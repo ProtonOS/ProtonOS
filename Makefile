@@ -34,7 +34,7 @@ MERNEL_SRC := $(wildcard $(MERNEL_DIR)/*.cs)
 NERNEL_OBJ := $(patsubst $(NERNEL_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/nernel/%.obj,$(NERNEL_SRC))
 
 # Targets
-.PHONY: all clean nernel mernel image
+.PHONY: all clean nernel mernel image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -68,6 +68,10 @@ image: $(BUILD_DIR)/$(EFI_NAME)
 
 clean:
 	rm -rf build/
+
+# Run in QEMU
+run: image
+	./run.sh
 
 # Show configuration
 info:
