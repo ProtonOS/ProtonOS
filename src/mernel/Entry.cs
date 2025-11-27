@@ -13,5 +13,8 @@ public static unsafe class Entry
         DebugConsole.WriteLine("  netos mernel booted!");
         DebugConsole.WriteLine("==============================");
         DebugConsole.WriteLine();
+
+        // Initialize GDT with our own descriptors
+        Gdt.Init();
     }
 }

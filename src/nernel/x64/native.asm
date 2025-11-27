@@ -56,6 +56,28 @@ ind:
     in eax, dx
     ret
 
+;; ==================== Descriptor Tables ====================
+
+global lgdt, lidt, ltr
+
+; void lgdt(void* gdtPtr) - Load Global Descriptor Table
+; Windows x64 ABI: gdtPtr in rcx
+lgdt:
+    lgdt [rcx]
+    ret
+
+; void lidt(void* idtPtr) - Load Interrupt Descriptor Table
+; Windows x64 ABI: idtPtr in rcx
+lidt:
+    lidt [rcx]
+    ret
+
+; void ltr(uint16_t selector) - Load Task Register
+; Windows x64 ABI: selector in cx
+ltr:
+    ltr cx
+    ret
+
 ;; ==================== CPU Control ====================
 
 global hlt, cli, sti, pause

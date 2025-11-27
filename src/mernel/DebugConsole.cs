@@ -91,4 +91,44 @@ public static unsafe class DebugConsole
         WriteByte(0x0D);  // CR
         WriteByte(0x0A);  // LF
     }
+
+    /// <summary>
+    /// Write a 64-bit value as hexadecimal
+    /// </summary>
+    public static void WriteHex(ulong value)
+    {
+        // Write digits from most significant to least
+        for (int i = 60; i >= 0; i -= 4)
+        {
+            int nibble = (int)((value >> i) & 0xF);
+            byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
+            WriteByte(c);
+        }
+    }
+
+    /// <summary>
+    /// Write a 32-bit value as hexadecimal
+    /// </summary>
+    public static void WriteHex(uint value)
+    {
+        for (int i = 28; i >= 0; i -= 4)
+        {
+            int nibble = (int)((value >> i) & 0xF);
+            byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
+            WriteByte(c);
+        }
+    }
+
+    /// <summary>
+    /// Write a 16-bit value as hexadecimal
+    /// </summary>
+    public static void WriteHex(ushort value)
+    {
+        for (int i = 12; i >= 0; i -= 4)
+        {
+            int nibble = (value >> i) & 0xF;
+            byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
+            WriteByte(c);
+        }
+    }
 }
