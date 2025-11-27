@@ -1,0 +1,29 @@
+# Build outputs
+build/
+logs/
+
+# Object files
+*.obj
+*.o
+
+# Listing files
+*.lst
+
+# Executables
+*.EFI
+*.efi
+
+# Disk images
+*.img
+*.iso
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
