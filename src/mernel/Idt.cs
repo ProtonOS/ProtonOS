@@ -1,0 +1,195 @@
+// netos mernel - Interrupt Descriptor Table
+// Sets up IDT entries pointing to ISR stubs in nernel.
+
+using System.Runtime.InteropServices;
+
+namespace Mernel;
+
+/// <summary>
+/// 16-byte IDT entry for 64-bit mode
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct IdtEntry
+{
+    public ushort OffsetLow;     // Offset bits 0-15
+    public ushort Selector;      // Code segment selector
+    public byte Ist;             // Interrupt Stack Table (bits 0-2), rest zero
+    public byte TypeAttr;        // Type and attributes
+    public ushort OffsetMid;     // Offset bits 16-31
+    public uint OffsetHigh;      // Offset bits 32-63
+    public uint Reserved;        // Must be zero
+
+    /// <summary>
+    /// Create an interrupt gate entry
+    /// </summary>
+    public static IdtEntry InterruptGate(ulong handler, ushort selector, byte ist = 0)
+    {
+        return new IdtEntry
+        {
+            OffsetLow = (ushort)(handler & 0xFFFF),
+            Selector = selector,
+            Ist = (byte)(ist & 0x7),
+            // Type: 0xE = 64-bit interrupt gate, Present=1, DPL=0
+            // 1 00 0 1110 = 0x8E
+            TypeAttr = 0x8E,
+            OffsetMid = (ushort)((handler >> 16) & 0xFFFF),
+            OffsetHigh = (uint)((handler >> 32) & 0xFFFFFFFF),
+            Reserved = 0,
+        };
+    }
+
+    /// <summary>
+    /// Create a trap gate entry (doesn't disable interrupts)
+    /// </summary>
+    public static IdtEntry TrapGate(ulong handler, ushort selector, byte ist = 0)
+    {
+        return new IdtEntry
+        {
+            OffsetLow = (ushort)(handler & 0xFFFF),
+            Selector = selector,
+            Ist = (byte)(ist & 0x7),
+            // Type: 0xF = 64-bit trap gate, Present=1, DPL=0
+            // 1 00 0 1111 = 0x8F
+            TypeAttr = 0x8F,
+            OffsetMid = (ushort)((handler >> 16) & 0xFFFF),
+            OffsetHigh = (uint)((handler >> 32) & 0xFFFFFFFF),
+            Reserved = 0,
+        };
+    }
+}
+
+/// <summary>
+/// IDT pointer structure for lidt instruction
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct IdtPointer
+{
+    public ushort Limit;  // Size of IDT - 1
+    public ulong Base;    // Linear address of IDT
+}
+
+/// <summary>
+/// Interrupt frame passed to InterruptDispatch
+/// Layout matches what ISR stubs push onto the stack.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct InterruptFrame
+{
+    // Segment registers (pushed by isr_common)
+    public ulong Es;
+    public ulong Ds;
+
+    // General purpose registers (pushed by isr_common)
+    public ulong R15;
+    public ulong R14;
+    public ulong R13;
+    public ulong R12;
+    public ulong R11;
+    public ulong R10;
+    public ulong R9;
+    public ulong R8;
+    public ulong Rbp;
+    public ulong Rdi;
+    public ulong Rsi;
+    public ulong Rdx;
+    public ulong Rcx;
+    public ulong Rbx;
+    public ulong Rax;
+
+    // Pushed by ISR stub
+    public ulong InterruptNumber;
+    public ulong ErrorCode;
+
+    // Pushed by CPU on interrupt
+    public ulong Rip;
+    public ulong Cs;
+    public ulong Rflags;
+    public ulong Rsp;
+    public ulong Ss;
+}
+
+/// <summary>
+/// Interrupt Descriptor Table management
+/// </summary>
+public static unsafe class Idt
+{
+    private const int IdtEntryCount = 256;
+
+    private static IdtEntry* _idt;
+    private static IdtPointer _idtPointer;
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void lidt(void* idtPtr);
+
+    // Import a function that returns the ISR table address
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong* get_isr_table();
+
+    // Handler function pointers (allocated from our bump allocator)
+    private static delegate*<InterruptFrame*, void>* _handlers;
+
+    /// <summary>
+    /// Initialize and load the IDT
+    /// </summary>
+    public static void Init()
+    {
+        // Allocate IDT
+        _idt = (IdtEntry*)NativeMemory.Alloc((nuint)(IdtEntryCount * sizeof(IdtEntry)));
+
+        // Allocate handler array (can't use 'new' in stdlib:zero)
+        _handlers = (delegate*<InterruptFrame*, void>*)NativeMemory.AllocZeroed(
+            (nuint)(IdtEntryCount * sizeof(delegate*<InterruptFrame*, void>)));
+
+        // Set up IDT entries pointing to ISR stubs
+        SetupIdtEntries();
+
+        // Set up IDT pointer
+        _idtPointer.Limit = (ushort)(IdtEntryCount * sizeof(IdtEntry) - 1);
+        _idtPointer.Base = (ulong)_idt;
+
+        // Load the IDT
+        fixed (IdtPointer* ptr = &_idtPointer)
+        {
+            lidt(ptr);
+        }
+
+        DebugConsole.Write("[IDT] Loaded at 0x");
+        DebugConsole.WriteHex((ulong)_idt);
+        DebugConsole.WriteLine();
+    }
+
+    private static void SetupIdtEntries()
+    {
+        // Get ISR table address from nernel
+        ulong* isrTable = get_isr_table();
+
+        for (int i = 0; i < IdtEntryCount; i++)
+        {
+            ulong handler = isrTable[i];
+            _idt[i] = IdtEntry.InterruptGate(handler, GdtSelectors.KernelCode);
+        }
+    }
+
+    /// <summary>
+    /// Register a handler for an interrupt
+    /// </summary>
+    public static void RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)
+    {
+        if (vector >= 0 && vector < IdtEntryCount && _handlers != null)
+        {
+            _handlers[vector] = handler;
+        }
+    }
+
+    /// <summary>
+    /// Get the handler for an interrupt (for dispatch)
+    /// </summary>
+    public static delegate*<InterruptFrame*, void> GetHandler(int vector)
+    {
+        if (vector >= 0 && vector < IdtEntryCount && _handlers != null)
+        {
+            return _handlers[vector];
+        }
+        return null;
+    }
+}

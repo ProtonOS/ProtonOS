@@ -204,6 +204,9 @@ public static unsafe class Gdt
     private static extern void lgdt(void* gdtPtr);
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void reload_segments(ushort codeSelector, ushort dataSelector);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void ltr(ushort selector);
 
     /// <summary>
@@ -241,6 +244,9 @@ public static unsafe class Gdt
         {
             lgdt(ptr);
         }
+
+        // Reload segment registers with our selectors
+        reload_segments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
 
         // Load the TSS
         ltr(GdtSelectors.Tss);

@@ -16,5 +16,11 @@ public static unsafe class Entry
 
         // Initialize GDT with our own descriptors
         Gdt.Init();
+
+        // Initialize IDT with interrupt handlers
+        Idt.Init();
+
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[OK] Kernel initialization complete");
     }
 }
