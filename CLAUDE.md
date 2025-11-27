@@ -25,18 +25,24 @@ Docker-based development using `netos-dev` container:
 
 ### Build Commands
 ```bash
-# Start dev shell (mounts project to /usr/src/netos)
+# Run commands inside container via ./dev.sh wrapper
+./dev.sh make           # Build kernel
+./dev.sh make image     # Create boot image
+./dev.sh ./run.sh       # Run in QEMU
+./dev.sh make clean     # Clean artifacts
+
+# Or start interactive dev shell
 ./dev.sh
+```
 
-# Or manually:
-docker run -it --rm -v "$(pwd):/usr/src/netos" -w /usr/src/netos netos-dev
+### Testing
+**IMPORTANT:** Always cleanup background QEMU processes after testing to avoid file locks:
+```bash
+# Run test with timeout
+timeout 15 ./dev.sh ./run.sh 2>&1 || true
 
-# Inside container
-./build.sh              # Build kernel
-./run.sh                # Run in QEMU
-DEBUG=1 ./run.sh        # Run with GDB server on port 1234
-./clean.sh              # Clean artifacts
-ARCH=arm64 ./build.sh   # Build for ARM64
+# Kill any lingering QEMU processes after test
+./dev.sh bash -c "killall qemu-system-x86_64 2>/dev/null || true"
 ```
 
 ### Output Format Flow
@@ -53,36 +59,51 @@ ARCH=arm64 ./build.sh   # Build for ARM64
 
 ```
 src/
-├── Kernel.HAL/          # Hardware abstraction interfaces (arch-independent)
-├── Kernel.Core/         # Architecture-independent kernel services
-│   ├── Memory/          # PhysicalMemory, VirtualMemory, Heap
-│   ├── Console/         # Console output
-│   └── Drivers/         # DriverManager
-├── Kernel.Arch.X64/     # x86_64 implementation
-├── Kernel.Arch.Arm64/   # ARM64 implementation
-├── Kernel.Boot.UEFI/    # UEFI boot protocol
-└── Kernel.Boot.M1N1/    # Apple Silicon (future)
-
-arch/
-├── x64/native_x64.asm   # ~150 LOC
-└── arm64/native_arm64.asm
+├── nernel/              # Native kernel (assembly)
+│   └── x64/
+│       └── native.asm   # CPU intrinsics, ISR stubs (~280 LOC)
+└── mernel/              # Managed kernel (C#)
+    ├── Mernel.cs        # Main entry point
+    ├── DebugConsole.cs  # COM1 serial output
+    ├── NativeMemory.cs  # Bump allocator for early boot
+    └── x64/             # x64-specific code
+        ├── Arch.cs      # Architecture init, interrupt dispatch
+        ├── Gdt.cs       # Global Descriptor Table + TSS
+        └── Idt.cs       # Interrupt Descriptor Table
 
 build/
-├── x64/
-│   ├── BOOTX64.EFI
-│   └── boot.img
-└── arm64/
+└── x64/
+    ├── BOOTX64.EFI      # UEFI executable
+    └── boot.img         # FAT32 boot image
 ```
 
-## Key HAL Interfaces
+### stdlib:zero Constraints
+bflat's `--stdlib:zero` mode has no runtime, so:
+- **No `new` for classes** - Use static classes or structs
+- **No managed delegates** - Use `delegate*<T, void>` function pointers
+- **No arrays via `new`** - Use `NativeMemory.Alloc()` for buffers
+- **No GC** - Manual memory management only
 
-- `IArchitecture` - Architecture detection, initialization
-- `IInterruptController` - Interrupt registration, enable/disable
-- `IPageTableManager` - Virtual memory, address spaces
-- `ICpuServices` - CPU count, halt, barriers, timestamp
-- `ITimer` - Periodic/one-shot timers
-- `ISerialPort` - Early console output
-- `IBootServices` - Memory map, framebuffer, config tables
+## Architecture Abstraction
+
+Due to stdlib:zero constraints (no `new` for classes), we use **compile-time architecture selection** instead of runtime interfaces:
+
+```csharp
+// In Mernel.cs - compile-time dispatch via preprocessor
+#if ARCH_X64
+    Arch.Init();  // Mernel.X64.Arch
+#elif ARCH_ARM64
+    Arch.Init();  // Mernel.Arm64.Arch (future)
+#endif
+```
+
+Each architecture provides a static `Arch` class with:
+- `Init()` - Initialize GDT/IDT (or equivalent), interrupt handlers
+- `RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)`
+- `EnableInterrupts()` / `DisableInterrupts()`
+- `Halt()`
+
+**Future:** Once JIT is available, we can use proper interfaces with runtime polymorphism.
 
 ## Native Assembly Functions (x86_64)
 

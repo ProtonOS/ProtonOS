@@ -4,7 +4,7 @@
 
 using System.Runtime.InteropServices;
 
-namespace Mernel;
+namespace Mernel.X64;
 
 /// <summary>
 /// GDT segment selectors (byte offsets into GDT)
@@ -239,22 +239,25 @@ public static unsafe class Gdt
         _gdtPointer.Limit = (ushort)(GdtEntryCount * sizeof(GdtEntry) - 1);
         _gdtPointer.Base = (ulong)_gdt;
 
+        DebugConsole.Write("[GDT] Loading... ");
+
         // Load the GDT
         fixed (GdtPointer* ptr = &_gdtPointer)
         {
             lgdt(ptr);
         }
+        DebugConsole.Write("lgdt ");
 
         // Reload segment registers with our selectors
         reload_segments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
+        DebugConsole.Write("segs ");
 
         // Load the TSS
         ltr(GdtSelectors.Tss);
+        DebugConsole.Write("tss ");
 
-        DebugConsole.Write("[GDT] Loaded at 0x");
+        DebugConsole.Write("at 0x");
         DebugConsole.WriteHex((ulong)_gdt);
-        DebugConsole.Write(", TSS at 0x");
-        DebugConsole.WriteHex((ulong)_tss);
         DebugConsole.WriteLine();
     }
 

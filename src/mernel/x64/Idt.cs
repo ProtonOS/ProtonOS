@@ -1,9 +1,10 @@
-// netos mernel - Interrupt Descriptor Table
+// netos mernel - x64 Interrupt Descriptor Table
 // Sets up IDT entries pointing to ISR stubs in nernel.
 
 using System.Runtime.InteropServices;
+using Mernel.X64;
 
-namespace Mernel;
+namespace Mernel.X64;
 
 /// <summary>
 /// 16-byte IDT entry for 64-bit mode
@@ -121,12 +122,8 @@ public static unsafe class Idt
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void lidt(void* idtPtr);
 
-    // Import a function that returns the ISR table address
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong* get_isr_table();
-
-    // Handler function pointers (allocated from our bump allocator)
-    private static delegate*<InterruptFrame*, void>* _handlers;
 
     /// <summary>
     /// Initialize and load the IDT
@@ -135,10 +132,6 @@ public static unsafe class Idt
     {
         // Allocate IDT
         _idt = (IdtEntry*)NativeMemory.Alloc((nuint)(IdtEntryCount * sizeof(IdtEntry)));
-
-        // Allocate handler array (can't use 'new' in stdlib:zero)
-        _handlers = (delegate*<InterruptFrame*, void>*)NativeMemory.AllocZeroed(
-            (nuint)(IdtEntryCount * sizeof(delegate*<InterruptFrame*, void>)));
 
         // Set up IDT entries pointing to ISR stubs
         SetupIdtEntries();
@@ -168,28 +161,5 @@ public static unsafe class Idt
             ulong handler = isrTable[i];
             _idt[i] = IdtEntry.InterruptGate(handler, GdtSelectors.KernelCode);
         }
-    }
-
-    /// <summary>
-    /// Register a handler for an interrupt
-    /// </summary>
-    public static void RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)
-    {
-        if (vector >= 0 && vector < IdtEntryCount && _handlers != null)
-        {
-            _handlers[vector] = handler;
-        }
-    }
-
-    /// <summary>
-    /// Get the handler for an interrupt (for dispatch)
-    /// </summary>
-    public static delegate*<InterruptFrame*, void> GetHandler(int vector)
-    {
-        if (vector >= 0 && vector < IdtEntryCount && _handlers != null)
-        {
-            return _handlers[vector];
-        }
-        return null;
     }
 }
