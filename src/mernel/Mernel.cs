@@ -43,6 +43,9 @@ public static unsafe class Mernel
         // Initialize virtual memory (our own page tables)
         VirtualMemory.Init();
 
+        // Initialize kernel heap
+        HeapAllocator.Init();
+
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
 
