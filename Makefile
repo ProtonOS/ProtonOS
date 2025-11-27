@@ -46,7 +46,7 @@ endif
 
 # Source files
 NERNEL_SRC := $(wildcard $(NERNEL_DIR)/$(ARCH)/*.asm)
-MERNEL_SRC := $(wildcard $(MERNEL_DIR)/*.cs)
+MERNEL_SRC := $(wildcard $(MERNEL_DIR)/*.cs) $(wildcard $(MERNEL_DIR)/$(ARCH)/*.cs)
 
 # Object files
 NERNEL_OBJ := $(patsubst $(NERNEL_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/nernel/%.obj,$(NERNEL_SRC))
