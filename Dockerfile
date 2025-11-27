@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nasm \
     # LLVM linker for PE/COFF (lld-link)
     lld \
+    # libc++ required by bflat's objwriter
+    libc++1 \
     # FAT32 image tools (mformat, mcopy, mmd)
     mtools \
     dosfstools \

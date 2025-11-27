@@ -26,12 +26,31 @@ BFLAT := bflat
 NASM_FLAGS := -f $(NASM_FORMAT)
 LD_FLAGS := -subsystem:efi_application -entry:EfiMain
 
+BFLAT_FLAGS := \
+	--os:uefi \
+	--arch:$(ARCH) \
+	--stdlib:zero \
+	--no-stacktrace-data \
+	--no-globalization \
+	--no-reflection \
+	--no-exception-messages
+
+# Architecture-specific defines
+ifeq ($(ARCH),x64)
+    BFLAT_FLAGS += -d ARCH_X64 -d BOOT_UEFI
+else ifeq ($(ARCH),arm64)
+    BFLAT_FLAGS += -d ARCH_ARM64 -d BOOT_UEFI
+else ifeq ($(ARCH),apple)
+    BFLAT_FLAGS += -d ARCH_ARM64 -d BOOT_M1N1
+endif
+
 # Source files
 NERNEL_SRC := $(wildcard $(NERNEL_DIR)/$(ARCH)/*.asm)
 MERNEL_SRC := $(wildcard $(MERNEL_DIR)/*.cs)
 
 # Object files
 NERNEL_OBJ := $(patsubst $(NERNEL_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/nernel/%.obj,$(NERNEL_SRC))
+MERNEL_OBJ := $(BUILD_DIR)/mernel/mernel.obj
 
 # Targets
 .PHONY: all clean nernel mernel image run
@@ -50,8 +69,16 @@ $(BUILD_DIR)/nernel/%.obj: $(NERNEL_DIR)/$(ARCH)/%.asm | $(BUILD_DIR)
 
 nernel: $(NERNEL_OBJ)
 
+# Compile mernel (all C# files into single object)
+$(MERNEL_OBJ): $(MERNEL_SRC) | $(BUILD_DIR)
+	@echo "BFLAT mernel"
+	@mkdir -p $(dir $@)
+	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(MERNEL_SRC)
+
+mernel: $(MERNEL_OBJ)
+
 # Link UEFI executable
-$(BUILD_DIR)/$(EFI_NAME): $(NERNEL_OBJ)
+$(BUILD_DIR)/$(EFI_NAME): $(NERNEL_OBJ) $(MERNEL_OBJ)
 	@echo "LINK $@"
 	$(LD) $(LD_FLAGS) -out:$@ $^
 	@file $@
@@ -80,4 +107,5 @@ info:
 	@echo "NERNEL_SRC: $(NERNEL_SRC)"
 	@echo "NERNEL_OBJ: $(NERNEL_OBJ)"
 	@echo "MERNEL_SRC: $(MERNEL_SRC)"
+	@echo "MERNEL_OBJ: $(MERNEL_OBJ)"
 	@echo "EFI_NAME:   $(EFI_NAME)"
