@@ -1,13 +1,33 @@
 ; netos nernel - x64 native layer
-; Minimal CPU intrinsics that cannot be expressed in C#
-;
-; Note: UEFI entry point (EfiMain) is provided by bflat's zerolib.
-; This file provides CPU-level primitives that cannot be expressed in C#.
+; Provides UEFI entry point hook and CPU primitives for the kernel.
 
 BITS 64
 DEFAULT REL
 
+section .data
+
+;; UEFI parameters - stored for later retrieval by managed code
+global g_uefi_image_handle, g_uefi_system_table
+g_uefi_image_handle: dq 0
+g_uefi_system_table:  dq 0
+
 section .text
+
+;; ==================== UEFI Entry Point ====================
+;; Linker entry point that saves UEFI parameters, then calls zerolib's EfiMain.
+
+extern EfiMain  ; zerolib's EfiMain
+
+; EFI_STATUS EFIAPI EfiEntry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable)
+; Windows x64 ABI: ImageHandle in rcx, SystemTable in rdx
+global EfiEntry
+EfiEntry:
+    ; Save UEFI parameters to globals for later retrieval by managed code
+    mov [rel g_uefi_image_handle], rcx
+    mov [rel g_uefi_system_table], rdx
+
+    ; Tail-call to zerolib's EfiMain (parameters already in correct registers)
+    jmp EfiMain
 
 ;; ==================== Port I/O ====================
 ;; These instructions have no high-level equivalent
@@ -287,4 +307,19 @@ section .text
 global get_isr_table
 get_isr_table:
     lea rax, [rel isr_table]
+    ret
+
+;; ==================== UEFI Parameter Access ====================
+;; Functions to retrieve UEFI parameters saved by EfiMainHook
+
+; void* get_uefi_system_table(void)
+global get_uefi_system_table
+get_uefi_system_table:
+    mov rax, [rel g_uefi_system_table]
+    ret
+
+; void* get_uefi_image_handle(void)
+global get_uefi_image_handle
+get_uefi_image_handle:
+    mov rax, [rel g_uefi_image_handle]
     ret

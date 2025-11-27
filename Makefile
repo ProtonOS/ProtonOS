@@ -24,7 +24,7 @@ BFLAT := bflat
 
 # Tool flags
 NASM_FLAGS := -f $(NASM_FORMAT)
-LD_FLAGS := -subsystem:efi_application -entry:EfiMain
+LD_FLAGS := -subsystem:efi_application -entry:EfiEntry
 
 BFLAT_FLAGS := \
 	--os:uefi \
