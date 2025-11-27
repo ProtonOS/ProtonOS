@@ -48,9 +48,6 @@ public static unsafe class Mernel
         // TODO: Arch.Init();
 #endif
 
-        // Test page allocation
-        TestPageAllocator();
-
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
     }
@@ -120,47 +117,5 @@ public static unsafe class Mernel
                 DebugConsole.WriteLine("[PageAlloc] Initialization failed!");
             }
         }
-    }
-
-    private static void TestPageAllocator()
-    {
-        if (!PageAllocator.IsInitialized)
-        {
-            DebugConsole.WriteLine("[Test] PageAllocator not initialized");
-            return;
-        }
-
-        DebugConsole.WriteLine();
-        DebugConsole.WriteLine("[Test] Testing page allocator...");
-
-        // Allocate a single page
-        ulong page1 = PageAllocator.AllocatePage();
-        DebugConsole.Write("[Test] Allocated page at 0x");
-        DebugConsole.WriteHex(page1);
-        DebugConsole.WriteLine();
-
-        // Allocate another page
-        ulong page2 = PageAllocator.AllocatePage();
-        DebugConsole.Write("[Test] Allocated page at 0x");
-        DebugConsole.WriteHex(page2);
-        DebugConsole.WriteLine();
-
-        // Allocate 4 contiguous pages
-        ulong pages = PageAllocator.AllocatePages(4);
-        DebugConsole.Write("[Test] Allocated 4 pages at 0x");
-        DebugConsole.WriteHex(pages);
-        DebugConsole.WriteLine();
-
-        // Free them
-        PageAllocator.FreePage(page1);
-        PageAllocator.FreePage(page2);
-        PageAllocator.FreePageRange(pages, 4);
-
-        ulong freePages = PageAllocator.FreePages;
-        DebugConsole.Write("[Test] Free pages: ");
-        DebugConsole.WriteHex(freePages);
-        DebugConsole.Write(" (");
-        DebugConsole.WriteHex(PageAllocator.FreeMemory / (1024 * 1024));
-        DebugConsole.WriteLine(" MB)");
     }
 }
