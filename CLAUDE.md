@@ -38,31 +38,35 @@ Docker-based development using `netos-dev` container:
 ### Testing
 **CRITICAL:** The dev.sh script runs commands inside Docker containers. Each `./dev.sh` invocation starts a NEW container. If tests run QEMU (via `./run.sh`), that container will keep running until QEMU exits. Stale containers can lock files in `build/` and cause subsequent builds to fail.
 
-**ALWAYS follow this test pattern:**
+**ALWAYS use this single-command pattern for build + test:**
 ```bash
-# Run test with timeout (container auto-exits when timeout kills QEMU)
-timeout 15 ./dev.sh ./run.sh 2>&1 || true
-
-# IMMEDIATELY after test, kill the background shell that ran the test
-# Use KillShell tool if running from Claude Code
+# Build, create image, run test with timeout, then cleanup containers - ALL IN ONE COMMAND
+./dev.sh make 2>&1 && ./dev.sh make image 2>&1 && timeout 15 ./dev.sh ./run.sh 2>&1; \
+docker stop $(docker ps -q) 2>/dev/null; docker rm $(docker ps -aq) 2>/dev/null; \
+echo "--- Done ---"
 ```
+
+This pattern ensures:
+1. Build and image creation happen first (fails fast on errors)
+2. QEMU runs with 15-second timeout (auto-exits)
+3. Docker containers are ALWAYS cleaned up at the end
+4. The `echo` confirms the command completed
 
 **If file locks occur (e.g., "Device or resource busy"):**
 ```bash
-# Stop ALL Docker containers
+# Stop ALL Docker containers first
 docker stop $(docker ps -q) 2>/dev/null; docker rm $(docker ps -aq) 2>/dev/null
 
 # Clean build directory via Docker (files are owned by root)
 ./dev.sh rm -rf /usr/src/netos/build/x64
 ./dev.sh mkdir -p /usr/src/netos/build/x64/mernel /usr/src/netos/build/x64/nernel
 
-# Rebuild
-./dev.sh make && ./dev.sh make image
+# Then use the standard build+test pattern above
 ```
 
 **NOTE:** The dev.sh mounts the project to `/usr/src/netos` inside the container (NOT `/work`).
 
-**NEVER leave test containers running.** Always verify cleanup completed before starting new work.
+**NEVER leave test containers running.** The single-command pattern above handles this automatically.
 
 ### Output Format Flow
 ```
