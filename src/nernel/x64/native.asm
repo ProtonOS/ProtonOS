@@ -122,11 +122,32 @@ ltr:
 
 ;; ==================== Control Registers ====================
 
-global read_cr2
+global read_cr2, read_cr3, write_cr3
 
 ; uint64_t read_cr2(void) - Read CR2 (page fault linear address)
 read_cr2:
     mov rax, cr2
+    ret
+
+; uint64_t read_cr3(void) - Read CR3 (page table base)
+read_cr3:
+    mov rax, cr3
+    ret
+
+; void write_cr3(uint64_t value) - Write CR3 (switch page tables)
+; Windows x64 ABI: value in rcx
+write_cr3:
+    mov cr3, rcx
+    ret
+
+;; ==================== TLB ====================
+
+global invlpg
+
+; void invlpg(uint64_t virtualAddress) - Invalidate TLB entry
+; Windows x64 ABI: virtualAddress in rcx
+invlpg:
+    invlpg [rcx]
     ret
 
 ;; ==================== CPU Control ====================

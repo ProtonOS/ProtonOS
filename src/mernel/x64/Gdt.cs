@@ -220,15 +220,6 @@ public static unsafe class Gdt
     private static TssStorage _tssStorage;
     private static GdtPointer _gdtPointer;
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void lgdt(void* gdtPtr);
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void reload_segments(ushort codeSelector, ushort dataSelector);
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void ltr(ushort selector);
-
     /// <summary>
     /// Initialize and load our GDT
     /// </summary>
@@ -265,16 +256,16 @@ public static unsafe class Gdt
             // Load the GDT
             fixed (GdtPointer* ptr = &_gdtPointer)
             {
-                lgdt(ptr);
+                Cpu.LoadGdt(ptr);
             }
             DebugConsole.Write("lgdt ");
 
             // Reload segment registers with our selectors
-            reload_segments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
+            Cpu.ReloadSegments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
             DebugConsole.Write("segs ");
 
             // Load the TSS
-            ltr(GdtSelectors.Tss);
+            Cpu.LoadTr(GdtSelectors.Tss);
             DebugConsole.Write("tss ");
 
             DebugConsole.Write("at 0x");

@@ -130,12 +130,6 @@ public static unsafe class Idt
     private static IdtStorage _idtStorage;
     private static IdtPointer _idtPointer;
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void lidt(void* idtPtr);
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern ulong* get_isr_table();
-
     /// <summary>
     /// Initialize and load the IDT
     /// </summary>
@@ -146,7 +140,7 @@ public static unsafe class Idt
             IdtEntry* idt = (IdtEntry*)idtPtr;
 
             // Set up IDT entries pointing to ISR stubs
-            ulong* isrTable = get_isr_table();
+            ulong* isrTable = Cpu.GetIsrTable();
             for (int i = 0; i < IdtEntryCount; i++)
             {
                 ulong handler = isrTable[i];
@@ -160,7 +154,7 @@ public static unsafe class Idt
             // Load the IDT
             fixed (IdtPointer* ptr = &_idtPointer)
             {
-                lidt(ptr);
+                Cpu.LoadIdt(ptr);
             }
 
             DebugConsole.Write("[IDT] Loaded at 0x");

@@ -29,21 +29,6 @@ public static unsafe class Arch
     private static HandlerStorage _handlerStorage;
     private static bool _interruptsEnabled;
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void cli();
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void sti();
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void hlt();
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern ulong read_cr2();
-
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void int3();
-
     /// <summary>
     /// Initialize x64 architecture
     /// </summary>
@@ -106,7 +91,7 @@ public static unsafe class Arch
     public static void EnableInterrupts()
     {
         _interruptsEnabled = true;
-        sti();
+        Cpu.EnableInterrupts();
     }
 
     /// <summary>
@@ -114,7 +99,7 @@ public static unsafe class Arch
     /// </summary>
     public static void DisableInterrupts()
     {
-        cli();
+        Cpu.DisableInterrupts();
         _interruptsEnabled = false;
     }
 
@@ -136,7 +121,7 @@ public static unsafe class Arch
     /// </summary>
     public static void Halt()
     {
-        hlt();
+        Cpu.Halt();
     }
 
     /// <summary>
@@ -144,7 +129,7 @@ public static unsafe class Arch
     /// </summary>
     public static void Breakpoint()
     {
-        int3();
+        Cpu.Breakpoint();
     }
 
     /// <summary>
@@ -204,17 +189,13 @@ public static unsafe class Arch
             if (vector == 14) // Page fault
             {
                 DebugConsole.Write("    CR2: 0x");
-                DebugConsole.WriteHex(read_cr2());
+                DebugConsole.WriteHex(Cpu.ReadCr2());
                 DebugConsole.WriteLine();
             }
 
             // Halt - can't continue from unhandled exception
             DebugConsole.WriteLine("!!! SYSTEM HALTED");
-            cli();
-            while (true)
-            {
-                hlt();
-            }
+            Cpu.HaltForever();
         }
 
         // IRQs (32-47) - acknowledge and ignore if no handler

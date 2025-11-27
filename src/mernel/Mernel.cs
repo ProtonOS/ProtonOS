@@ -48,6 +48,9 @@ public static unsafe class Mernel
         // TODO: Arch.Init();
 #endif
 
+        // Initialize virtual memory
+        VirtualMemory.Init();
+
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
     }
