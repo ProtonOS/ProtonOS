@@ -17,6 +17,14 @@ public static unsafe class PageAllocator
     public const ulong PageSize = 4096;
     public const int PageShift = 12;
 
+    // Static buffer for memory map (8KB should be enough for most systems)
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private unsafe struct MemoryMapBuffer
+    {
+        public fixed byte Data[8192];
+    }
+    private static MemoryMapBuffer _memMapBuffer;
+
     // Bitmap location (set during Init)
     private static byte* _bitmap;
     private static ulong _bitmapSize;      // Size in bytes
@@ -68,144 +76,179 @@ public static unsafe class PageAllocator
     /// Must be called before ExitBootServices.
     ///
     /// This function:
-    /// 1. Scans memory map to find highest address (determines bitmap size)
-    /// 2. Allocates bitmap from UEFI boot services
-    /// 3. Marks all memory as used initially
-    /// 4. Marks ConventionalMemory regions as free
-    /// 5. Reserves: bitmap, kernel image, runtime services memory
+    /// 1. Gets UEFI memory map
+    /// 2. Finds kernel extent from LoaderCode/LoaderData regions
+    /// 3. Scans memory map to find highest address (determines bitmap size)
+    /// 4. Allocates bitmap from UEFI boot services
+    /// 5. Marks all memory as used initially
+    /// 6. Marks ConventionalMemory regions as free
+    /// 7. Reserves: bitmap, kernel image, null guard page
     /// </summary>
-    /// <param name="memoryMap">Pointer to UEFI memory map buffer</param>
-    /// <param name="descriptorSize">Size of each memory descriptor</param>
-    /// <param name="entryCount">Number of entries in the map</param>
-    /// <param name="kernelBase">Base address of kernel image</param>
-    /// <param name="kernelSize">Size of kernel image in bytes</param>
-    public static bool Init(
-        byte* memoryMap,
-        ulong descriptorSize,
-        int entryCount,
-        ulong kernelBase,
-        ulong kernelSize)
+    public static bool Init()
     {
         if (_initialized)
-            return false;
+            return true;
 
-        var bs = UefiBoot.BootServices;
-        if (bs == null)
+        if (!UefiBoot.BootServicesAvailable)
         {
             DebugConsole.WriteLine("[PageAlloc] Boot services not available!");
             return false;
         }
 
-        // === Pass 1: Find the highest physical address ===
-        _topAddress = 0;
-        for (int i = 0; i < entryCount; i++)
+        var bs = UefiBoot.BootServices;
+
+        fixed (byte* memoryMap = _memMapBuffer.Data)
         {
-            var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
-            ulong regionEnd = desc->PhysicalStart + desc->NumberOfPages * PageSize;
-            if (regionEnd > _topAddress)
-                _topAddress = regionEnd;
-        }
+            // Get UEFI memory map
+            var status = UefiBoot.GetMemoryMap(
+                memoryMap,
+                8192,
+                out ulong mapKey,
+                out ulong descriptorSize,
+                out int entryCount);
 
-        if (_topAddress == 0)
-        {
-            DebugConsole.WriteLine("[PageAlloc] No memory found!");
-            return false;
-        }
-
-        // Calculate bitmap size needed
-        // Each bit represents one 4KB page
-        _totalPages = _topAddress / PageSize;
-        _bitmapSize = (_totalPages + 7) / 8;  // Round up to bytes
-        _bitmapPages = (_bitmapSize + PageSize - 1) / PageSize;  // Round up to pages
-
-        DebugConsole.Write("[PageAlloc] Top address: 0x");
-        DebugConsole.WriteHex(_topAddress);
-        DebugConsole.Write(", tracking ");
-        DebugConsole.WriteHex(_totalPages);
-        DebugConsole.WriteLine(" pages");
-
-        DebugConsole.Write("[PageAlloc] Bitmap needs ");
-        DebugConsole.WriteHex(_bitmapSize);
-        DebugConsole.Write(" bytes (");
-        DebugConsole.WriteHex(_bitmapPages);
-        DebugConsole.WriteLine(" pages)");
-
-        // === Allocate bitmap from UEFI ===
-        void* bitmapPtr = null;
-        var status = bs->AllocatePool(
-            EfiMemoryType.LoaderData,  // Will become available after ExitBootServices
-            _bitmapPages * PageSize,   // Allocate full pages
-            &bitmapPtr);
-
-        if (status != EfiStatus.Success || bitmapPtr == null)
-        {
-            DebugConsole.Write("[PageAlloc] Failed to allocate bitmap: 0x");
-            DebugConsole.WriteHex((ulong)status);
-            DebugConsole.WriteLine();
-            return false;
-        }
-
-        _bitmap = (byte*)bitmapPtr;
-        DebugConsole.Write("[PageAlloc] Bitmap at 0x");
-        DebugConsole.WriteHex((ulong)_bitmap);
-        DebugConsole.WriteLine();
-
-        // === Initialize bitmap: all pages start as USED (0) ===
-        for (ulong i = 0; i < _bitmapSize; i++)
-            _bitmap[i] = 0;
-
-        _freePages = 0;
-
-        // === Pass 2: Mark usable memory regions as FREE ===
-        for (int i = 0; i < entryCount; i++)
-        {
-            var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
-
-            // Only ConventionalMemory is safe to use
-            // After ExitBootServices, BootServicesCode/Data also become available,
-            // but we're setting this up before that call
-            if (desc->Type == EfiMemoryType.ConventionalMemory)
+            if (status != EfiStatus.Success)
             {
-                ulong startPage = desc->PhysicalStart / PageSize;
-                ulong pageCount = desc->NumberOfPages;
-
-                MarkRangeFree(startPage, pageCount);
+                DebugConsole.Write("[PageAlloc] GetMemoryMap failed: 0x");
+                DebugConsole.WriteHex((ulong)status);
+                DebugConsole.WriteLine();
+                return false;
             }
+
+            DebugConsole.Write("[PageAlloc] Memory map: ");
+            DebugConsole.WriteHex((ushort)entryCount);
+            DebugConsole.Write(" entries, descriptor size ");
+            DebugConsole.WriteHex((ushort)descriptorSize);
+            DebugConsole.WriteLine();
+
+            // Find kernel extent from LoaderCode/LoaderData regions
+            ulong kernelBase = 0xFFFFFFFFFFFFFFFF;
+            ulong kernelTop = 0;
+
+            for (int i = 0; i < entryCount; i++)
+            {
+                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
+                if (desc->Type == EfiMemoryType.LoaderCode ||
+                    desc->Type == EfiMemoryType.LoaderData)
+                {
+                    ulong start = desc->PhysicalStart;
+                    ulong end = start + desc->NumberOfPages * PageSize;
+
+                    if (start < kernelBase)
+                        kernelBase = start;
+                    if (end > kernelTop)
+                        kernelTop = end;
+                }
+            }
+
+            ulong kernelSize = (kernelTop > kernelBase) ? kernelTop - kernelBase : 0;
+
+            DebugConsole.Write("[PageAlloc] Kernel at 0x");
+            DebugConsole.WriteHex(kernelBase);
+            DebugConsole.Write(" size ");
+            DebugConsole.WriteHex(kernelSize / 1024);
+            DebugConsole.WriteLine(" KB");
+
+            // Find the highest physical address
+            _topAddress = 0;
+            for (int i = 0; i < entryCount; i++)
+            {
+                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
+                ulong regionEnd = desc->PhysicalStart + desc->NumberOfPages * PageSize;
+                if (regionEnd > _topAddress)
+                    _topAddress = regionEnd;
+            }
+
+            if (_topAddress == 0)
+            {
+                DebugConsole.WriteLine("[PageAlloc] No memory found!");
+                return false;
+            }
+
+            // Calculate bitmap size needed (each bit = one 4KB page)
+            _totalPages = _topAddress / PageSize;
+            _bitmapSize = (_totalPages + 7) / 8;  // Round up to bytes
+            _bitmapPages = (_bitmapSize + PageSize - 1) / PageSize;  // Round up to pages
+
+            DebugConsole.Write("[PageAlloc] Top address: 0x");
+            DebugConsole.WriteHex(_topAddress);
+            DebugConsole.Write(", tracking ");
+            DebugConsole.WriteHex(_totalPages);
+            DebugConsole.WriteLine(" pages");
+
+            DebugConsole.Write("[PageAlloc] Bitmap needs ");
+            DebugConsole.WriteHex(_bitmapSize);
+            DebugConsole.Write(" bytes (");
+            DebugConsole.WriteHex(_bitmapPages);
+            DebugConsole.WriteLine(" pages)");
+
+            // Allocate bitmap from UEFI
+            void* bitmapPtr = null;
+            status = bs->AllocatePool(
+                EfiMemoryType.LoaderData,  // Will become available after ExitBootServices
+                _bitmapPages * PageSize,   // Allocate full pages
+                &bitmapPtr);
+
+            if (status != EfiStatus.Success || bitmapPtr == null)
+            {
+                DebugConsole.Write("[PageAlloc] Failed to allocate bitmap: 0x");
+                DebugConsole.WriteHex((ulong)status);
+                DebugConsole.WriteLine();
+                return false;
+            }
+
+            _bitmap = (byte*)bitmapPtr;
+            DebugConsole.Write("[PageAlloc] Bitmap at 0x");
+            DebugConsole.WriteHex((ulong)_bitmap);
+            DebugConsole.WriteLine();
+
+            // Initialize bitmap: all pages start as USED (0)
+            for (ulong i = 0; i < _bitmapSize; i++)
+                _bitmap[i] = 0;
+
+            _freePages = 0;
+
+            // Mark usable memory regions as FREE
+            for (int i = 0; i < entryCount; i++)
+            {
+                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
+
+                // Only ConventionalMemory is safe to use
+                if (desc->Type == EfiMemoryType.ConventionalMemory)
+                {
+                    ulong startPage = desc->PhysicalStart / PageSize;
+                    ulong pageCount = desc->NumberOfPages;
+                    MarkRangeFree(startPage, pageCount);
+                }
+            }
+
+            DebugConsole.Write("[PageAlloc] Free pages after marking conventional: ");
+            DebugConsole.WriteHex(_freePages);
+            DebugConsole.WriteLine();
+
+            // Reserve critical regions
+            ulong bitmapStartPage = (ulong)_bitmap / PageSize;
+            ReserveRange(bitmapStartPage, _bitmapPages, "bitmap");
+
+            if (kernelSize > 0)
+            {
+                ulong kernelStartPage = kernelBase / PageSize;
+                ulong kernelPages = (kernelSize + PageSize - 1) / PageSize;
+                ReserveRange(kernelStartPage, kernelPages, "kernel");
+            }
+
+            ReserveRange(0, 1, "null guard");
+
+            _initialized = true;
+
+            DebugConsole.Write("[PageAlloc] Initialized: ");
+            DebugConsole.WriteHex(_freePages);
+            DebugConsole.Write(" free pages (");
+            DebugConsole.WriteHex(_freePages * PageSize / (1024 * 1024));
+            DebugConsole.WriteLine(" MB)");
+
+            return true;
         }
-
-        DebugConsole.Write("[PageAlloc] Free pages after marking conventional: ");
-        DebugConsole.WriteHex(_freePages);
-        DebugConsole.WriteLine();
-
-        // === Reserve critical regions ===
-
-        // Reserve the bitmap itself
-        ulong bitmapStartPage = (ulong)_bitmap / PageSize;
-        ReserveRange(bitmapStartPage, _bitmapPages, "bitmap");
-
-        // Reserve the kernel image
-        if (kernelSize > 0)
-        {
-            ulong kernelStartPage = kernelBase / PageSize;
-            ulong kernelPages = (kernelSize + PageSize - 1) / PageSize;
-            ReserveRange(kernelStartPage, kernelPages, "kernel");
-        }
-
-        // Reserve page 0 (null pointer guard)
-        ReserveRange(0, 1, "null guard");
-
-        // Note: Runtime services memory is already marked as non-conventional,
-        // so it won't be in our free pool
-
-        _initialized = true;
-
-        DebugConsole.Write("[PageAlloc] Initialized: ");
-        DebugConsole.WriteHex(_freePages);
-        DebugConsole.Write(" free pages (");
-        DebugConsole.WriteHex(_freePages * PageSize / (1024 * 1024));
-        DebugConsole.WriteLine(" MB)");
-
-        return true;
     }
 
     /// <summary>
