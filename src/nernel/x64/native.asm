@@ -111,7 +111,7 @@ read_cr2:
 
 ;; ==================== CPU Control ====================
 
-global hlt, cli, sti, pause
+global hlt, cli, sti, pause, int3
 
 ; void hlt(void) - halt until interrupt
 hlt:
@@ -131,6 +131,11 @@ sti:
 ; void pause(void) - spin-wait hint
 pause:
     pause
+    ret
+
+; void int3(void) - trigger breakpoint exception
+int3:
+    int3
     ret
 
 ;; ==================== Interrupt Stubs ====================

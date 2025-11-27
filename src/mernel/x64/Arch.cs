@@ -31,6 +31,9 @@ public static unsafe class Arch
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong read_cr2();
 
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void int3();
+
     /// <summary>
     /// Initialize x64 architecture
     /// </summary>
@@ -113,6 +116,14 @@ public static unsafe class Arch
     public static void Halt()
     {
         hlt();
+    }
+
+    /// <summary>
+    /// Trigger a breakpoint exception (for testing/debugging)
+    /// </summary>
+    public static void Breakpoint()
+    {
+        int3();
     }
 
     /// <summary>
