@@ -123,13 +123,14 @@ public unsafe struct EfiSimpleTextOutputProtocol
 /// <summary>
 /// UEFI Boot Services table
 /// We only define the fields we need, with padding for the rest.
-/// Boot services table layout (x64):
-/// - Header: 24 bytes
-/// - RaiseTPL, RestoreTPL: 16 bytes (offsets 24, 32)
-/// - AllocatePages, FreePages: 16 bytes (offsets 40, 48)
-/// - GetMemoryMap: 8 bytes (offset 56)
-/// - AllocatePool, FreePool: 16 bytes (offsets 64, 72)
-/// - ... more services follow
+/// Boot services table layout (x64, all pointers are 8 bytes):
+/// - Header: 24 bytes (offsets 0-23)
+/// - Task Priority: RaiseTPL, RestoreTPL (offsets 24, 32)
+/// - Memory: AllocatePages, FreePages, GetMemoryMap, AllocatePool, FreePool (offsets 40-72)
+/// - Events: CreateEvent, SetTimer, WaitForEvent, SignalEvent, CloseEvent, CheckEvent (offsets 80-120)
+/// - Protocol Handlers: 9 functions (offsets 128-192)
+/// - Image Services: LoadImage, StartImage, Exit, UnloadImage (offsets 200-224)
+/// - ExitBootServices: offset 232
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct EfiBootServices
@@ -165,15 +166,19 @@ public unsafe struct EfiBootServices
         void*,               // Buffer
         EfiStatus> FreePool;
 
-    // We need more padding to get to ExitBootServices
-    // CreateEvent, SetTimer, WaitForEvent, SignalEvent, CloseEvent, CheckEvent (6)
-    private void* _pad1, _pad2, _pad3, _pad4, _pad5, _pad6;
+    // We need more padding to get to ExitBootServices (at offset 232)
+    // Event Services: CreateEvent, SetTimer, WaitForEvent, SignalEvent, CloseEvent, CheckEvent (6)
+    private void* _createEvent, _setTimer, _waitForEvent, _signalEvent, _closeEvent, _checkEvent;
 
-    // Protocol Handler Services (6 functions)
-    private void* _pad7, _pad8, _pad9, _pad10, _pad11, _pad12;
+    // Protocol Handler Services (9 functions, offsets 128-192)
+    // InstallProtocolInterface, ReinstallProtocolInterface, UninstallProtocolInterface,
+    // HandleProtocol, Reserved, RegisterProtocolNotify, LocateHandle, LocateDevicePath,
+    // InstallConfigurationTable
+    private void* _installProto, _reinstallProto, _uninstallProto, _handleProto, _reserved;
+    private void* _registerProtoNotify, _locateHandle, _locateDevicePath, _installConfigTable;
 
-    // Image Services: LoadImage, StartImage, Exit, UnloadImage (4)
-    private void* _pad13, _pad14, _pad15, _pad16;
+    // Image Services: LoadImage, StartImage, Exit, UnloadImage (4, offsets 200-224)
+    private void* _loadImage, _startImage, _exit, _unloadImage;
 
     /// <summary>
     /// ExitBootServices - Terminate boot services
@@ -235,25 +240,79 @@ public static unsafe class UefiBoot
     /// </summary>
     public static bool BootServicesAvailable => !_bootServicesExited && SystemTable != null;
 
+    // Static buffer for ExitBootServices memory map (needs fresh map key)
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct ExitMemoryMapBuffer
+    {
+        public fixed byte Data[8192];
+    }
+    private static ExitMemoryMapBuffer _exitMemMapBuffer;
+
     /// <summary>
     /// Exit boot services - after this, UEFI boot services are no longer available.
-    /// The memory map must be retrieved before calling this.
+    /// This function gets a fresh memory map and calls ExitBootServices with the map key.
+    /// If the memory map changes between GetMemoryMap and ExitBootServices, it retries.
+    ///
+    /// IMPORTANT: No UEFI calls (including DebugConsole which uses ConOut) can be made
+    /// between GetMemoryMap and ExitBootServices, or the map key becomes invalid.
     /// </summary>
-    public static EfiStatus ExitBootServices(ulong mapKey)
+    public static bool ExitBootServices()
     {
         if (_bootServicesExited)
-            return EfiStatus.InvalidParameter;
+            return true;
 
         var st = SystemTable;
         if (st == null || st->BootServices == null)
-            return EfiStatus.InvalidParameter;
+            return false;
 
-        var status = st->BootServices->ExitBootServices(ImageHandle, mapKey);
-        if (status == EfiStatus.Success)
+        DebugConsole.WriteLine("[UEFI] Exiting boot services...");
+
+        // ExitBootServices requires a fresh map key. If the memory map changes
+        // between GetMemoryMap and ExitBootServices (rare), we retry.
+        const int maxRetries = 3;
+
+        for (int attempt = 0; attempt < maxRetries; attempt++)
         {
-            _bootServicesExited = true;
+            fixed (byte* buffer = _exitMemMapBuffer.Data)
+            {
+                ulong mapSize = 8192;
+                ulong mapKey = 0;
+                ulong descSize = 0;
+                uint descVersion = 0;
+
+                var status = st->BootServices->GetMemoryMap(
+                    &mapSize,
+                    (EfiMemoryDescriptor*)buffer,
+                    &mapKey,
+                    &descSize,
+                    &descVersion);
+
+                if (status != EfiStatus.Success)
+                {
+                    DebugConsole.Write("[UEFI] GetMemoryMap failed: 0x");
+                    DebugConsole.WriteHex((ulong)status);
+                    DebugConsole.WriteLine();
+                    continue;
+                }
+
+                status = st->BootServices->ExitBootServices(ImageHandle, mapKey);
+                if (status == EfiStatus.Success)
+                {
+                    _bootServicesExited = true;
+                    DebugConsole.WriteLine("[UEFI] Boot services exited");
+                    return true;
+                }
+
+                DebugConsole.Write("[UEFI] ExitBootServices attempt ");
+                DebugConsole.WriteHex((ushort)(attempt + 1));
+                DebugConsole.Write(" failed: 0x");
+                DebugConsole.WriteHex((ulong)status);
+                DebugConsole.WriteLine();
+            }
         }
-        return status;
+
+        DebugConsole.WriteLine("[UEFI] ExitBootServices failed after all retries");
+        return false;
     }
 
     /// <summary>

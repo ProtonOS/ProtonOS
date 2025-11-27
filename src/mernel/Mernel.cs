@@ -27,20 +27,26 @@ public static unsafe class Mernel
         }
         DebugConsole.WriteLine();
 
-        // Initialize page allocator (must be done before ExitBootServices)
+        // Initialize page allocator (requires UEFI boot services)
         PageAllocator.Init();
 
-        // Initialize architecture-specific code
+        // Exit UEFI boot services - we now own the hardware
+        UefiBoot.ExitBootServices();
+
+        // Initialize architecture-specific code (GDT, IDT)
 #if ARCH_X64
         Arch.Init();
 #elif ARCH_ARM64
         // TODO: Arch.Init();
 #endif
 
-        // Initialize virtual memory
+        // Initialize virtual memory (our own page tables)
         VirtualMemory.Init();
 
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
+
+        // Halt - kernel main loop would go here
+        Cpu.HaltForever();
     }
 }
