@@ -110,13 +110,24 @@ public struct InterruptFrame
 }
 
 /// <summary>
+/// Static storage for IDT entries (fixed buffer wrapper)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct IdtStorage
+{
+    // 256 IDT entries × 16 bytes = 4096 bytes
+    public fixed byte Data[256 * 16];
+}
+
+/// <summary>
 /// Interrupt Descriptor Table management
 /// </summary>
 public static unsafe class Idt
 {
     private const int IdtEntryCount = 256;
 
-    private static IdtEntry* _idt;
+    // Static storage for IDT (fixed buffer, no heap allocation)
+    private static IdtStorage _idtStorage;
     private static IdtPointer _idtPointer;
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -130,36 +141,31 @@ public static unsafe class Idt
     /// </summary>
     public static void Init()
     {
-        // Allocate IDT
-        _idt = (IdtEntry*)NativeMemory.Alloc((nuint)(IdtEntryCount * sizeof(IdtEntry)));
-
-        // Set up IDT entries pointing to ISR stubs
-        SetupIdtEntries();
-
-        // Set up IDT pointer
-        _idtPointer.Limit = (ushort)(IdtEntryCount * sizeof(IdtEntry) - 1);
-        _idtPointer.Base = (ulong)_idt;
-
-        // Load the IDT
-        fixed (IdtPointer* ptr = &_idtPointer)
+        fixed (byte* idtPtr = _idtStorage.Data)
         {
-            lidt(ptr);
-        }
+            IdtEntry* idt = (IdtEntry*)idtPtr;
 
-        DebugConsole.Write("[IDT] Loaded at 0x");
-        DebugConsole.WriteHex((ulong)_idt);
-        DebugConsole.WriteLine();
-    }
+            // Set up IDT entries pointing to ISR stubs
+            ulong* isrTable = get_isr_table();
+            for (int i = 0; i < IdtEntryCount; i++)
+            {
+                ulong handler = isrTable[i];
+                idt[i] = IdtEntry.InterruptGate(handler, GdtSelectors.KernelCode);
+            }
 
-    private static void SetupIdtEntries()
-    {
-        // Get ISR table address from nernel
-        ulong* isrTable = get_isr_table();
+            // Set up IDT pointer
+            _idtPointer.Limit = (ushort)(IdtEntryCount * sizeof(IdtEntry) - 1);
+            _idtPointer.Base = (ulong)idt;
 
-        for (int i = 0; i < IdtEntryCount; i++)
-        {
-            ulong handler = isrTable[i];
-            _idt[i] = IdtEntry.InterruptGate(handler, GdtSelectors.KernelCode);
+            // Load the IDT
+            fixed (IdtPointer* ptr = &_idtPointer)
+            {
+                lidt(ptr);
+            }
+
+            DebugConsole.Write("[IDT] Loaded at 0x");
+            DebugConsole.WriteHex((ulong)idt);
+            DebugConsole.WriteLine();
         }
     }
 }

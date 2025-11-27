@@ -187,6 +187,26 @@ public struct GdtPointer
 }
 
 /// <summary>
+/// Static storage for GDT entries (fixed buffer wrapper)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct GdtStorage
+{
+    // 7 GDT entries × 8 bytes = 56 bytes
+    public fixed byte Data[7 * 8];
+}
+
+/// <summary>
+/// Static storage for TSS
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct TssStorage
+{
+    // TSS64 is 104 bytes
+    public fixed byte Data[104];
+}
+
+/// <summary>
 /// Global Descriptor Table management
 /// </summary>
 public static unsafe class Gdt
@@ -195,9 +215,9 @@ public static unsafe class Gdt
     // Total: 7 GdtEntry slots (TSS takes 2)
     private const int GdtEntryCount = 7;
 
-    // Static storage for GDT and TSS (must not move in memory)
-    private static GdtEntry* _gdt;
-    private static Tss64* _tss;
+    // Static storage for GDT and TSS (fixed buffers, no heap allocation)
+    private static GdtStorage _gdtStorage;
+    private static TssStorage _tssStorage;
     private static GdtPointer _gdtPointer;
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -214,51 +234,53 @@ public static unsafe class Gdt
     /// </summary>
     public static void Init()
     {
-        // Allocate GDT entries
-        _gdt = (GdtEntry*)NativeMemory.Alloc((nuint)(GdtEntryCount * sizeof(GdtEntry)));
-
-        // Allocate TSS
-        _tss = (Tss64*)NativeMemory.Alloc((nuint)sizeof(Tss64));
-
-        // Clear TSS
-        for (int i = 0; i < sizeof(Tss64); i++)
-            ((byte*)_tss)[i] = 0;
-
-        // Set up GDT entries
-        _gdt[0] = GdtEntry.Null();                              // 0x00: Null
-        _gdt[1] = GdtEntry.KernelCode64();                      // 0x08: Kernel Code
-        _gdt[2] = GdtEntry.KernelData64();                      // 0x10: Kernel Data
-        _gdt[3] = GdtEntry.UserData64();                        // 0x18: User Data
-        _gdt[4] = GdtEntry.UserCode64();                        // 0x20: User Code
-
-        // TSS descriptor (16 bytes = 2 GDT slots)
-        var tssDesc = TssDescriptor.Create((ulong)_tss, (ushort)(sizeof(Tss64) - 1));
-        *(TssDescriptor*)&_gdt[5] = tssDesc;                    // 0x28: TSS
-
-        // Set up GDT pointer
-        _gdtPointer.Limit = (ushort)(GdtEntryCount * sizeof(GdtEntry) - 1);
-        _gdtPointer.Base = (ulong)_gdt;
-
-        DebugConsole.Write("[GDT] Loading... ");
-
-        // Load the GDT
-        fixed (GdtPointer* ptr = &_gdtPointer)
+        // Get pointers to our static storage
+        fixed (byte* gdtPtr = _gdtStorage.Data)
+        fixed (byte* tssPtr = _tssStorage.Data)
         {
-            lgdt(ptr);
+            GdtEntry* gdt = (GdtEntry*)gdtPtr;
+            Tss64* tss = (Tss64*)tssPtr;
+
+            // Clear TSS
+            for (int i = 0; i < sizeof(Tss64); i++)
+                tssPtr[i] = 0;
+
+            // Set up GDT entries
+            gdt[0] = GdtEntry.Null();                              // 0x00: Null
+            gdt[1] = GdtEntry.KernelCode64();                      // 0x08: Kernel Code
+            gdt[2] = GdtEntry.KernelData64();                      // 0x10: Kernel Data
+            gdt[3] = GdtEntry.UserData64();                        // 0x18: User Data
+            gdt[4] = GdtEntry.UserCode64();                        // 0x20: User Code
+
+            // TSS descriptor (16 bytes = 2 GDT slots)
+            var tssDesc = TssDescriptor.Create((ulong)tss, (ushort)(sizeof(Tss64) - 1));
+            *(TssDescriptor*)&gdt[5] = tssDesc;                    // 0x28: TSS
+
+            // Set up GDT pointer
+            _gdtPointer.Limit = (ushort)(GdtEntryCount * sizeof(GdtEntry) - 1);
+            _gdtPointer.Base = (ulong)gdt;
+
+            DebugConsole.Write("[GDT] Loading... ");
+
+            // Load the GDT
+            fixed (GdtPointer* ptr = &_gdtPointer)
+            {
+                lgdt(ptr);
+            }
+            DebugConsole.Write("lgdt ");
+
+            // Reload segment registers with our selectors
+            reload_segments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
+            DebugConsole.Write("segs ");
+
+            // Load the TSS
+            ltr(GdtSelectors.Tss);
+            DebugConsole.Write("tss ");
+
+            DebugConsole.Write("at 0x");
+            DebugConsole.WriteHex((ulong)gdt);
+            DebugConsole.WriteLine();
         }
-        DebugConsole.Write("lgdt ");
-
-        // Reload segment registers with our selectors
-        reload_segments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
-        DebugConsole.Write("segs ");
-
-        // Load the TSS
-        ltr(GdtSelectors.Tss);
-        DebugConsole.Write("tss ");
-
-        DebugConsole.Write("at 0x");
-        DebugConsole.WriteHex((ulong)_gdt);
-        DebugConsole.WriteLine();
     }
 
     /// <summary>
@@ -266,7 +288,11 @@ public static unsafe class Gdt
     /// </summary>
     public static void SetKernelStack(ulong rsp0)
     {
-        _tss->Rsp0 = rsp0;
+        fixed (byte* tssPtr = _tssStorage.Data)
+        {
+            Tss64* tss = (Tss64*)tssPtr;
+            tss->Rsp0 = rsp0;
+        }
     }
 
     /// <summary>
@@ -277,7 +303,11 @@ public static unsafe class Gdt
         if (index < 1 || index > 7)
             return;
 
-        ulong* ist = &_tss->Ist1;
-        ist[index - 1] = stackPointer;
+        fixed (byte* tssPtr = _tssStorage.Data)
+        {
+            Tss64* tss = (Tss64*)tssPtr;
+            ulong* ist = &tss->Ist1;
+            ist[index - 1] = stackPointer;
+        }
     }
 }

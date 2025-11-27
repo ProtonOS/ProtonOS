@@ -6,6 +6,16 @@ using System.Runtime.InteropServices;
 namespace Mernel.X64;
 
 /// <summary>
+/// Static storage for interrupt handlers (fixed buffer wrapper)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct HandlerStorage
+{
+    // 256 function pointers × 8 bytes = 2048 bytes
+    public fixed byte Data[256 * 8];
+}
+
+/// <summary>
 /// x64 architecture initialization.
 /// Uses static methods instead of instance methods because stdlib:zero
 /// doesn't support 'new' for reference types.
@@ -14,9 +24,9 @@ public static unsafe class Arch
 {
     private static bool _initialized;
 
-    // Handler storage - function pointers for interrupt handlers
+    // Handler storage - function pointers for interrupt handlers (static, no heap allocation)
     private const int VectorCount = 256;
-    private static delegate*<InterruptFrame*, void>* _handlers;
+    private static HandlerStorage _handlerStorage;
     private static bool _interruptsEnabled;
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -46,9 +56,12 @@ public static unsafe class Arch
         // Initialize GDT
         Gdt.Init();
 
-        // Allocate handler array
-        _handlers = (delegate*<InterruptFrame*, void>*)NativeMemory.AllocZeroed(
-            (nuint)(VectorCount * sizeof(void*)));
+        // Clear handler storage (static storage, no heap allocation needed)
+        fixed (byte* ptr = _handlerStorage.Data)
+        {
+            for (int i = 0; i < VectorCount * sizeof(void*); i++)
+                ptr[i] = 0;
+        }
 
         // Initialize IDT
         Idt.Init();
@@ -62,9 +75,13 @@ public static unsafe class Arch
     /// </summary>
     public static void RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)
     {
-        if (vector >= 0 && vector < VectorCount && _handlers != null)
+        if (vector >= 0 && vector < VectorCount)
         {
-            _handlers[vector] = handler;
+            fixed (byte* ptr = _handlerStorage.Data)
+            {
+                var handlers = (delegate*<InterruptFrame*, void>*)ptr;
+                handlers[vector] = handler;
+            }
         }
     }
 
@@ -73,9 +90,13 @@ public static unsafe class Arch
     /// </summary>
     public static void UnregisterHandler(int vector)
     {
-        if (vector >= 0 && vector < VectorCount && _handlers != null)
+        if (vector >= 0 && vector < VectorCount)
         {
-            _handlers[vector] = null;
+            fixed (byte* ptr = _handlerStorage.Data)
+            {
+                var handlers = (delegate*<InterruptFrame*, void>*)ptr;
+                handlers[vector] = null;
+            }
         }
     }
 
@@ -134,9 +155,10 @@ public static unsafe class Arch
     {
         int vector = (int)frame->InterruptNumber;
 
-        if (_handlers != null)
+        fixed (byte* ptr = _handlerStorage.Data)
         {
-            var handler = _handlers[vector];
+            var handlers = (delegate*<InterruptFrame*, void>*)ptr;
+            var handler = handlers[vector];
             if (handler != null)
             {
                 handler(frame);
