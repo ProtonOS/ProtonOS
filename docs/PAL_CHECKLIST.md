@@ -245,14 +245,15 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ---
 
-## 10. Environment (NOT STARTED)
+## 10. Environment (COMPLETE)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
-| GetEnvironmentVariableW | [ ] | - | Read env var |
-| SetEnvironmentVariableW | [ ] | - | Write env var |
-| GetEnvironmentStringsW | [ ] | - | Get all env vars |
-| FreeEnvironmentStringsW | [ ] | - | Free env block |
+| GetEnvironmentVariableW | [x] | Environment.cs | Read env var - tested |
+| SetEnvironmentVariableW | [x] | Environment.cs | Write/delete env var - tested |
+| GetEnvironmentStringsW | [x] | Environment.cs | Get all env vars as block - tested |
+| FreeEnvironmentStringsW | [x] | Environment.cs | Free env block - tested |
+| ExpandEnvironmentStringsW | [~] | Environment.cs | Stub - copies without expansion |
 
 ---
 
@@ -297,7 +298,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ### Phase 2 - Important for Runtime
 5. [x] SuspendThread / ResumeThread - Thread control - **TESTED**
-6. [ ] GetEnvironmentVariableW - Config/tuning
+6. [x] GetEnvironmentVariableW - Config/tuning - **TESTED**
 7. [x] OutputDebugString / IsDebuggerPresent - Debug support - **DONE**
 8. [ ] GetSystemTimeAsFileTime - Timestamps
 
@@ -327,9 +328,9 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Interlocked | 13 | 0 | 0 | 13 |
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
-| Environment | 0 | 0 | 4 | 4 |
-| **TOTAL** | **73** | **2** | **21** | **96** |
+| Environment | 4 | 1 | 0 | 5 |
+| **TOTAL** | **77** | **3** | **17** | **97** |
 
-**Coverage: 76% complete, 2% partial, 22% missing**
+**Coverage: 79% complete, 3% partial, 18% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management, environment variables).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. Environment variable APIs are now implemented and tested. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).

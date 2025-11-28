@@ -164,19 +164,20 @@ public static unsafe class Kernel
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
         var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
         var thread11 = Scheduler.CreateThread(&SystemTestThread, null, 0, 0, out id11);
-        uint id12, id13, id14, id15, id16, id17;
+        uint id12, id13, id14, id15, id16, id17, id18;
         var thread12 = Scheduler.CreateThread(&VirtualQueryTestThread, null, 0, 0, out id12);
         var thread13 = Scheduler.CreateThread(&ThreadContextTestThread, null, 0, 0, out id13);
         var thread14 = Scheduler.CreateThread(&WaitMultipleTestThread, null, 0, 0, out id14);
         var thread15 = Scheduler.CreateThread(&RaiseExceptionTestThread, null, 0, 0, out id15);
         var thread16 = Scheduler.CreateThread(&SuspendResumeTestThread, null, 0, 0, out id16);
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
+        var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
-            thread16 != null && thread17 != null)
+            thread16 != null && thread17 != null && thread18 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -212,6 +213,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id16);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id17);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id18);
             DebugConsole.WriteLine();
         }
     }
@@ -1512,6 +1515,199 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("[Debug API Test] Note: DebugBreak tested via ExceptionTestThread");
 
         DebugConsole.WriteLine("[Debug API Test] All Debug API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Environment API test thread - tests Get/Set/Free environment variable APIs
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint EnvironmentApiTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Env API Test] Starting Environment API tests...");
+
+        // Test 1: Set a new environment variable
+        DebugConsole.WriteLine("[Env API Test] Test 1: SetEnvironmentVariableW (new variable)");
+        char* varName = stackalloc char[16];
+        varName[0] = 'T'; varName[1] = 'E'; varName[2] = 'S'; varName[3] = 'T';
+        varName[4] = '_'; varName[5] = 'V'; varName[6] = 'A'; varName[7] = 'R';
+        varName[8] = '\0';
+
+        char* varValue = stackalloc char[16];
+        varValue[0] = 'H'; varValue[1] = 'e'; varValue[2] = 'l'; varValue[3] = 'l';
+        varValue[4] = 'o'; varValue[5] = '1'; varValue[6] = '2'; varValue[7] = '3';
+        varValue[8] = '\0';
+
+        bool setResult = EnvironmentApi.SetEnvironmentVariableW(varName, varValue);
+        if (setResult)
+        {
+            DebugConsole.WriteLine("[Env API Test] SetEnvironmentVariableW - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] SetEnvironmentVariableW - FAILED");
+            return 1;
+        }
+
+        // Test 2: Get the environment variable
+        DebugConsole.WriteLine("[Env API Test] Test 2: GetEnvironmentVariableW");
+        char* buffer = stackalloc char[256];
+        uint result = EnvironmentApi.GetEnvironmentVariableW(varName, buffer, 256);
+
+        if (result == 8) // "Hello123" is 8 chars
+        {
+            DebugConsole.Write("[Env API Test] Got value: ");
+            // Print the value character by character
+            for (int i = 0; i < (int)result; i++)
+            {
+                DebugConsole.WriteByte((byte)buffer[i]);
+            }
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("[Env API Test] GetEnvironmentVariableW - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[Env API Test] GetEnvironmentVariableW returned: ");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("[Env API Test] GetEnvironmentVariableW - FAILED");
+            return 1;
+        }
+
+        // Test 3: Case-insensitive lookup
+        DebugConsole.WriteLine("[Env API Test] Test 3: Case-insensitive lookup");
+        char* lowerName = stackalloc char[16];
+        lowerName[0] = 't'; lowerName[1] = 'e'; lowerName[2] = 's'; lowerName[3] = 't';
+        lowerName[4] = '_'; lowerName[5] = 'v'; lowerName[6] = 'a'; lowerName[7] = 'r';
+        lowerName[8] = '\0';
+
+        result = EnvironmentApi.GetEnvironmentVariableW(lowerName, buffer, 256);
+        if (result == 8)
+        {
+            DebugConsole.WriteLine("[Env API Test] Case-insensitive lookup - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] Case-insensitive lookup - FAILED");
+            return 1;
+        }
+
+        // Test 4: Update existing variable
+        DebugConsole.WriteLine("[Env API Test] Test 4: Update existing variable");
+        char* newValue = stackalloc char[16];
+        newValue[0] = 'W'; newValue[1] = 'o'; newValue[2] = 'r'; newValue[3] = 'l';
+        newValue[4] = 'd'; newValue[5] = '!'; newValue[6] = '\0';
+
+        setResult = EnvironmentApi.SetEnvironmentVariableW(varName, newValue);
+        result = EnvironmentApi.GetEnvironmentVariableW(varName, buffer, 256);
+        if (setResult && result == 6) // "World!" is 6 chars
+        {
+            DebugConsole.Write("[Env API Test] Updated value: ");
+            for (int i = 0; i < (int)result; i++)
+            {
+                DebugConsole.WriteByte((byte)buffer[i]);
+            }
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("[Env API Test] Update variable - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] Update variable - FAILED");
+            return 1;
+        }
+
+        // Test 5: GetEnvironmentStringsW
+        DebugConsole.WriteLine("[Env API Test] Test 5: GetEnvironmentStringsW");
+        char* envBlock = EnvironmentApi.GetEnvironmentStringsW();
+        if (envBlock != null)
+        {
+            DebugConsole.WriteLine("[Env API Test] Got environment block");
+            // Count entries
+            int entryCount = 0;
+            char* p = envBlock;
+            while (*p != '\0')
+            {
+                entryCount++;
+                while (*p != '\0') p++;
+                p++; // skip null terminator
+            }
+            DebugConsole.Write("[Env API Test] Environment entries: ");
+            DebugConsole.WriteHex((uint)entryCount);
+            DebugConsole.WriteLine();
+
+            // Free the block
+            bool freeResult = EnvironmentApi.FreeEnvironmentStringsW(envBlock);
+            if (freeResult)
+            {
+                DebugConsole.WriteLine("[Env API Test] GetEnvironmentStringsW + Free - PASSED");
+            }
+            else
+            {
+                DebugConsole.WriteLine("[Env API Test] FreeEnvironmentStringsW - FAILED");
+                return 1;
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] GetEnvironmentStringsW - FAILED (null)");
+            return 1;
+        }
+
+        // Test 6: Delete variable (set to null)
+        DebugConsole.WriteLine("[Env API Test] Test 6: Delete variable");
+        setResult = EnvironmentApi.SetEnvironmentVariableW(varName, null);
+        result = EnvironmentApi.GetEnvironmentVariableW(varName, buffer, 256);
+        if (setResult && result == 0)
+        {
+            DebugConsole.WriteLine("[Env API Test] Delete variable - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] Delete variable - FAILED");
+            return 1;
+        }
+
+        // Test 7: Get non-existent variable
+        DebugConsole.WriteLine("[Env API Test] Test 7: Get non-existent variable");
+        char* noExist = stackalloc char[16];
+        noExist[0] = 'N'; noExist[1] = 'O'; noExist[2] = '_'; noExist[3] = 'E';
+        noExist[4] = 'X'; noExist[5] = 'I'; noExist[6] = 'S'; noExist[7] = 'T';
+        noExist[8] = '\0';
+
+        result = EnvironmentApi.GetEnvironmentVariableW(noExist, buffer, 256);
+        if (result == 0)
+        {
+            DebugConsole.WriteLine("[Env API Test] Non-existent variable returns 0 - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Env API Test] Non-existent variable - FAILED");
+            return 1;
+        }
+
+        // Test 8: Buffer size check
+        DebugConsole.WriteLine("[Env API Test] Test 8: Buffer size check");
+        // Set a variable again
+        EnvironmentApi.SetEnvironmentVariableW(varName, varValue); // "Hello123"
+        // Try to get with small buffer
+        result = EnvironmentApi.GetEnvironmentVariableW(varName, buffer, 4); // too small
+        if (result == 9) // Should return required size (8 + 1 for null)
+        {
+            DebugConsole.WriteLine("[Env API Test] Buffer size check - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[Env API Test] Buffer size check returned: ");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine(" (expected 9)");
+            DebugConsole.WriteLine("[Env API Test] Buffer size check - FAILED");
+            return 1;
+        }
+
+        // Clean up
+        EnvironmentApi.SetEnvironmentVariableW(varName, null);
+
+        DebugConsole.WriteLine("[Env API Test] All Environment API tests PASSED!");
         return 0;
     }
 }
