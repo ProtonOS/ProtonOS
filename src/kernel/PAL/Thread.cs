@@ -283,6 +283,46 @@ public static unsafe class ThreadApi
     }
 
     /// <summary>
+    /// Sleep for the specified number of milliseconds with alertable option.
+    /// If bAlertable is true, the function can return early if an APC is queued.
+    /// </summary>
+    /// <param name="dwMilliseconds">Time to sleep in milliseconds. Use INFINITE (0xFFFFFFFF) for infinite wait.</param>
+    /// <param name="bAlertable">If true, function returns when an APC is queued to the thread.</param>
+    /// <returns>0 if timeout elapsed, WAIT_IO_COMPLETION (0xC0) if returned due to APC.</returns>
+    public static uint SleepEx(uint dwMilliseconds, bool bAlertable)
+    {
+        if (dwMilliseconds == 0)
+        {
+            // SleepEx(0, true) should still check for APCs
+            if (bAlertable && Scheduler.HasPendingApc(Scheduler.CurrentThread))
+            {
+                Scheduler.DeliverApcs();
+                return WaitResult.IoCompletion;
+            }
+            Scheduler.Yield();
+            return 0;
+        }
+
+        return Scheduler.SleepEx(dwMilliseconds, bAlertable);
+    }
+
+    /// <summary>
+    /// Queue an asynchronous procedure call (APC) to a thread.
+    /// The APC function will be called when the thread enters an alertable wait state.
+    /// </summary>
+    /// <param name="pfnAPC">Pointer to the APC function. Signature: void ApcProc(ULONG_PTR dwParam)</param>
+    /// <param name="hThread">Handle to the thread to queue the APC to</param>
+    /// <param name="dwData">Parameter to pass to the APC function</param>
+    /// <returns>True if the APC was queued successfully</returns>
+    public static bool QueueUserAPC(delegate* unmanaged<nuint, void> pfnAPC, ThreadHandle hThread, nuint dwData)
+    {
+        if (pfnAPC == null || !hThread.IsValid)
+            return false;
+
+        return Scheduler.QueueApc(hThread.Thread, pfnAPC, dwData);
+    }
+
+    /// <summary>
     /// Close a thread handle.
     /// In our implementation, handles don't need explicit cleanup,
     /// but this is provided for API compatibility.
@@ -488,8 +528,9 @@ public static unsafe class ThreadApi
 
 /// <summary>
 /// Thread flags for kernel Scheduler.
+/// Must match Kernel.Threading.ThreadFlags values.
 /// </summary>
 internal static class ThreadFlags
 {
-    public const uint CreateSuspended = 0x00000001;
+    public const uint CreateSuspended = 0x00000004;  // Must match Kernel.Threading.ThreadFlags.CreateSuspended
 }

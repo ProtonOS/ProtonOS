@@ -296,25 +296,65 @@ public static unsafe class Scheduler
     /// </summary>
     public static void Sleep(uint milliseconds)
     {
-        if (!_initialized || milliseconds == 0)
-            return;
+        SleepEx(milliseconds, false);
+    }
 
-        _lock.Acquire();
+    /// <summary>
+    /// Sleep for specified milliseconds with optional alertable state.
+    /// If alertable is true, the sleep can be interrupted by APCs.
+    /// </summary>
+    /// <param name="milliseconds">Time to sleep in milliseconds</param>
+    /// <param name="alertable">If true, can be woken by APCs</param>
+    /// <returns>0 if timeout elapsed, WAIT_IO_COMPLETION (0xC0) if woken by APC</returns>
+    public static uint SleepEx(uint milliseconds, bool alertable)
+    {
+        if (!_initialized)
+            return 0;
 
         var thread = _currentThread;
         if (thread == null)
+            return 0;
+
+        // If alertable and APCs are already pending, deliver them immediately
+        if (alertable && HasPendingApc(thread))
         {
-            _lock.Release();
-            return;
+            DeliverApcs();
+            return WaitResult.IoCompletion;
         }
+
+        // Sleep(0) just yields
+        if (milliseconds == 0)
+        {
+            Schedule();
+            return 0;
+        }
+
+        _lock.Acquire();
 
         // Calculate wake time
         thread->WakeTime = Apic.TickCount + (milliseconds / 10);  // 10ms per tick
         thread->State = ThreadState.Blocked;
+        thread->Alertable = alertable;
+        thread->WaitResult = 0;  // Will be set to IoCompletion if woken by APC
 
         _lock.Release();
 
         Schedule();
+
+        // We've been woken up - check why
+        _lock.Acquire();
+        thread->Alertable = false;
+        uint result = thread->WaitResult;
+        thread->WaitResult = 0;
+        _lock.Release();
+
+        // If woken by APC, deliver all pending APCs
+        if (result == WaitResult.IoCompletion)
+        {
+            DeliverApcs();
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -490,6 +530,123 @@ public static unsafe class Scheduler
         if (!_initialized || _currentThread == null)
             return 0;
         return _currentThread->Id;
+    }
+
+    /// <summary>
+    /// Queue an APC to a thread.
+    /// </summary>
+    /// <param name="thread">Target thread</param>
+    /// <param name="function">APC function pointer</param>
+    /// <param name="parameter">Parameter to pass to function</param>
+    /// <returns>True if APC was queued successfully</returns>
+    public static bool QueueApc(Thread* thread, delegate* unmanaged<nuint, void> function, nuint parameter)
+    {
+        if (thread == null || function == null || !_initialized)
+            return false;
+
+        // Allocate APC entry
+        var apc = (Apc*)HeapAllocator.AllocZeroed((ulong)sizeof(Apc));
+        if (apc == null)
+            return false;
+
+        apc->Function = function;
+        apc->Parameter = parameter;
+        apc->Next = null;
+
+        _lock.Acquire();
+
+        // Can't queue to terminated threads
+        if (thread->State == ThreadState.Terminated)
+        {
+            _lock.Release();
+            HeapAllocator.Free(apc);
+            return false;
+        }
+
+        // Add to tail of APC queue (FIFO order)
+        if (thread->ApcQueueTail != null)
+        {
+            thread->ApcQueueTail->Next = apc;
+        }
+        else
+        {
+            thread->ApcQueueHead = apc;
+        }
+        thread->ApcQueueTail = apc;
+
+        // If thread is in alertable wait, wake it up
+        if (thread->Alertable && thread->State == ThreadState.Blocked)
+        {
+            thread->WaitResult = WaitResult.IoCompletion;
+            thread->WakeTime = 0;
+            thread->State = ThreadState.Ready;
+            AddToReadyQueue(thread);
+        }
+
+        _lock.Release();
+        return true;
+    }
+
+    /// <summary>
+    /// Check if a thread has pending APCs.
+    /// </summary>
+    public static bool HasPendingApc(Thread* thread)
+    {
+        if (thread == null)
+            return false;
+        return thread->ApcQueueHead != null;
+    }
+
+    /// <summary>
+    /// Deliver all pending APCs for the current thread.
+    /// Called after returning from an alertable wait.
+    /// Returns the number of APCs delivered.
+    /// </summary>
+    public static int DeliverApcs()
+    {
+        if (!_initialized || _currentThread == null)
+            return 0;
+
+        int count = 0;
+        var thread = _currentThread;
+
+        // Process APCs until queue is empty
+        while (true)
+        {
+            _lock.Acquire();
+
+            var apc = thread->ApcQueueHead;
+            if (apc == null)
+            {
+                _lock.Release();
+                break;
+            }
+
+            // Dequeue this APC
+            thread->ApcQueueHead = apc->Next;
+            if (thread->ApcQueueHead == null)
+            {
+                thread->ApcQueueTail = null;
+            }
+
+            // Get function and parameter before releasing lock
+            var function = apc->Function;
+            var parameter = apc->Parameter;
+
+            _lock.Release();
+
+            // Free the APC entry
+            HeapAllocator.Free(apc);
+
+            // Call the APC function (outside the lock)
+            if (function != null)
+            {
+                function(parameter);
+                count++;
+            }
+        }
+
+        return count;
     }
 
     /// <summary>

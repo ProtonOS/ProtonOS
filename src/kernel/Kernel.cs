@@ -164,7 +164,7 @@ public static unsafe class Kernel
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
         var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
         var thread11 = Scheduler.CreateThread(&SystemTestThread, null, 0, 0, out id11);
-        uint id12, id13, id14, id15, id16, id17, id18;
+        uint id12, id13, id14, id15, id16, id17, id18, id19;
         var thread12 = Scheduler.CreateThread(&VirtualQueryTestThread, null, 0, 0, out id12);
         var thread13 = Scheduler.CreateThread(&ThreadContextTestThread, null, 0, 0, out id13);
         var thread14 = Scheduler.CreateThread(&WaitMultipleTestThread, null, 0, 0, out id14);
@@ -172,12 +172,13 @@ public static unsafe class Kernel
         var thread16 = Scheduler.CreateThread(&SuspendResumeTestThread, null, 0, 0, out id16);
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
+        var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
-            thread16 != null && thread17 != null && thread18 != null)
+            thread16 != null && thread17 != null && thread18 != null && thread19 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -215,6 +216,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id17);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id18);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id19);
             DebugConsole.WriteLine();
         }
     }
@@ -1552,6 +1555,195 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("[Debug API Test] Note: DebugBreak tested via ExceptionTestThread");
 
         DebugConsole.WriteLine("[Debug API Test] All Debug API tests PASSED!");
+        return 0;
+    }
+
+    // APC test state
+    private static int _apcCallCount;
+    private static nuint _apcLastParam;
+
+    /// <summary>
+    /// APC callback function for testing
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static void TestApcCallback(nuint dwParam)
+    {
+        _apcCallCount++;
+        _apcLastParam = dwParam;
+        DebugConsole.Write("[APC Test] APC callback executed! Param: 0x");
+        DebugConsole.WriteHex((ulong)dwParam);
+        DebugConsole.Write(", call count: ");
+        DebugConsole.WriteHex((uint)_apcCallCount);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// APC test thread - tests QueueUserAPC and SleepEx
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint ApcTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[APC Test] Starting QueueUserAPC and SleepEx tests...");
+
+        // Reset test state
+        _apcCallCount = 0;
+        _apcLastParam = 0;
+
+        // Get handle to current thread
+        var handle = PAL.ThreadApi.GetCurrentThread();
+        if (!handle.IsValid)
+        {
+            DebugConsole.WriteLine("[APC Test] FAILED: Could not get current thread handle");
+            return 1;
+        }
+
+        // Test 1: Queue an APC to self and call SleepEx with alertable=true
+        DebugConsole.WriteLine("[APC Test] Test 1: Queue APC to self, then SleepEx(alertable=true)");
+
+        bool queued = PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0x1234);
+        if (!queued)
+        {
+            DebugConsole.WriteLine("[APC Test] FAILED: QueueUserAPC returned false");
+            return 1;
+        }
+        DebugConsole.WriteLine("[APC Test] QueueUserAPC succeeded");
+
+        // Call SleepEx with alertable=true - should return immediately with WAIT_IO_COMPLETION
+        // because APC is already queued
+        uint result = PAL.ThreadApi.SleepEx(1000, true);  // 1 second timeout, alertable
+
+        DebugConsole.Write("[APC Test] SleepEx returned: 0x");
+        DebugConsole.WriteHex(result);
+        if (result == WaitResult.IoCompletion)
+        {
+            DebugConsole.WriteLine(" (WAIT_IO_COMPLETION) - PASSED");
+        }
+        else if (result == 0)
+        {
+            DebugConsole.WriteLine(" (timeout - APC not delivered?)");
+        }
+        else
+        {
+            DebugConsole.WriteLine();
+        }
+
+        // Check APC was called
+        if (_apcCallCount == 1 && _apcLastParam == 0x1234)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 1: APC delivered correctly - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 1: FAILED - call count: ");
+            DebugConsole.WriteHex((uint)_apcCallCount);
+            DebugConsole.Write(", last param: 0x");
+            DebugConsole.WriteHex((ulong)_apcLastParam);
+            DebugConsole.WriteLine();
+        }
+
+        // Test 2: SleepEx with alertable=false should NOT deliver APCs
+        DebugConsole.WriteLine("[APC Test] Test 2: SleepEx with alertable=false");
+        _apcCallCount = 0;
+
+        queued = PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0x5678);
+        if (!queued)
+        {
+            DebugConsole.WriteLine("[APC Test] FAILED: QueueUserAPC returned false");
+            return 1;
+        }
+
+        // Call SleepEx with alertable=false - should NOT process the APC
+        result = PAL.ThreadApi.SleepEx(50, false);  // 50ms timeout, NOT alertable
+
+        DebugConsole.Write("[APC Test] SleepEx(alertable=false) returned: 0x");
+        DebugConsole.WriteHex(result);
+        DebugConsole.WriteLine();
+
+        if (_apcCallCount == 0)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 2: APC NOT delivered (correct) - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[APC Test] Test 2: FAILED - APC was delivered when it shouldn't be");
+        }
+
+        // Test 3: Now call SleepEx alertable to drain the queued APC
+        DebugConsole.WriteLine("[APC Test] Test 3: Drain pending APC with SleepEx(alertable=true)");
+        result = PAL.ThreadApi.SleepEx(1000, true);
+
+        if (result == WaitResult.IoCompletion && _apcCallCount == 1 && _apcLastParam == 0x5678)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 3: Pending APC delivered - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 3: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.Write(", count: ");
+            DebugConsole.WriteHex((uint)_apcCallCount);
+            DebugConsole.WriteLine();
+        }
+
+        // Test 4: Multiple APCs queued
+        DebugConsole.WriteLine("[APC Test] Test 4: Multiple APCs queued");
+        _apcCallCount = 0;
+
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xAAAA);
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xBBBB);
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xCCCC);
+
+        result = PAL.ThreadApi.SleepEx(1000, true);
+
+        if (_apcCallCount == 3)
+        {
+            DebugConsole.Write("[APC Test] Test 4: All 3 APCs delivered, last param: 0x");
+            DebugConsole.WriteHex((ulong)_apcLastParam);
+            DebugConsole.WriteLine(" - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 4: FAILED - only ");
+            DebugConsole.WriteHex((uint)_apcCallCount);
+            DebugConsole.WriteLine(" APCs delivered");
+        }
+
+        // Test 5: SleepEx(0, true) should check for APCs without sleeping
+        DebugConsole.WriteLine("[APC Test] Test 5: SleepEx(0, alertable=true)");
+        _apcCallCount = 0;
+
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xDEAD);
+        result = PAL.ThreadApi.SleepEx(0, true);
+
+        if (result == WaitResult.IoCompletion && _apcCallCount == 1)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 5: SleepEx(0, true) delivered APC - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 5: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+        }
+
+        // Test 6: No pending APCs - should timeout normally
+        DebugConsole.WriteLine("[APC Test] Test 6: No pending APCs - should timeout");
+        _apcCallCount = 0;
+
+        result = PAL.ThreadApi.SleepEx(50, true);  // 50ms timeout
+
+        if (result == 0 && _apcCallCount == 0)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 6: Normal timeout with no APCs - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 6: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+        }
+
+        DebugConsole.WriteLine("[APC Test] All QueueUserAPC and SleepEx tests completed!");
         return 0;
     }
 

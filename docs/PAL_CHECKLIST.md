@@ -55,7 +55,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | API | Status | File | Notes |
 |-----|--------|------|-------|
 | Sleep | [x] | Thread.cs | Uses scheduler Sleep() |
-| SleepEx | [ ] | - | Alertable sleep - needed for APC |
+| SleepEx | [x] | Thread.cs | Alertable sleep with APC delivery - tested |
 | SwitchToThread | [x] | Thread.cs | Yields to scheduler |
 | SuspendThread | [x] | Thread.cs | Stackable suspend count - tested |
 | ResumeThread | [x] | Thread.cs | Decrements suspend count - tested |
@@ -83,7 +83,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 ### Async Procedure Calls
 | API | Status | File | Notes |
 |-----|--------|------|-------|
-| QueueUserAPC | [ ] | - | Needed for async operations |
+| QueueUserAPC | [x] | Thread.cs | Queue APC to thread - tested |
 
 ---
 
@@ -302,9 +302,9 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 7. [x] OutputDebugString / IsDebuggerPresent - Debug support - **DONE**
 8. [x] GetSystemTimeAsFileTime - Wall-clock time from RTC + HPET elapsed - **TESTED**
 
-### Phase 3 - Nice to Have
-9. [ ] QueueUserAPC - Async operations
-10. [ ] SleepEx - Alertable sleep
+### Phase 3 - Nice to Have (IN PROGRESS)
+9. [x] QueueUserAPC - Async operations - **TESTED**
+10. [x] SleepEx - Alertable sleep - **TESTED**
 11. [ ] Extended sync APIs (CreateEventEx, etc.)
 12. [ ] HeapSize - Allocation tracking
 
@@ -320,7 +320,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Category | Complete | Partial | Missing | Total |
 |----------|----------|---------|---------|-------|
 | Memory | 7 | 1 | 2 | 10 |
-| Threading | 12 | 1 | 4 | 17 |
+| Threading | 14 | 1 | 2 | 17 |
 | Synchronization | 23 | 0 | 8 | 31 |
 | Time/Performance | 6 | 0 | 0 | 6 |
 | System Info | 3 | 0 | 0 | 3 |
@@ -329,8 +329,8 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
-| **TOTAL** | **79** | **3** | **15** | **97** |
+| **TOTAL** | **81** | **3** | **13** | **97** |
 
-**Coverage: 81% complete, 3% partial, 15% missing**
+**Coverage: 84% complete, 3% partial, 13% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is IN PROGRESS!** QueueUserAPC and SleepEx are now implemented and tested, enabling async procedure call delivery to threads in alertable wait states. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).

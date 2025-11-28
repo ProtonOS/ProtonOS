@@ -108,6 +108,11 @@ public unsafe struct Thread
     // Allocated on demand when TlsSetValue is first called
     public void** TlsSlots;            // Pointer to TLS slot array
     public uint TlsSlotCount;          // Number of allocated TLS slots
+
+    // Asynchronous Procedure Calls (APC) queue
+    public Apc* ApcQueueHead;          // Head of APC queue (FIFO)
+    public Apc* ApcQueueTail;          // Tail of APC queue
+    public bool Alertable;             // Whether thread is in alertable wait state
 }
 
 /// <summary>
@@ -140,8 +145,32 @@ public static class WaitResult
 {
     public const uint Object0 = 0x00000000;       // Wait succeeded
     public const uint Abandoned = 0x00000080;     // Mutex was abandoned
+    public const uint IoCompletion = 0x000000C0;  // APC was delivered (WAIT_IO_COMPLETION)
     public const uint Timeout = 0x00000102;       // Wait timed out
     public const uint Failed = 0xFFFFFFFF;        // Wait failed
+}
+
+/// <summary>
+/// Asynchronous Procedure Call (APC) entry.
+/// Queued to threads for deferred execution during alertable waits.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct Apc
+{
+    /// <summary>
+    /// APC function to call: void ApcProc(nuint dwParam)
+    /// </summary>
+    public delegate* unmanaged<nuint, void> Function;
+
+    /// <summary>
+    /// Parameter to pass to the APC function
+    /// </summary>
+    public nuint Parameter;
+
+    /// <summary>
+    /// Next APC in the queue
+    /// </summary>
+    public Apc* Next;
 }
 
 /// <summary>
