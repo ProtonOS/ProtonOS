@@ -152,7 +152,7 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("[Test] Initialized SRW lock");
 
         // Create test threads
-        uint id1, id2, id3, id4, id5, id6, id7, id8, id9, id10;
+        uint id1, id2, id3, id4, id5, id6, id7, id8, id9, id10, id11;
         var thread1 = Scheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
         var thread2 = Scheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
         var thread3 = Scheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
@@ -163,10 +163,11 @@ public static unsafe class Kernel
         var thread8 = Scheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
         var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
+        var thread11 = Scheduler.CreateThread(&SystemTestThread, null, 0, 0, out id11);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
-            thread9 != null && thread10 != null)
+            thread9 != null && thread10 != null && thread11 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -188,6 +189,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id9);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id10);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id11);
             DebugConsole.WriteLine();
         }
     }
@@ -729,6 +732,147 @@ public static unsafe class Kernel
         // Restore old filter
         X64.ExceptionHandling.SetUnhandledExceptionFilter(oldFilter);
 
+        return 0;
+    }
+
+    /// <summary>
+    /// System API test thread - tests QueryPerformanceCounter, GetSystemInfo, GetTickCount
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SystemTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[System Test] Starting System API tests...");
+
+        // Test 1: QueryPerformanceFrequency
+        long frequency;
+        if (!SystemApi.QueryPerformanceFrequency(out frequency))
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: QueryPerformanceFrequency returned false");
+            return 1;
+        }
+
+        if (frequency <= 0)
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: Frequency is <= 0");
+            return 1;
+        }
+
+        DebugConsole.Write("[System Test] Performance frequency: ");
+        DebugConsole.WriteHex((ulong)frequency);
+        DebugConsole.Write(" Hz (");
+        // Display in MHz for readability
+        DebugConsole.WriteHex((ulong)(frequency / 1000000));
+        DebugConsole.WriteLine(" MHz)");
+
+        // Test 2: QueryPerformanceCounter
+        long counter1;
+        if (!SystemApi.QueryPerformanceCounter(out counter1))
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: QueryPerformanceCounter returned false");
+            return 1;
+        }
+
+        if (counter1 <= 0)
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: Counter is <= 0");
+            return 1;
+        }
+
+        DebugConsole.Write("[System Test] Performance counter: 0x");
+        DebugConsole.WriteHex((ulong)counter1);
+        DebugConsole.WriteLine();
+
+        // Wait a bit and read again to verify it advances
+        for (ulong i = 0; i < 5_000_000; i++)
+        {
+            Cpu.Pause();
+        }
+
+        long counter2;
+        SystemApi.QueryPerformanceCounter(out counter2);
+
+        if (counter2 <= counter1)
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: Counter did not advance");
+            return 1;
+        }
+
+        DebugConsole.Write("[System Test] Counter advanced to: 0x");
+        DebugConsole.WriteHex((ulong)counter2);
+        DebugConsole.WriteLine(" OK");
+
+        // Test 3: GetSystemInfo
+        SystemInfo sysInfo;
+        SystemApi.GetSystemInfo(out sysInfo);
+
+        DebugConsole.Write("[System Test] ProcessorArchitecture: ");
+        DebugConsole.WriteHex(sysInfo.wProcessorArchitecture);
+        if (sysInfo.wProcessorArchitecture == ProcessorArchitecture.PROCESSOR_ARCHITECTURE_AMD64)
+        {
+            DebugConsole.WriteLine(" (AMD64) OK");
+        }
+        else
+        {
+            DebugConsole.WriteLine(" UNEXPECTED");
+        }
+
+        DebugConsole.Write("[System Test] PageSize: ");
+        DebugConsole.WriteHex(sysInfo.dwPageSize);
+        if (sysInfo.dwPageSize == 4096)
+        {
+            DebugConsole.WriteLine(" (4KB) OK");
+        }
+        else
+        {
+            DebugConsole.WriteLine(" UNEXPECTED");
+        }
+
+        DebugConsole.Write("[System Test] AllocationGranularity: ");
+        DebugConsole.WriteHex(sysInfo.dwAllocationGranularity);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[System Test] NumberOfProcessors: ");
+        DebugConsole.WriteHex(sysInfo.dwNumberOfProcessors);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[System Test] MinAppAddress: 0x");
+        DebugConsole.WriteHex((ulong)sysInfo.lpMinimumApplicationAddress);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[System Test] MaxAppAddress: 0x");
+        DebugConsole.WriteHex((ulong)sysInfo.lpMaximumApplicationAddress);
+        DebugConsole.WriteLine();
+
+        // Test 4: GetTickCount64
+        ulong tick1 = SystemApi.GetTickCount64();
+        DebugConsole.Write("[System Test] TickCount64: ");
+        DebugConsole.WriteHex(tick1);
+        DebugConsole.WriteLine(" ms");
+
+        // Wait and verify it advances
+        for (ulong i = 0; i < 5_000_000; i++)
+        {
+            Cpu.Pause();
+        }
+
+        ulong tick2 = SystemApi.GetTickCount64();
+        if (tick2 < tick1)
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: TickCount64 went backwards");
+            return 1;
+        }
+
+        DebugConsole.Write("[System Test] TickCount64 advanced to: ");
+        DebugConsole.WriteHex(tick2);
+        DebugConsole.WriteLine(" ms OK");
+
+        // Test 5: GetTickCount (32-bit)
+        uint tick32 = SystemApi.GetTickCount();
+        DebugConsole.Write("[System Test] TickCount: ");
+        DebugConsole.WriteHex(tick32);
+        DebugConsole.WriteLine(" ms OK");
+
+        DebugConsole.WriteLine("[System Test] All System API tests PASSED!");
         return 0;
     }
 }
