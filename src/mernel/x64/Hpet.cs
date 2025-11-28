@@ -86,7 +86,7 @@ public static unsafe class Hpet
 
         _regs = (HpetRegisters*)hpetTable->BaseAddress.Address;
 
-        DebugConsole.Write("[HPET] Base address: 0x");
+        DebugConsole.Write("[HPET] Base: 0x");
         DebugConsole.WriteHex((ulong)_regs);
         DebugConsole.WriteLine();
 

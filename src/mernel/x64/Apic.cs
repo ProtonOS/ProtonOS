@@ -123,7 +123,7 @@ public static unsafe class Apic
 
     /// <summary>
     /// Initialize the Local APIC.
-    /// Must be called after VirtualMemory.Init() (APIC base needs to be identity-mapped).
+    /// Must be called after VirtualMemory.Init() so we can use higher-half addresses.
     /// </summary>
     public static bool Init()
     {

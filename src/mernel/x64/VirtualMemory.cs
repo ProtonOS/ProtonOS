@@ -43,6 +43,27 @@ public static unsafe class VirtualMemory
     public const ulong LargePageSize = 2097152;   // 2MB
     public const ulong HugePageSize = 1073741824; // 1GB
 
+    // Memory layout:
+    // 0x0000_0000_0000_0000 - 0x0000_0000_0000_0FFF : Null guard page (unmapped)
+    // 0x0000_0000_0000_1000 - 0x0000_0000_FFFF_FFFF : Kernel space (first 4GB)
+    // 0x0000_0001_0000_0000 - 0x0000_7FFF_FFFF_FFFF : User space (rest of lower half)
+    // 0xFFFF_8000_0000_0000+                        : Physical memory map
+
+    // Kernel occupies the first 4GB (where UEFI loads it)
+    public const ulong KernelBase = 0x0000_0000_0000_1000;  // After null guard
+    public const ulong KernelEnd = 0x0000_0001_0000_0000;   // 4GB boundary
+    public const ulong KernelSize = KernelEnd - KernelBase;
+
+    // User space starts after kernel area
+    public const ulong UserBase = 0x0000_0001_0000_0000;    // 4GB
+    public const ulong UserEnd = 0x0000_8000_0000_0000;     // End of lower canonical half
+
+    // Physical memory map in higher half (for kernel to access any physical address)
+    public const ulong PhysicalMapBase = 0xFFFF_8000_0000_0000;
+
+    // Size of physical memory to map (4GB covers most systems)
+    public const ulong PhysicalMapSize = 4UL * 1024 * 1024 * 1024;
+
     // Virtual address structure (48-bit canonical):
     // Bits 0-11:  Page offset (12 bits)
     // Bits 12-20: PT index (9 bits)
@@ -68,6 +89,28 @@ public static unsafe class VirtualMemory
     /// Whether paging has been initialized
     /// </summary>
     public static bool IsInitialized => _initialized;
+
+    /// <summary>
+    /// Convert a physical address to its higher-half virtual address
+    /// </summary>
+    public static ulong PhysToVirt(ulong physAddr) => physAddr + PhysicalMapBase;
+
+    /// <summary>
+    /// Convert a higher-half virtual address to its physical address
+    /// </summary>
+    public static ulong VirtToPhys(ulong virtAddr) => virtAddr - PhysicalMapBase;
+
+    /// <summary>
+    /// Convert a physical pointer to a higher-half virtual pointer
+    /// </summary>
+    public static T* PhysToVirt<T>(T* physPtr) where T : unmanaged
+        => (T*)((ulong)physPtr + PhysicalMapBase);
+
+    /// <summary>
+    /// Convert a higher-half virtual pointer to a physical pointer
+    /// </summary>
+    public static T* VirtToPhys<T>(T* virtPtr) where T : unmanaged
+        => (T*)((ulong)virtPtr - PhysicalMapBase);
 
     /// <summary>
     /// Initialize virtual memory with identity mapping for kernel.
@@ -101,13 +144,31 @@ public static unsafe class VirtualMemory
         DebugConsole.WriteHex(_pml4PhysAddr);
         DebugConsole.WriteLine();
 
-        // Identity map the first 4GB using 2MB pages for simplicity
-        // This covers all conventional memory in most UEFI systems
-        if (!IdentityMapRange(0, 4UL * 1024 * 1024 * 1024))
+        // Map kernel space (first 4GB) using 2MB pages
+        // We map from 0 but will unmap page 0 separately for null guard
+        if (!IdentityMapRange(0, PhysicalMapSize))
         {
-            DebugConsole.WriteLine("[VMem] Failed to create identity mapping!");
+            DebugConsole.WriteLine("[VMem] Failed to create kernel mapping!");
             return false;
         }
+
+        // Unmap page 0 (null guard) - this catches null pointer dereferences
+        // We need to use 4KB pages for the first 2MB to allow unmapping just page 0
+        UnmapNullGuardPage();
+
+        DebugConsole.WriteLine("[VMem] Kernel space: 0x1000 - 0x1_0000_0000 (null guard at 0x0)");
+
+        // Map physical memory to higher half (0xFFFF_8000_0000_0000+)
+        // This allows kernel to access any physical memory through higher-half pointers
+        if (!MapHigherHalf(0, PhysicalMapSize))
+        {
+            DebugConsole.WriteLine("[VMem] Failed to create physical memory map!");
+            return false;
+        }
+
+        DebugConsole.Write("[VMem] Physical map: 0x");
+        DebugConsole.WriteHex(PhysicalMapBase);
+        DebugConsole.WriteLine(" (4GB)");
 
         // Switch to our page tables
         DebugConsole.Write("[VMem] Loading CR3 with 0x");
@@ -117,7 +178,7 @@ public static unsafe class VirtualMemory
         Cpu.WriteCr3(_pml4PhysAddr);
 
         _initialized = true;
-        DebugConsole.WriteLine("[VMem] Initialized with 4GB identity mapping");
+        DebugConsole.WriteLine("[VMem] Initialized (kernel 0-4GB, physmap in higher half)");
         return true;
     }
 
@@ -133,6 +194,26 @@ public static unsafe class VirtualMemory
         for (ulong addr = physStart; addr < physEnd; addr += LargePageSize)
         {
             if (!MapLargePage(addr, addr, PageFlags.KernelRW))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Map physical memory to higher-half virtual addresses using 2MB pages.
+    /// Maps physical 0 -> PhysicalMapBase, physical 2MB -> PhysicalMapBase + 2MB, etc.
+    /// </summary>
+    private static bool MapHigherHalf(ulong physStart, ulong size)
+    {
+        // Align to 2MB boundary
+        physStart &= ~(LargePageSize - 1);
+        ulong physEnd = physStart + size;
+
+        for (ulong phys = physStart; phys < physEnd; phys += LargePageSize)
+        {
+            ulong virt = phys + PhysicalMapBase;
+            if (!MapLargePage(virt, phys, PageFlags.KernelRW))
                 return false;
         }
 
@@ -248,6 +329,54 @@ public static unsafe class VirtualMemory
         ulong* ptr = (ulong*)physAddr;
         for (int i = 0; i < 512; i++)
             ptr[i] = 0;
+    }
+
+    /// <summary>
+    /// Unmap page 0 to create null guard.
+    /// This converts the first 2MB large page into 4KB pages, then unmaps page 0.
+    /// </summary>
+    private static void UnmapNullGuardPage()
+    {
+        // Get PML4 -> PDPT -> PD for virtual address 0
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pdptPhys = pml4[0] & PageFlags.AddressMask;
+        if (pdptPhys == 0) return;
+
+        ulong* pdpt = (ulong*)pdptPhys;
+        ulong pdPhys = pdpt[0] & PageFlags.AddressMask;
+        if (pdPhys == 0) return;
+
+        ulong* pd = (ulong*)pdPhys;
+        ulong pdEntry = pd[0];
+
+        // Check if this is a 2MB large page
+        if ((pdEntry & PageFlags.HugePage) == 0)
+            return;  // Already using 4KB pages
+
+        // Get the physical address this 2MB page maps to (should be 0)
+        ulong largePagePhys = pdEntry & PageFlags.AddressMask;
+
+        // Allocate a page table for 4KB pages
+        ulong ptPhys = PageAllocator.AllocatePage();
+        if (ptPhys == 0) return;
+
+        ulong* pt = (ulong*)ptPhys;
+
+        // Map pages 1-511 (skip page 0 for null guard)
+        // Page 0 entry stays 0 (not present)
+        pt[0] = 0;  // Null guard - not present
+        for (int i = 1; i < 512; i++)
+        {
+            ulong pagePhys = largePagePhys + (ulong)i * PageSize;
+            pt[i] = pagePhys | PageFlags.Present | PageFlags.Writable;
+        }
+
+        // Replace the 2MB page entry with pointer to our PT
+        // Remove HugePage flag since we're now using a page table
+        pd[0] = ptPhys | PageFlags.Present | PageFlags.Writable;
+
+        // Flush TLB for the affected range
+        Cpu.WriteCr3(_pml4PhysAddr);
     }
 
     /// <summary>
