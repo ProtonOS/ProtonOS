@@ -87,6 +87,12 @@ public static unsafe class Mernel
     private static int _sharedCounter;
     private static bool _producerDone;
 
+    // SRW lock test variables
+    private static KernelSRWLock _testSRW;
+    private static int _srwSharedData;
+    private static int _srwReaderCount;
+    private static bool _srwWriterDone;
+
     /// <summary>
     /// Create test threads to demonstrate scheduling and synchronization
     /// </summary>
@@ -126,15 +132,29 @@ public static unsafe class Mernel
         _producerDone = false;
         DebugConsole.WriteLine("[Test] Initialized critical section and condition variable");
 
+        // Initialize SRW lock for testing
+        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        {
+            KernelSRWLockOps.InitializeSRWLock(srwPtr);
+        }
+        _srwSharedData = 0;
+        _srwReaderCount = 0;
+        _srwWriterDone = false;
+        DebugConsole.WriteLine("[Test] Initialized SRW lock");
+
         // Create test threads
-        uint id1, id2, id3, id4, id5;
+        uint id1, id2, id3, id4, id5, id6, id7, id8;
         var thread1 = KernelScheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
         var thread2 = KernelScheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
         var thread3 = KernelScheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
         var thread4 = KernelScheduler.CreateThread(&TlsTestThread, null, 0, 0, out id4);
         var thread5 = KernelScheduler.CreateThread(&CondVarTestConsumer, null, 0, 0, out id5);
+        var thread6 = KernelScheduler.CreateThread(&SRWTestWriter, null, 0, 0, out id6);
+        var thread7 = KernelScheduler.CreateThread(&SRWTestReader, (void*)1, 0, 0, out id7);
+        var thread8 = KernelScheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
 
-        if (thread1 != null && thread2 != null && thread3 != null && thread4 != null && thread5 != null)
+        if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
+            thread5 != null && thread6 != null && thread7 != null && thread8 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -146,6 +166,12 @@ public static unsafe class Mernel
             DebugConsole.WriteHex((ushort)id4);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id5);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id6);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id7);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id8);
             DebugConsole.WriteLine();
         }
     }
@@ -346,6 +372,116 @@ public static unsafe class Mernel
         }
 
         DebugConsole.WriteLine("[Consumer] CondVar test SUCCESS!");
+        return 0;
+    }
+
+    /// <summary>
+    /// SRW lock writer test - acquires exclusive lock and updates shared data
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SRWTestWriter(void* param)
+    {
+        DebugConsole.WriteLine("[SRW Writer] Starting SRW lock writer test...");
+
+        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                // Busy wait a bit before acquiring
+                for (ulong j = 0; j < 3_000_000; j++)
+                {
+                    Cpu.Pause();
+                }
+
+                DebugConsole.WriteLine("[SRW Writer] Acquiring exclusive lock...");
+                KernelSRWLockOps.AcquireSRWLockExclusive(srwPtr);
+
+                // Check no readers are active (they shouldn't be while we hold exclusive)
+                int readers = _srwReaderCount;
+                if (readers != 0)
+                {
+                    DebugConsole.Write("[SRW Writer] ERROR: Readers active during write: ");
+                    DebugConsole.WriteHex((ushort)readers);
+                    DebugConsole.WriteLine();
+                }
+
+                _srwSharedData++;
+                DebugConsole.Write("[SRW Writer] Wrote value: ");
+                DebugConsole.WriteHex((ushort)_srwSharedData);
+                DebugConsole.WriteLine();
+
+                // Hold lock briefly
+                for (ulong j = 0; j < 1_000_000; j++)
+                {
+                    Cpu.Pause();
+                }
+
+                KernelSRWLockOps.ReleaseSRWLockExclusive(srwPtr);
+                DebugConsole.WriteLine("[SRW Writer] Released exclusive lock");
+            }
+        }
+
+        _srwWriterDone = true;
+        DebugConsole.WriteLine("[SRW Writer] Done");
+        return 0;
+    }
+
+    /// <summary>
+    /// SRW lock reader test - acquires shared lock and reads shared data
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SRWTestReader(void* param)
+    {
+        int readerId = (int)(ulong)param;
+        DebugConsole.Write("[SRW Reader ");
+        DebugConsole.WriteHex((ushort)readerId);
+        DebugConsole.WriteLine("] Starting SRW lock reader test...");
+
+        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        {
+            int readCount = 0;
+            while (!_srwWriterDone || readCount < 3)
+            {
+                // Busy wait a bit before acquiring
+                for (ulong j = 0; j < 2_000_000; j++)
+                {
+                    Cpu.Pause();
+                }
+
+                KernelSRWLockOps.AcquireSRWLockShared(srwPtr);
+
+                // Increment reader count atomically
+                Cpu.AtomicIncrement(ref _srwReaderCount);
+
+                int value = _srwSharedData;
+                DebugConsole.Write("[SRW Reader ");
+                DebugConsole.WriteHex((ushort)readerId);
+                DebugConsole.Write("] Read value: ");
+                DebugConsole.WriteHex((ushort)value);
+                DebugConsole.Write(" (");
+                DebugConsole.WriteHex((ushort)_srwReaderCount);
+                DebugConsole.WriteLine(" readers active)");
+
+                // Hold lock briefly
+                for (ulong j = 0; j < 500_000; j++)
+                {
+                    Cpu.Pause();
+                }
+
+                // Decrement reader count atomically
+                Cpu.AtomicDecrement(ref _srwReaderCount);
+
+                KernelSRWLockOps.ReleaseSRWLockShared(srwPtr);
+                readCount++;
+
+                if (readCount >= 5)
+                    break;
+            }
+        }
+
+        DebugConsole.Write("[SRW Reader ");
+        DebugConsole.WriteHex((ushort)readerId);
+        DebugConsole.WriteLine("] SRW test SUCCESS!");
         return 0;
     }
 }

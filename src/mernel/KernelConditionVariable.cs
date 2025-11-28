@@ -113,18 +113,88 @@ public static unsafe class KernelConditionVariableOps
         return signaled;
     }
 
+    // Flags for SleepConditionVariableSRW
+    private const uint CONDITION_VARIABLE_LOCKMODE_SHARED = 0x1;
+
     /// <summary>
     /// Sleep on a condition variable and release a slim reader/writer lock.
-    /// Note: SRW locks not yet implemented, this is a placeholder.
     /// </summary>
+    /// <param name="cv">Condition variable to wait on</param>
+    /// <param name="srwLock">SRW lock to release while waiting</param>
+    /// <param name="dwMilliseconds">Timeout in milliseconds (INFINITE = 0xFFFFFFFF)</param>
+    /// <param name="flags">CONDITION_VARIABLE_LOCKMODE_SHARED (0x1) if holding shared lock</param>
+    /// <returns>True if signaled, false if timed out</returns>
     public static bool SleepConditionVariableSRW(
         KernelConditionVariable* cv,
-        void* srwLock,
+        KernelSRWLock* srwLock,
         uint dwMilliseconds,
         uint flags)
     {
-        // TODO: Implement when SRW locks are added
-        return false;
+        if (cv == null || srwLock == null)
+            return false;
+
+        var current = KernelScheduler.CurrentThread;
+        if (current == null)
+            return false;
+
+        bool isShared = (flags & CONDITION_VARIABLE_LOCKMODE_SHARED) != 0;
+
+        // Add thread to wait list
+        cv->Lock.Acquire();
+
+        current->Next = null;
+        current->Prev = cv->WaitListTail;
+
+        if (cv->WaitListTail != null)
+            cv->WaitListTail->Next = current;
+        else
+            cv->WaitListHead = current;
+
+        cv->WaitListTail = current;
+
+        // Set up wait timeout
+        if (dwMilliseconds != 0xFFFFFFFF)
+        {
+            current->WakeTime = Apic.TickCount + (dwMilliseconds / 10);  // 10ms per tick
+        }
+        else
+        {
+            current->WakeTime = 0;  // Infinite wait
+        }
+
+        current->WaitResult = KernelWaitResult.Timeout;  // Default to timeout
+        current->State = KernelThreadState.Blocked;
+
+        cv->Lock.Release();
+
+        // Release the SRW lock (shared or exclusive)
+        if (isShared)
+            KernelSRWLockOps.ReleaseSRWLockShared(srwLock);
+        else
+            KernelSRWLockOps.ReleaseSRWLockExclusive(srwLock);
+
+        // Yield to scheduler
+        KernelScheduler.Schedule();
+
+        // We're back - re-acquire the SRW lock
+        if (isShared)
+            KernelSRWLockOps.AcquireSRWLockShared(srwLock);
+        else
+            KernelSRWLockOps.AcquireSRWLockExclusive(srwLock);
+
+        // Check if we were signaled or timed out
+        cv->Lock.Acquire();
+
+        // Remove from wait list if still there (timeout case)
+        RemoveFromWaitList(cv, current);
+
+        bool signaled = current->WaitResult == KernelWaitResult.Object0;
+        current->WaitResult = 0;
+        current->WakeTime = 0;
+
+        cv->Lock.Release();
+
+        return signaled;
     }
 
     /// <summary>

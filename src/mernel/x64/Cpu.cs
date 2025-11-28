@@ -73,6 +73,10 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void load_context(KernelCpuContext* context);
 
+    // Memory Barrier (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void mfence();
+
     // Atomic Operations (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_cmpxchg32(int* ptr, int newVal, int comparand);
@@ -274,4 +278,11 @@ public static unsafe class Cpu
             return atomic_add32(ptr, addend);
         }
     }
+
+    // --- Memory Barriers ---
+
+    /// <summary>
+    /// Full memory barrier (prevents all reordering across the barrier)
+    /// </summary>
+    public static void MemoryBarrier() => mfence();
 }

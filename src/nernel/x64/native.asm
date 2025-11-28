@@ -495,6 +495,17 @@ load_context:
     ; Jump to new context
     ret
 
+;; ==================== Memory Barriers ====================
+;; CPU memory fence instructions
+
+global mfence
+
+; void mfence(void) - Full memory fence
+; Serializes all memory operations (loads and stores)
+mfence:
+    mfence
+    ret
+
 ;; ==================== Atomic Operations ====================
 ;; Lock-prefixed instructions for thread-safe operations
 
