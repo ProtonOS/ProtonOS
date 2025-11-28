@@ -234,14 +234,14 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ---
 
-## 9. Debug Support (NOT STARTED)
+## 9. Debug Support (COMPLETE)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
-| OutputDebugStringA | [ ] | - | **USEFUL**: Debug output |
-| OutputDebugStringW | [ ] | - | Wide char version |
-| IsDebuggerPresent | [ ] | - | **USEFUL**: Check for debugger |
-| DebugBreak | [x] | Cpu.cs | INT3 instruction |
+| OutputDebugStringA | [x] | System.cs | Outputs to serial console |
+| OutputDebugStringW | [x] | System.cs | Wide char version (ASCII fallback) |
+| IsDebuggerPresent | [x] | System.cs | Returns false (no debugger yet) |
+| DebugBreak | [x] | System.cs | INT3 instruction via Cpu.Breakpoint |
 
 ---
 
@@ -298,7 +298,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 ### Phase 2 - Important for Runtime
 5. [x] SuspendThread / ResumeThread - Thread control - **TESTED**
 6. [ ] GetEnvironmentVariableW - Config/tuning
-7. [ ] OutputDebugString / IsDebuggerPresent - Debug support
+7. [x] OutputDebugString / IsDebuggerPresent - Debug support - **DONE**
 8. [ ] GetSystemTimeAsFileTime - Timestamps
 
 ### Phase 3 - Nice to Have
@@ -326,10 +326,10 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Exception Handling | 3 | 0 | 1 | 4 |
 | Interlocked | 13 | 0 | 0 | 13 |
 | TLS | 4 | 0 | 0 | 4 |
-| Debug | 1 | 0 | 3 | 4 |
+| Debug | 4 | 0 | 0 | 4 |
 | Environment | 0 | 0 | 4 | 4 |
-| **TOTAL** | **70** | **2** | **24** | **96** |
+| **TOTAL** | **73** | **2** | **21** | **96** |
 
-**Coverage: 73% complete, 2% partial, 25% missing**
+**Coverage: 76% complete, 2% partial, 22% missing**
 
 **Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management, environment variables).

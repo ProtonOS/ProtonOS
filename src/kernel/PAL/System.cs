@@ -1,8 +1,9 @@
 // netos mernel - PAL System APIs
-// Win32-compatible system information and timing APIs for PAL compatibility.
+// Win32-compatible system information, timing, and debug APIs for PAL compatibility.
 
 using System.Runtime.InteropServices;
 using Kernel.X64;
+using Kernel.Platform;
 
 namespace Kernel.PAL;
 
@@ -156,5 +157,80 @@ public static unsafe class SystemApi
 
         ulong ticks = Hpet.ReadCounter();
         return Hpet.TicksToNanoseconds(ticks) / 1_000_000;
+    }
+}
+
+/// <summary>
+/// PAL Debug APIs - Win32-compatible debugging functions.
+/// </summary>
+public static unsafe class DebugApi
+{
+    /// <summary>
+    /// Output a debug string (ANSI version).
+    /// Sends the string to the debug console (serial port).
+    /// </summary>
+    /// <param name="lpOutputString">Pointer to null-terminated string to output</param>
+    public static void OutputDebugStringA(byte* lpOutputString)
+    {
+        if (lpOutputString == null)
+            return;
+
+        // Output each character until null terminator
+        byte* p = lpOutputString;
+        while (*p != 0)
+        {
+            DebugConsole.WriteByte(*p);
+            p++;
+        }
+    }
+
+    /// <summary>
+    /// Output a debug string (Wide/Unicode version).
+    /// Sends the string to the debug console (serial port).
+    /// Note: Unicode characters > 127 are output as '?'.
+    /// </summary>
+    /// <param name="lpOutputString">Pointer to null-terminated wide string to output</param>
+    public static void OutputDebugStringW(char* lpOutputString)
+    {
+        if (lpOutputString == null)
+            return;
+
+        // Output each character until null terminator
+        char* p = lpOutputString;
+        while (*p != 0)
+        {
+            // Convert wide char to ASCII, replace non-ASCII with '?'
+            char c = *p;
+            if (c < 128)
+                DebugConsole.WriteByte((byte)c);
+            else
+                DebugConsole.WriteByte((byte)'?');
+            p++;
+        }
+    }
+
+    /// <summary>
+    /// Check if a debugger is attached to the current process.
+    /// In our kernel, we always return false since we don't have a real debugger.
+    /// Could be extended to check for a debug flag or GDB stub connection.
+    /// </summary>
+    /// <returns>True if debugger is present, false otherwise</returns>
+    public static bool IsDebuggerPresent()
+    {
+        // No debugger attached in kernel mode (yet)
+        // This could be extended to check for:
+        // - A kernel debugger flag
+        // - GDB stub connection over serial
+        // - Debug registers (DR7) indicating debug breakpoints
+        return false;
+    }
+
+    /// <summary>
+    /// Trigger a debug break (INT 3 instruction).
+    /// This is the same as Cpu.Breakpoint but provided for PAL compatibility.
+    /// </summary>
+    public static void DebugBreak()
+    {
+        Cpu.Breakpoint();
     }
 }
