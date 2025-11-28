@@ -164,8 +164,8 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | QueryPerformanceFrequency | [x] | System.cs | Returns HPET frequency (~100MHz) |
 | GetTickCount | [x] | System.cs | Milliseconds since boot (32-bit) |
 | GetTickCount64 | [x] | System.cs | Milliseconds since boot (64-bit) |
-| GetSystemTimeAsFileTime | [ ] | - | Current time as FILETIME |
-| GetSystemTime | [ ] | - | Current time as SYSTEMTIME |
+| GetSystemTimeAsFileTime | [x] | System.cs | RTC at boot + HPET elapsed time - tested |
+| GetSystemTime | [x] | System.cs | Broken-down date/time (SYSTEMTIME struct) - tested |
 
 ---
 
@@ -296,11 +296,11 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 4. [x] WaitForMultipleObjects - Common sync pattern - **TESTED**
 5. [x] RtlCaptureContext - Capture CPU context - **TESTED**
 
-### Phase 2 - Important for Runtime
+### Phase 2 - Important for Runtime (COMPLETE ✓)
 5. [x] SuspendThread / ResumeThread - Thread control - **TESTED**
 6. [x] GetEnvironmentVariableW - Config/tuning - **TESTED**
 7. [x] OutputDebugString / IsDebuggerPresent - Debug support - **DONE**
-8. [ ] GetSystemTimeAsFileTime - Timestamps
+8. [x] GetSystemTimeAsFileTime - Wall-clock time from RTC + HPET elapsed - **TESTED**
 
 ### Phase 3 - Nice to Have
 9. [ ] QueueUserAPC - Async operations
@@ -322,15 +322,15 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Memory | 7 | 1 | 2 | 10 |
 | Threading | 12 | 1 | 4 | 17 |
 | Synchronization | 23 | 0 | 8 | 31 |
-| Time/Performance | 4 | 0 | 2 | 6 |
+| Time/Performance | 6 | 0 | 0 | 6 |
 | System Info | 3 | 0 | 0 | 3 |
 | Exception Handling | 3 | 0 | 1 | 4 |
 | Interlocked | 13 | 0 | 0 | 13 |
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
-| **TOTAL** | **77** | **3** | **17** | **97** |
+| **TOTAL** | **79** | **3** | **15** | **97** |
 
-**Coverage: 79% complete, 3% partial, 18% missing**
+**Coverage: 81% complete, 3% partial, 15% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. Environment variable APIs are now implemented and tested. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).

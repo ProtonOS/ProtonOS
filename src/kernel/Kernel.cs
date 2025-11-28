@@ -896,6 +896,43 @@ public static unsafe class Kernel
         DebugConsole.WriteHex(tick32);
         DebugConsole.WriteLine(" ms OK");
 
+        // Test 6: GetSystemTimeAsFileTime
+        FileTime fileTime;
+        SystemApi.GetSystemTimeAsFileTime(&fileTime);
+        ulong ft = fileTime.ToUInt64();
+        if (ft == 0)
+        {
+            DebugConsole.WriteLine("[System Test] FAILED: GetSystemTimeAsFileTime returned 0");
+            return 1;
+        }
+        DebugConsole.Write("[System Test] FileTime: 0x");
+        DebugConsole.WriteHex(ft);
+        DebugConsole.WriteLine(" OK");
+
+        // Test 7: GetSystemTime (broken-down time)
+        SystemTime sysTime;
+        SystemApi.GetSystemTime(&sysTime);
+        if (sysTime.wYear < 2024 || sysTime.wYear > 2100)
+        {
+            DebugConsole.Write("[System Test] FAILED: Invalid year: ");
+            DebugConsole.WriteDecimal(sysTime.wYear);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.Write("[System Test] SystemTime: ");
+        DebugConsole.WriteDecimal(sysTime.wYear);
+        DebugConsole.Write("-");
+        DebugConsole.WriteDecimalPadded(sysTime.wMonth, 2);
+        DebugConsole.Write("-");
+        DebugConsole.WriteDecimalPadded(sysTime.wDay, 2);
+        DebugConsole.Write(" ");
+        DebugConsole.WriteDecimalPadded(sysTime.wHour, 2);
+        DebugConsole.Write(":");
+        DebugConsole.WriteDecimalPadded(sysTime.wMinute, 2);
+        DebugConsole.Write(":");
+        DebugConsole.WriteDecimalPadded(sysTime.wSecond, 2);
+        DebugConsole.WriteLine(" UTC OK");
+
         DebugConsole.WriteLine("[System Test] All System API tests PASSED!");
         return 0;
     }

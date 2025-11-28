@@ -131,4 +131,108 @@ public static unsafe class DebugConsole
             WriteByte(c);
         }
     }
+
+    /// <summary>
+    /// Write a signed integer as decimal
+    /// </summary>
+    public static void WriteDecimal(int value)
+    {
+        if (value == 0)
+        {
+            WriteByte((byte)'0');
+            return;
+        }
+
+        if (value < 0)
+        {
+            WriteByte((byte)'-');
+            value = -value;
+        }
+
+        WriteDecimal((uint)value);
+    }
+
+    /// <summary>
+    /// Write an unsigned integer as decimal
+    /// </summary>
+    public static void WriteDecimal(uint value)
+    {
+        if (value == 0)
+        {
+            WriteByte((byte)'0');
+            return;
+        }
+
+        // Find the highest power of 10 <= value
+        uint divisor = 1;
+        uint temp = value;
+        while (temp >= 10)
+        {
+            divisor *= 10;
+            temp /= 10;
+        }
+
+        // Write digits from most significant to least
+        while (divisor > 0)
+        {
+            uint digit = value / divisor;
+            WriteByte((byte)('0' + digit));
+            value %= divisor;
+            divisor /= 10;
+        }
+    }
+
+    /// <summary>
+    /// Write an unsigned 64-bit integer as decimal
+    /// </summary>
+    public static void WriteDecimal(ulong value)
+    {
+        if (value == 0)
+        {
+            WriteByte((byte)'0');
+            return;
+        }
+
+        // Find the highest power of 10 <= value
+        ulong divisor = 1;
+        ulong temp = value;
+        while (temp >= 10)
+        {
+            divisor *= 10;
+            temp /= 10;
+        }
+
+        // Write digits from most significant to least
+        while (divisor > 0)
+        {
+            ulong digit = value / divisor;
+            WriteByte((byte)('0' + digit));
+            value %= divisor;
+            divisor /= 10;
+        }
+    }
+
+    /// <summary>
+    /// Write a decimal number with zero-padding to specified width
+    /// </summary>
+    public static void WriteDecimalPadded(int value, int width)
+    {
+        // Calculate number of digits
+        int digits = 1;
+        int temp = value;
+        if (temp < 0) temp = -temp;
+        while (temp >= 10)
+        {
+            digits++;
+            temp /= 10;
+        }
+
+        // Add padding zeros
+        for (int i = digits; i < width; i++)
+        {
+            WriteByte((byte)'0');
+        }
+
+        WriteDecimal(value);
+    }
 }

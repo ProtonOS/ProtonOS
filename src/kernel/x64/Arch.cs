@@ -155,6 +155,9 @@ public static unsafe class Arch
             DebugConsole.WriteLine("[x64] WARNING: HPET not available, timer calibration will be inaccurate");
         }
 
+        // Initialize RTC (for wall-clock time) - depends on HPET for elapsed time tracking
+        Rtc.Init();
+
         // Initialize Local APIC
         if (Apic.Init())
         {

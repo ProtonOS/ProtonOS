@@ -158,6 +158,79 @@ public static unsafe class SystemApi
         ulong ticks = Hpet.ReadCounter();
         return Hpet.TicksToNanoseconds(ticks) / 1_000_000;
     }
+
+    /// <summary>
+    /// Get current system time as FILETIME (100-nanosecond intervals since 1601-01-01).
+    /// This is the primary PAL API for wall-clock time.
+    /// </summary>
+    /// <param name="lpSystemTimeAsFileTime">Pointer to FILETIME structure to receive the time</param>
+    public static void GetSystemTimeAsFileTime(FileTime* lpSystemTimeAsFileTime)
+    {
+        if (lpSystemTimeAsFileTime == null)
+            return;
+
+        ulong ft = Rtc.GetSystemTimeAsFileTime();
+        lpSystemTimeAsFileTime->dwLowDateTime = (uint)(ft & 0xFFFFFFFF);
+        lpSystemTimeAsFileTime->dwHighDateTime = (uint)(ft >> 32);
+    }
+
+    /// <summary>
+    /// Get current system time as SYSTEMTIME structure.
+    /// </summary>
+    /// <param name="lpSystemTime">Pointer to SYSTEMTIME structure to receive the time</param>
+    public static void GetSystemTime(SystemTime* lpSystemTime)
+    {
+        if (lpSystemTime == null)
+            return;
+
+        Rtc.GetSystemTime(out int year, out int month, out int day,
+                          out int hour, out int minute, out int second,
+                          out int millisecond);
+
+        lpSystemTime->wYear = (ushort)year;
+        lpSystemTime->wMonth = (ushort)month;
+        lpSystemTime->wDayOfWeek = 0;  // TODO: Calculate day of week
+        lpSystemTime->wDay = (ushort)day;
+        lpSystemTime->wHour = (ushort)hour;
+        lpSystemTime->wMinute = (ushort)minute;
+        lpSystemTime->wSecond = (ushort)second;
+        lpSystemTime->wMilliseconds = (ushort)millisecond;
+    }
+}
+
+/// <summary>
+/// FILETIME structure - Win32-compatible 64-bit time value.
+/// Represents 100-nanosecond intervals since January 1, 1601 (UTC).
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct FileTime
+{
+    public uint dwLowDateTime;
+    public uint dwHighDateTime;
+
+    /// <summary>
+    /// Convert to 64-bit value
+    /// </summary>
+    public ulong ToUInt64()
+    {
+        return ((ulong)dwHighDateTime << 32) | dwLowDateTime;
+    }
+}
+
+/// <summary>
+/// SYSTEMTIME structure - Win32-compatible broken-down time.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct SystemTime
+{
+    public ushort wYear;
+    public ushort wMonth;
+    public ushort wDayOfWeek;
+    public ushort wDay;
+    public ushort wHour;
+    public ushort wMinute;
+    public ushort wSecond;
+    public ushort wMilliseconds;
 }
 
 /// <summary>
