@@ -149,9 +149,9 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | API | Status | File | Notes |
 |-----|--------|------|-------|
 | WaitForSingleObject | [x] | Sync.cs | Event, Mutex, Semaphore, Thread |
-| WaitForSingleObjectEx | [ ] | - | Alertable wait |
+| WaitForSingleObjectEx | [x] | Sync.cs | Alertable wait with APC delivery - tested |
 | WaitForMultipleObjects | [x] | Sync.cs | Wait on multiple handles (WaitAny/WaitAll) - tested |
-| WaitForMultipleObjectsEx | [ ] | - | Alertable multi-wait |
+| WaitForMultipleObjectsEx | [x] | Sync.cs | Alertable multi-wait with APC delivery |
 | SignalObjectAndWait | [ ] | - | Atomic signal + wait |
 
 ---
@@ -305,13 +305,15 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 ### Phase 3 - Nice to Have (IN PROGRESS)
 9. [x] QueueUserAPC - Async operations - **TESTED**
 10. [x] SleepEx - Alertable sleep - **TESTED**
-11. [ ] Extended sync APIs (CreateEventEx, etc.)
-12. [ ] HeapSize - Allocation tracking
+11. [x] WaitForSingleObjectEx - Alertable wait - **TESTED**
+12. [x] WaitForMultipleObjectsEx - Alertable multi-wait - **TESTED**
+13. [ ] Extended sync APIs (CreateEventEx, CreateMutexEx, CreateSemaphoreEx)
+14. [ ] HeapSize - Allocation tracking
 
 ### Phase 4 - Future (After JIT Works)
-13. [ ] File I/O subsystem
-14. [ ] Process management
-15. [ ] Named objects (OpenEvent, OpenMutex, etc.)
+15. [ ] File I/O subsystem
+16. [ ] Process management
+17. [ ] Named objects (OpenEvent, OpenMutex, etc.)
 
 ---
 
@@ -321,7 +323,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 |----------|----------|---------|---------|-------|
 | Memory | 7 | 1 | 2 | 10 |
 | Threading | 14 | 1 | 2 | 17 |
-| Synchronization | 23 | 0 | 8 | 31 |
+| Synchronization | 25 | 0 | 6 | 31 |
 | Time/Performance | 6 | 0 | 0 | 6 |
 | System Info | 3 | 0 | 0 | 3 |
 | Exception Handling | 3 | 0 | 1 | 4 |
@@ -329,8 +331,8 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
-| **TOTAL** | **81** | **3** | **13** | **97** |
+| **TOTAL** | **83** | **3** | **11** | **97** |
 
-**Coverage: 84% complete, 3% partial, 13% missing**
+**Coverage: 86% complete, 3% partial, 11% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is IN PROGRESS!** QueueUserAPC and SleepEx are now implemented and tested, enabling async procedure call delivery to threads in alertable wait states. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is IN PROGRESS!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, and WaitForMultipleObjectsEx all support alertable waits with APC delivery. The remaining missing APIs are mostly in categories that aren't critical for initial JIT integration (file I/O, process management, extended sync APIs with security attributes).

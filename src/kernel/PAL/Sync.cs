@@ -269,19 +269,48 @@ public static unsafe class Sync
     /// <returns>Wait result code</returns>
     public static uint WaitForSingleObject(void* obj, uint timeoutMs)
     {
+        return WaitForSingleObjectEx(obj, timeoutMs, false);
+    }
+
+    /// <summary>
+    /// Wait for a single object with alertable option.
+    /// If alertable is true, the wait can be interrupted by APCs.
+    /// </summary>
+    /// <param name="obj">Object to wait on (Event, Mutex, Semaphore, or Thread)</param>
+    /// <param name="timeoutMs">Timeout in milliseconds (0xFFFFFFFF = infinite)</param>
+    /// <param name="alertable">If true, wait can be interrupted by APCs</param>
+    /// <returns>Wait result code (WAIT_IO_COMPLETION if woken by APC)</returns>
+    public static uint WaitForSingleObjectEx(void* obj, uint timeoutMs, bool alertable)
+    {
         if (obj == null)
+            return WaitResult.Failed;
+
+        var current = Scheduler.CurrentThread;
+        if (current == null)
             return WaitResult.Failed;
 
         var header = (ObjectHeader*)obj;
 
         _lock.Acquire();
 
-        // Check if object is already signaled
+        // Check if object is already signaled - this takes priority over APC delivery
         if (TryAcquireObject(header))
         {
             _lock.Release();
             return WaitResult.Object0;
         }
+
+        _lock.Release();
+
+        // If alertable and APCs are already pending, deliver them immediately
+        // (only if we would need to block)
+        if (alertable && Scheduler.HasPendingApc(current))
+        {
+            Scheduler.DeliverApcs();
+            return WaitResult.IoCompletion;
+        }
+
+        _lock.Acquire();
 
         // If timeout is 0, return immediately
         if (timeoutMs == 0)
@@ -290,17 +319,10 @@ public static unsafe class Sync
             return WaitResult.Timeout;
         }
 
-        // Block current thread
-        var current = Scheduler.CurrentThread;
-        if (current == null)
-        {
-            _lock.Release();
-            return WaitResult.Failed;
-        }
-
         // Set up wait
         current->WaitObject = obj;
         current->WaitResult = WaitResult.Timeout;
+        current->Alertable = alertable;
 
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
@@ -326,13 +348,21 @@ public static unsafe class Sync
         // We're back - check result
         _lock.Acquire();
 
-        // Remove from wait list if still there (timeout case)
+        // Remove from wait list if still there (timeout or APC case)
         RemoveFromWaitList(header, current);
         current->WaitObject = null;
+        current->Alertable = false;
 
         var result = current->WaitResult;
+        current->WaitResult = 0;
 
         _lock.Release();
+
+        // If woken by APC, deliver all pending APCs
+        if (result == WaitResult.IoCompletion)
+        {
+            Scheduler.DeliverApcs();
+        }
 
         return result;
     }
@@ -538,6 +568,26 @@ public static unsafe class Sync
     /// </returns>
     public static uint WaitForMultipleObjects(uint count, void** handles, bool waitAll, uint timeoutMs)
     {
+        return WaitForMultipleObjectsEx(count, handles, waitAll, timeoutMs, false);
+    }
+
+    /// <summary>
+    /// Wait for multiple objects with alertable option.
+    /// If alertable is true, the wait can be interrupted by APCs.
+    /// </summary>
+    /// <param name="count">Number of objects to wait on</param>
+    /// <param name="handles">Array of object pointers</param>
+    /// <param name="waitAll">If true, wait for ALL objects; if false, wait for ANY</param>
+    /// <param name="timeoutMs">Timeout in milliseconds (0xFFFFFFFF = infinite)</param>
+    /// <param name="alertable">If true, wait can be interrupted by APCs</param>
+    /// <returns>
+    /// If waitAll is false: WAIT_OBJECT_0 + index of signaled object
+    /// If waitAll is true: WAIT_OBJECT_0 when all objects are signaled
+    /// WAIT_IO_COMPLETION if woken by APC
+    /// WAIT_TIMEOUT on timeout, WAIT_FAILED on error
+    /// </returns>
+    public static uint WaitForMultipleObjectsEx(uint count, void** handles, bool waitAll, uint timeoutMs, bool alertable)
+    {
         if (count == 0 || count > 64 || handles == null)
             return WaitResult.Failed;
 
@@ -548,9 +598,13 @@ public static unsafe class Sync
                 return WaitResult.Failed;
         }
 
+        var current = Scheduler.CurrentThread;
+        if (current == null)
+            return WaitResult.Failed;
+
         _lock.Acquire();
 
-        // Check if objects are already signaled
+        // Check if objects are already signaled - this takes priority over APC delivery
         if (waitAll)
         {
             // WaitAll: all objects must be signaled
@@ -595,17 +649,22 @@ public static unsafe class Sync
             return WaitResult.Timeout;
         }
 
-        // Need to block - add to wait lists of all objects
-        var current = Scheduler.CurrentThread;
-        if (current == null)
+        _lock.Release();
+
+        // If alertable and APCs are already pending, deliver them immediately
+        // (only if we would need to block)
+        if (alertable && Scheduler.HasPendingApc(current))
         {
-            _lock.Release();
-            return WaitResult.Failed;
+            Scheduler.DeliverApcs();
+            return WaitResult.IoCompletion;
         }
+
+        _lock.Acquire();
 
         // Store the first handle as the wait object (for simple tracking)
         current->WaitObject = handles[0];
         current->WaitResult = WaitResult.Timeout;
+        current->Alertable = alertable;
 
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
@@ -633,6 +692,18 @@ public static unsafe class Sync
             Scheduler.Schedule();
 
             _lock.Acquire();
+
+            // Check if woken by APC
+            if (current->WaitResult == WaitResult.IoCompletion)
+            {
+                RemoveFromWaitList((ObjectHeader*)handles[0], current);
+                current->WaitObject = null;
+                current->Alertable = false;
+                current->WaitResult = 0;
+                _lock.Release();
+                Scheduler.DeliverApcs();
+                return WaitResult.IoCompletion;
+            }
 
             // Check timeout
             bool timedOut = false;
@@ -663,6 +734,7 @@ public static unsafe class Sync
                     }
                     RemoveFromWaitList((ObjectHeader*)handles[0], current);
                     current->WaitObject = null;
+                    current->Alertable = false;
                     _lock.Release();
                     return WaitResult.Object0;
                 }
@@ -676,6 +748,7 @@ public static unsafe class Sync
                     {
                         RemoveFromWaitList((ObjectHeader*)handles[0], current);
                         current->WaitObject = null;
+                        current->Alertable = false;
                         _lock.Release();
                         return WaitResult.Object0 + i;
                     }
@@ -686,6 +759,7 @@ public static unsafe class Sync
             {
                 RemoveFromWaitList((ObjectHeader*)handles[0], current);
                 current->WaitObject = null;
+                current->Alertable = false;
                 _lock.Release();
                 return WaitResult.Timeout;
             }

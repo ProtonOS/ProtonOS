@@ -1743,7 +1743,90 @@ public static unsafe class Kernel
             DebugConsole.WriteLine();
         }
 
-        DebugConsole.WriteLine("[APC Test] All QueueUserAPC and SleepEx tests completed!");
+        // Test 7: WaitForSingleObjectEx with alertable=true and pending APC
+        DebugConsole.WriteLine("[APC Test] Test 7: WaitForSingleObjectEx with alertable=true");
+        _apcCallCount = 0;
+
+        // Create an event that won't be signaled
+        var evt = PAL.Sync.CreateEvent(false, false);
+        if (evt == null)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 7: FAILED - could not create event");
+            return 1;
+        }
+
+        // Queue an APC
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xCAFE);
+
+        // Wait on unsignaled event with alertable=true - should return WAIT_IO_COMPLETION
+        result = PAL.Sync.WaitForSingleObjectEx(evt, 1000, true);
+
+        if (result == WaitResult.IoCompletion && _apcCallCount == 1 && _apcLastParam == 0xCAFE)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 7: WaitForSingleObjectEx returned WAIT_IO_COMPLETION - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 7: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.Write(", count: ");
+            DebugConsole.WriteHex((uint)_apcCallCount);
+            DebugConsole.WriteLine();
+        }
+
+        // Test 8: WaitForSingleObjectEx with alertable=false should NOT deliver APC
+        DebugConsole.WriteLine("[APC Test] Test 8: WaitForSingleObjectEx with alertable=false");
+        _apcCallCount = 0;
+
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xBEEF);
+
+        // Wait with short timeout and alertable=false
+        result = PAL.Sync.WaitForSingleObjectEx(evt, 50, false);
+
+        if (result == WaitResult.Timeout && _apcCallCount == 0)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 8: APC NOT delivered during non-alertable wait - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 8: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.Write(", count: ");
+            DebugConsole.WriteHex((uint)_apcCallCount);
+            DebugConsole.WriteLine();
+        }
+
+        // Drain the pending APC
+        PAL.ThreadApi.SleepEx(0, true);
+        _apcCallCount = 0;
+
+        // Test 9: WaitForSingleObjectEx on signaled event should return immediately
+        DebugConsole.WriteLine("[APC Test] Test 9: WaitForSingleObjectEx on signaled event");
+
+        PAL.Sync.SetEvent(evt);  // Signal the event
+        PAL.ThreadApi.QueueUserAPC(&TestApcCallback, handle, 0xFACE);
+
+        // Wait on signaled event - should acquire immediately, not deliver APC
+        result = PAL.Sync.WaitForSingleObjectEx(evt, 1000, true);
+
+        if (result == WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[APC Test] Test 9: Signaled event acquired immediately - PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("[APC Test] Test 9: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+        }
+
+        // Drain the pending APC from test 9
+        PAL.ThreadApi.SleepEx(0, true);
+
+        // Clean up
+        PAL.Sync.CloseHandle(evt);
+
+        DebugConsole.WriteLine("[APC Test] All QueueUserAPC, SleepEx, and WaitForSingleObjectEx tests completed!");
         return 0;
     }
 
