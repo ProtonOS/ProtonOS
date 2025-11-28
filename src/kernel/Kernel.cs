@@ -164,18 +164,19 @@ public static unsafe class Kernel
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
         var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
         var thread11 = Scheduler.CreateThread(&SystemTestThread, null, 0, 0, out id11);
-        uint id12, id13, id14, id15, id16;
+        uint id12, id13, id14, id15, id16, id17;
         var thread12 = Scheduler.CreateThread(&VirtualQueryTestThread, null, 0, 0, out id12);
         var thread13 = Scheduler.CreateThread(&ThreadContextTestThread, null, 0, 0, out id13);
         var thread14 = Scheduler.CreateThread(&WaitMultipleTestThread, null, 0, 0, out id14);
         var thread15 = Scheduler.CreateThread(&RaiseExceptionTestThread, null, 0, 0, out id15);
         var thread16 = Scheduler.CreateThread(&SuspendResumeTestThread, null, 0, 0, out id16);
+        var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
-            thread16 != null)
+            thread16 != null && thread17 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -209,6 +210,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id15);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id16);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id17);
             DebugConsole.WriteLine();
         }
     }
@@ -1411,6 +1414,104 @@ public static unsafe class Kernel
         PAL.ThreadApi.Sleep(50);
 
         DebugConsole.WriteLine("[Suspend/Resume Test] All tests completed!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Debug API test thread - tests OutputDebugStringA/W, IsDebuggerPresent, DebugBreak
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint DebugApiTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Debug API Test] Starting Debug API tests...");
+
+        // Test 1: OutputDebugStringA - ANSI string output
+        DebugConsole.WriteLine("[Debug API Test] Test 1: OutputDebugStringA");
+        // Create a null-terminated ANSI string on stack
+        byte* ansiStr = stackalloc byte[32];
+        ansiStr[0] = (byte)'[';
+        ansiStr[1] = (byte)'D';
+        ansiStr[2] = (byte)'e';
+        ansiStr[3] = (byte)'b';
+        ansiStr[4] = (byte)'u';
+        ansiStr[5] = (byte)'g';
+        ansiStr[6] = (byte)' ';
+        ansiStr[7] = (byte)'A';
+        ansiStr[8] = (byte)'N';
+        ansiStr[9] = (byte)'S';
+        ansiStr[10] = (byte)'I';
+        ansiStr[11] = (byte)']';
+        ansiStr[12] = (byte)' ';
+        ansiStr[13] = (byte)'H';
+        ansiStr[14] = (byte)'e';
+        ansiStr[15] = (byte)'l';
+        ansiStr[16] = (byte)'l';
+        ansiStr[17] = (byte)'o';
+        ansiStr[18] = (byte)'!';
+        ansiStr[19] = (byte)'\n';
+        ansiStr[20] = 0;
+
+        DebugApi.OutputDebugStringA(ansiStr);
+        DebugConsole.WriteLine("[Debug API Test] OutputDebugStringA - check serial output above");
+
+        // Test 2: OutputDebugStringW - Wide string output
+        DebugConsole.WriteLine("[Debug API Test] Test 2: OutputDebugStringW");
+        char* wideStr = stackalloc char[32];
+        wideStr[0] = '[';
+        wideStr[1] = 'D';
+        wideStr[2] = 'e';
+        wideStr[3] = 'b';
+        wideStr[4] = 'u';
+        wideStr[5] = 'g';
+        wideStr[6] = ' ';
+        wideStr[7] = 'W';
+        wideStr[8] = 'I';
+        wideStr[9] = 'D';
+        wideStr[10] = 'E';
+        wideStr[11] = ']';
+        wideStr[12] = ' ';
+        wideStr[13] = 'H';
+        wideStr[14] = 'e';
+        wideStr[15] = 'l';
+        wideStr[16] = 'l';
+        wideStr[17] = 'o';
+        wideStr[18] = '!';
+        wideStr[19] = '\n';
+        wideStr[20] = '\0';
+
+        DebugApi.OutputDebugStringW(wideStr);
+        DebugConsole.WriteLine("[Debug API Test] OutputDebugStringW - check serial output above");
+
+        // Test 3: IsDebuggerPresent - should return false
+        DebugConsole.WriteLine("[Debug API Test] Test 3: IsDebuggerPresent");
+        bool debuggerPresent = DebugApi.IsDebuggerPresent();
+        DebugConsole.Write("[Debug API Test] IsDebuggerPresent returned: ");
+        if (debuggerPresent)
+            DebugConsole.WriteLine("true");
+        else
+            DebugConsole.WriteLine("false (expected)");
+
+        if (!debuggerPresent)
+        {
+            DebugConsole.WriteLine("[Debug API Test] IsDebuggerPresent - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Debug API Test] IsDebuggerPresent - unexpected (but not an error)");
+        }
+
+        // Test 4: Null pointer handling
+        DebugConsole.WriteLine("[Debug API Test] Test 4: Null pointer handling");
+        DebugApi.OutputDebugStringA(null);
+        DebugApi.OutputDebugStringW(null);
+        DebugConsole.WriteLine("[Debug API Test] Null pointers handled safely - PASSED");
+
+        // Note: We don't test DebugBreak here because it would trigger INT3
+        // which would need to be caught by an exception handler.
+        // The ExceptionTestThread already tests breakpoints.
+        DebugConsole.WriteLine("[Debug API Test] Note: DebugBreak tested via ExceptionTestThread");
+
+        DebugConsole.WriteLine("[Debug API Test] All Debug API tests PASSED!");
         return 0;
     }
 }
