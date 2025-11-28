@@ -80,7 +80,7 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void mfence();
 
-    // Atomic Operations (from native.asm)
+    // Atomic Operations - 32-bit (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_cmpxchg32(int* ptr, int newVal, int comparand);
 
@@ -89,6 +89,16 @@ public static unsafe class Cpu
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_add32(int* ptr, int addend);
+
+    // Atomic Operations - 64-bit (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern long atomic_cmpxchg64(long* ptr, long newVal, long comparand);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern long atomic_xchg64(long* ptr, long newVal);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern long atomic_add64(long* ptr, long addend);
 
     // ==================== Public API ====================
 
@@ -279,6 +289,94 @@ public static unsafe class Cpu
         fixed (int* ptr = &location)
         {
             return atomic_add32(ptr, addend);
+        }
+    }
+
+    // --- 64-bit Atomic Operations ---
+
+    /// <summary>
+    /// Atomic compare-and-exchange for 64-bit integers.
+    /// If *location == comparand, sets *location = value.
+    /// Returns the original value at location.
+    /// </summary>
+    public static long AtomicCompareExchange64(ref long location, long value, long comparand)
+    {
+        fixed (long* ptr = &location)
+        {
+            return atomic_cmpxchg64(ptr, value, comparand);
+        }
+    }
+
+    /// <summary>
+    /// Atomic exchange for 64-bit integers.
+    /// Sets *location = value and returns the original value.
+    /// </summary>
+    public static long AtomicExchange64(ref long location, long value)
+    {
+        fixed (long* ptr = &location)
+        {
+            return atomic_xchg64(ptr, value);
+        }
+    }
+
+    /// <summary>
+    /// Atomic increment for 64-bit integers.
+    /// Returns the original value (before increment).
+    /// </summary>
+    public static long AtomicIncrement64(ref long location)
+    {
+        fixed (long* ptr = &location)
+        {
+            return atomic_add64(ptr, 1);
+        }
+    }
+
+    /// <summary>
+    /// Atomic decrement for 64-bit integers.
+    /// Returns the original value (before decrement).
+    /// </summary>
+    public static long AtomicDecrement64(ref long location)
+    {
+        fixed (long* ptr = &location)
+        {
+            return atomic_add64(ptr, -1);
+        }
+    }
+
+    /// <summary>
+    /// Atomic add for 64-bit integers.
+    /// Returns the original value (before addition).
+    /// </summary>
+    public static long AtomicAdd64(ref long location, long addend)
+    {
+        fixed (long* ptr = &location)
+        {
+            return atomic_add64(ptr, addend);
+        }
+    }
+
+    /// <summary>
+    /// Atomic compare-and-exchange for pointers.
+    /// If *location == comparand, sets *location = value.
+    /// Returns the original value at location.
+    /// </summary>
+    public static void* AtomicCompareExchangePointer(ref void* location, void* value, void* comparand)
+    {
+        fixed (void** ptr = &location)
+        {
+            return (void*)atomic_cmpxchg64((long*)ptr, (long)value, (long)comparand);
+        }
+    }
+
+    /// <summary>
+    /// Atomic exchange for pointers.
+    /// Sets *location = value and returns the original value.
+    /// </summary>
+    public static void* AtomicExchangePointer(ref void* location, void* value)
+    {
+        fixed (void** ptr = &location)
+        {
+            return (void*)atomic_xchg64((long*)ptr, (long)value);
         }
     }
 

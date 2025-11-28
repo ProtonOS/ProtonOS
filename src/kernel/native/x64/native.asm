@@ -510,6 +510,7 @@ mfence:
 ;; Lock-prefixed instructions for thread-safe operations
 
 global atomic_cmpxchg32, atomic_xchg32, atomic_add32
+global atomic_cmpxchg64, atomic_xchg64, atomic_add64
 
 ; int atomic_add32(int* ptr, int addend)
 ; Windows x64 ABI: ptr in rcx, addend in edx
@@ -533,6 +534,30 @@ atomic_cmpxchg32:
 atomic_xchg32:
     mov eax, edx
     lock xchg [rcx], eax    ; atomically exchange *rcx with eax
+    ret
+
+; long atomic_add64(long* ptr, long addend)
+; Windows x64 ABI: ptr in rcx, addend in rdx
+; Returns: original value at *ptr (before addition)
+atomic_add64:
+    mov rax, rdx
+    lock xadd [rcx], rax    ; atomically add rdx to *rcx, original value in rax
+    ret
+
+; long atomic_cmpxchg64(long* ptr, long newVal, long comparand)
+; Windows x64 ABI: ptr in rcx, newVal in rdx, comparand in r8
+; Returns: original value at *ptr (if original == comparand, exchange occurred)
+atomic_cmpxchg64:
+    mov rax, r8             ; comparand goes in rax
+    lock cmpxchg [rcx], rdx ; if *rcx == rax, *rcx = rdx; else rax = *rcx
+    ret
+
+; long atomic_xchg64(long* ptr, long newVal)
+; Windows x64 ABI: ptr in rcx, newVal in rdx
+; Returns: original value at *ptr
+atomic_xchg64:
+    mov rax, rdx
+    lock xchg [rcx], rax    ; atomically exchange *rcx with rax
     ret
 
 ;; ==================== Memory Operations ====================
