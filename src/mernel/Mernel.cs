@@ -72,37 +72,50 @@ public static unsafe class Mernel
         }
     }
 
+    // Shared event for synchronization test
+    private static KernelEvent* _testEvent;
+
     /// <summary>
-    /// Create test threads to demonstrate scheduling
+    /// Create test threads to demonstrate scheduling and synchronization
     /// </summary>
     private static void CreateTestThreads()
     {
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[Test] Creating test threads...");
 
-        // Create two test threads
-        uint id1, id2;
+        // Create an auto-reset event for synchronization test
+        _testEvent = KernelSync.CreateEvent(false, false);  // Auto-reset, initially non-signaled
+        if (_testEvent != null)
+        {
+            DebugConsole.WriteLine("[Test] Created auto-reset event");
+        }
+
+        // Create test threads
+        uint id1, id2, id3;
         var thread1 = KernelScheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
         var thread2 = KernelScheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
+        var thread3 = KernelScheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
 
-        if (thread1 != null && thread2 != null)
+        if (thread1 != null && thread2 != null && thread3 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
-            DebugConsole.Write(" and ");
+            DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id2);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id3);
             DebugConsole.WriteLine();
         }
     }
 
     /// <summary>
-    /// Test thread 1 - prints 'A' periodically
+    /// Test thread 1 - prints 'A' periodically, then signals event
     /// </summary>
     [UnmanagedCallersOnly]
     private static uint TestThread1(void* param)
     {
         uint count = 0;
-        while (count < 10)
+        while (count < 5)
         {
             DebugConsole.Write("A");
             count++;
@@ -114,7 +127,11 @@ public static unsafe class Mernel
             }
         }
 
+        // Signal the event to wake the waiter
         DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[Thread1] Signaling event");
+        KernelSync.SetEvent(_testEvent);
+
         DebugConsole.WriteLine("[Thread1] Done");
         return 0;
     }
@@ -126,7 +143,7 @@ public static unsafe class Mernel
     private static uint TestThread2(void* param)
     {
         uint count = 0;
-        while (count < 10)
+        while (count < 5)
         {
             DebugConsole.Write("B");
             count++;
@@ -140,6 +157,31 @@ public static unsafe class Mernel
 
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[Thread2] Done");
+        return 0;
+    }
+
+    /// <summary>
+    /// Test thread 3 - waits for event before printing
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SyncTestWaiter(void* param)
+    {
+        DebugConsole.WriteLine("[Waiter] Waiting for event...");
+
+        // Wait for the event (infinite timeout)
+        uint result = KernelSync.WaitForSingleObject(_testEvent, 0xFFFFFFFF);
+
+        if (result == KernelWaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[Waiter] Event received! Sync works!");
+        }
+        else
+        {
+            DebugConsole.Write("[Waiter] Wait failed: ");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+        }
+
         return 0;
     }
 }

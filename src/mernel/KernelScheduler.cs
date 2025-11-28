@@ -452,6 +452,30 @@ public static unsafe class KernelScheduler
     }
 
     /// <summary>
+    /// Make a thread ready to run (add to ready queue).
+    /// Called by synchronization primitives when waking threads.
+    /// </summary>
+    public static void MakeReady(KernelThread* thread)
+    {
+        if (thread == null)
+            return;
+
+        _lock.Acquire();
+
+        if (thread->State == KernelThreadState.Ready)
+        {
+            // Already in ready queue
+            _lock.Release();
+            return;
+        }
+
+        thread->State = KernelThreadState.Ready;
+        AddToReadyQueue(thread);
+
+        _lock.Release();
+    }
+
+    /// <summary>
     /// Get thread count
     /// </summary>
     public static int ThreadCount => _threadCount;
