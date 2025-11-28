@@ -305,13 +305,10 @@ public static unsafe class Apic
     {
         _tickCount++;
 
-        // For now, just show a tick indicator every 100 ticks
-        if (_tickCount % 100 == 0)
-        {
-            DebugConsole.Write(".");
-        }
-
-        // Send EOI to acknowledge the interrupt
+        // Send EOI first to allow nested interrupts
         SendEoi();
+
+        // Call scheduler timer tick for preemptive scheduling
+        KernelScheduler.TimerTick();
     }
 }

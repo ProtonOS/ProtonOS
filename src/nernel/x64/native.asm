@@ -364,3 +364,189 @@ global get_uefi_image_handle
 get_uefi_image_handle:
     mov rax, [rel g_uefi_image_handle]
     ret
+
+;; ==================== Context Switching ====================
+;; KernelCpuContext structure layout (must match C# KernelCpuContext):
+;;   0x00: rax, 0x08: rbx, 0x10: rcx, 0x18: rdx
+;;   0x20: rsi, 0x28: rdi, 0x30: rbp
+;;   0x38: r8,  0x40: r9,  0x48: r10, 0x50: r11
+;;   0x58: r12, 0x60: r13, 0x68: r14, 0x70: r15
+;;   0x78: rip, 0x80: rsp, 0x88: rflags
+;;   0x90: cs,  0x98: ss
+
+; void switch_context(KernelCpuContext* oldContext, KernelCpuContext* newContext)
+; Windows x64 ABI: oldContext in rcx, newContext in rdx
+; Saves current context to oldContext, loads newContext
+global switch_context
+switch_context:
+    ; Save current context to oldContext (rcx)
+    mov [rcx + 0x00], rax
+    mov [rcx + 0x08], rbx
+    ; rcx will be saved after we're done using it
+    mov [rcx + 0x18], rdx
+    mov [rcx + 0x20], rsi
+    mov [rcx + 0x28], rdi
+    mov [rcx + 0x30], rbp
+    mov [rcx + 0x38], r8
+    mov [rcx + 0x40], r9
+    mov [rcx + 0x48], r10
+    mov [rcx + 0x50], r11
+    mov [rcx + 0x58], r12
+    mov [rcx + 0x60], r13
+    mov [rcx + 0x68], r14
+    mov [rcx + 0x70], r15
+
+    ; Save return address as RIP
+    mov rax, [rsp]          ; Return address is at top of stack
+    mov [rcx + 0x78], rax
+
+    ; Save RSP (after return, so +8)
+    lea rax, [rsp + 8]
+    mov [rcx + 0x80], rax
+
+    ; Save RFLAGS
+    pushfq
+    pop rax
+    mov [rcx + 0x88], rax
+
+    ; Save CS and SS
+    mov ax, cs
+    movzx rax, ax
+    mov [rcx + 0x90], rax
+    mov ax, ss
+    movzx rax, ax
+    mov [rcx + 0x98], rax
+
+    ; Now save rcx (oldContext pointer)
+    mov rax, rcx
+    mov [rcx + 0x10], rax
+
+    ; Load new context from newContext (rdx)
+    ; First load rsp so we have a valid stack
+    mov rsp, [rdx + 0x80]
+
+    ; Push the return address (new RIP) onto new stack
+    mov rax, [rdx + 0x78]
+    push rax
+
+    ; Load all registers from new context
+    mov rax, [rdx + 0x00]
+    mov rbx, [rdx + 0x08]
+    mov rcx, [rdx + 0x10]
+    ; rdx loaded last since we're using it
+    mov rsi, [rdx + 0x20]
+    mov rdi, [rdx + 0x28]
+    mov rbp, [rdx + 0x30]
+    mov r8,  [rdx + 0x38]
+    mov r9,  [rdx + 0x40]
+    mov r10, [rdx + 0x48]
+    mov r11, [rdx + 0x50]
+    mov r12, [rdx + 0x58]
+    mov r13, [rdx + 0x60]
+    mov r14, [rdx + 0x68]
+    mov r15, [rdx + 0x70]
+
+    ; Load RFLAGS
+    push qword [rdx + 0x88]
+    popfq
+
+    ; Finally load rdx
+    mov rdx, [rdx + 0x18]
+
+    ; Return to new context (RIP was pushed onto stack)
+    ret
+
+; void load_context(KernelCpuContext* context)
+; Windows x64 ABI: context in rcx
+; Loads context without saving (for first thread switch)
+global load_context
+load_context:
+    ; Load rsp first
+    mov rsp, [rcx + 0x80]
+
+    ; Push the return address (RIP) onto stack
+    mov rax, [rcx + 0x78]
+    push rax
+
+    ; Load all registers
+    mov rax, [rcx + 0x00]
+    mov rbx, [rcx + 0x08]
+    ; rcx loaded last
+    mov rdx, [rcx + 0x18]
+    mov rsi, [rcx + 0x20]
+    mov rdi, [rcx + 0x28]
+    mov rbp, [rcx + 0x30]
+    mov r8,  [rcx + 0x38]
+    mov r9,  [rcx + 0x40]
+    mov r10, [rcx + 0x48]
+    mov r11, [rcx + 0x50]
+    mov r12, [rcx + 0x58]
+    mov r13, [rcx + 0x60]
+    mov r14, [rcx + 0x68]
+    mov r15, [rcx + 0x70]
+
+    ; Load RFLAGS
+    push qword [rcx + 0x88]
+    popfq
+
+    ; Finally load rcx
+    mov rcx, [rcx + 0x10]
+
+    ; Jump to new context
+    ret
+
+;; ==================== Atomic Operations ====================
+;; Lock-prefixed instructions for thread-safe operations
+
+global atomic_cmpxchg32, atomic_xchg32
+
+; int atomic_cmpxchg32(int* ptr, int newVal, int comparand)
+; Windows x64 ABI: ptr in rcx, newVal in edx, comparand in r8d
+; Returns: original value at *ptr (if original == comparand, exchange occurred)
+atomic_cmpxchg32:
+    mov eax, r8d            ; comparand goes in eax
+    lock cmpxchg [rcx], edx ; if *rcx == eax, *rcx = edx; else eax = *rcx
+    ret
+
+; int atomic_xchg32(int* ptr, int newVal)
+; Windows x64 ABI: ptr in rcx, newVal in edx
+; Returns: original value at *ptr
+atomic_xchg32:
+    mov eax, edx
+    lock xchg [rcx], eax    ; atomically exchange *rcx with eax
+    ret
+
+;; ==================== Memory Operations ====================
+;; Required by C# compiler for struct initialization
+
+global memset, memcpy
+
+; void* memset(void* dest, int c, size_t count)
+; Windows x64 ABI: dest in rcx, c in edx, count in r8
+; Returns: dest
+memset:
+    push rdi
+    mov rax, rcx            ; save dest for return value
+    mov rdi, rcx            ; dest for stosb
+    mov rcx, r8             ; count
+    mov r8, rax             ; save dest again (rcx now has count)
+    mov rax, rdx            ; fill byte for stosb
+    rep stosb
+    mov rax, r8             ; return original dest
+    pop rdi
+    ret
+
+; void* memcpy(void* dest, const void* src, size_t count)
+; Windows x64 ABI: dest in rcx, src in rdx, count in r8
+; Returns: dest
+memcpy:
+    push rdi
+    push rsi
+    mov rax, rcx            ; save dest for return
+    mov rdi, rcx            ; dest
+    mov rsi, rdx            ; src
+    mov rcx, r8             ; count
+    rep movsb
+    pop rsi
+    pop rdi
+    ret

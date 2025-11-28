@@ -66,6 +66,20 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong* get_isr_table();
 
+    // Context Switching (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void switch_context(KernelCpuContext* oldContext, KernelCpuContext* newContext);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void load_context(KernelCpuContext* context);
+
+    // Atomic Operations (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int atomic_cmpxchg32(int* ptr, int newVal, int comparand);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int atomic_xchg32(int* ptr, int newVal);
+
     // ==================== Public API ====================
 
     // --- Interrupt Control ---
@@ -178,4 +192,47 @@ public static unsafe class Cpu
     /// Write a Model Specific Register
     /// </summary>
     public static void WriteMsr(uint msr, ulong value) => wrmsr(msr, value);
+
+    // --- Context Switching ---
+
+    /// <summary>
+    /// Switch from current context to new context.
+    /// Saves current CPU state to oldContext, loads newContext.
+    /// </summary>
+    public static void SwitchContext(KernelCpuContext* oldContext, KernelCpuContext* newContext)
+        => switch_context(oldContext, newContext);
+
+    /// <summary>
+    /// Load a context without saving current state.
+    /// Used for initial thread switch.
+    /// </summary>
+    public static void LoadContext(KernelCpuContext* context)
+        => load_context(context);
+
+    // --- Atomic Operations ---
+
+    /// <summary>
+    /// Atomic compare-and-exchange for 32-bit integers.
+    /// If *location == comparand, sets *location = value.
+    /// Returns the original value at location.
+    /// </summary>
+    public static int AtomicCompareExchange(ref int location, int value, int comparand)
+    {
+        fixed (int* ptr = &location)
+        {
+            return atomic_cmpxchg32(ptr, value, comparand);
+        }
+    }
+
+    /// <summary>
+    /// Atomic exchange for 32-bit integers.
+    /// Sets *location = value and returns the original value.
+    /// </summary>
+    public static int AtomicExchange(ref int location, int value)
+    {
+        fixed (int* ptr = &location)
+        {
+            return atomic_xchg32(ptr, value);
+        }
+    }
 }
