@@ -51,6 +51,9 @@ public static unsafe class Arch
         // Initialize IDT
         Idt.Init();
 
+        // Initialize virtual memory (our own page tables)
+        VirtualMemory.Init();
+
         _initialized = true;
         DebugConsole.WriteLine("[x64] Architecture initialized");
     }

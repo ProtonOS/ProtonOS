@@ -37,15 +37,12 @@ public static unsafe class Mernel
         // Exit UEFI boot services - we now own the hardware
         UefiBoot.ExitBootServices();
 
-        // Initialize architecture-specific code (GDT, IDT)
+        // Initialize architecture-specific code (GDT, IDT, virtual memory)
 #if ARCH_X64
         Arch.Init();
 #elif ARCH_ARM64
         // TODO: Arch.Init();
 #endif
-
-        // Initialize virtual memory (our own page tables)
-        VirtualMemory.Init();
 
         // Initialize kernel heap
         HeapAllocator.Init();
