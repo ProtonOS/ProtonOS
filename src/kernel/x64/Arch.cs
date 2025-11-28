@@ -146,6 +146,9 @@ public static unsafe class Arch
     {
         DebugConsole.WriteLine("[x64] Stage 2 initialization...");
 
+        // Initialize exception handling
+        ExceptionHandling.Init();
+
         // Initialize HPET (for calibration)
         if (!Hpet.Init())
         {
@@ -198,9 +201,17 @@ public static unsafe class Arch
     {
         int vector = (int)frame->InterruptNumber;
 
-        // CPU exceptions (0-31) are fatal if unhandled
+        // CPU exceptions (0-31) - try SEH dispatch first
         if (vector < 32)
         {
+            // Try to dispatch through exception handling infrastructure
+            if (ExceptionHandling.DispatchException(frame, vector))
+            {
+                // Exception was handled, return to continue execution
+                return;
+            }
+
+            // Unhandled exception - display info and halt
             DebugConsole.WriteLine();
             DebugConsole.Write("!!! EXCEPTION ");
             DebugConsole.WriteHex((ushort)vector);

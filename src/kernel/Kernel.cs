@@ -98,6 +98,10 @@ public static unsafe class Kernel
     private static int _srwReaderCount;
     private static bool _srwWriterDone;
 
+    // Exception handling test variables
+    private static bool _exceptionCaught;
+    private static uint _caughtExceptionCode;
+
     /// <summary>
     /// Create test threads to demonstrate scheduling and synchronization
     /// </summary>
@@ -148,7 +152,7 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("[Test] Initialized SRW lock");
 
         // Create test threads
-        uint id1, id2, id3, id4, id5, id6, id7, id8, id9;
+        uint id1, id2, id3, id4, id5, id6, id7, id8, id9, id10;
         var thread1 = Scheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
         var thread2 = Scheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
         var thread3 = Scheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
@@ -158,9 +162,11 @@ public static unsafe class Kernel
         var thread7 = Scheduler.CreateThread(&SRWTestReader, (void*)1, 0, 0, out id7);
         var thread8 = Scheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
+        var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
-            thread5 != null && thread6 != null && thread7 != null && thread8 != null && thread9 != null)
+            thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
+            thread9 != null && thread10 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -180,6 +186,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id8);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id9);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id10);
             DebugConsole.WriteLine();
         }
     }
@@ -664,6 +672,63 @@ public static unsafe class Kernel
 
         DebugConsole.WriteLine("[Memory Test] VirtualFree OK");
         DebugConsole.WriteLine("[Memory Test] All memory tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Exception filter for the exception test.
+    /// Handles breakpoint exceptions - INT3 is a trap so RIP already points past it.
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static int TestExceptionFilter(X64.ExceptionRecord* record, X64.ExceptionContext* context)
+    {
+        // Handle breakpoints - INT3 is a trap, RIP already points to next instruction
+        // We just need to continue execution without modifying RIP
+        if (record->ExceptionCode == X64.ExceptionCodes.EXCEPTION_BREAKPOINT)
+        {
+            // INT3 is a trap - RIP already points to instruction after INT3
+            // No need to increment RIP
+            return -1; // EXCEPTION_CONTINUE_EXECUTION
+        }
+
+        // Let other exceptions crash
+        return 0; // EXCEPTION_CONTINUE_SEARCH
+    }
+
+    /// <summary>
+    /// Exception handling test thread - tests that SEH actually works
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint ExceptionTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[SEH Test] Starting exception handling test...");
+
+        // Install our exception filter
+        var oldFilter = X64.ExceptionHandling.SetUnhandledExceptionFilter(&TestExceptionFilter);
+        DebugConsole.WriteLine("[SEH Test] Installed exception filter");
+
+        // Trigger a breakpoint exception (INT3)
+        // This should be caught by our filter, which will increment RIP and continue
+        DebugConsole.WriteLine("[SEH Test] About to trigger INT3 breakpoint...");
+
+        // Use a volatile write to a local before and after to prove execution continued
+        int testVal = 42;
+
+        Cpu.Breakpoint(); // This triggers INT3 (exception vector 3)
+
+        // If we reach here, the exception was handled and we continued
+        testVal = 123;
+
+        // If we get here, the exception was handled!
+        DebugConsole.WriteLine("[SEH Test] Execution continued after breakpoint!");
+        DebugConsole.Write("[SEH Test] testVal = ");
+        DebugConsole.WriteHex((ushort)testVal);
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[SEH Test] Exception handling test PASSED!");
+
+        // Restore old filter
+        X64.ExceptionHandling.SetUnhandledExceptionFilter(oldFilter);
+
         return 0;
     }
 }
