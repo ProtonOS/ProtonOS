@@ -368,11 +368,46 @@ public static unsafe class Memory
     /// </summary>
     public static bool VirtualProtect(void* lpAddress, ulong dwSize, uint flNewProtect, uint* lpflOldProtect)
     {
-        // Simplified - in a real implementation we'd modify page table entries
-        if (lpflOldProtect != null)
-            *lpflOldProtect = MemoryProtection.PAGE_READWRITE;
+        if (!_initialized) Init();
 
-        return true;
+        if (lpAddress == null || dwSize == 0)
+            return false;
+
+        // Convert Win32 protection to page flags
+        ulong newPageFlags = ProtectionToPageFlags(flNewProtect);
+
+        // Change the protection
+        ulong oldPageFlags;
+        bool success = VirtualMemory.ChangeRangeProtection((ulong)lpAddress, dwSize, newPageFlags, out oldPageFlags);
+
+        if (success && lpflOldProtect != null)
+        {
+            // Convert old page flags back to Win32 format
+            *lpflOldProtect = PageFlagsToProtection(oldPageFlags);
+        }
+
+        return success;
+    }
+
+    /// <summary>
+    /// Convert x64 page flags to Win32 protection flags.
+    /// </summary>
+    private static uint PageFlagsToProtection(ulong pageFlags)
+    {
+        if ((pageFlags & PageFlags.Present) == 0)
+            return MemoryProtection.PAGE_NOACCESS;
+
+        bool writable = (pageFlags & PageFlags.Writable) != 0;
+        bool executable = (pageFlags & PageFlags.NoExecute) == 0;
+
+        if (executable && writable)
+            return MemoryProtection.PAGE_EXECUTE_READWRITE;
+        if (executable)
+            return MemoryProtection.PAGE_EXECUTE_READ;
+        if (writable)
+            return MemoryProtection.PAGE_READWRITE;
+
+        return MemoryProtection.PAGE_READONLY;
     }
 
     /// <summary>

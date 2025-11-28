@@ -390,6 +390,150 @@ public static unsafe class VirtualMemory
         Cpu.Invlpg(virtAddr);
     }
 
+    /// <summary>
+    /// Get the page table entry for a virtual address.
+    /// Returns 0 if not mapped.
+    /// </summary>
+    public static ulong GetPageEntry(ulong virtAddr)
+    {
+        if (_pml4PhysAddr == 0)
+            return 0;
+
+        // Get table indices
+        int pml4Index = (int)((virtAddr >> 39) & IndexMask);
+        int pdptIndex = (int)((virtAddr >> 30) & IndexMask);
+        int pdIndex = (int)((virtAddr >> 21) & IndexMask);
+        int ptIndex = (int)((virtAddr >> 12) & IndexMask);
+
+        // Walk PML4
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pml4Entry = pml4[pml4Index];
+        if ((pml4Entry & PageFlags.Present) == 0)
+            return 0;
+
+        // Walk PDPT
+        ulong* pdpt = (ulong*)(pml4Entry & PageFlags.AddressMask);
+        ulong pdptEntry = pdpt[pdptIndex];
+        if ((pdptEntry & PageFlags.Present) == 0)
+            return 0;
+
+        // Check for 1GB huge page
+        if ((pdptEntry & PageFlags.HugePage) != 0)
+            return pdptEntry;
+
+        // Walk PD
+        ulong* pd = (ulong*)(pdptEntry & PageFlags.AddressMask);
+        ulong pdEntry = pd[pdIndex];
+        if ((pdEntry & PageFlags.Present) == 0)
+            return 0;
+
+        // Check for 2MB large page
+        if ((pdEntry & PageFlags.HugePage) != 0)
+            return pdEntry;
+
+        // Walk PT
+        ulong* pt = (ulong*)(pdEntry & PageFlags.AddressMask);
+        return pt[ptIndex];
+    }
+
+    /// <summary>
+    /// Change the protection flags on a page.
+    /// Returns the old flags, or 0 if page is not mapped.
+    /// </summary>
+    public static ulong ChangePageProtection(ulong virtAddr, ulong newFlags)
+    {
+        if (_pml4PhysAddr == 0)
+            return 0;
+
+        // Get table indices
+        int pml4Index = (int)((virtAddr >> 39) & IndexMask);
+        int pdptIndex = (int)((virtAddr >> 30) & IndexMask);
+        int pdIndex = (int)((virtAddr >> 21) & IndexMask);
+        int ptIndex = (int)((virtAddr >> 12) & IndexMask);
+
+        // Walk PML4
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pml4Entry = pml4[pml4Index];
+        if ((pml4Entry & PageFlags.Present) == 0)
+            return 0;
+
+        // Walk PDPT
+        ulong* pdpt = (ulong*)(pml4Entry & PageFlags.AddressMask);
+        ulong pdptEntry = pdpt[pdptIndex];
+        if ((pdptEntry & PageFlags.Present) == 0)
+            return 0;
+
+        // Check for 1GB huge page
+        if ((pdptEntry & PageFlags.HugePage) != 0)
+        {
+            ulong oldEntry = pdptEntry;
+            ulong physAddr = oldEntry & PageFlags.AddressMask;
+            pdpt[pdptIndex] = physAddr | newFlags | PageFlags.HugePage | PageFlags.Present;
+            InvalidatePage(virtAddr);
+            return oldEntry;
+        }
+
+        // Walk PD
+        ulong* pd = (ulong*)(pdptEntry & PageFlags.AddressMask);
+        ulong pdEntry = pd[pdIndex];
+        if ((pdEntry & PageFlags.Present) == 0)
+            return 0;
+
+        // Check for 2MB large page
+        if ((pdEntry & PageFlags.HugePage) != 0)
+        {
+            ulong oldEntry = pdEntry;
+            ulong physAddr = oldEntry & PageFlags.AddressMask;
+            pd[pdIndex] = physAddr | newFlags | PageFlags.HugePage | PageFlags.Present;
+            InvalidatePage(virtAddr);
+            return oldEntry;
+        }
+
+        // Walk PT - 4KB page
+        ulong* pt = (ulong*)(pdEntry & PageFlags.AddressMask);
+        ulong ptEntry = pt[ptIndex];
+        if ((ptEntry & PageFlags.Present) == 0)
+            return 0;
+
+        ulong oldPtEntry = ptEntry;
+        ulong pagePhysAddr = ptEntry & PageFlags.AddressMask;
+        pt[ptIndex] = pagePhysAddr | newFlags | PageFlags.Present;
+        InvalidatePage(virtAddr);
+        return oldPtEntry;
+    }
+
+    /// <summary>
+    /// Change protection on a range of pages.
+    /// </summary>
+    public static bool ChangeRangeProtection(ulong virtAddr, ulong size, ulong newFlags, out ulong oldFlags)
+    {
+        oldFlags = 0;
+
+        if (size == 0)
+            return false;
+
+        // Align to page boundaries
+        ulong startPage = virtAddr & ~(PageSize - 1);
+        ulong endAddr = virtAddr + size;
+        ulong endPage = (endAddr + PageSize - 1) & ~(PageSize - 1);
+
+        bool first = true;
+        for (ulong addr = startPage; addr < endPage; addr += PageSize)
+        {
+            ulong old = ChangePageProtection(addr, newFlags);
+            if (old == 0)
+                return false;
+
+            if (first)
+            {
+                oldFlags = old;
+                first = false;
+            }
+        }
+
+        return true;
+    }
+
     // ==================== Virtual Address Space Management ====================
 
     // Virtual allocation tracking

@@ -621,6 +621,40 @@ public static unsafe class Kernel
 
         DebugConsole.WriteLine("[Memory Test] VirtualAlloc data write/read OK");
 
+        // Test 3: VirtualProtect
+        uint oldProtect = 0;
+        if (!PAL.Memory.VirtualProtect(vaddr, 4096, MemoryProtection.PAGE_EXECUTE_READWRITE, &oldProtect))
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: VirtualProtect returned false");
+            return 1;
+        }
+
+        DebugConsole.Write("[Memory Test] VirtualProtect RW->RWX, old protect: 0x");
+        DebugConsole.WriteHex(oldProtect);
+        DebugConsole.WriteLine();
+
+        // Change back to read-only
+        uint oldProtect2 = 0;
+        if (!PAL.Memory.VirtualProtect(vaddr, 4096, MemoryProtection.PAGE_READONLY, &oldProtect2))
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: VirtualProtect (to RO) returned false");
+            return 1;
+        }
+
+        DebugConsole.Write("[Memory Test] VirtualProtect RWX->RO, old protect: 0x");
+        DebugConsole.WriteHex(oldProtect2);
+        DebugConsole.WriteLine();
+
+        // Verify old protect was RWX (0x40)
+        if (oldProtect2 != MemoryProtection.PAGE_EXECUTE_READWRITE)
+        {
+            DebugConsole.Write("[Memory Test] WARNING: Expected old protect 0x40, got 0x");
+            DebugConsole.WriteHex(oldProtect2);
+            DebugConsole.WriteLine();
+        }
+
+        DebugConsole.WriteLine("[Memory Test] VirtualProtect OK");
+
         // Free virtual memory
         if (!PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE))
         {
