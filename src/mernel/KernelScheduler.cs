@@ -489,4 +489,15 @@ public static unsafe class KernelScheduler
             return 0;
         return _currentThread->Id;
     }
+
+    /// <summary>
+    /// Get the head of the all-threads list for enumeration.
+    /// Caller should acquire SchedulerLock before iterating.
+    /// </summary>
+    public static KernelThread* AllThreadsHead => _allThreadsHead;
+
+    /// <summary>
+    /// Get the scheduler lock for safe thread enumeration.
+    /// </summary>
+    public static ref KernelSpinLock SchedulerLock => ref _lock;
 }

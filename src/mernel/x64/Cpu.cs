@@ -80,6 +80,9 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_xchg32(int* ptr, int newVal);
 
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int atomic_add32(int* ptr, int addend);
+
     // ==================== Public API ====================
 
     // --- Interrupt Control ---
@@ -233,6 +236,42 @@ public static unsafe class Cpu
         fixed (int* ptr = &location)
         {
             return atomic_xchg32(ptr, value);
+        }
+    }
+
+    /// <summary>
+    /// Atomic increment for 32-bit integers.
+    /// Returns the original value (before increment).
+    /// </summary>
+    public static int AtomicIncrement(ref int location)
+    {
+        fixed (int* ptr = &location)
+        {
+            return atomic_add32(ptr, 1);
+        }
+    }
+
+    /// <summary>
+    /// Atomic decrement for 32-bit integers.
+    /// Returns the original value (before decrement).
+    /// </summary>
+    public static int AtomicDecrement(ref int location)
+    {
+        fixed (int* ptr = &location)
+        {
+            return atomic_add32(ptr, -1);
+        }
+    }
+
+    /// <summary>
+    /// Atomic add for 32-bit integers.
+    /// Returns the original value (before addition).
+    /// </summary>
+    public static int AtomicAdd(ref int location, int addend)
+    {
+        fixed (int* ptr = &location)
+        {
+            return atomic_add32(ptr, addend);
         }
     }
 }

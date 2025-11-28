@@ -100,6 +100,11 @@ public unsafe struct KernelThread
     // Synchronization - what this thread is waiting on
     public void* WaitObject;           // Object being waited on
     public uint WaitResult;            // Result of wait operation
+
+    // Thread Local Storage (TLS) - array of pointers indexed by TLS slot
+    // Allocated on demand when TlsSetValue is first called
+    public void** TlsSlots;            // Pointer to TLS slot array
+    public uint TlsSlotCount;          // Number of allocated TLS slots
 }
 
 /// <summary>

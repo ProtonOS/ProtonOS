@@ -498,7 +498,15 @@ load_context:
 ;; ==================== Atomic Operations ====================
 ;; Lock-prefixed instructions for thread-safe operations
 
-global atomic_cmpxchg32, atomic_xchg32
+global atomic_cmpxchg32, atomic_xchg32, atomic_add32
+
+; int atomic_add32(int* ptr, int addend)
+; Windows x64 ABI: ptr in rcx, addend in edx
+; Returns: original value at *ptr (before addition)
+atomic_add32:
+    mov eax, edx
+    lock xadd [rcx], eax    ; atomically add edx to *rcx, original value in eax
+    ret
 
 ; int atomic_cmpxchg32(int* ptr, int newVal, int comparand)
 ; Windows x64 ABI: ptr in rcx, newVal in edx, comparand in r8d

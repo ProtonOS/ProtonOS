@@ -35,38 +35,51 @@ Docker-based development using `netos-dev` container:
 ./dev.sh
 ```
 
-### Testing
-**CRITICAL:** The dev.sh script runs commands inside Docker containers. Each `./dev.sh` invocation starts a NEW container. If tests run QEMU (via `./run.sh`), that container will keep running until QEMU exits. Stale containers can lock files in `build/` and cause subsequent builds to fail.
+### Testing - CRITICAL RULES
 
-**ALWAYS use this single-command pattern for build + test:**
+**RULE 1: ALWAYS stop Docker containers BEFORE running tests**
 ```bash
-# Build, create image, run test with timeout, then cleanup containers - ALL IN ONE COMMAND
-./dev.sh make 2>&1 && ./dev.sh make image 2>&1 && timeout 15 ./dev.sh ./run.sh 2>&1; \
-docker stop $(docker ps -q) 2>/dev/null; docker rm $(docker ps -aq) 2>/dev/null; \
-echo "--- Done ---"
+docker kill $(docker ps -q) 2>/dev/null || true
 ```
 
-This pattern ensures:
-1. Build and image creation happen first (fails fast on errors)
-2. QEMU runs with 15-second timeout (auto-exits)
-3. Docker containers are ALWAYS cleaned up at the end
-4. The `echo` confirms the command completed
+**RULE 2: Container paths are `/usr/src/netos` (NOT `/work`)**
+When cleaning or accessing files inside containers, use `/usr/src/netos`:
+```bash
+./dev.sh rm -rf /usr/src/netos/build/x64
+./dev.sh mkdir -p /usr/src/netos/build/x64/mernel /usr/src/netos/build/x64/nernel
+```
+
+**RULE 3: Use 30-second timeout for Bash tool, NO timeout wrapper**
+The `timeout` command does NOT work with `./dev.sh`. Use the Bash tool's timeout parameter:
+```
+timeout: 30000  (30 seconds - this is the correct value for tests)
+```
+NEVER use `timeout 15 ./dev.sh` - it will NOT work.
+
+**Standard build + test pattern:**
+```bash
+# Step 1: Kill any stale containers
+docker kill $(docker ps -q) 2>/dev/null || true
+
+# Step 2: Build and run (use Bash tool with timeout: 30000)
+./dev.sh make image 2>&1 && ./dev.sh ./run.sh 2>&1
+```
 
 **If file locks occur (e.g., "Device or resource busy"):**
 ```bash
 # Stop ALL Docker containers first
-docker stop $(docker ps -q) 2>/dev/null; docker rm $(docker ps -aq) 2>/dev/null
+docker kill $(docker ps -q) 2>/dev/null || true
 
 # Clean build directory via Docker (files are owned by root)
 ./dev.sh rm -rf /usr/src/netos/build/x64
 ./dev.sh mkdir -p /usr/src/netos/build/x64/mernel /usr/src/netos/build/x64/nernel
-
-# Then use the standard build+test pattern above
 ```
 
-**NOTE:** The dev.sh mounts the project to `/usr/src/netos` inside the container (NOT `/work`).
-
-**NEVER leave test containers running.** The single-command pattern above handles this automatically.
+**Why this matters:**
+- Each `./dev.sh` invocation starts a NEW container
+- QEMU keeps the container running until it exits
+- Stale containers lock files in `build/` and cause failures
+- The `timeout` command runs on the host but QEMU runs in Docker - it cannot kill the Docker process
 
 ### Output Format Flow
 ```
