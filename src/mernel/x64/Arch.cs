@@ -133,6 +133,39 @@ public static unsafe class Arch
     }
 
     /// <summary>
+    /// Second-stage architecture initialization.
+    /// Called after heap is ready, initializes timers and enables interrupts.
+    /// </summary>
+    public static void InitStage2()
+    {
+        DebugConsole.WriteLine("[x64] Stage 2 initialization...");
+
+        // Initialize HPET (for calibration)
+        if (!Hpet.Init())
+        {
+            DebugConsole.WriteLine("[x64] WARNING: HPET not available, timer calibration will be inaccurate");
+        }
+
+        // Initialize Local APIC
+        if (Apic.Init())
+        {
+            // Calibrate timer using HPET if available
+            if (Hpet.IsInitialized)
+            {
+                Apic.CalibrateTimer();
+            }
+
+            // Start periodic timer (10ms period = 100Hz)
+            Apic.StartTimer(10);
+        }
+
+        // Enable interrupts
+        EnableInterrupts();
+
+        DebugConsole.WriteLine("[x64] Stage 2 complete, interrupts enabled");
+    }
+
+    /// <summary>
     /// Entry point from nernel ISR stubs
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "InterruptDispatch")]

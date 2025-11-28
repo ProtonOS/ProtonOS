@@ -55,6 +55,13 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void invlpg(ulong virtualAddress);
 
+    // MSR (Model Specific Registers)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong rdmsr(uint msr);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void wrmsr(uint msr, ulong value);
+
     // ISR Table (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong* get_isr_table();
@@ -159,4 +166,16 @@ public static unsafe class Cpu
     /// Get pointer to ISR stub table (from native.asm)
     /// </summary>
     public static ulong* GetIsrTable() => get_isr_table();
+
+    // --- MSR (Model Specific Registers) ---
+
+    /// <summary>
+    /// Read a Model Specific Register
+    /// </summary>
+    public static ulong ReadMsr(uint msr) => rdmsr(msr);
+
+    /// <summary>
+    /// Write a Model Specific Register
+    /// </summary>
+    public static void WriteMsr(uint msr, ulong value) => wrmsr(msr, value);
 }

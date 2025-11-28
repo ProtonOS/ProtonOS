@@ -30,6 +30,9 @@ public static unsafe class Mernel
         // Initialize page allocator (requires UEFI boot services)
         PageAllocator.Init();
 
+        // Initialize ACPI (requires UEFI - must be before ExitBootServices)
+        Acpi.Init();
+
         // Exit UEFI boot services - we now own the hardware
         UefiBoot.ExitBootServices();
 
@@ -46,10 +49,19 @@ public static unsafe class Mernel
         // Initialize kernel heap
         HeapAllocator.Init();
 
+        // Second-stage arch init (timers, enable interrupts)
+#if ARCH_X64
+        Arch.InitStage2();
+#endif
+
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
+        DebugConsole.WriteLine("[OK] Entering idle loop...");
 
-        // Halt - kernel main loop would go here
-        Cpu.HaltForever();
+        // Idle loop - wait for interrupts
+        while (true)
+        {
+            Cpu.Halt();
+        }
     }
 }

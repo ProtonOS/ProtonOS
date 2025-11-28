@@ -150,6 +150,26 @@ invlpg:
     invlpg [rcx]
     ret
 
+;; ==================== MSR (Model Specific Registers) ====================
+
+global rdmsr, wrmsr
+
+; uint64_t rdmsr(uint32_t msr) - Read MSR
+; Windows x64 ABI: msr in ecx (already there!)
+rdmsr:
+    rdmsr               ; Result in edx:eax
+    shl rdx, 32
+    or rax, rdx
+    ret
+
+; void wrmsr(uint32_t msr, uint64_t value) - Write MSR
+; Windows x64 ABI: msr in ecx, value in rdx
+wrmsr:
+    mov rax, rdx        ; Low 32 bits
+    shr rdx, 32         ; High 32 bits
+    wrmsr
+    ret
+
 ;; ==================== CPU Control ====================
 
 global hlt, cli, sti, pause, int3
