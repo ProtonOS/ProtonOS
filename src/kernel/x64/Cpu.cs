@@ -2,8 +2,11 @@
 // Centralized wrappers around native assembly for CPU-specific instructions.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// CPU intrinsics for x64 - all native function imports in one place
@@ -68,10 +71,10 @@ public static unsafe class Cpu
 
     // Context Switching (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void switch_context(KernelCpuContext* oldContext, KernelCpuContext* newContext);
+    private static extern void switch_context(CpuContext* oldContext, CpuContext* newContext);
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void load_context(KernelCpuContext* context);
+    private static extern void load_context(CpuContext* context);
 
     // Memory Barrier (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -206,14 +209,14 @@ public static unsafe class Cpu
     /// Switch from current context to new context.
     /// Saves current CPU state to oldContext, loads newContext.
     /// </summary>
-    public static void SwitchContext(KernelCpuContext* oldContext, KernelCpuContext* newContext)
+    public static void SwitchContext(CpuContext* oldContext, CpuContext* newContext)
         => switch_context(oldContext, newContext);
 
     /// <summary>
     /// Load a context without saving current state.
     /// Used for initial thread switch.
     /// </summary>
-    public static void LoadContext(KernelCpuContext* context)
+    public static void LoadContext(CpuContext* context)
         => load_context(context);
 
     // --- Atomic Operations ---

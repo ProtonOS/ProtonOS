@@ -1,17 +1,19 @@
-// netos mernel - Kernel Synchronization Primitives
+// netos mernel - PAL Synchronization Primitives
 // Win32-style synchronization objects for PAL compatibility.
 // Supports: Events (auto/manual reset), Mutexes, Semaphores
 // All objects support WaitForSingleObject/WaitForMultipleObjects patterns.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
-/// Type of waitable kernel object
+/// Type of waitable PAL object
 /// </summary>
-public enum KernelObjectType : uint
+public enum ObjectType : uint
 {
     Event = 0,
     Mutex = 1,
@@ -23,56 +25,56 @@ public enum KernelObjectType : uint
 /// Base header for all waitable objects
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelObjectHeader
+public unsafe struct ObjectHeader
 {
-    public KernelObjectType Type;
+    public ObjectType Type;
     public uint RefCount;
-    public KernelThread* WaitListHead;  // Threads waiting on this object
-    public KernelThread* WaitListTail;
+    public Thread* WaitListHead;  // Threads waiting on this object
+    public Thread* WaitListTail;
 }
 
 /// <summary>
-/// Kernel Event - signalable synchronization object.
+/// PAL Event - signalable synchronization object.
 /// Supports both auto-reset and manual-reset modes.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelEvent
+public unsafe struct Event
 {
-    public KernelObjectHeader Header;
+    public ObjectHeader Header;
     public bool Signaled;           // Current signal state
     public bool ManualReset;        // If true, stays signaled until ResetEvent
 }
 
 /// <summary>
-/// Kernel Mutex - mutual exclusion lock with ownership tracking.
+/// PAL Mutex - mutual exclusion lock with ownership tracking.
 /// Supports recursive acquisition by the same thread.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelMutex
+public unsafe struct Mutex
 {
-    public KernelObjectHeader Header;
-    public KernelThread* Owner;     // Thread that owns the mutex
+    public ObjectHeader Header;
+    public Thread* Owner;     // Thread that owns the mutex
     public uint RecursionCount;     // For recursive acquisition
 }
 
 /// <summary>
-/// Kernel Semaphore - counting synchronization object.
+/// PAL Semaphore - counting synchronization object.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelSemaphore
+public unsafe struct Semaphore
 {
-    public KernelObjectHeader Header;
+    public ObjectHeader Header;
     public int Count;               // Current count
     public int MaxCount;            // Maximum count
 }
 
 /// <summary>
-/// Static class for kernel synchronization operations.
+/// Static class for PAL synchronization operations.
 /// Provides Win32-style CreateEvent, SetEvent, WaitForSingleObject, etc.
 /// </summary>
-public static unsafe class KernelSync
+public static unsafe class Sync
 {
-    private static KernelSpinLock _lock;
+    private static SpinLock _lock;
 
     /// <summary>
     /// Create an event object.
@@ -80,13 +82,13 @@ public static unsafe class KernelSync
     /// <param name="manualReset">If true, event stays signaled until Reset is called</param>
     /// <param name="initialState">If true, event starts signaled</param>
     /// <returns>Event pointer, or null on failure</returns>
-    public static KernelEvent* CreateEvent(bool manualReset, bool initialState)
+    public static Event* CreateEvent(bool manualReset, bool initialState)
     {
-        var evt = (KernelEvent*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelEvent));
+        var evt = (Event*)HeapAllocator.AllocZeroed((ulong)sizeof(Event));
         if (evt == null)
             return null;
 
-        evt->Header.Type = KernelObjectType.Event;
+        evt->Header.Type = ObjectType.Event;
         evt->Header.RefCount = 1;
         evt->Header.WaitListHead = null;
         evt->Header.WaitListTail = null;
@@ -100,9 +102,9 @@ public static unsafe class KernelSync
     /// Set an event to signaled state.
     /// Wakes one (auto-reset) or all (manual-reset) waiting threads.
     /// </summary>
-    public static bool SetEvent(KernelEvent* evt)
+    public static bool SetEvent(Event* evt)
     {
-        if (evt == null || evt->Header.Type != KernelObjectType.Event)
+        if (evt == null || evt->Header.Type != ObjectType.Event)
             return false;
 
         _lock.Acquire();
@@ -131,9 +133,9 @@ public static unsafe class KernelSync
     /// <summary>
     /// Reset an event to non-signaled state.
     /// </summary>
-    public static bool ResetEvent(KernelEvent* evt)
+    public static bool ResetEvent(Event* evt)
     {
-        if (evt == null || evt->Header.Type != KernelObjectType.Event)
+        if (evt == null || evt->Header.Type != ObjectType.Event)
             return false;
 
         _lock.Acquire();
@@ -147,17 +149,17 @@ public static unsafe class KernelSync
     /// </summary>
     /// <param name="initialOwner">If true, creating thread owns the mutex</param>
     /// <returns>Mutex pointer, or null on failure</returns>
-    public static KernelMutex* CreateMutex(bool initialOwner)
+    public static Mutex* CreateMutex(bool initialOwner)
     {
-        var mutex = (KernelMutex*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelMutex));
+        var mutex = (Mutex*)HeapAllocator.AllocZeroed((ulong)sizeof(Mutex));
         if (mutex == null)
             return null;
 
-        mutex->Header.Type = KernelObjectType.Mutex;
+        mutex->Header.Type = ObjectType.Mutex;
         mutex->Header.RefCount = 1;
         mutex->Header.WaitListHead = null;
         mutex->Header.WaitListTail = null;
-        mutex->Owner = initialOwner ? KernelScheduler.CurrentThread : null;
+        mutex->Owner = initialOwner ? Scheduler.CurrentThread : null;
         mutex->RecursionCount = initialOwner ? 1u : 0u;
 
         return mutex;
@@ -166,14 +168,14 @@ public static unsafe class KernelSync
     /// <summary>
     /// Release a mutex.
     /// </summary>
-    public static bool ReleaseMutex(KernelMutex* mutex)
+    public static bool ReleaseMutex(Mutex* mutex)
     {
-        if (mutex == null || mutex->Header.Type != KernelObjectType.Mutex)
+        if (mutex == null || mutex->Header.Type != ObjectType.Mutex)
             return false;
 
         _lock.Acquire();
 
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
         if (mutex->Owner != current)
         {
             // Not owned by current thread
@@ -199,16 +201,16 @@ public static unsafe class KernelSync
     /// <param name="initialCount">Initial count (must be >= 0 and <= maxCount)</param>
     /// <param name="maxCount">Maximum count</param>
     /// <returns>Semaphore pointer, or null on failure</returns>
-    public static KernelSemaphore* CreateSemaphore(int initialCount, int maxCount)
+    public static Semaphore* CreateSemaphore(int initialCount, int maxCount)
     {
         if (initialCount < 0 || maxCount <= 0 || initialCount > maxCount)
             return null;
 
-        var sem = (KernelSemaphore*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelSemaphore));
+        var sem = (Semaphore*)HeapAllocator.AllocZeroed((ulong)sizeof(Semaphore));
         if (sem == null)
             return null;
 
-        sem->Header.Type = KernelObjectType.Semaphore;
+        sem->Header.Type = ObjectType.Semaphore;
         sem->Header.RefCount = 1;
         sem->Header.WaitListHead = null;
         sem->Header.WaitListTail = null;
@@ -225,11 +227,11 @@ public static unsafe class KernelSync
     /// <param name="releaseCount">Amount to increment (usually 1)</param>
     /// <param name="previousCount">Output: previous count</param>
     /// <returns>True on success</returns>
-    public static bool ReleaseSemaphore(KernelSemaphore* sem, int releaseCount, out int previousCount)
+    public static bool ReleaseSemaphore(Semaphore* sem, int releaseCount, out int previousCount)
     {
         previousCount = 0;
 
-        if (sem == null || sem->Header.Type != KernelObjectType.Semaphore)
+        if (sem == null || sem->Header.Type != ObjectType.Semaphore)
             return false;
 
         if (releaseCount <= 0)
@@ -268,9 +270,9 @@ public static unsafe class KernelSync
     public static uint WaitForSingleObject(void* obj, uint timeoutMs)
     {
         if (obj == null)
-            return KernelWaitResult.Failed;
+            return WaitResult.Failed;
 
-        var header = (KernelObjectHeader*)obj;
+        var header = (ObjectHeader*)obj;
 
         _lock.Acquire();
 
@@ -278,27 +280,27 @@ public static unsafe class KernelSync
         if (TryAcquireObject(header))
         {
             _lock.Release();
-            return KernelWaitResult.Object0;
+            return WaitResult.Object0;
         }
 
         // If timeout is 0, return immediately
         if (timeoutMs == 0)
         {
             _lock.Release();
-            return KernelWaitResult.Timeout;
+            return WaitResult.Timeout;
         }
 
         // Block current thread
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
         if (current == null)
         {
             _lock.Release();
-            return KernelWaitResult.Failed;
+            return WaitResult.Failed;
         }
 
         // Set up wait
         current->WaitObject = obj;
-        current->WaitResult = KernelWaitResult.Timeout;
+        current->WaitResult = WaitResult.Timeout;
 
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
@@ -314,12 +316,12 @@ public static unsafe class KernelSync
         AddToWaitList(header, current);
 
         // Block the thread
-        current->State = KernelThreadState.Blocked;
+        current->State = ThreadState.Blocked;
 
         _lock.Release();
 
         // Yield to scheduler
-        KernelScheduler.Schedule();
+        Scheduler.Schedule();
 
         // We're back - check result
         _lock.Acquire();
@@ -339,12 +341,12 @@ public static unsafe class KernelSync
     /// Try to acquire an object without blocking.
     /// Caller must hold the lock.
     /// </summary>
-    private static bool TryAcquireObject(KernelObjectHeader* header)
+    private static bool TryAcquireObject(ObjectHeader* header)
     {
         switch (header->Type)
         {
-            case KernelObjectType.Event:
-                var evt = (KernelEvent*)header;
+            case ObjectType.Event:
+                var evt = (Event*)header;
                 if (evt->Signaled)
                 {
                     if (!evt->ManualReset)
@@ -353,9 +355,9 @@ public static unsafe class KernelSync
                 }
                 return false;
 
-            case KernelObjectType.Mutex:
-                var mutex = (KernelMutex*)header;
-                var current = KernelScheduler.CurrentThread;
+            case ObjectType.Mutex:
+                var mutex = (Mutex*)header;
+                var current = Scheduler.CurrentThread;
                 if (mutex->Owner == null)
                 {
                     mutex->Owner = current;
@@ -370,8 +372,8 @@ public static unsafe class KernelSync
                 }
                 return false;
 
-            case KernelObjectType.Semaphore:
-                var sem = (KernelSemaphore*)header;
+            case ObjectType.Semaphore:
+                var sem = (Semaphore*)header;
                 if (sem->Count > 0)
                 {
                     sem->Count--;
@@ -379,9 +381,9 @@ public static unsafe class KernelSync
                 }
                 return false;
 
-            case KernelObjectType.Thread:
-                var thread = (KernelThread*)header;
-                return thread->State == KernelThreadState.Terminated;
+            case ObjectType.Thread:
+                var thread = (Thread*)header;
+                return thread->State == ThreadState.Terminated;
 
             default:
                 return false;
@@ -392,7 +394,7 @@ public static unsafe class KernelSync
     /// Add a thread to an object's wait list.
     /// Caller must hold the lock.
     /// </summary>
-    private static void AddToWaitList(KernelObjectHeader* header, KernelThread* thread)
+    private static void AddToWaitList(ObjectHeader* header, Thread* thread)
     {
         thread->Next = null;
         thread->Prev = header->WaitListTail;
@@ -410,7 +412,7 @@ public static unsafe class KernelSync
     /// Caller must hold the lock.
     /// Safe to call even if thread was already removed.
     /// </summary>
-    private static void RemoveFromWaitList(KernelObjectHeader* header, KernelThread* thread)
+    private static void RemoveFromWaitList(ObjectHeader* header, Thread* thread)
     {
         // Check if thread is still in a wait list (has prev/next or is head/tail)
         bool inList = thread->Prev != null || thread->Next != null ||
@@ -437,7 +439,7 @@ public static unsafe class KernelSync
     /// Caller must hold the lock.
     /// </summary>
     /// <returns>True if a thread was woken</returns>
-    private static bool WakeOneWaiter(KernelObjectHeader* header)
+    private static bool WakeOneWaiter(ObjectHeader* header)
     {
         var thread = header->WaitListHead;
         if (thread == null)
@@ -455,14 +457,14 @@ public static unsafe class KernelSync
 
         // Wake the thread - set result before making ready
         thread->WaitObject = null;
-        thread->WaitResult = KernelWaitResult.Object0;
+        thread->WaitResult = WaitResult.Object0;
         thread->WakeTime = 0;
 
         // Make it ready - MakeReady will change state from Blocked to Ready
         // and add to ready queue
-        if (thread->State == KernelThreadState.Blocked)
+        if (thread->State == ThreadState.Blocked)
         {
-            KernelScheduler.MakeReady(thread);
+            Scheduler.MakeReady(thread);
         }
 
         return true;
@@ -472,7 +474,7 @@ public static unsafe class KernelSync
     /// Wake all threads from an object's wait list.
     /// Caller must hold the lock.
     /// </summary>
-    private static void WakeAllWaiters(KernelObjectHeader* header)
+    private static void WakeAllWaiters(ObjectHeader* header)
     {
         while (WakeOneWaiter(header))
         {
@@ -488,7 +490,7 @@ public static unsafe class KernelSync
         if (obj == null)
             return false;
 
-        var header = (KernelObjectHeader*)obj;
+        var header = (ObjectHeader*)obj;
 
         _lock.Acquire();
 
@@ -501,12 +503,12 @@ public static unsafe class KernelSync
             {
                 var next = thread->Next;
                 thread->WaitObject = null;
-                thread->WaitResult = KernelWaitResult.Failed;
+                thread->WaitResult = WaitResult.Failed;
                 thread->Next = null;
                 thread->Prev = null;
-                if (thread->State == KernelThreadState.Blocked)
+                if (thread->State == ThreadState.Blocked)
                 {
-                    KernelScheduler.MakeReady(thread);
+                    Scheduler.MakeReady(thread);
                 }
                 thread = next;
             }

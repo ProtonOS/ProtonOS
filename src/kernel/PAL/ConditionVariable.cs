@@ -1,37 +1,39 @@
-// netos mernel - Condition Variables
+// netos mernel - PAL Condition Variables
 // Win32-style condition variable implementation for PAL compatibility.
 // Used with Critical Sections for producer/consumer and wait patterns.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
-/// Condition Variable - allows threads to atomically release a lock
+/// PAL Condition Variable - allows threads to atomically release a lock
 /// and wait for a condition, then re-acquire the lock.
 /// Used with Critical Sections for complex synchronization patterns.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelConditionVariable
+public unsafe struct ConditionVariable
 {
     // Wait list of threads waiting on this condition
-    public KernelThread* WaitListHead;
-    public KernelThread* WaitListTail;
+    public Thread* WaitListHead;
+    public Thread* WaitListTail;
 
     // Lock for protecting the wait list
-    public KernelSpinLock Lock;
+    public SpinLock Lock;
 }
 
 /// <summary>
-/// Condition Variable management APIs - matching Win32 for PAL compatibility.
+/// PAL Condition Variable management APIs - matching Win32 for PAL compatibility.
 /// </summary>
-public static unsafe class KernelConditionVariableOps
+public static unsafe class ConditionVariableOps
 {
     /// <summary>
     /// Initialize a condition variable.
     /// </summary>
-    public static void InitializeConditionVariable(KernelConditionVariable* cv)
+    public static void InitializeConditionVariable(ConditionVariable* cv)
     {
         if (cv == null)
             return;
@@ -50,14 +52,14 @@ public static unsafe class KernelConditionVariableOps
     /// <param name="dwMilliseconds">Timeout in milliseconds (INFINITE = 0xFFFFFFFF)</param>
     /// <returns>True if signaled, false if timed out</returns>
     public static bool SleepConditionVariableCS(
-        KernelConditionVariable* cv,
-        KernelCriticalSection* cs,
+        ConditionVariable* cv,
+        CriticalSection* cs,
         uint dwMilliseconds)
     {
         if (cv == null || cs == null)
             return false;
 
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
         if (current == null)
             return false;
 
@@ -84,19 +86,19 @@ public static unsafe class KernelConditionVariableOps
             current->WakeTime = 0;  // Infinite wait
         }
 
-        current->WaitResult = KernelWaitResult.Timeout;  // Default to timeout
-        current->State = KernelThreadState.Blocked;
+        current->WaitResult = WaitResult.Timeout;  // Default to timeout
+        current->State = ThreadState.Blocked;
 
         cv->Lock.Release();
 
         // Release the critical section
-        KernelCriticalSectionOps.LeaveCriticalSection(cs);
+        CriticalSectionOps.LeaveCriticalSection(cs);
 
         // Yield to scheduler
-        KernelScheduler.Schedule();
+        Scheduler.Schedule();
 
         // We're back - re-acquire the critical section
-        KernelCriticalSectionOps.EnterCriticalSection(cs);
+        CriticalSectionOps.EnterCriticalSection(cs);
 
         // Check if we were signaled or timed out
         cv->Lock.Acquire();
@@ -104,7 +106,7 @@ public static unsafe class KernelConditionVariableOps
         // Remove from wait list if still there (timeout case)
         RemoveFromWaitList(cv, current);
 
-        bool signaled = current->WaitResult == KernelWaitResult.Object0;
+        bool signaled = current->WaitResult == WaitResult.Object0;
         current->WaitResult = 0;
         current->WakeTime = 0;
 
@@ -125,15 +127,15 @@ public static unsafe class KernelConditionVariableOps
     /// <param name="flags">CONDITION_VARIABLE_LOCKMODE_SHARED (0x1) if holding shared lock</param>
     /// <returns>True if signaled, false if timed out</returns>
     public static bool SleepConditionVariableSRW(
-        KernelConditionVariable* cv,
-        KernelSRWLock* srwLock,
+        ConditionVariable* cv,
+        SRWLock* srwLock,
         uint dwMilliseconds,
         uint flags)
     {
         if (cv == null || srwLock == null)
             return false;
 
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
         if (current == null)
             return false;
 
@@ -162,25 +164,25 @@ public static unsafe class KernelConditionVariableOps
             current->WakeTime = 0;  // Infinite wait
         }
 
-        current->WaitResult = KernelWaitResult.Timeout;  // Default to timeout
-        current->State = KernelThreadState.Blocked;
+        current->WaitResult = WaitResult.Timeout;  // Default to timeout
+        current->State = ThreadState.Blocked;
 
         cv->Lock.Release();
 
         // Release the SRW lock (shared or exclusive)
         if (isShared)
-            KernelSRWLockOps.ReleaseSRWLockShared(srwLock);
+            SRWLockOps.ReleaseSRWLockShared(srwLock);
         else
-            KernelSRWLockOps.ReleaseSRWLockExclusive(srwLock);
+            SRWLockOps.ReleaseSRWLockExclusive(srwLock);
 
         // Yield to scheduler
-        KernelScheduler.Schedule();
+        Scheduler.Schedule();
 
         // We're back - re-acquire the SRW lock
         if (isShared)
-            KernelSRWLockOps.AcquireSRWLockShared(srwLock);
+            SRWLockOps.AcquireSRWLockShared(srwLock);
         else
-            KernelSRWLockOps.AcquireSRWLockExclusive(srwLock);
+            SRWLockOps.AcquireSRWLockExclusive(srwLock);
 
         // Check if we were signaled or timed out
         cv->Lock.Acquire();
@@ -188,7 +190,7 @@ public static unsafe class KernelConditionVariableOps
         // Remove from wait list if still there (timeout case)
         RemoveFromWaitList(cv, current);
 
-        bool signaled = current->WaitResult == KernelWaitResult.Object0;
+        bool signaled = current->WaitResult == WaitResult.Object0;
         current->WaitResult = 0;
         current->WakeTime = 0;
 
@@ -200,7 +202,7 @@ public static unsafe class KernelConditionVariableOps
     /// <summary>
     /// Wake one thread waiting on a condition variable.
     /// </summary>
-    public static void WakeConditionVariable(KernelConditionVariable* cv)
+    public static void WakeConditionVariable(ConditionVariable* cv)
     {
         if (cv == null)
             return;
@@ -221,13 +223,13 @@ public static unsafe class KernelConditionVariableOps
             thread->Prev = null;
 
             // Signal success
-            thread->WaitResult = KernelWaitResult.Object0;
+            thread->WaitResult = WaitResult.Object0;
             thread->WakeTime = 0;
 
             // Make thread ready
-            if (thread->State == KernelThreadState.Blocked)
+            if (thread->State == ThreadState.Blocked)
             {
-                KernelScheduler.MakeReady(thread);
+                Scheduler.MakeReady(thread);
             }
         }
 
@@ -237,7 +239,7 @@ public static unsafe class KernelConditionVariableOps
     /// <summary>
     /// Wake all threads waiting on a condition variable.
     /// </summary>
-    public static void WakeAllConditionVariable(KernelConditionVariable* cv)
+    public static void WakeAllConditionVariable(ConditionVariable* cv)
     {
         if (cv == null)
             return;
@@ -259,13 +261,13 @@ public static unsafe class KernelConditionVariableOps
             thread->Prev = null;
 
             // Signal success
-            thread->WaitResult = KernelWaitResult.Object0;
+            thread->WaitResult = WaitResult.Object0;
             thread->WakeTime = 0;
 
             // Make thread ready
-            if (thread->State == KernelThreadState.Blocked)
+            if (thread->State == ThreadState.Blocked)
             {
-                KernelScheduler.MakeReady(thread);
+                Scheduler.MakeReady(thread);
             }
         }
 
@@ -277,7 +279,7 @@ public static unsafe class KernelConditionVariableOps
     /// Safe to call even if thread was already removed.
     /// Caller must hold cv->Lock.
     /// </summary>
-    private static void RemoveFromWaitList(KernelConditionVariable* cv, KernelThread* thread)
+    private static void RemoveFromWaitList(ConditionVariable* cv, Thread* thread)
     {
         // Check if thread is still in wait list
         bool inList = thread->Prev != null || thread->Next != null ||

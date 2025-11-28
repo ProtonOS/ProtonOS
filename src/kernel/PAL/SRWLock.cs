@@ -1,18 +1,20 @@
-// netos mernel - Slim Reader/Writer Lock
+// netos mernel - PAL Slim Reader/Writer Lock
 // Win32-style SRW lock implementation for PAL compatibility.
 // Allows multiple concurrent readers OR a single exclusive writer.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
-/// Slim Reader/Writer Lock - allows multiple readers or single writer.
+/// PAL Slim Reader/Writer Lock - allows multiple readers or single writer.
 /// Writer-preferring to prevent writer starvation.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelSRWLock
+public unsafe struct SRWLock
 {
     // State encoding (single 32-bit word for lock-free fast path):
     // Bits 0-15:  Reader count (0-65535 concurrent readers)
@@ -21,13 +23,13 @@ public unsafe struct KernelSRWLock
     public int State;
 
     // Wait queues for blocked threads
-    public KernelThread* ReaderWaitHead;
-    public KernelThread* ReaderWaitTail;
-    public KernelThread* WriterWaitHead;
-    public KernelThread* WriterWaitTail;
+    public Thread* ReaderWaitHead;
+    public Thread* ReaderWaitTail;
+    public Thread* WriterWaitHead;
+    public Thread* WriterWaitTail;
 
     // Spin lock for protecting wait queues
-    public KernelSpinLock QueueLock;
+    public SpinLock QueueLock;
 
     private const int ReaderMask = 0xFFFF;        // Bits 0-15
     private const int WriterActive = 0x10000;     // Bit 16
@@ -35,9 +37,9 @@ public unsafe struct KernelSRWLock
 }
 
 /// <summary>
-/// SRW Lock management APIs - matching Win32 for PAL compatibility.
+/// PAL SRW Lock management APIs - matching Win32 for PAL compatibility.
 /// </summary>
-public static unsafe class KernelSRWLockOps
+public static unsafe class SRWLockOps
 {
     private const int ReaderMask = 0xFFFF;
     private const int WriterActive = 0x10000;
@@ -46,7 +48,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Initialize an SRW lock.
     /// </summary>
-    public static void InitializeSRWLock(KernelSRWLock* srw)
+    public static void InitializeSRWLock(SRWLock* srw)
     {
         if (srw == null)
             return;
@@ -63,7 +65,7 @@ public static unsafe class KernelSRWLockOps
     /// Acquire the lock for shared (read) access.
     /// Multiple threads can hold shared access simultaneously.
     /// </summary>
-    public static void AcquireSRWLockShared(KernelSRWLock* srw)
+    public static void AcquireSRWLockShared(SRWLock* srw)
     {
         if (srw == null)
             return;
@@ -89,7 +91,7 @@ public static unsafe class KernelSRWLockOps
             }
 
             // Slow path: writer active or waiting, need to block
-            var current = KernelScheduler.CurrentThread;
+            var current = Scheduler.CurrentThread;
             if (current == null)
                 return; // No thread context, just spin
 
@@ -113,13 +115,13 @@ public static unsafe class KernelSRWLockOps
                 srw->ReaderWaitHead = current;
             srw->ReaderWaitTail = current;
 
-            current->State = KernelThreadState.Blocked;
+            current->State = ThreadState.Blocked;
             current->WaitResult = 0;
 
             srw->QueueLock.Release();
 
             // Yield to scheduler
-            KernelScheduler.Schedule();
+            Scheduler.Schedule();
 
             // We were woken - try again from the top
         }
@@ -128,7 +130,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Try to acquire the lock for shared (read) access without blocking.
     /// </summary>
-    public static bool TryAcquireSRWLockShared(KernelSRWLock* srw)
+    public static bool TryAcquireSRWLockShared(SRWLock* srw)
     {
         if (srw == null)
             return false;
@@ -149,7 +151,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Release shared (read) access to the lock.
     /// </summary>
-    public static void ReleaseSRWLockShared(KernelSRWLock* srw)
+    public static void ReleaseSRWLockShared(SRWLock* srw)
     {
         if (srw == null)
             return;
@@ -182,7 +184,7 @@ public static unsafe class KernelSRWLockOps
     /// Acquire the lock for exclusive (write) access.
     /// Only one thread can hold exclusive access, and no readers allowed.
     /// </summary>
-    public static void AcquireSRWLockExclusive(KernelSRWLock* srw)
+    public static void AcquireSRWLockExclusive(SRWLock* srw)
     {
         if (srw == null)
             return;
@@ -205,7 +207,7 @@ public static unsafe class KernelSRWLockOps
             }
 
             // Slow path: readers active or another writer, need to block
-            var current = KernelScheduler.CurrentThread;
+            var current = Scheduler.CurrentThread;
             if (current == null)
                 return; // No thread context
 
@@ -245,13 +247,13 @@ public static unsafe class KernelSRWLockOps
                 srw->WriterWaitHead = current;
             srw->WriterWaitTail = current;
 
-            current->State = KernelThreadState.Blocked;
+            current->State = ThreadState.Blocked;
             current->WaitResult = 0;
 
             srw->QueueLock.Release();
 
             // Yield to scheduler
-            KernelScheduler.Schedule();
+            Scheduler.Schedule();
 
             // We were woken - try again from the top
         }
@@ -260,7 +262,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Try to acquire the lock for exclusive (write) access without blocking.
     /// </summary>
-    public static bool TryAcquireSRWLockExclusive(KernelSRWLock* srw)
+    public static bool TryAcquireSRWLockExclusive(SRWLock* srw)
     {
         if (srw == null)
             return false;
@@ -278,7 +280,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Release exclusive (write) access to the lock.
     /// </summary>
-    public static void ReleaseSRWLockExclusive(KernelSRWLock* srw)
+    public static void ReleaseSRWLockExclusive(SRWLock* srw)
     {
         if (srw == null)
             return;
@@ -321,7 +323,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Wake one waiting writer.
     /// </summary>
-    private static void WakeOneWriter(KernelSRWLock* srw)
+    private static void WakeOneWriter(SRWLock* srw)
     {
         srw->QueueLock.Acquire();
 
@@ -339,9 +341,9 @@ public static unsafe class KernelSRWLockOps
             thread->Prev = null;
 
             // Make ready
-            if (thread->State == KernelThreadState.Blocked)
+            if (thread->State == ThreadState.Blocked)
             {
-                KernelScheduler.MakeReady(thread);
+                Scheduler.MakeReady(thread);
             }
         }
 
@@ -351,7 +353,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Wake all waiting readers.
     /// </summary>
-    private static void WakeAllReaders(KernelSRWLock* srw)
+    private static void WakeAllReaders(SRWLock* srw)
     {
         srw->QueueLock.Acquire();
 
@@ -370,9 +372,9 @@ public static unsafe class KernelSRWLockOps
             thread->Prev = null;
 
             // Make ready
-            if (thread->State == KernelThreadState.Blocked)
+            if (thread->State == ThreadState.Blocked)
             {
-                KernelScheduler.MakeReady(thread);
+                Scheduler.MakeReady(thread);
             }
         }
 
@@ -382,7 +384,7 @@ public static unsafe class KernelSRWLockOps
     /// <summary>
     /// Read current state with volatile semantics.
     /// </summary>
-    private static int ReadState(KernelSRWLock* srw)
+    private static int ReadState(SRWLock* srw)
     {
         // Read with memory barrier - prevents reordering
         int* ptr = &srw->State;

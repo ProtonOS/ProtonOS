@@ -2,7 +2,7 @@
 
 using System.Runtime.InteropServices;
 
-namespace Mernel;
+namespace Kernel.Platform;
 
 /// <summary>
 /// Early debug output via COM1 serial port.

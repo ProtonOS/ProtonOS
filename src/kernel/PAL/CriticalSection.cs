@@ -1,19 +1,21 @@
-// netos mernel - Critical Sections
+// netos mernel - PAL Critical Sections
 // Win32-style critical section implementation for PAL compatibility.
 // Lightweight mutex with spin-first behavior before blocking.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
-/// Critical Section - lightweight mutex with spin-wait optimization.
-/// Unlike KernelMutex, this is designed for short lock durations.
+/// PAL Critical Section - lightweight mutex with spin-wait optimization.
+/// Unlike Mutex, this is designed for short lock durations.
 /// Spins briefly before blocking to avoid context switch overhead.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelCriticalSection
+public unsafe struct CriticalSection
 {
     // Debug info (for debugging deadlocks)
     public void* DebugInfo;
@@ -25,10 +27,10 @@ public unsafe struct KernelCriticalSection
     public int RecursionCount;
 
     // Owner thread
-    public KernelThread* OwningThread;
+    public Thread* OwningThread;
 
     // Event for blocking waiters (created on first contention)
-    public KernelEvent* LockSemaphore;
+    public Event* LockSemaphore;
 
     // Spin count before blocking
     public uint SpinCount;
@@ -38,19 +40,19 @@ public unsafe struct KernelCriticalSection
 }
 
 /// <summary>
-/// Critical Section management APIs - matching Win32 for PAL compatibility.
+/// PAL Critical Section management APIs - matching Win32 for PAL compatibility.
 /// </summary>
-public static unsafe class KernelCriticalSectionOps
+public static unsafe class CriticalSectionOps
 {
     // Default spin count - tuned for typical x86-64 systems
     private const uint DefaultSpinCount = 4000;
 
-    private static KernelSpinLock _globalLock;
+    private static SpinLock _globalLock;
 
     /// <summary>
     /// Initialize a critical section.
     /// </summary>
-    public static void InitializeCriticalSection(KernelCriticalSection* cs)
+    public static void InitializeCriticalSection(CriticalSection* cs)
     {
         InitializeCriticalSectionAndSpinCount(cs, 0);
     }
@@ -58,7 +60,7 @@ public static unsafe class KernelCriticalSectionOps
     /// <summary>
     /// Initialize a critical section with a specific spin count.
     /// </summary>
-    public static bool InitializeCriticalSectionAndSpinCount(KernelCriticalSection* cs, uint spinCount)
+    public static bool InitializeCriticalSectionAndSpinCount(CriticalSection* cs, uint spinCount)
     {
         if (cs == null)
             return false;
@@ -77,7 +79,7 @@ public static unsafe class KernelCriticalSectionOps
     /// Set the spin count for a critical section.
     /// Returns the previous spin count.
     /// </summary>
-    public static uint SetCriticalSectionSpinCount(KernelCriticalSection* cs, uint spinCount)
+    public static uint SetCriticalSectionSpinCount(CriticalSection* cs, uint spinCount)
     {
         if (cs == null)
             return 0;
@@ -90,7 +92,7 @@ public static unsafe class KernelCriticalSectionOps
     /// <summary>
     /// Delete a critical section (free resources).
     /// </summary>
-    public static void DeleteCriticalSection(KernelCriticalSection* cs)
+    public static void DeleteCriticalSection(CriticalSection* cs)
     {
         if (cs == null)
             return;
@@ -98,7 +100,7 @@ public static unsafe class KernelCriticalSectionOps
         // Free the lock semaphore if it was created
         if (cs->LockSemaphore != null)
         {
-            KernelSync.CloseHandle(cs->LockSemaphore);
+            Sync.CloseHandle(cs->LockSemaphore);
             cs->LockSemaphore = null;
         }
 
@@ -110,12 +112,12 @@ public static unsafe class KernelCriticalSectionOps
     /// <summary>
     /// Enter a critical section (blocking).
     /// </summary>
-    public static void EnterCriticalSection(KernelCriticalSection* cs)
+    public static void EnterCriticalSection(CriticalSection* cs)
     {
         if (cs == null)
             return;
 
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
 
         // Fast path: try to acquire without contention
         // Increment LockCount atomically - if it was -1, we got the lock
@@ -162,7 +164,7 @@ public static unsafe class KernelCriticalSectionOps
         EnsureLockSemaphore(cs);
 
         // Wait on the semaphore
-        KernelSync.WaitForSingleObject(cs->LockSemaphore, 0xFFFFFFFF);
+        Sync.WaitForSingleObject(cs->LockSemaphore, 0xFFFFFFFF);
 
         // We were woken - we own the lock now
         cs->OwningThread = current;
@@ -173,12 +175,12 @@ public static unsafe class KernelCriticalSectionOps
     /// Try to enter a critical section (non-blocking).
     /// Returns true if the lock was acquired.
     /// </summary>
-    public static bool TryEnterCriticalSection(KernelCriticalSection* cs)
+    public static bool TryEnterCriticalSection(CriticalSection* cs)
     {
         if (cs == null)
             return false;
 
-        var current = KernelScheduler.CurrentThread;
+        var current = Scheduler.CurrentThread;
 
         // Try to acquire without contention
         int oldCount = Cpu.AtomicIncrement(ref cs->LockCount);
@@ -204,7 +206,7 @@ public static unsafe class KernelCriticalSectionOps
     /// <summary>
     /// Leave a critical section.
     /// </summary>
-    public static void LeaveCriticalSection(KernelCriticalSection* cs)
+    public static void LeaveCriticalSection(CriticalSection* cs)
     {
         if (cs == null)
             return;
@@ -228,14 +230,14 @@ public static unsafe class KernelCriticalSectionOps
         if (newCount >= 0 && cs->LockSemaphore != null)
         {
             // Wake one waiter
-            KernelSync.SetEvent(cs->LockSemaphore);
+            Sync.SetEvent(cs->LockSemaphore);
         }
     }
 
     /// <summary>
     /// Ensure the lock semaphore exists (creates it on first contention).
     /// </summary>
-    private static void EnsureLockSemaphore(KernelCriticalSection* cs)
+    private static void EnsureLockSemaphore(CriticalSection* cs)
     {
         if (cs->LockSemaphore != null)
             return;
@@ -246,7 +248,7 @@ public static unsafe class KernelCriticalSectionOps
         if (cs->LockSemaphore == null)
         {
             // Create an auto-reset event (semaphore-like behavior)
-            cs->LockSemaphore = KernelSync.CreateEvent(false, false);
+            cs->LockSemaphore = Sync.CreateEvent(false, false);
         }
 
         _globalLock.Release();

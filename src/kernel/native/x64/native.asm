@@ -366,7 +366,7 @@ get_uefi_image_handle:
     ret
 
 ;; ==================== Context Switching ====================
-;; KernelCpuContext structure layout (must match C# KernelCpuContext):
+;; CpuContext structure layout (must match C# CpuContext):
 ;;   0x00: rax, 0x08: rbx, 0x10: rcx, 0x18: rdx
 ;;   0x20: rsi, 0x28: rdi, 0x30: rbp
 ;;   0x38: r8,  0x40: r9,  0x48: r10, 0x50: r11
@@ -374,7 +374,7 @@ get_uefi_image_handle:
 ;;   0x78: rip, 0x80: rsp, 0x88: rflags
 ;;   0x90: cs,  0x98: ss
 
-; void switch_context(KernelCpuContext* oldContext, KernelCpuContext* newContext)
+; void switch_context(CpuContext* oldContext, CpuContext* newContext)
 ; Windows x64 ABI: oldContext in rcx, newContext in rdx
 ; Saves current context to oldContext, loads newContext
 global switch_context
@@ -456,7 +456,7 @@ switch_context:
     ; Return to new context (RIP was pushed onto stack)
     ret
 
-; void load_context(KernelCpuContext* context)
+; void load_context(CpuContext* context)
 ; Windows x64 ABI: context in rcx
 ; Loads context without saving (for first thread switch)
 global load_context

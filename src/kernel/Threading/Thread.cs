@@ -3,14 +3,16 @@
 // Named with "Kernel" prefix to avoid collision with System.Threading types.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.Threading;
 
 /// <summary>
 /// Kernel thread states
 /// </summary>
-public enum KernelThreadState
+public enum ThreadState
 {
     Created,      // Thread created but not yet started
     Ready,        // Ready to run, in scheduler queue
@@ -25,7 +27,7 @@ public enum KernelThreadState
 /// Layout matches what we save/restore in assembly.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct KernelCpuContext
+public struct CpuContext
 {
     // General purpose registers
     public ulong Rax;
@@ -58,17 +60,17 @@ public struct KernelCpuContext
 
 /// <summary>
 /// Kernel Thread Control Block - core thread structure.
-/// Heap-allocated by KernelScheduler.
+/// Heap-allocated by Scheduler.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelThread
+public unsafe struct Thread
 {
     // Thread identification
     public uint Id;                    // Unique thread ID
-    public KernelThreadState State;    // Current state
+    public ThreadState State;    // Current state
 
     // CPU context (saved during context switch)
-    public KernelCpuContext Context;
+    public CpuContext Context;
 
     // Stack information
     public ulong StackBase;            // Bottom of stack (highest address)
@@ -87,15 +89,15 @@ public unsafe struct KernelThread
     public ulong WakeTime;             // For Sleep() - tick count when thread should wake
 
     // Linked list for general purpose (e.g., wait queues)
-    public KernelThread* Next;
-    public KernelThread* Prev;
+    public Thread* Next;
+    public Thread* Prev;
 
     // Ready queue linked list
-    public KernelThread* NextReady;
-    public KernelThread* PrevReady;
+    public Thread* NextReady;
+    public Thread* PrevReady;
 
     // All-threads list (for iteration)
-    public KernelThread* NextAll;
+    public Thread* NextAll;
 
     // Synchronization - what this thread is waiting on
     public void* WaitObject;           // Object being waited on
@@ -110,7 +112,7 @@ public unsafe struct KernelThread
 /// <summary>
 /// Thread creation flags (matching Win32 CreateThread for PAL compatibility)
 /// </summary>
-public static class KernelThreadFlags
+public static class ThreadFlags
 {
     public const uint None = 0;
     public const uint CreateSuspended = 0x00000004;
@@ -119,7 +121,7 @@ public static class KernelThreadFlags
 /// <summary>
 /// Thread priority levels
 /// </summary>
-public static class KernelThreadPriority
+public static class ThreadPriority
 {
     public const int Idle = -15;
     public const int Lowest = -2;
@@ -133,7 +135,7 @@ public static class KernelThreadPriority
 /// <summary>
 /// Wait result codes (matching Win32 for PAL compatibility)
 /// </summary>
-public static class KernelWaitResult
+public static class WaitResult
 {
     public const uint Object0 = 0x00000000;       // Wait succeeded
     public const uint Abandoned = 0x00000080;     // Mutex was abandoned
@@ -146,7 +148,7 @@ public static class KernelWaitResult
 /// Uses atomic operations, no thread blocking.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct KernelSpinLock
+public struct SpinLock
 {
     // Not using volatile since stdlib:zero doesn't have IsVolatile type.
     // Atomic operations provide necessary memory barriers.

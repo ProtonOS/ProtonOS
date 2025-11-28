@@ -4,7 +4,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace Mernel;
+namespace Kernel.Platform;
 
 // ============================================================================
 // UEFI Status Codes

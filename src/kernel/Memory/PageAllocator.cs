@@ -3,8 +3,9 @@
 // The bitmap is placed in a reserved memory region sized based on actual physical memory.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
 
-namespace Mernel;
+namespace Kernel.Memory;
 
 /// <summary>
 /// Physical page allocator using a bitmap to track free/allocated 4KB pages.

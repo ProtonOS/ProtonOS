@@ -58,12 +58,15 @@ NEVER use `timeout 15 ./dev.sh` - it will NOT work.
 
 **Standard build + test pattern:**
 ```bash
-# Step 1: Kill any stale containers
-docker kill $(docker ps -q) 2>/dev/null || true
-
-# Step 2: Build and run (use Bash tool with timeout: 30000)
+# Step 1: Build and run (use Bash tool with timeout: 30000)
 ./dev.sh make image 2>&1 && ./dev.sh ./run.sh 2>&1
+
+# Step 2: ALWAYS run kill.sh after test completes
+./kill.sh
 ```
+
+**RULE 4: ALWAYS run `./kill.sh` after a test**
+This kills all Docker containers to prevent stale QEMU instances from accumulating.
 
 **If file locks occur (e.g., "Device or resource busy"):**
 ```bash

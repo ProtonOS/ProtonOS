@@ -1,19 +1,23 @@
-// netos mernel - Managed kernel entry point
+// netos kernel - Managed kernel entry point
 // EfiEntry (native.asm) saves UEFI params, then calls zerolib's EfiMain, which calls Main()
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.X64;
+using Kernel.PAL;
+using Kernel.Memory;
+using Kernel.Threading;
+using Kernel.Platform;
 
-namespace Mernel;
+namespace Kernel;
 
-public static unsafe class Mernel
+public static unsafe class Kernel
 {
     public static void Main()
     {
         DebugConsole.Init();
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("==============================");
-        DebugConsole.WriteLine("  netos mernel booted!");
+        DebugConsole.WriteLine("  netos kernel booted!");
         DebugConsole.WriteLine("==============================");
         DebugConsole.WriteLine();
 
@@ -48,10 +52,11 @@ public static unsafe class Mernel
         HeapAllocator.Init();
 
         // Initialize scheduler (creates boot thread)
-        KernelScheduler.Init();
+        Scheduler.Init();
 
-        // Initialize Thread Local Storage
-        KernelTls.Init();
+        // Initialize PAL subsystems
+        Tls.Init();
+        PAL.Memory.Init();
 
         // Second-stage arch init (timers, enable interrupts)
 #if ARCH_X64
@@ -62,7 +67,7 @@ public static unsafe class Mernel
         CreateTestThreads();
 
         // Enable preemptive scheduling
-        KernelScheduler.EnableScheduling();
+        Scheduler.EnableScheduling();
 
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[OK] Kernel initialization complete");
@@ -76,19 +81,19 @@ public static unsafe class Mernel
     }
 
     // Shared event for synchronization test
-    private static KernelEvent* _testEvent;
+    private static Event* _testEvent;
 
     // Shared TLS slot for testing
     private static uint _testTlsSlot;
 
     // Shared critical section and condition variable for testing
-    private static KernelCriticalSection _testCS;
-    private static KernelConditionVariable _testCV;
+    private static CriticalSection _testCS;
+    private static ConditionVariable _testCV;
     private static int _sharedCounter;
     private static bool _producerDone;
 
     // SRW lock test variables
-    private static KernelSRWLock _testSRW;
+    private static SRWLock _testSRW;
     private static int _srwSharedData;
     private static int _srwReaderCount;
     private static bool _srwWriterDone;
@@ -102,14 +107,14 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Test] Creating test threads...");
 
         // Create an auto-reset event for synchronization test
-        _testEvent = KernelSync.CreateEvent(false, false);  // Auto-reset, initially non-signaled
+        _testEvent = Sync.CreateEvent(false, false);  // Auto-reset, initially non-signaled
         if (_testEvent != null)
         {
             DebugConsole.WriteLine("[Test] Created auto-reset event");
         }
 
         // Allocate TLS slot for testing
-        _testTlsSlot = KernelTls.TlsAlloc();
+        _testTlsSlot = Tls.TlsAlloc();
         if (_testTlsSlot != 0xFFFFFFFF)
         {
             DebugConsole.Write("[Test] Allocated TLS slot: ");
@@ -122,20 +127,20 @@ public static unsafe class Mernel
         }
 
         // Initialize critical section and condition variable
-        fixed (KernelCriticalSection* csPtr = &_testCS)
-        fixed (KernelConditionVariable* cvPtr = &_testCV)
+        fixed (CriticalSection* csPtr = &_testCS)
+        fixed (ConditionVariable* cvPtr = &_testCV)
         {
-            KernelCriticalSectionOps.InitializeCriticalSectionAndSpinCount(csPtr, 1000);
-            KernelConditionVariableOps.InitializeConditionVariable(cvPtr);
+            CriticalSectionOps.InitializeCriticalSectionAndSpinCount(csPtr, 1000);
+            ConditionVariableOps.InitializeConditionVariable(cvPtr);
         }
         _sharedCounter = 0;
         _producerDone = false;
         DebugConsole.WriteLine("[Test] Initialized critical section and condition variable");
 
         // Initialize SRW lock for testing
-        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        fixed (SRWLock* srwPtr = &_testSRW)
         {
-            KernelSRWLockOps.InitializeSRWLock(srwPtr);
+            SRWLockOps.InitializeSRWLock(srwPtr);
         }
         _srwSharedData = 0;
         _srwReaderCount = 0;
@@ -144,15 +149,15 @@ public static unsafe class Mernel
 
         // Create test threads
         uint id1, id2, id3, id4, id5, id6, id7, id8, id9;
-        var thread1 = KernelScheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
-        var thread2 = KernelScheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
-        var thread3 = KernelScheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
-        var thread4 = KernelScheduler.CreateThread(&TlsTestThread, null, 0, 0, out id4);
-        var thread5 = KernelScheduler.CreateThread(&CondVarTestConsumer, null, 0, 0, out id5);
-        var thread6 = KernelScheduler.CreateThread(&SRWTestWriter, null, 0, 0, out id6);
-        var thread7 = KernelScheduler.CreateThread(&SRWTestReader, (void*)1, 0, 0, out id7);
-        var thread8 = KernelScheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
-        var thread9 = KernelScheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
+        var thread1 = Scheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
+        var thread2 = Scheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
+        var thread3 = Scheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
+        var thread4 = Scheduler.CreateThread(&TlsTestThread, null, 0, 0, out id4);
+        var thread5 = Scheduler.CreateThread(&CondVarTestConsumer, null, 0, 0, out id5);
+        var thread6 = Scheduler.CreateThread(&SRWTestWriter, null, 0, 0, out id6);
+        var thread7 = Scheduler.CreateThread(&SRWTestReader, (void*)1, 0, 0, out id7);
+        var thread8 = Scheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
+        var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null && thread9 != null)
@@ -201,7 +206,7 @@ public static unsafe class Mernel
         // Signal the event to wake the waiter
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[Thread1] Signaling event");
-        KernelSync.SetEvent(_testEvent);
+        Sync.SetEvent(_testEvent);
 
         DebugConsole.WriteLine("[Thread1] Done");
         return 0;
@@ -240,9 +245,9 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Waiter] Waiting for event...");
 
         // Wait for the event (infinite timeout)
-        uint result = KernelSync.WaitForSingleObject(_testEvent, 0xFFFFFFFF);
+        uint result = Sync.WaitForSingleObject(_testEvent, 0xFFFFFFFF);
 
-        if (result == KernelWaitResult.Object0)
+        if (result == WaitResult.Object0)
         {
             DebugConsole.WriteLine("[Waiter] Event received! Sync works!");
         }
@@ -265,8 +270,8 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[TLS Test] Starting TLS test...");
 
         // Store thread ID in TLS slot
-        uint threadId = KernelScheduler.GetCurrentThreadId();
-        bool setResult = KernelTls.TlsSetValue(_testTlsSlot, (void*)(ulong)threadId);
+        uint threadId = Scheduler.GetCurrentThreadId();
+        bool setResult = Tls.TlsSetValue(_testTlsSlot, (void*)(ulong)threadId);
         if (!setResult)
         {
             DebugConsole.WriteLine("[TLS Test] FAILED to set TLS value!");
@@ -274,7 +279,7 @@ public static unsafe class Mernel
         }
 
         // Read it back
-        void* value = KernelTls.TlsGetValue(_testTlsSlot);
+        void* value = Tls.TlsGetValue(_testTlsSlot);
         uint readBack = (uint)(ulong)value;
 
         if (readBack == threadId)
@@ -296,8 +301,8 @@ public static unsafe class Mernel
         // Now act as producer for condition variable test
         DebugConsole.WriteLine("[TLS Test] Acting as producer for CondVar test...");
 
-        fixed (KernelCriticalSection* csPtr = &_testCS)
-        fixed (KernelConditionVariable* cvPtr = &_testCV)
+        fixed (CriticalSection* csPtr = &_testCS)
+        fixed (ConditionVariable* cvPtr = &_testCV)
         {
             for (int i = 0; i < 3; i++)
             {
@@ -308,20 +313,20 @@ public static unsafe class Mernel
                 }
 
                 // Enter critical section, update counter, signal consumer
-                KernelCriticalSectionOps.EnterCriticalSection(csPtr);
+                CriticalSectionOps.EnterCriticalSection(csPtr);
                 _sharedCounter++;
                 DebugConsole.Write("[Producer] Counter = ");
                 DebugConsole.WriteHex((ushort)_sharedCounter);
                 DebugConsole.WriteLine();
-                KernelConditionVariableOps.WakeConditionVariable(cvPtr);
-                KernelCriticalSectionOps.LeaveCriticalSection(csPtr);
+                ConditionVariableOps.WakeConditionVariable(cvPtr);
+                CriticalSectionOps.LeaveCriticalSection(csPtr);
             }
 
             // Signal done
-            KernelCriticalSectionOps.EnterCriticalSection(csPtr);
+            CriticalSectionOps.EnterCriticalSection(csPtr);
             _producerDone = true;
-            KernelConditionVariableOps.WakeConditionVariable(cvPtr);
-            KernelCriticalSectionOps.LeaveCriticalSection(csPtr);
+            ConditionVariableOps.WakeConditionVariable(cvPtr);
+            CriticalSectionOps.LeaveCriticalSection(csPtr);
         }
 
         DebugConsole.WriteLine("[TLS Test/Producer] Done");
@@ -338,18 +343,18 @@ public static unsafe class Mernel
 
         int lastSeen = 0;
 
-        fixed (KernelCriticalSection* csPtr = &_testCS)
-        fixed (KernelConditionVariable* cvPtr = &_testCV)
+        fixed (CriticalSection* csPtr = &_testCS)
+        fixed (ConditionVariable* cvPtr = &_testCV)
         {
             while (true)
             {
-                KernelCriticalSectionOps.EnterCriticalSection(csPtr);
+                CriticalSectionOps.EnterCriticalSection(csPtr);
 
                 // Wait for counter to change or producer to finish
                 while (_sharedCounter == lastSeen && !_producerDone)
                 {
                     DebugConsole.WriteLine("[Consumer] Waiting on condition variable...");
-                    bool woken = KernelConditionVariableOps.SleepConditionVariableCS(cvPtr, csPtr, 0xFFFFFFFF);
+                    bool woken = ConditionVariableOps.SleepConditionVariableCS(cvPtr, csPtr, 0xFFFFFFFF);
                     if (!woken)
                     {
                         DebugConsole.WriteLine("[Consumer] Timeout waiting (unexpected)");
@@ -366,11 +371,11 @@ public static unsafe class Mernel
 
                 if (_producerDone && _sharedCounter == lastSeen)
                 {
-                    KernelCriticalSectionOps.LeaveCriticalSection(csPtr);
+                    CriticalSectionOps.LeaveCriticalSection(csPtr);
                     break;
                 }
 
-                KernelCriticalSectionOps.LeaveCriticalSection(csPtr);
+                CriticalSectionOps.LeaveCriticalSection(csPtr);
             }
         }
 
@@ -386,7 +391,7 @@ public static unsafe class Mernel
     {
         DebugConsole.WriteLine("[SRW Writer] Starting SRW lock writer test...");
 
-        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        fixed (SRWLock* srwPtr = &_testSRW)
         {
             for (int i = 0; i < 3; i++)
             {
@@ -397,7 +402,7 @@ public static unsafe class Mernel
                 }
 
                 DebugConsole.WriteLine("[SRW Writer] Acquiring exclusive lock...");
-                KernelSRWLockOps.AcquireSRWLockExclusive(srwPtr);
+                SRWLockOps.AcquireSRWLockExclusive(srwPtr);
 
                 // Check no readers are active (they shouldn't be while we hold exclusive)
                 int readers = _srwReaderCount;
@@ -419,7 +424,7 @@ public static unsafe class Mernel
                     Cpu.Pause();
                 }
 
-                KernelSRWLockOps.ReleaseSRWLockExclusive(srwPtr);
+                SRWLockOps.ReleaseSRWLockExclusive(srwPtr);
                 DebugConsole.WriteLine("[SRW Writer] Released exclusive lock");
             }
         }
@@ -440,7 +445,7 @@ public static unsafe class Mernel
         DebugConsole.WriteHex((ushort)readerId);
         DebugConsole.WriteLine("] Starting SRW lock reader test...");
 
-        fixed (KernelSRWLock* srwPtr = &_testSRW)
+        fixed (SRWLock* srwPtr = &_testSRW)
         {
             int readCount = 0;
             while (!_srwWriterDone || readCount < 3)
@@ -451,7 +456,7 @@ public static unsafe class Mernel
                     Cpu.Pause();
                 }
 
-                KernelSRWLockOps.AcquireSRWLockShared(srwPtr);
+                SRWLockOps.AcquireSRWLockShared(srwPtr);
 
                 // Increment reader count atomically
                 Cpu.AtomicIncrement(ref _srwReaderCount);
@@ -474,7 +479,7 @@ public static unsafe class Mernel
                 // Decrement reader count atomically
                 Cpu.AtomicDecrement(ref _srwReaderCount);
 
-                KernelSRWLockOps.ReleaseSRWLockShared(srwPtr);
+                SRWLockOps.ReleaseSRWLockShared(srwPtr);
                 readCount++;
 
                 if (readCount >= 5)
@@ -497,7 +502,7 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Memory Test] Starting memory API tests...");
 
         // Test 1: HeapAlloc/HeapFree
-        var heap = KernelMemoryOps.GetProcessHeap();
+        var heap = PAL.Memory.GetProcessHeap();
         if (heap == null)
         {
             DebugConsole.WriteLine("[Memory Test] FAILED: GetProcessHeap returned null");
@@ -509,7 +514,7 @@ public static unsafe class Mernel
         DebugConsole.WriteLine();
 
         // Allocate some memory
-        byte* ptr1 = (byte*)KernelMemoryOps.HeapAlloc(heap, 0, 256);
+        byte* ptr1 = (byte*)PAL.Memory.HeapAlloc(heap, 0, 256);
         if (ptr1 == null)
         {
             DebugConsole.WriteLine("[Memory Test] FAILED: HeapAlloc returned null");
@@ -544,7 +549,7 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Memory Test] HeapAlloc data write/read OK");
 
         // Allocate with zero flag
-        byte* ptr2 = (byte*)KernelMemoryOps.HeapAlloc(heap, HeapFlags.HEAP_ZERO_MEMORY, 128);
+        byte* ptr2 = (byte*)PAL.Memory.HeapAlloc(heap, HeapFlags.HEAP_ZERO_MEMORY, 128);
         if (ptr2 == null)
         {
             DebugConsole.WriteLine("[Memory Test] FAILED: HeapAlloc(ZERO) returned null");
@@ -571,12 +576,12 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Memory Test] HeapAlloc HEAP_ZERO_MEMORY OK");
 
         // Free memory
-        KernelMemoryOps.HeapFree(heap, 0, ptr1);
-        KernelMemoryOps.HeapFree(heap, 0, ptr2);
+        PAL.Memory.HeapFree(heap, 0, ptr1);
+        PAL.Memory.HeapFree(heap, 0, ptr2);
         DebugConsole.WriteLine("[Memory Test] HeapFree OK");
 
         // Test 2: VirtualAlloc/VirtualFree
-        void* vaddr = KernelMemoryOps.VirtualAlloc(
+        void* vaddr = PAL.Memory.VirtualAlloc(
             null,
             4096,
             MemoryAllocationType.MEM_COMMIT | MemoryAllocationType.MEM_RESERVE,
@@ -617,7 +622,7 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Memory Test] VirtualAlloc data write/read OK");
 
         // Free virtual memory
-        if (!KernelMemoryOps.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE))
+        if (!PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE))
         {
             DebugConsole.WriteLine("[Memory Test] FAILED: VirtualFree returned false");
             return 1;

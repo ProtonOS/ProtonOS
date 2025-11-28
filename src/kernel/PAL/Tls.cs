@@ -1,22 +1,25 @@
-// netos mernel - Thread Local Storage (TLS)
+// netos mernel - PAL Thread Local Storage (TLS)
 // Win32-style TLS implementation for PAL compatibility.
 // Supports TlsAlloc, TlsFree, TlsGetValue, TlsSetValue.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.Platform;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
-/// Thread Local Storage management.
+/// PAL Thread Local Storage management.
 /// Provides Win32-compatible TLS APIs needed by CoreCLR PAL.
 /// </summary>
-public static unsafe class KernelTls
+public static unsafe class Tls
 {
     private const uint MaxTlsSlots = 1088;  // Win32 has 64 static + 1024 dynamic = 1088 total
     private const uint InvalidTlsIndex = 0xFFFFFFFF;
 
-    private static KernelSpinLock _lock;
+    private static SpinLock _lock;
     private static ulong* _slotBitmap;      // Bitmap tracking allocated slots
     private static uint _bitmapSize;         // Number of ulong elements in bitmap
     private static bool _initialized;
@@ -108,9 +111,9 @@ public static unsafe class KernelTls
         _slotBitmap[wordIndex] &= ~(1UL << bitIndex);
 
         // Clear the slot value for all threads by enumerating them
-        ref var schedLock = ref KernelScheduler.SchedulerLock;
+        ref var schedLock = ref Scheduler.SchedulerLock;
         schedLock.Acquire();
-        for (var t = KernelScheduler.AllThreadsHead; t != null; t = t->NextAll)
+        for (var t = Scheduler.AllThreadsHead; t != null; t = t->NextAll)
         {
             if (t->TlsSlots != null && dwTlsIndex < t->TlsSlotCount)
             {
@@ -132,7 +135,7 @@ public static unsafe class KernelTls
         if (!_initialized || dwTlsIndex >= MaxTlsSlots)
             return null;
 
-        var thread = KernelScheduler.CurrentThread;
+        var thread = Scheduler.CurrentThread;
         if (thread == null)
             return null;
 
@@ -152,7 +155,7 @@ public static unsafe class KernelTls
         if (!_initialized || dwTlsIndex >= MaxTlsSlots)
             return false;
 
-        var thread = KernelScheduler.CurrentThread;
+        var thread = Scheduler.CurrentThread;
         if (thread == null)
             return false;
 
@@ -180,7 +183,7 @@ public static unsafe class KernelTls
     /// <summary>
     /// Grow a thread's TLS slot array to accommodate at least the given number of slots.
     /// </summary>
-    private static bool GrowThreadTlsSlots(KernelThread* thread, uint minSlots)
+    private static bool GrowThreadTlsSlots(Thread* thread, uint minSlots)
     {
         // Round up to next power of 2, minimum 64
         uint newCount = 64;
@@ -211,7 +214,7 @@ public static unsafe class KernelTls
     /// <summary>
     /// Clean up TLS storage for a thread (called when thread exits).
     /// </summary>
-    public static void CleanupThread(KernelThread* thread)
+    public static void CleanupThread(Thread* thread)
     {
         if (thread == null)
             return;

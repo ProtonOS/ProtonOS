@@ -1,10 +1,13 @@
 // netos mernel - PAL Memory APIs
 // Win32-style HeapAlloc/HeapFree and VirtualAlloc/VirtualFree for PAL compatibility.
+// These are PAL (Platform Abstraction Layer) wrappers over kernel memory services.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Threading;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.PAL;
 
 /// <summary>
 /// Heap flags for HeapCreate and HeapAlloc.
@@ -61,15 +64,15 @@ public static class MemoryFreeType
 }
 
 /// <summary>
-/// Kernel heap handle structure.
+/// PAL heap handle structure.
 /// Allows multiple heaps with different characteristics.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct KernelHeap
+public unsafe struct Heap
 {
     public uint Magic;           // Validation magic
     public uint Flags;           // Heap flags
-    public KernelSpinLock Lock;  // Thread safety
+    public SpinLock Lock;  // Thread safety
     public void* BaseAddress;    // Base of heap region (for private heaps)
     public ulong Size;           // Size of heap region
     public ulong Allocated;      // Currently allocated bytes
@@ -79,52 +82,30 @@ public unsafe struct KernelHeap
 }
 
 /// <summary>
-/// Virtual memory allocation tracking.
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal unsafe struct VirtualAllocation
-{
-    public ulong BaseAddress;     // Virtual address
-    public ulong Size;            // Allocated size
-    public uint AllocationType;   // MEM_COMMIT, MEM_RESERVE
-    public uint Protection;       // PAGE_READWRITE, etc.
-    public VirtualAllocation* Next;
-}
-
-/// <summary>
 /// PAL Memory APIs - Win32-compatible heap and virtual memory functions.
+/// These are thin wrappers over kernel services for PAL compatibility.
 /// </summary>
-public static unsafe class KernelMemoryOps
+public static unsafe class Memory
 {
     // Process heap (default heap - uses the kernel HeapAllocator)
-    private static KernelHeap _processHeap;
+    private static Heap _processHeap;
     private static bool _initialized;
 
-    // Virtual allocation tracking
-    private static VirtualAllocation* _virtualAllocList;
-    private static KernelSpinLock _virtualAllocLock;
-
-    // Next virtual address for allocations
-    private static ulong _nextVirtualAddress = 0x0000_0002_0000_0000; // Start at 8GB
-
     /// <summary>
-    /// Initialize the memory subsystem.
+    /// Initialize the PAL memory subsystem.
     /// </summary>
     public static void Init()
     {
         if (_initialized) return;
 
         // Set up the process heap (uses kernel HeapAllocator)
-        _processHeap.Magic = KernelHeap.MagicValue;
+        _processHeap.Magic = Heap.MagicValue;
         _processHeap.Flags = HeapFlags.HEAP_GROWABLE;
         _processHeap.Lock = default;
         _processHeap.BaseAddress = null;
         _processHeap.Size = 0;
         _processHeap.Allocated = 0;
         _processHeap.IsProcessHeap = true;
-
-        _virtualAllocList = null;
-        _virtualAllocLock = default;
 
         _initialized = true;
     }
@@ -134,10 +115,10 @@ public static unsafe class KernelMemoryOps
     /// <summary>
     /// Get the default process heap.
     /// </summary>
-    public static KernelHeap* GetProcessHeap()
+    public static Heap* GetProcessHeap()
     {
         if (!_initialized) Init();
-        fixed (KernelHeap* heap = &_processHeap)
+        fixed (Heap* heap = &_processHeap)
         {
             return heap;
         }
@@ -150,7 +131,7 @@ public static unsafe class KernelMemoryOps
     /// <param name="dwInitialSize">Initial size (0 for default)</param>
     /// <param name="dwMaximumSize">Maximum size (0 for growable)</param>
     /// <returns>Handle to the heap, or null on failure</returns>
-    public static KernelHeap* HeapCreate(uint flOptions, ulong dwInitialSize, ulong dwMaximumSize)
+    public static Heap* HeapCreate(uint flOptions, ulong dwInitialSize, ulong dwMaximumSize)
     {
         if (!_initialized) Init();
 
@@ -163,10 +144,10 @@ public static unsafe class KernelMemoryOps
         }
 
         // Fixed-size heap - allocate a dedicated region
-        var heapPtr = (KernelHeap*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelHeap));
+        var heapPtr = (Heap*)HeapAllocator.AllocZeroed((ulong)sizeof(Heap));
         if (heapPtr == null) return null;
 
-        heapPtr->Magic = KernelHeap.MagicValue;
+        heapPtr->Magic = Heap.MagicValue;
         heapPtr->Flags = flOptions;
         heapPtr->Lock = default;
         heapPtr->IsProcessHeap = false;
@@ -189,9 +170,9 @@ public static unsafe class KernelMemoryOps
     /// <summary>
     /// Destroy a heap.
     /// </summary>
-    public static bool HeapDestroy(KernelHeap* hHeap)
+    public static bool HeapDestroy(Heap* hHeap)
     {
-        if (hHeap == null || hHeap->Magic != KernelHeap.MagicValue)
+        if (hHeap == null || hHeap->Magic != Heap.MagicValue)
             return false;
 
         // Can't destroy the process heap
@@ -216,9 +197,9 @@ public static unsafe class KernelMemoryOps
     /// <param name="dwFlags">Allocation flags</param>
     /// <param name="dwBytes">Number of bytes to allocate</param>
     /// <returns>Pointer to allocated memory, or null on failure</returns>
-    public static void* HeapAlloc(KernelHeap* hHeap, uint dwFlags, ulong dwBytes)
+    public static void* HeapAlloc(Heap* hHeap, uint dwFlags, ulong dwBytes)
     {
-        if (hHeap == null || hHeap->Magic != KernelHeap.MagicValue)
+        if (hHeap == null || hHeap->Magic != Heap.MagicValue)
             return null;
 
         if (dwBytes == 0)
@@ -271,9 +252,9 @@ public static unsafe class KernelMemoryOps
     /// <summary>
     /// Free memory allocated from a heap.
     /// </summary>
-    public static bool HeapFree(KernelHeap* hHeap, uint dwFlags, void* lpMem)
+    public static bool HeapFree(Heap* hHeap, uint dwFlags, void* lpMem)
     {
-        if (hHeap == null || hHeap->Magic != KernelHeap.MagicValue)
+        if (hHeap == null || hHeap->Magic != Heap.MagicValue)
             return false;
 
         if (lpMem == null)
@@ -297,9 +278,9 @@ public static unsafe class KernelMemoryOps
     /// <summary>
     /// Reallocate memory from a heap.
     /// </summary>
-    public static void* HeapReAlloc(KernelHeap* hHeap, uint dwFlags, void* lpMem, ulong dwBytes)
+    public static void* HeapReAlloc(Heap* hHeap, uint dwFlags, void* lpMem, ulong dwBytes)
     {
-        if (hHeap == null || hHeap->Magic != KernelHeap.MagicValue)
+        if (hHeap == null || hHeap->Magic != Heap.MagicValue)
             return null;
 
         // Simple implementation: allocate new, copy, free old
@@ -325,7 +306,7 @@ public static unsafe class KernelMemoryOps
     /// <summary>
     /// Get the size of an allocated block.
     /// </summary>
-    public static ulong HeapSize(KernelHeap* hHeap, uint dwFlags, void* lpMem)
+    public static ulong HeapSize(Heap* hHeap, uint dwFlags, void* lpMem)
     {
         // This requires tracking allocation sizes - return 0 for now
         return 0;
@@ -348,78 +329,20 @@ public static unsafe class KernelMemoryOps
         if (dwSize == 0)
             return null;
 
-        // Round up to page boundary
-        dwSize = (dwSize + VirtualMemory.PageSize - 1) & ~(VirtualMemory.PageSize - 1);
-
-        ulong virtAddr;
-        if (lpAddress != null)
-        {
-            // Use requested address (must be page-aligned)
-            virtAddr = (ulong)lpAddress;
-            if ((virtAddr & (VirtualMemory.PageSize - 1)) != 0)
-                return null; // Not page-aligned
-        }
-        else
-        {
-            // Allocate from next available address
-            _virtualAllocLock.Acquire();
-            virtAddr = _nextVirtualAddress;
-            _nextVirtualAddress += dwSize;
-            _virtualAllocLock.Release();
-        }
-
-        // Convert protection flags to page flags
+        // Convert Win32 protection flags to kernel page flags
         ulong pageFlags = ProtectionToPageFlags(flProtect);
 
-        // If committing, actually allocate physical pages and map them
-        if ((flAllocationType & MemoryAllocationType.MEM_COMMIT) != 0)
-        {
-            ulong numPages = dwSize / VirtualMemory.PageSize;
+        // Determine if we should commit
+        bool commit = (flAllocationType & MemoryAllocationType.MEM_COMMIT) != 0;
 
-            for (ulong i = 0; i < numPages; i++)
-            {
-                // Allocate physical page
-                ulong physPage = PageAllocator.AllocatePage();
-                if (physPage == 0)
-                {
-                    // Allocation failed - unmap what we've done so far
-                    // (simplified - real implementation would clean up properly)
-                    return null;
-                }
+        // Call kernel VirtualMemory API
+        ulong result = VirtualMemory.AllocateVirtualRange(
+            (ulong)lpAddress,
+            dwSize,
+            commit,
+            pageFlags);
 
-                // Zero the page
-                byte* pagePtr = (byte*)physPage;
-                for (int j = 0; j < (int)VirtualMemory.PageSize; j++)
-                    pagePtr[j] = 0;
-
-                // Map virtual to physical
-                ulong virt = virtAddr + i * VirtualMemory.PageSize;
-                if (!VirtualMemory.MapPage(virt, physPage, pageFlags))
-                {
-                    PageAllocator.FreePage(physPage);
-                    return null;
-                }
-
-                VirtualMemory.InvalidatePage(virt);
-            }
-        }
-
-        // Track the allocation
-        var alloc = (VirtualAllocation*)HeapAllocator.AllocZeroed((ulong)sizeof(VirtualAllocation));
-        if (alloc != null)
-        {
-            alloc->BaseAddress = virtAddr;
-            alloc->Size = dwSize;
-            alloc->AllocationType = flAllocationType;
-            alloc->Protection = flProtect;
-
-            _virtualAllocLock.Acquire();
-            alloc->Next = _virtualAllocList;
-            _virtualAllocList = alloc;
-            _virtualAllocLock.Release();
-        }
-
-        return (void*)virtAddr;
+        return (void*)result;
     }
 
     /// <summary>
@@ -435,73 +358,9 @@ public static unsafe class KernelMemoryOps
         if (lpAddress == null)
             return false;
 
-        ulong addr = (ulong)lpAddress;
+        bool releaseAll = (dwFreeType & MemoryFreeType.MEM_RELEASE) != 0;
 
-        // Find the allocation
-        _virtualAllocLock.Acquire();
-        VirtualAllocation* prev = null;
-        VirtualAllocation* current = _virtualAllocList;
-
-        while (current != null)
-        {
-            if (current->BaseAddress == addr)
-                break;
-            prev = current;
-            current = current->Next;
-        }
-
-        if (current == null)
-        {
-            _virtualAllocLock.Release();
-            return false; // Not found
-        }
-
-        if ((dwFreeType & MemoryFreeType.MEM_RELEASE) != 0)
-        {
-            // Release the entire region
-            dwSize = current->Size;
-
-            // Remove from list
-            if (prev != null)
-                prev->Next = current->Next;
-            else
-                _virtualAllocList = current->Next;
-
-            _virtualAllocLock.Release();
-
-            // Free physical pages and unmap
-            ulong numPages = dwSize / VirtualMemory.PageSize;
-            for (ulong i = 0; i < numPages; i++)
-            {
-                ulong virt = addr + i * VirtualMemory.PageSize;
-                // Note: We'd need to walk page tables to get physical address
-                // For now, just invalidate the TLB entry
-                VirtualMemory.InvalidatePage(virt);
-            }
-
-            HeapAllocator.Free(current);
-            return true;
-        }
-        else if ((dwFreeType & MemoryFreeType.MEM_DECOMMIT) != 0)
-        {
-            // Decommit pages but keep reservation
-            _virtualAllocLock.Release();
-
-            // Round to page boundary
-            dwSize = (dwSize + VirtualMemory.PageSize - 1) & ~(VirtualMemory.PageSize - 1);
-            ulong numPages = dwSize / VirtualMemory.PageSize;
-
-            for (ulong i = 0; i < numPages; i++)
-            {
-                ulong virt = addr + i * VirtualMemory.PageSize;
-                VirtualMemory.InvalidatePage(virt);
-            }
-
-            return true;
-        }
-
-        _virtualAllocLock.Release();
-        return false;
+        return VirtualMemory.FreeVirtualRange((ulong)lpAddress, releaseAll);
     }
 
     /// <summary>

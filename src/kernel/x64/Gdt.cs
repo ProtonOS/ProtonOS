@@ -3,8 +3,11 @@
 // for privilege levels, TSS, and the syscall/sysret instructions.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// GDT segment selectors (byte offsets into GDT)

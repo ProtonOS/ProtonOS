@@ -3,8 +3,11 @@
 // HPET provides a known, stable frequency counter.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// HPET memory-mapped register block.

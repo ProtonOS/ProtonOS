@@ -4,24 +4,26 @@
 // Uses heap allocation for thread structures - no artificial thread limits.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.X64;
 
-namespace Mernel;
+namespace Kernel.Threading;
 
 /// <summary>
 /// Kernel thread scheduler - manages thread lifecycle and context switching.
 /// Thread structures are heap-allocated for unlimited thread count.
 /// </summary>
-public static unsafe class KernelScheduler
+public static unsafe class Scheduler
 {
     private const nuint DefaultStackSize = 64 * 1024;  // 64KB default stack
 
-    private static KernelSpinLock _lock;
+    private static SpinLock _lock;
 
-    private static KernelThread* _currentThread;        // Currently running thread
-    private static KernelThread* _readyQueueHead;       // Head of ready queue
-    private static KernelThread* _readyQueueTail;       // Tail of ready queue
-    private static KernelThread* _allThreadsHead;       // All threads (for iteration)
+    private static Thread* _currentThread;        // Currently running thread
+    private static Thread* _readyQueueHead;       // Head of ready queue
+    private static Thread* _readyQueueTail;       // Tail of ready queue
+    private static Thread* _allThreadsHead;       // All threads (for iteration)
     private static uint _nextThreadId;                  // Next thread ID to assign
     private static int _threadCount;                    // Number of active threads
     private static bool _initialized;
@@ -40,7 +42,7 @@ public static unsafe class KernelScheduler
     /// <summary>
     /// Current thread (null if none)
     /// </summary>
-    public static KernelThread* CurrentThread => _currentThread;
+    public static Thread* CurrentThread => _currentThread;
 
     /// <summary>
     /// Initialize the scheduler.
@@ -63,7 +65,7 @@ public static unsafe class KernelScheduler
 
         // Create thread 0 for the boot/idle thread (current execution context)
         // This thread doesn't need a separate stack - it uses the boot stack
-        var bootThread = (KernelThread*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelThread));
+        var bootThread = (Thread*)HeapAllocator.AllocZeroed((ulong)sizeof(Thread));
         if (bootThread == null)
         {
             DebugConsole.WriteLine("[Sched] Failed to allocate boot thread!");
@@ -71,8 +73,8 @@ public static unsafe class KernelScheduler
         }
 
         bootThread->Id = _nextThreadId++;
-        bootThread->State = KernelThreadState.Running;
-        bootThread->Priority = KernelThreadPriority.Normal;
+        bootThread->State = ThreadState.Running;
+        bootThread->Priority = ThreadPriority.Normal;
         bootThread->Next = null;
         bootThread->Prev = null;
         bootThread->NextReady = null;
@@ -119,7 +121,7 @@ public static unsafe class KernelScheduler
     /// <param name="flags">Creation flags</param>
     /// <param name="threadId">Output: assigned thread ID</param>
     /// <returns>Thread pointer, or null on failure</returns>
-    public static KernelThread* CreateThread(
+    public static Thread* CreateThread(
         delegate* unmanaged<void*, uint> entryPoint,
         void* parameter,
         nuint stackSize,
@@ -137,7 +139,7 @@ public static unsafe class KernelScheduler
         _lock.Acquire();
 
         // Allocate thread structure
-        var thread = (KernelThread*)HeapAllocator.AllocZeroed((ulong)sizeof(KernelThread));
+        var thread = (Thread*)HeapAllocator.AllocZeroed((ulong)sizeof(Thread));
         if (thread == null)
         {
             _lock.Release();
@@ -161,10 +163,10 @@ public static unsafe class KernelScheduler
 
         // Initialize thread
         thread->Id = _nextThreadId++;
-        thread->State = (flags & KernelThreadFlags.CreateSuspended) != 0
-            ? KernelThreadState.Suspended
-            : KernelThreadState.Ready;
-        thread->Priority = KernelThreadPriority.Normal;
+        thread->State = (flags & ThreadFlags.CreateSuspended) != 0
+            ? ThreadState.Suspended
+            : ThreadState.Ready;
+        thread->Priority = ThreadPriority.Normal;
         thread->StackBase = stackTop;
         thread->StackLimit = stackLimit;
         thread->StackSize = stackSize;
@@ -199,7 +201,7 @@ public static unsafe class KernelScheduler
         _allThreadsHead = thread;
 
         // Add to ready queue if not suspended
-        if (thread->State == KernelThreadState.Ready)
+        if (thread->State == ThreadState.Ready)
         {
             AddToReadyQueue(thread);
         }
@@ -256,7 +258,7 @@ public static unsafe class KernelScheduler
         }
 
         thread->ExitCode = exitCode;
-        thread->State = KernelThreadState.Terminated;
+        thread->State = ThreadState.Terminated;
 
         DebugConsole.Write("[Sched] Thread ");
         DebugConsole.WriteHex((ushort)thread->Id);
@@ -308,7 +310,7 @@ public static unsafe class KernelScheduler
 
         // Calculate wake time
         thread->WakeTime = Apic.TickCount + (milliseconds / 10);  // 10ms per tick
-        thread->State = KernelThreadState.Blocked;
+        thread->State = ThreadState.Blocked;
 
         _lock.Release();
 
@@ -319,7 +321,7 @@ public static unsafe class KernelScheduler
     /// Add a thread to the ready queue.
     /// Caller must hold the lock.
     /// </summary>
-    private static void AddToReadyQueue(KernelThread* thread)
+    private static void AddToReadyQueue(Thread* thread)
     {
         thread->NextReady = null;
         thread->PrevReady = _readyQueueTail;
@@ -339,7 +341,7 @@ public static unsafe class KernelScheduler
     /// Remove a thread from the ready queue.
     /// Caller must hold the lock.
     /// </summary>
-    private static void RemoveFromReadyQueue(KernelThread* thread)
+    private static void RemoveFromReadyQueue(Thread* thread)
     {
         if (thread->PrevReady != null)
             thread->PrevReady->NextReady = thread->NextReady;
@@ -372,20 +374,20 @@ public static unsafe class KernelScheduler
         ulong now = Apic.TickCount;
         for (var t = _allThreadsHead; t != null; t = t->NextAll)
         {
-            if (t->State == KernelThreadState.Blocked &&
+            if (t->State == ThreadState.Blocked &&
                 t->WakeTime > 0 &&
                 t->WakeTime <= now)
             {
                 t->WakeTime = 0;
-                t->State = KernelThreadState.Ready;
+                t->State = ThreadState.Ready;
                 AddToReadyQueue(t);
             }
         }
 
         // If current thread is still running, move it to ready queue
-        if (current != null && current->State == KernelThreadState.Running)
+        if (current != null && current->State == ThreadState.Running)
         {
-            current->State = KernelThreadState.Ready;
+            current->State = ThreadState.Ready;
             AddToReadyQueue(current);
         }
 
@@ -394,10 +396,10 @@ public static unsafe class KernelScheduler
         if (next == null)
         {
             // No ready threads - continue with current or idle
-            if (current != null && current->State == KernelThreadState.Ready)
+            if (current != null && current->State == ThreadState.Ready)
             {
                 RemoveFromReadyQueue(current);
-                current->State = KernelThreadState.Running;
+                current->State = ThreadState.Running;
                 _lock.Release();
                 return;
             }
@@ -408,7 +410,7 @@ public static unsafe class KernelScheduler
 
         // Remove from ready queue
         RemoveFromReadyQueue(next);
-        next->State = KernelThreadState.Running;
+        next->State = ThreadState.Running;
 
         // Context switch if different thread
         if (next != current)
@@ -455,21 +457,21 @@ public static unsafe class KernelScheduler
     /// Make a thread ready to run (add to ready queue).
     /// Called by synchronization primitives when waking threads.
     /// </summary>
-    public static void MakeReady(KernelThread* thread)
+    public static void MakeReady(Thread* thread)
     {
         if (thread == null)
             return;
 
         _lock.Acquire();
 
-        if (thread->State == KernelThreadState.Ready)
+        if (thread->State == ThreadState.Ready)
         {
             // Already in ready queue
             _lock.Release();
             return;
         }
 
-        thread->State = KernelThreadState.Ready;
+        thread->State = ThreadState.Ready;
         AddToReadyQueue(thread);
 
         _lock.Release();
@@ -494,10 +496,10 @@ public static unsafe class KernelScheduler
     /// Get the head of the all-threads list for enumeration.
     /// Caller should acquire SchedulerLock before iterating.
     /// </summary>
-    public static KernelThread* AllThreadsHead => _allThreadsHead;
+    public static Thread* AllThreadsHead => _allThreadsHead;
 
     /// <summary>
     /// Get the scheduler lock for safe thread enumeration.
     /// </summary>
-    public static ref KernelSpinLock SchedulerLock => ref _lock;
+    public static ref SpinLock SchedulerLock => ref _lock;
 }

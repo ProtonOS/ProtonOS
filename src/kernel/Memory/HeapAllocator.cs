@@ -3,8 +3,9 @@
 // Uses PageAllocator for backing memory, grows on demand.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
 
-namespace Mernel;
+namespace Kernel.Memory;
 
 /// <summary>
 /// Block header stored at the start of each allocation.

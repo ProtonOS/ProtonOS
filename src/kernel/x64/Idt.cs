@@ -2,9 +2,12 @@
 // Sets up IDT entries pointing to ISR stubs in nernel.
 
 using System.Runtime.InteropServices;
-using Mernel.X64;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
+using Kernel.X64;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// 16-byte IDT entry for 64-bit mode

@@ -2,8 +2,11 @@
 // Static initialization to avoid 'new' keyword issues in stdlib:zero
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// Static storage for interrupt handlers (fixed buffer wrapper)

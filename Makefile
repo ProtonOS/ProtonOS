@@ -5,8 +5,8 @@ ARCH ?= x64
 
 # Directories
 BUILD_DIR := build/$(ARCH)
-NERNEL_DIR := src/nernel
-MERNEL_DIR := src/mernel
+KERNEL_DIR := src/kernel
+NATIVE_DIR := $(KERNEL_DIR)/native
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -44,41 +44,44 @@ else ifeq ($(ARCH),apple)
     BFLAT_FLAGS += -d ARCH_ARM64 -d BOOT_M1N1
 endif
 
+# Recursive wildcard function
+rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+
 # Source files
-NERNEL_SRC := $(wildcard $(NERNEL_DIR)/$(ARCH)/*.asm)
-MERNEL_SRC := $(wildcard $(MERNEL_DIR)/*.cs) $(wildcard $(MERNEL_DIR)/$(ARCH)/*.cs)
+NATIVE_SRC := $(wildcard $(NATIVE_DIR)/$(ARCH)/*.asm)
+KERNEL_SRC := $(call rwildcard,$(KERNEL_DIR),*.cs)
 
 # Object files
-NERNEL_OBJ := $(patsubst $(NERNEL_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/nernel/%.obj,$(NERNEL_SRC))
-MERNEL_OBJ := $(BUILD_DIR)/mernel/mernel.obj
+NATIVE_OBJ := $(patsubst $(NATIVE_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/native/%.obj,$(NATIVE_SRC))
+KERNEL_OBJ := $(BUILD_DIR)/kernel/kernel.obj
 
 # Targets
-.PHONY: all clean nernel mernel image run
+.PHONY: all clean native kernel image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/nernel
+	mkdir -p $(BUILD_DIR)/native $(BUILD_DIR)/kernel
 
-# Assemble nernel
-$(BUILD_DIR)/nernel/%.obj: $(NERNEL_DIR)/$(ARCH)/%.asm | $(BUILD_DIR)
+# Assemble native code
+$(BUILD_DIR)/native/%.obj: $(NATIVE_DIR)/$(ARCH)/%.asm | $(BUILD_DIR)
 	@echo "NASM $<"
 	@mkdir -p $(dir $@)
-	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/nernel/$*.lst
+	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/native/$*.lst
 
-nernel: $(NERNEL_OBJ)
+native: $(NATIVE_OBJ)
 
-# Compile mernel (all C# files into single object)
-$(MERNEL_OBJ): $(MERNEL_SRC) | $(BUILD_DIR)
-	@echo "BFLAT mernel"
+# Compile kernel (all C# files into single object)
+$(KERNEL_OBJ): $(KERNEL_SRC) | $(BUILD_DIR)
+	@echo "BFLAT kernel"
 	@mkdir -p $(dir $@)
-	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(MERNEL_SRC)
+	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(KERNEL_SRC)
 
-mernel: $(MERNEL_OBJ)
+kernel: $(KERNEL_OBJ)
 
 # Link UEFI executable
-$(BUILD_DIR)/$(EFI_NAME): $(NERNEL_OBJ) $(MERNEL_OBJ)
+$(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
 	$(LD) $(LD_FLAGS) -out:$@ $^
 	@file $@
@@ -104,8 +107,8 @@ run: image
 info:
 	@echo "ARCH:       $(ARCH)"
 	@echo "BUILD_DIR:  $(BUILD_DIR)"
-	@echo "NERNEL_SRC: $(NERNEL_SRC)"
-	@echo "NERNEL_OBJ: $(NERNEL_OBJ)"
-	@echo "MERNEL_SRC: $(MERNEL_SRC)"
-	@echo "MERNEL_OBJ: $(MERNEL_OBJ)"
+	@echo "NATIVE_SRC: $(NATIVE_SRC)"
+	@echo "NATIVE_OBJ: $(NATIVE_OBJ)"
+	@echo "KERNEL_SRC: $(KERNEL_SRC)"
+	@echo "KERNEL_OBJ: $(KERNEL_OBJ)"
 	@echo "EFI_NAME:   $(EFI_NAME)"

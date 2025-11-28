@@ -2,8 +2,11 @@
 // Implements 4-level paging (PML4 -> PDPT -> PD -> PT) for x64.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// Page table entry flags for x64 4-level paging
@@ -386,4 +389,206 @@ public static unsafe class VirtualMemory
     {
         Cpu.Invlpg(virtAddr);
     }
+
+    // ==================== Virtual Address Space Management ====================
+
+    // Virtual allocation tracking
+    private static VirtualAllocationEntry* _allocListHead;
+    private static SpinLock _allocLock;
+
+    // Next virtual address for dynamic allocations (start at 8GB, above kernel space)
+    private static ulong _nextVirtualAddress = 0x0000_0002_0000_0000;
+
+    /// <summary>
+    /// Allocate virtual address space and optionally commit physical pages.
+    /// </summary>
+    /// <param name="requestedAddress">Desired address (0 for any)</param>
+    /// <param name="size">Size in bytes (will be rounded up to page size)</param>
+    /// <param name="commit">If true, allocate and map physical pages</param>
+    /// <param name="flags">Page flags to use when mapping</param>
+    /// <returns>Base address of allocation, or 0 on failure</returns>
+    public static ulong AllocateVirtualRange(ulong requestedAddress, ulong size, bool commit, ulong flags)
+    {
+        if (size == 0)
+            return 0;
+
+        // Round up to page boundary
+        size = (size + PageSize - 1) & ~(PageSize - 1);
+
+        ulong virtAddr;
+        if (requestedAddress != 0)
+        {
+            // Use requested address (must be page-aligned)
+            if ((requestedAddress & (PageSize - 1)) != 0)
+                return 0;
+            virtAddr = requestedAddress;
+        }
+        else
+        {
+            // Allocate from next available address
+            _allocLock.Acquire();
+            virtAddr = _nextVirtualAddress;
+            _nextVirtualAddress += size;
+            _allocLock.Release();
+        }
+
+        // If committing, actually allocate physical pages and map them
+        if (commit)
+        {
+            ulong numPages = size / PageSize;
+
+            for (ulong i = 0; i < numPages; i++)
+            {
+                // Allocate physical page
+                ulong physPage = PageAllocator.AllocatePage();
+                if (physPage == 0)
+                {
+                    // Allocation failed - should unmap what we've done
+                    return 0;
+                }
+
+                // Zero the page
+                byte* pagePtr = (byte*)physPage;
+                for (int j = 0; j < (int)PageSize; j++)
+                    pagePtr[j] = 0;
+
+                // Map virtual to physical
+                ulong virt = virtAddr + i * PageSize;
+                if (!MapPage(virt, physPage, flags))
+                {
+                    PageAllocator.FreePage(physPage);
+                    return 0;
+                }
+
+                InvalidatePage(virt);
+            }
+        }
+
+        // Track the allocation
+        var entry = (VirtualAllocationEntry*)HeapAllocator.AllocZeroed((ulong)sizeof(VirtualAllocationEntry));
+        if (entry != null)
+        {
+            entry->BaseAddress = virtAddr;
+            entry->Size = size;
+            entry->IsCommitted = commit;
+            entry->Flags = flags;
+
+            _allocLock.Acquire();
+            entry->Next = _allocListHead;
+            _allocListHead = entry;
+            _allocLock.Release();
+        }
+
+        return virtAddr;
+    }
+
+    /// <summary>
+    /// Free virtual address space.
+    /// </summary>
+    /// <param name="address">Base address of allocation</param>
+    /// <param name="releaseAll">If true, release entire allocation; if false, just decommit</param>
+    /// <returns>True on success</returns>
+    public static bool FreeVirtualRange(ulong address, bool releaseAll)
+    {
+        if (address == 0)
+            return false;
+
+        // Find the allocation
+        _allocLock.Acquire();
+        VirtualAllocationEntry* prev = null;
+        VirtualAllocationEntry* current = _allocListHead;
+
+        while (current != null)
+        {
+            if (current->BaseAddress == address)
+                break;
+            prev = current;
+            current = current->Next;
+        }
+
+        if (current == null)
+        {
+            _allocLock.Release();
+            return false;
+        }
+
+        ulong size = current->Size;
+
+        if (releaseAll)
+        {
+            // Remove from list
+            if (prev != null)
+                prev->Next = current->Next;
+            else
+                _allocListHead = current->Next;
+
+            _allocLock.Release();
+
+            // Invalidate TLB entries
+            ulong numPages = size / PageSize;
+            for (ulong i = 0; i < numPages; i++)
+            {
+                InvalidatePage(address + i * PageSize);
+            }
+
+            HeapAllocator.Free(current);
+        }
+        else
+        {
+            // Just decommit - keep the reservation
+            current->IsCommitted = false;
+            _allocLock.Release();
+
+            // Invalidate TLB entries
+            ulong numPages = size / PageSize;
+            for (ulong i = 0; i < numPages; i++)
+            {
+                InvalidatePage(address + i * PageSize);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Find a virtual allocation by address.
+    /// </summary>
+    /// <param name="address">Address within the allocation</param>
+    /// <param name="outSize">Output: size of allocation</param>
+    /// <returns>Base address of allocation, or 0 if not found</returns>
+    public static ulong FindAllocation(ulong address, out ulong outSize)
+    {
+        outSize = 0;
+
+        _allocLock.Acquire();
+        var current = _allocListHead;
+
+        while (current != null)
+        {
+            if (address >= current->BaseAddress &&
+                address < current->BaseAddress + current->Size)
+            {
+                outSize = current->Size;
+                _allocLock.Release();
+                return current->BaseAddress;
+            }
+            current = current->Next;
+        }
+
+        _allocLock.Release();
+        return 0;
+    }
+}
+
+/// <summary>
+/// Tracks a virtual memory allocation.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct VirtualAllocationEntry
+{
+    public ulong BaseAddress;
+    public ulong Size;
+    public bool IsCommitted;
+    public ulong Flags;
+    public VirtualAllocationEntry* Next;
 }

@@ -3,8 +3,11 @@
 // Timer is calibrated using HPET for accurate timing.
 
 using System.Runtime.InteropServices;
+using Kernel.Platform;
+using Kernel.Memory;
+using Kernel.Threading;
 
-namespace Mernel.X64;
+namespace Kernel.X64;
 
 /// <summary>
 /// Local APIC Register offsets (memory-mapped at APIC base)
@@ -309,6 +312,6 @@ public static unsafe class Apic
         SendEoi();
 
         // Call scheduler timer tick for preemptive scheduling
-        KernelScheduler.TimerTick();
+        Scheduler.TimerTick();
     }
 }
