@@ -87,6 +87,7 @@ public unsafe struct Thread
     // Scheduling
     public int Priority;               // Thread priority
     public ulong WakeTime;             // For Sleep() - tick count when thread should wake
+    public int SuspendCount;           // Suspend count (>0 means suspended)
 
     // Linked list for general purpose (e.g., wait queues)
     public Thread* Next;

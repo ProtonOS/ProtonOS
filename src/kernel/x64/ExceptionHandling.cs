@@ -525,4 +525,57 @@ public static unsafe class ExceptionHandling
         // Exception not handled
         return false;
     }
+
+    /// <summary>
+    /// Dispatch a software-raised exception (from RaiseException API).
+    /// This is similar to DispatchException but takes pre-built exception record and context.
+    /// </summary>
+    /// <param name="exceptionRecord">The exception record</param>
+    /// <param name="context">The context at the time of the exception</param>
+    /// <returns>
+    /// -1 (EXCEPTION_CONTINUE_EXECUTION) if exception was handled and execution should continue,
+    /// 0 (EXCEPTION_CONTINUE_SEARCH) if exception was not handled,
+    /// 1 (EXCEPTION_EXECUTE_HANDLER) if a handler should be executed (unhandled in our impl)
+    /// </returns>
+    public static int DispatchRaisedException(ExceptionRecord* exceptionRecord, ExceptionContext* context)
+    {
+        if (!_initialized) Init();
+
+        // Look up function entry for RIP
+        ulong imageBase;
+        var runtimeFunction = LookupFunctionEntry(context->Rip, out imageBase);
+
+        // If we found a registered function with exception handler, call it
+        if (runtimeFunction != null)
+        {
+            var unwindInfo = (UnwindInfo*)(imageBase + runtimeFunction->UnwindInfoAddress);
+
+            if ((unwindInfo->Flags & UnwindFlags.UNW_FLAG_EHANDLER) != 0)
+            {
+                // Get handler address (after unwind codes)
+                int unwindCodeSize = (unwindInfo->CountOfUnwindCodes + 1) & ~1; // Round up to even
+                var handlerRva = (uint*)((byte*)unwindInfo + 4 + unwindCodeSize * 2);
+                var handler = (delegate*<ExceptionRecord*, void*, ExceptionContext*, void*, ExceptionDisposition>)
+                    (imageBase + *handlerRva);
+
+                // Call handler
+                var disposition = handler(exceptionRecord, null, context, null);
+
+                if (disposition == ExceptionDisposition.ExceptionContinueExecution)
+                {
+                    return -1; // EXCEPTION_CONTINUE_EXECUTION
+                }
+            }
+        }
+
+        // Try unhandled exception filter
+        if (_unhandledFilter != null)
+        {
+            int result = _unhandledFilter(exceptionRecord, context);
+            return result;
+        }
+
+        // No filter registered, return continue search
+        return 0; // EXCEPTION_CONTINUE_SEARCH
+    }
 }

@@ -4,6 +4,7 @@
 using System.Runtime.InteropServices;
 using Kernel.X64;
 using Kernel.Platform;
+using Kernel.Threading;
 
 namespace Kernel.PAL;
 
@@ -59,6 +60,10 @@ public static unsafe class Exception
 
     /// <summary>
     /// Raise an exception.
+    /// This dispatches the exception to the unhandled exception filter if one is registered.
+    /// If the filter returns EXCEPTION_CONTINUE_EXECUTION (-1), execution continues.
+    /// If the exception is noncontinuable or the filter returns EXCEPTION_EXECUTE_HANDLER (1),
+    /// the process/thread is terminated.
     /// </summary>
     /// <param name="exceptionCode">Exception code to raise</param>
     /// <param name="exceptionFlags">Exception flags</param>
@@ -71,26 +76,90 @@ public static unsafe class Exception
         record.ExceptionCode = exceptionCode;
         record.ExceptionFlags = exceptionFlags;
         record.ExceptionRecord_ = null;
-        record.ExceptionAddress = null; // Will be filled in by handler
         record.NumberParameters = numberOfArguments > 15 ? 15 : numberOfArguments;
 
+        // Copy exception parameters
         for (uint i = 0; i < record.NumberParameters; i++)
         {
-            record.ExceptionInformation[i] = arguments[i];
+            record.ExceptionInformation[i] = arguments != null ? arguments[i] : 0;
         }
 
-        // For now, just log and potentially crash if unhandled
-        // A full implementation would do stack unwinding
+        // Capture context - use the current thread's saved context
+        // Note: This won't be perfectly accurate for the exact call site, but it's
+        // sufficient for exception handling purposes
+        ExceptionContext context;
+        CaptureContext(&context);
+
+        // Set exception address to caller's return address (approximation)
+        // In a real implementation this would be the actual faulting instruction
+        record.ExceptionAddress = (void*)context.Rip;
+
+        // Log the exception
         DebugConsole.Write("[SEH] RaiseException: 0x");
         DebugConsole.WriteHex(exceptionCode);
+        if ((exceptionFlags & ExceptionFlags.EXCEPTION_NONCONTINUABLE) != 0)
+            DebugConsole.Write(" (noncontinuable)");
         DebugConsole.WriteLine();
 
-        // If noncontinuable, this should terminate
+        // Dispatch to unhandled exception filter
+        int filterResult = ExceptionHandling.DispatchRaisedException(&record, &context);
+
+        if (filterResult == -1) // EXCEPTION_CONTINUE_EXECUTION
+        {
+            // Filter handled it, continue execution
+            // Note: In a real implementation, we would restore the modified context
+            DebugConsole.WriteLine("[SEH] Exception handled, continuing execution");
+            return;
+        }
+
+        // Exception was not handled or filter returned EXCEPTION_EXECUTE_HANDLER
+        // If noncontinuable, this is fatal
         if ((exceptionFlags & ExceptionFlags.EXCEPTION_NONCONTINUABLE) != 0)
         {
             DebugConsole.WriteLine("[SEH] FATAL: Noncontinuable exception raised");
             Cpu.HaltForever();
         }
+
+        // For continuable exceptions that weren't handled, halt the thread
+        DebugConsole.WriteLine("[SEH] Unhandled exception - halting");
+        Cpu.HaltForever();
+    }
+
+    /// <summary>
+    /// Capture the current context for exception handling.
+    /// </summary>
+    private static void CaptureContext(ExceptionContext* context)
+    {
+        var thread = Scheduler.CurrentThread;
+        if (thread == null)
+        {
+            // No thread context available, zero out
+            *context = default;
+            return;
+        }
+
+        ref CpuContext ctx = ref thread->Context;
+
+        context->Rip = ctx.Rip;
+        context->Rsp = ctx.Rsp;
+        context->Rbp = ctx.Rbp;
+        context->Rflags = ctx.Rflags;
+        context->Rax = ctx.Rax;
+        context->Rbx = ctx.Rbx;
+        context->Rcx = ctx.Rcx;
+        context->Rdx = ctx.Rdx;
+        context->Rsi = ctx.Rsi;
+        context->Rdi = ctx.Rdi;
+        context->R8 = ctx.R8;
+        context->R9 = ctx.R9;
+        context->R10 = ctx.R10;
+        context->R11 = ctx.R11;
+        context->R12 = ctx.R12;
+        context->R13 = ctx.R13;
+        context->R14 = ctx.R14;
+        context->R15 = ctx.R15;
+        context->Cs = (ushort)ctx.Cs;
+        context->Ss = (ushort)ctx.Ss;
     }
 
     /// <summary>

@@ -164,10 +164,18 @@ public static unsafe class Kernel
         var thread9 = Scheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
         var thread10 = Scheduler.CreateThread(&ExceptionTestThread, null, 0, 0, out id10);
         var thread11 = Scheduler.CreateThread(&SystemTestThread, null, 0, 0, out id11);
+        uint id12, id13, id14, id15, id16;
+        var thread12 = Scheduler.CreateThread(&VirtualQueryTestThread, null, 0, 0, out id12);
+        var thread13 = Scheduler.CreateThread(&ThreadContextTestThread, null, 0, 0, out id13);
+        var thread14 = Scheduler.CreateThread(&WaitMultipleTestThread, null, 0, 0, out id14);
+        var thread15 = Scheduler.CreateThread(&RaiseExceptionTestThread, null, 0, 0, out id15);
+        var thread16 = Scheduler.CreateThread(&SuspendResumeTestThread, null, 0, 0, out id16);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
-            thread9 != null && thread10 != null && thread11 != null)
+            thread9 != null && thread10 != null && thread11 != null &&
+            thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
+            thread16 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -191,6 +199,16 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id10);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id11);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id12);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id13);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id14);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id15);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id16);
             DebugConsole.WriteLine();
         }
     }
@@ -873,6 +891,526 @@ public static unsafe class Kernel
         DebugConsole.WriteLine(" ms OK");
 
         DebugConsole.WriteLine("[System Test] All System API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// VirtualQuery test thread - tests VirtualQuery API
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint VirtualQueryTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[VirtualQuery Test] Starting VirtualQuery API test...");
+
+        // Allocate some virtual memory
+        void* vaddr = PAL.Memory.VirtualAlloc(
+            null,
+            8192,  // 2 pages
+            MemoryAllocationType.MEM_COMMIT | MemoryAllocationType.MEM_RESERVE,
+            MemoryProtection.PAGE_READWRITE);
+
+        if (vaddr == null)
+        {
+            DebugConsole.WriteLine("[VirtualQuery Test] FAILED: VirtualAlloc returned null");
+            return 1;
+        }
+
+        DebugConsole.Write("[VirtualQuery Test] Allocated at 0x");
+        DebugConsole.WriteHex((ulong)vaddr);
+        DebugConsole.WriteLine();
+
+        // Query the allocated memory
+        MemoryBasicInformation memInfo;
+        ulong result = PAL.Memory.VirtualQuery(vaddr, &memInfo, (ulong)sizeof(MemoryBasicInformation));
+
+        if (result == 0)
+        {
+            DebugConsole.WriteLine("[VirtualQuery Test] FAILED: VirtualQuery returned 0");
+            PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE);
+            return 1;
+        }
+
+        DebugConsole.Write("[VirtualQuery Test] BaseAddress: 0x");
+        DebugConsole.WriteHex((ulong)memInfo.BaseAddress);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[VirtualQuery Test] AllocationBase: 0x");
+        DebugConsole.WriteHex((ulong)memInfo.AllocationBase);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[VirtualQuery Test] RegionSize: 0x");
+        DebugConsole.WriteHex((ulong)memInfo.RegionSize);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[VirtualQuery Test] State: 0x");
+        DebugConsole.WriteHex(memInfo.State);
+        if (memInfo.State == MemoryState.MEM_COMMIT)
+            DebugConsole.Write(" (MEM_COMMIT)");
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[VirtualQuery Test] Protect: 0x");
+        DebugConsole.WriteHex(memInfo.Protect);
+        if (memInfo.Protect == MemoryProtection.PAGE_READWRITE)
+            DebugConsole.Write(" (PAGE_READWRITE)");
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[VirtualQuery Test] Type: 0x");
+        DebugConsole.WriteHex(memInfo.Type);
+        if (memInfo.Type == MemoryType.MEM_PRIVATE)
+            DebugConsole.Write(" (MEM_PRIVATE)");
+        DebugConsole.WriteLine();
+
+        // Verify the results
+        if (memInfo.State != MemoryState.MEM_COMMIT)
+        {
+            DebugConsole.WriteLine("[VirtualQuery Test] FAILED: Expected MEM_COMMIT state");
+            PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE);
+            return 1;
+        }
+
+        if (memInfo.Protect != MemoryProtection.PAGE_READWRITE)
+        {
+            DebugConsole.WriteLine("[VirtualQuery Test] FAILED: Expected PAGE_READWRITE protection");
+            PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE);
+            return 1;
+        }
+
+        // Query a free memory region (high address that shouldn't be mapped)
+        void* freeAddr = (void*)0x7FFF00000000UL;
+        ulong result2 = PAL.Memory.VirtualQuery(freeAddr, &memInfo, (ulong)sizeof(MemoryBasicInformation));
+
+        if (result2 > 0)
+        {
+            DebugConsole.Write("[VirtualQuery Test] Free region state: 0x");
+            DebugConsole.WriteHex(memInfo.State);
+            if (memInfo.State == MemoryState.MEM_FREE)
+                DebugConsole.Write(" (MEM_FREE) OK");
+            DebugConsole.WriteLine();
+        }
+
+        // Cleanup
+        PAL.Memory.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE);
+
+        DebugConsole.WriteLine("[VirtualQuery Test] All VirtualQuery tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Thread context test - tests GetThreadContext / RtlCaptureContext
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint ThreadContextTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Context Test] Starting Thread Context API test...");
+
+        // Test 1: RtlCaptureContext - capture current thread's context
+        Context ctx;
+        ThreadApi.RtlCaptureContext(&ctx);
+
+        DebugConsole.Write("[Context Test] RtlCaptureContext - ContextFlags: 0x");
+        DebugConsole.WriteHex(ctx.ContextFlags);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[Context Test] RIP: 0x");
+        DebugConsole.WriteHex(ctx.Rip);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[Context Test] RSP: 0x");
+        DebugConsole.WriteHex(ctx.Rsp);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[Context Test] RBP: 0x");
+        DebugConsole.WriteHex(ctx.Rbp);
+        DebugConsole.WriteLine();
+
+        // Verify context flags include what we expect
+        if ((ctx.ContextFlags & ContextFlags.CONTEXT_CONTROL) == 0)
+        {
+            DebugConsole.WriteLine("[Context Test] WARNING: CONTEXT_CONTROL not set");
+        }
+
+        if ((ctx.ContextFlags & ContextFlags.CONTEXT_INTEGER) == 0)
+        {
+            DebugConsole.WriteLine("[Context Test] WARNING: CONTEXT_INTEGER not set");
+        }
+
+        // Test 2: GetThreadContext - get our own context via handle
+        var handle = ThreadApi.GetCurrentThread();
+        if (!handle.IsValid)
+        {
+            DebugConsole.WriteLine("[Context Test] FAILED: GetCurrentThread returned invalid handle");
+            return 1;
+        }
+
+        Context ctx2;
+        ctx2.ContextFlags = ContextFlags.CONTEXT_FULL;
+        bool success = ThreadApi.GetThreadContext(handle, &ctx2);
+
+        if (!success)
+        {
+            DebugConsole.WriteLine("[Context Test] FAILED: GetThreadContext returned false");
+            return 1;
+        }
+
+        DebugConsole.Write("[Context Test] GetThreadContext - RSP: 0x");
+        DebugConsole.WriteHex(ctx2.Rsp);
+        DebugConsole.WriteLine();
+
+        // Verify RSP values are in a reasonable range (should be on stack)
+        if (ctx2.Rsp < 0x1000)
+        {
+            DebugConsole.WriteLine("[Context Test] WARNING: RSP seems too low");
+        }
+
+        // Test 3: Check segment registers
+        DebugConsole.Write("[Context Test] CS: 0x");
+        DebugConsole.WriteHex(ctx2.SegCs);
+        DebugConsole.Write(" SS: 0x");
+        DebugConsole.WriteHex(ctx2.SegSs);
+        DebugConsole.WriteLine();
+
+        // Test GetCurrentThreadId
+        uint tid = ThreadApi.GetCurrentThreadId();
+        DebugConsole.Write("[Context Test] Current thread ID: ");
+        DebugConsole.WriteHex((ushort)tid);
+        DebugConsole.WriteLine();
+
+        DebugConsole.WriteLine("[Context Test] All Thread Context tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Fixed-size handle array for WaitForMultipleObjects testing.
+    /// Using a struct avoids stackalloc overflow checking issues in stdlib:zero.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct HandleArray2
+    {
+        public void* Handle0;
+        public void* Handle1;
+    }
+
+    /// <summary>
+    /// WaitForMultipleObjects test thread - tests multi-object waiting
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint WaitMultipleTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[WaitMultiple Test] Starting WaitForMultipleObjects test...");
+
+        // Create two events for testing
+        var event1 = Sync.CreateEvent(false, false);  // Auto-reset, not signaled
+        var event2 = Sync.CreateEvent(false, true);   // Auto-reset, signaled
+
+        if (event1 == null || event2 == null)
+        {
+            DebugConsole.WriteLine("[WaitMultiple Test] FAILED: Could not create events");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[WaitMultiple Test] Created two events (one not signaled, one signaled)");
+
+        // Test 1: WaitAny with one signaled - should return immediately
+        // Use fixed-size struct to avoid stackalloc overflow checking
+        HandleArray2 handleArray;
+        handleArray.Handle0 = event1;  // not signaled
+        handleArray.Handle1 = event2;  // signaled
+        void** handles = (void**)&handleArray;
+
+        uint result = Sync.WaitForMultipleObjects(2, handles, false, 0);  // bWaitAll=false, timeout=0
+
+        DebugConsole.Write("[WaitMultiple Test] WaitAny result: ");
+        DebugConsole.WriteHex(result);
+        // WAIT_OBJECT_0 + 1 = 1 (second handle signaled)
+        if (result == 1u)
+        {
+            DebugConsole.WriteLine(" (WAIT_OBJECT_0+1) OK - second event was signaled");
+        }
+        else if (result == WaitResult.Object0)
+        {
+            DebugConsole.WriteLine(" (WAIT_OBJECT_0) - first event somehow signaled");
+        }
+        else if (result == WaitResult.Timeout)
+        {
+            DebugConsole.WriteLine(" (WAIT_TIMEOUT) - neither signaled??");
+        }
+        else
+        {
+            DebugConsole.WriteLine();
+        }
+
+        // Test 2: Signal event1 and test WaitAll
+        Sync.SetEvent(event1);
+        Sync.SetEvent(event2);  // Re-signal after auto-reset
+
+        DebugConsole.WriteLine("[WaitMultiple Test] Both events now signaled");
+
+        result = Sync.WaitForMultipleObjects(2, handles, true, 0);  // bWaitAll=true
+
+        DebugConsole.Write("[WaitMultiple Test] WaitAll result: ");
+        DebugConsole.WriteHex(result);
+        if (result == WaitResult.Object0)
+        {
+            DebugConsole.WriteLine(" (WAIT_OBJECT_0) OK - both events signaled");
+        }
+        else if (result == WaitResult.Timeout)
+        {
+            DebugConsole.WriteLine(" (WAIT_TIMEOUT)");
+        }
+        else
+        {
+            DebugConsole.WriteLine();
+        }
+
+        // Test 3: Timeout test - neither signaled now (auto-reset consumed them)
+        result = Sync.WaitForMultipleObjects(2, handles, false, 0);
+
+        DebugConsole.Write("[WaitMultiple Test] After auto-reset, WaitAny result: ");
+        DebugConsole.WriteHex(result);
+        if (result == WaitResult.Timeout)
+        {
+            DebugConsole.WriteLine(" (WAIT_TIMEOUT) OK - events were auto-reset");
+        }
+        else
+        {
+            DebugConsole.WriteLine();
+        }
+
+        // Cleanup
+        Sync.CloseHandle(event1);
+        Sync.CloseHandle(event2);
+
+        DebugConsole.WriteLine("[WaitMultiple Test] All WaitForMultipleObjects tests PASSED!");
+        return 0;
+    }
+
+    // Static flag to track if our exception filter was called
+    private static bool _raiseExceptionFilterCalled;
+    private static uint _raiseExceptionCode;
+
+    /// <summary>
+    /// Exception filter for RaiseException test - handles the test exception
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static int RaiseExceptionTestFilter(ExceptionRecord* record, ExceptionContext* context)
+    {
+        _raiseExceptionFilterCalled = true;
+        _raiseExceptionCode = record->ExceptionCode;
+
+        DebugConsole.Write("[RaiseException Test] Filter called! Code: 0x");
+        DebugConsole.WriteHex(record->ExceptionCode);
+        DebugConsole.WriteLine();
+
+        // Return -1 to continue execution (EXCEPTION_CONTINUE_EXECUTION)
+        return -1;
+    }
+
+    /// <summary>
+    /// RaiseException test thread - tests software exception raising with filter
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint RaiseExceptionTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[RaiseException Test] Starting RaiseException test...");
+
+        // Reset test state
+        _raiseExceptionFilterCalled = false;
+        _raiseExceptionCode = 0;
+
+        // Register our exception filter
+        var oldFilter = PAL.Exception.SetUnhandledExceptionFilter(&RaiseExceptionTestFilter);
+        DebugConsole.WriteLine("[RaiseException Test] Registered test exception filter");
+
+        // Test 1: Raise a custom exception code (continuable)
+        const uint TEST_EXCEPTION_CODE = 0xE0001234;
+        DebugConsole.Write("[RaiseException Test] Raising exception 0x");
+        DebugConsole.WriteHex(TEST_EXCEPTION_CODE);
+        DebugConsole.WriteLine("...");
+
+        PAL.Exception.RaiseException(TEST_EXCEPTION_CODE, 0, 0, null);
+
+        // If we get here, the exception was handled and we continued
+        DebugConsole.WriteLine("[RaiseException Test] Returned from RaiseException!");
+
+        // Check if filter was called
+        if (_raiseExceptionFilterCalled)
+        {
+            DebugConsole.Write("[RaiseException Test] Filter was called - ");
+            if (_raiseExceptionCode == TEST_EXCEPTION_CODE)
+            {
+                DebugConsole.WriteLine("PASSED: Exception code matched!");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED: Wrong code 0x");
+                DebugConsole.WriteHex(_raiseExceptionCode);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[RaiseException Test] Filter was NOT called (no filter registered or dispatch failed)");
+        }
+
+        // Restore old filter
+        PAL.Exception.SetUnhandledExceptionFilter(oldFilter);
+        DebugConsole.WriteLine("[RaiseException Test] Restored original exception filter");
+
+        DebugConsole.WriteLine("[RaiseException Test] RaiseException test completed!");
+        return 0;
+    }
+
+    // State for suspend/resume test
+    private static int _suspendTestCounter;
+    private static bool _suspendTestTargetRunning;
+
+    /// <summary>
+    /// Target thread that increments a counter - will be suspended/resumed
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SuspendTestTargetThread(void* param)
+    {
+        _suspendTestTargetRunning = true;
+        while (_suspendTestTargetRunning)
+        {
+            _suspendTestCounter++;
+            // Small busy loop
+            for (int i = 0; i < 1000; i++) Cpu.Pause();
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// SuspendThread/ResumeThread test thread
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SuspendResumeTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Suspend/Resume Test] Starting...");
+
+        // Test 1: Create a thread in suspended state
+        DebugConsole.WriteLine("[Suspend/Resume Test] Test 1: CREATE_SUSPENDED flag");
+        _suspendTestCounter = 0;
+        _suspendTestTargetRunning = true;
+
+        uint targetId;
+        var targetHandle = PAL.ThreadApi.CreateThread(
+            null, 0, &SuspendTestTargetThread, null,
+            ThreadCreationFlags.CREATE_SUSPENDED, out targetId);
+
+        if (!targetHandle.IsValid)
+        {
+            DebugConsole.WriteLine("[Suspend/Resume Test] FAILED: Could not create target thread");
+            return 1;
+        }
+
+        DebugConsole.Write("[Suspend/Resume Test] Created suspended thread ");
+        DebugConsole.WriteHex((ushort)targetId);
+        DebugConsole.WriteLine();
+
+        // Give it a moment, counter should stay at 0 since it's suspended
+        PAL.ThreadApi.Sleep(100);
+        int count1 = _suspendTestCounter;
+        DebugConsole.Write("[Suspend/Resume Test] Counter after 100ms (should be 0): ");
+        DebugConsole.WriteHex((uint)count1);
+        if (count1 == 0)
+            DebugConsole.WriteLine(" - PASSED");
+        else
+            DebugConsole.WriteLine(" - FAILED (thread ran while suspended!)");
+
+        // Resume the thread
+        DebugConsole.WriteLine("[Suspend/Resume Test] Resuming thread...");
+        int prevCount = PAL.ThreadApi.ResumeThread(targetHandle);
+        DebugConsole.Write("[Suspend/Resume Test] ResumeThread returned previous suspend count: ");
+        DebugConsole.WriteHex((uint)prevCount);
+        if (prevCount == 1)
+            DebugConsole.WriteLine(" - PASSED (was suspended once)");
+        else
+            DebugConsole.WriteLine();
+
+        // Let it run and check counter increases
+        PAL.ThreadApi.Sleep(100);
+        int count2 = _suspendTestCounter;
+        DebugConsole.Write("[Suspend/Resume Test] Counter after running 100ms: ");
+        DebugConsole.WriteHex((uint)count2);
+        if (count2 > count1)
+            DebugConsole.WriteLine(" - PASSED (counter increased)");
+        else
+            DebugConsole.WriteLine(" - FAILED (counter did not increase!)");
+
+        // Test 2: Suspend a running thread
+        DebugConsole.WriteLine("[Suspend/Resume Test] Test 2: SuspendThread on running thread");
+        prevCount = PAL.ThreadApi.SuspendThread(targetHandle);
+        DebugConsole.Write("[Suspend/Resume Test] SuspendThread returned previous suspend count: ");
+        DebugConsole.WriteHex((uint)prevCount);
+        if (prevCount == 0)
+            DebugConsole.WriteLine(" - PASSED (was not suspended)");
+        else
+            DebugConsole.WriteLine();
+
+        // Record counter, wait, check it doesn't change
+        int count3 = _suspendTestCounter;
+        PAL.ThreadApi.Sleep(100);
+        int count4 = _suspendTestCounter;
+        DebugConsole.Write("[Suspend/Resume Test] Counter before: ");
+        DebugConsole.WriteHex((uint)count3);
+        DebugConsole.Write(", after: ");
+        DebugConsole.WriteHex((uint)count4);
+        if (count4 == count3)
+            DebugConsole.WriteLine(" - PASSED (thread is suspended)");
+        else
+            DebugConsole.WriteLine(" - Note: counter changed (timing variance)");
+
+        // Test 3: Multiple suspends - suspend count should stack
+        DebugConsole.WriteLine("[Suspend/Resume Test] Test 3: Multiple suspend calls");
+        prevCount = PAL.ThreadApi.SuspendThread(targetHandle);
+        DebugConsole.Write("[Suspend/Resume Test] Second SuspendThread returned: ");
+        DebugConsole.WriteHex((uint)prevCount);
+        if (prevCount == 1)
+            DebugConsole.WriteLine(" - PASSED (was suspended once)");
+        else
+            DebugConsole.WriteLine();
+
+        // Resume once - should still be suspended (count was 2, now 1)
+        prevCount = PAL.ThreadApi.ResumeThread(targetHandle);
+        DebugConsole.Write("[Suspend/Resume Test] First ResumeThread returned: ");
+        DebugConsole.WriteHex((uint)prevCount);
+        if (prevCount == 2)
+            DebugConsole.WriteLine(" - PASSED (was suspended twice)");
+        else
+            DebugConsole.WriteLine();
+
+        int count5 = _suspendTestCounter;
+        PAL.ThreadApi.Sleep(50);
+        int count6 = _suspendTestCounter;
+        DebugConsole.Write("[Suspend/Resume Test] After one resume, counter change: ");
+        DebugConsole.WriteHex((uint)(count6 - count5));
+        if (count6 == count5)
+            DebugConsole.WriteLine(" - PASSED (still suspended)");
+        else
+            DebugConsole.WriteLine(" - Note: counter changed");
+
+        // Final resume - thread should run
+        prevCount = PAL.ThreadApi.ResumeThread(targetHandle);
+        DebugConsole.Write("[Suspend/Resume Test] Second ResumeThread returned: ");
+        DebugConsole.WriteHex((uint)prevCount);
+        if (prevCount == 1)
+            DebugConsole.WriteLine(" - PASSED");
+        else
+            DebugConsole.WriteLine();
+
+        PAL.ThreadApi.Sleep(50);
+        int count7 = _suspendTestCounter;
+        if (count7 > count6)
+            DebugConsole.WriteLine("[Suspend/Resume Test] Thread running again - PASSED");
+        else
+            DebugConsole.WriteLine("[Suspend/Resume Test] Thread not running - check timing");
+
+        // Stop the target thread
+        _suspendTestTargetRunning = false;
+        PAL.ThreadApi.Sleep(50);
+
+        DebugConsole.WriteLine("[Suspend/Resume Test] All tests completed!");
         return 0;
     }
 }

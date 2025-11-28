@@ -8,6 +8,64 @@ using Kernel.X64;
 namespace Kernel.PAL;
 
 /// <summary>
+/// Context flags for GetThreadContext/SetThreadContext.
+/// These control which parts of the CONTEXT structure are read/written.
+/// </summary>
+public static class ContextFlags
+{
+    public const uint CONTEXT_AMD64 = 0x00100000;
+    public const uint CONTEXT_CONTROL = CONTEXT_AMD64 | 0x0001;  // SS:RSP, CS:RIP, RFLAGS, RBP
+    public const uint CONTEXT_INTEGER = CONTEXT_AMD64 | 0x0002;  // RAX-R15
+    public const uint CONTEXT_SEGMENTS = CONTEXT_AMD64 | 0x0004; // DS, ES, FS, GS
+    public const uint CONTEXT_FLOATING_POINT = CONTEXT_AMD64 | 0x0008;
+    public const uint CONTEXT_DEBUG_REGISTERS = CONTEXT_AMD64 | 0x0010;
+    public const uint CONTEXT_FULL = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT;
+    public const uint CONTEXT_ALL = CONTEXT_FULL | CONTEXT_SEGMENTS | CONTEXT_DEBUG_REGISTERS;
+}
+
+/// <summary>
+/// x64 CONTEXT structure for Get/SetThreadContext.
+/// This is a simplified version that includes the registers needed for stack walking and SEH.
+/// Full Win32 CONTEXT includes XMM registers, debug registers, etc.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct Context
+{
+    // Context control flags - specifies which registers are valid
+    public uint ContextFlags;
+
+    // Segment registers (CONTEXT_SEGMENTS)
+    public ushort SegCs;
+    public ushort SegDs;
+    public ushort SegEs;
+    public ushort SegFs;
+    public ushort SegGs;
+    public ushort SegSs;
+
+    // Control registers (CONTEXT_CONTROL)
+    public ulong Rip;
+    public ulong Rsp;
+    public ulong Rbp;
+    public ulong EFlags;
+
+    // Integer registers (CONTEXT_INTEGER)
+    public ulong Rax;
+    public ulong Rbx;
+    public ulong Rcx;
+    public ulong Rdx;
+    public ulong Rsi;
+    public ulong Rdi;
+    public ulong R8;
+    public ulong R9;
+    public ulong R10;
+    public ulong R11;
+    public ulong R12;
+    public ulong R13;
+    public ulong R14;
+    public ulong R15;
+}
+
+/// <summary>
 /// Thread creation flags.
 /// </summary>
 public static class ThreadCreationFlags
@@ -123,9 +181,7 @@ public static unsafe class ThreadApi
         if (!hThread.IsValid)
             return -1;
 
-        // TODO: Implement in scheduler
-        // For now, return error
-        return -1;
+        return Scheduler.SuspendThread(hThread.Thread);
     }
 
     /// <summary>
@@ -138,9 +194,7 @@ public static unsafe class ThreadApi
         if (!hThread.IsValid)
             return -1;
 
-        // TODO: Implement in scheduler
-        // For now, return error
-        return -1;
+        return Scheduler.ResumeThread(hThread.Thread);
     }
 
     /// <summary>
@@ -259,6 +313,176 @@ public static unsafe class ThreadApi
         // for JIT scenarios since we're not running on the same core immediately.
 
         return true;
+    }
+
+    /// <summary>
+    /// Get the context (register state) of a thread.
+    /// The thread should be suspended before calling this.
+    /// </summary>
+    /// <param name="hThread">Thread handle</param>
+    /// <param name="lpContext">Pointer to CONTEXT structure to receive the context.
+    /// ContextFlags field must be set to indicate which parts to retrieve.</param>
+    /// <returns>True on success</returns>
+    public static bool GetThreadContext(ThreadHandle hThread, Context* lpContext)
+    {
+        if (!hThread.IsValid || lpContext == null)
+            return false;
+
+        var thread = hThread.Thread;
+        uint flags = lpContext->ContextFlags;
+
+        // For the current running thread, we can't get accurate context
+        // (the registers are in use). Thread should be suspended.
+        if (thread == Scheduler.CurrentThread && thread->State == ThreadState.Running)
+        {
+            // Return what we can from saved context, but it may be stale
+        }
+
+        // Copy from thread's saved CpuContext based on requested flags
+        ref CpuContext ctx = ref thread->Context;
+
+        if ((flags & ContextFlags.CONTEXT_CONTROL) != 0)
+        {
+            lpContext->Rip = ctx.Rip;
+            lpContext->Rsp = ctx.Rsp;
+            lpContext->Rbp = ctx.Rbp;
+            lpContext->EFlags = ctx.Rflags;
+            lpContext->SegCs = (ushort)ctx.Cs;
+            lpContext->SegSs = (ushort)ctx.Ss;
+        }
+
+        if ((flags & ContextFlags.CONTEXT_INTEGER) != 0)
+        {
+            lpContext->Rax = ctx.Rax;
+            lpContext->Rbx = ctx.Rbx;
+            lpContext->Rcx = ctx.Rcx;
+            lpContext->Rdx = ctx.Rdx;
+            lpContext->Rsi = ctx.Rsi;
+            lpContext->Rdi = ctx.Rdi;
+            lpContext->R8 = ctx.R8;
+            lpContext->R9 = ctx.R9;
+            lpContext->R10 = ctx.R10;
+            lpContext->R11 = ctx.R11;
+            lpContext->R12 = ctx.R12;
+            lpContext->R13 = ctx.R13;
+            lpContext->R14 = ctx.R14;
+            lpContext->R15 = ctx.R15;
+        }
+
+        if ((flags & ContextFlags.CONTEXT_SEGMENTS) != 0)
+        {
+            // We don't track DS/ES/FS/GS separately, use defaults
+            lpContext->SegDs = 0x10;  // Kernel data segment
+            lpContext->SegEs = 0x10;
+            lpContext->SegFs = 0;
+            lpContext->SegGs = 0;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Set the context (register state) of a thread.
+    /// The thread should be suspended before calling this.
+    /// </summary>
+    /// <param name="hThread">Thread handle</param>
+    /// <param name="lpContext">Pointer to CONTEXT structure with new values.
+    /// ContextFlags field indicates which parts to set.</param>
+    /// <returns>True on success</returns>
+    public static bool SetThreadContext(ThreadHandle hThread, Context* lpContext)
+    {
+        if (!hThread.IsValid || lpContext == null)
+            return false;
+
+        var thread = hThread.Thread;
+        uint flags = lpContext->ContextFlags;
+
+        // Cannot set context of currently running thread
+        if (thread == Scheduler.CurrentThread && thread->State == ThreadState.Running)
+            return false;
+
+        // Copy to thread's saved CpuContext based on requested flags
+        ref CpuContext ctx = ref thread->Context;
+
+        if ((flags & ContextFlags.CONTEXT_CONTROL) != 0)
+        {
+            ctx.Rip = lpContext->Rip;
+            ctx.Rsp = lpContext->Rsp;
+            ctx.Rbp = lpContext->Rbp;
+            ctx.Rflags = lpContext->EFlags;
+            ctx.Cs = lpContext->SegCs;
+            ctx.Ss = lpContext->SegSs;
+        }
+
+        if ((flags & ContextFlags.CONTEXT_INTEGER) != 0)
+        {
+            ctx.Rax = lpContext->Rax;
+            ctx.Rbx = lpContext->Rbx;
+            ctx.Rcx = lpContext->Rcx;
+            ctx.Rdx = lpContext->Rdx;
+            ctx.Rsi = lpContext->Rsi;
+            ctx.Rdi = lpContext->Rdi;
+            ctx.R8 = lpContext->R8;
+            ctx.R9 = lpContext->R9;
+            ctx.R10 = lpContext->R10;
+            ctx.R11 = lpContext->R11;
+            ctx.R12 = lpContext->R12;
+            ctx.R13 = lpContext->R13;
+            ctx.R14 = lpContext->R14;
+            ctx.R15 = lpContext->R15;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Capture the current context (RtlCaptureContext equivalent).
+    /// Saves the current CPU registers into the provided CONTEXT structure.
+    /// </summary>
+    /// <param name="lpContext">Pointer to CONTEXT structure to receive current context</param>
+    public static void RtlCaptureContext(Context* lpContext)
+    {
+        if (lpContext == null)
+            return;
+
+        var thread = Scheduler.CurrentThread;
+        if (thread == null)
+            return;
+
+        // Set flags to indicate what we captured
+        lpContext->ContextFlags = ContextFlags.CONTEXT_FULL;
+
+        // For the current thread, we get the saved context from the last context switch
+        // This won't be perfectly accurate for the current running thread, but it's
+        // what we have available without inline assembly
+        ref CpuContext ctx = ref thread->Context;
+
+        lpContext->Rip = ctx.Rip;
+        lpContext->Rsp = ctx.Rsp;
+        lpContext->Rbp = ctx.Rbp;
+        lpContext->EFlags = ctx.Rflags;
+        lpContext->SegCs = (ushort)ctx.Cs;
+        lpContext->SegSs = (ushort)ctx.Ss;
+
+        lpContext->Rax = ctx.Rax;
+        lpContext->Rbx = ctx.Rbx;
+        lpContext->Rcx = ctx.Rcx;
+        lpContext->Rdx = ctx.Rdx;
+        lpContext->Rsi = ctx.Rsi;
+        lpContext->Rdi = ctx.Rdi;
+        lpContext->R8 = ctx.R8;
+        lpContext->R9 = ctx.R9;
+        lpContext->R10 = ctx.R10;
+        lpContext->R11 = ctx.R11;
+        lpContext->R12 = ctx.R12;
+        lpContext->R13 = ctx.R13;
+        lpContext->R14 = ctx.R14;
+        lpContext->R15 = ctx.R15;
+
+        lpContext->SegDs = 0x10;
+        lpContext->SegEs = 0x10;
+        lpContext->SegFs = 0;
+        lpContext->SegGs = 0;
     }
 }
 

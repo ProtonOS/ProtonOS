@@ -523,4 +523,203 @@ public static unsafe class Sync
         _lock.Release();
         return true;
     }
+
+    /// <summary>
+    /// Wait for multiple objects.
+    /// </summary>
+    /// <param name="count">Number of objects to wait on</param>
+    /// <param name="handles">Array of object pointers</param>
+    /// <param name="waitAll">If true, wait for ALL objects; if false, wait for ANY</param>
+    /// <param name="timeoutMs">Timeout in milliseconds (0xFFFFFFFF = infinite)</param>
+    /// <returns>
+    /// If waitAll is false: WAIT_OBJECT_0 + index of signaled object
+    /// If waitAll is true: WAIT_OBJECT_0 when all objects are signaled
+    /// WAIT_TIMEOUT on timeout, WAIT_FAILED on error
+    /// </returns>
+    public static uint WaitForMultipleObjects(uint count, void** handles, bool waitAll, uint timeoutMs)
+    {
+        if (count == 0 || count > 64 || handles == null)
+            return WaitResult.Failed;
+
+        // Check for null handles
+        for (uint i = 0; i < count; i++)
+        {
+            if (handles[i] == null)
+                return WaitResult.Failed;
+        }
+
+        _lock.Acquire();
+
+        // Check if objects are already signaled
+        if (waitAll)
+        {
+            // WaitAll: all objects must be signaled
+            bool allSignaled = true;
+            for (uint i = 0; i < count; i++)
+            {
+                if (!IsObjectSignaled((ObjectHeader*)handles[i]))
+                {
+                    allSignaled = false;
+                    break;
+                }
+            }
+
+            if (allSignaled)
+            {
+                // Acquire all objects
+                for (uint i = 0; i < count; i++)
+                {
+                    TryAcquireObject((ObjectHeader*)handles[i]);
+                }
+                _lock.Release();
+                return WaitResult.Object0;
+            }
+        }
+        else
+        {
+            // WaitAny: check each object
+            for (uint i = 0; i < count; i++)
+            {
+                if (TryAcquireObject((ObjectHeader*)handles[i]))
+                {
+                    _lock.Release();
+                    return WaitResult.Object0 + i;
+                }
+            }
+        }
+
+        // If timeout is 0, return immediately
+        if (timeoutMs == 0)
+        {
+            _lock.Release();
+            return WaitResult.Timeout;
+        }
+
+        // Need to block - add to wait lists of all objects
+        var current = Scheduler.CurrentThread;
+        if (current == null)
+        {
+            _lock.Release();
+            return WaitResult.Failed;
+        }
+
+        // Store the first handle as the wait object (for simple tracking)
+        current->WaitObject = handles[0];
+        current->WaitResult = WaitResult.Timeout;
+
+        // Calculate wake time for timeout
+        if (timeoutMs != 0xFFFFFFFF)
+        {
+            current->WakeTime = Apic.TickCount + (timeoutMs / 10);
+        }
+        else
+        {
+            current->WakeTime = 0;
+        }
+
+        // For WaitAny, we add to all wait lists
+        // When one signals, we'll be woken and can check which one
+        // Note: This is a simplified implementation - we only add to the first wait list
+        // A full implementation would need to handle being on multiple wait lists
+        AddToWaitList((ObjectHeader*)handles[0], current);
+
+        current->State = ThreadState.Blocked;
+        _lock.Release();
+
+        // Poll loop for wait-any or wait-all
+        // This is a simplified implementation - ideally we'd use proper multi-wait
+        while (true)
+        {
+            Scheduler.Schedule();
+
+            _lock.Acquire();
+
+            // Check timeout
+            bool timedOut = false;
+            if (current->WakeTime != 0 && Apic.TickCount >= current->WakeTime)
+            {
+                timedOut = true;
+            }
+
+            if (waitAll)
+            {
+                // Check if all are signaled
+                bool allSignaled = true;
+                for (uint i = 0; i < count; i++)
+                {
+                    if (!IsObjectSignaled((ObjectHeader*)handles[i]))
+                    {
+                        allSignaled = false;
+                        break;
+                    }
+                }
+
+                if (allSignaled)
+                {
+                    // Acquire all
+                    for (uint i = 0; i < count; i++)
+                    {
+                        TryAcquireObject((ObjectHeader*)handles[i]);
+                    }
+                    RemoveFromWaitList((ObjectHeader*)handles[0], current);
+                    current->WaitObject = null;
+                    _lock.Release();
+                    return WaitResult.Object0;
+                }
+            }
+            else
+            {
+                // Check if any is signaled
+                for (uint i = 0; i < count; i++)
+                {
+                    if (TryAcquireObject((ObjectHeader*)handles[i]))
+                    {
+                        RemoveFromWaitList((ObjectHeader*)handles[0], current);
+                        current->WaitObject = null;
+                        _lock.Release();
+                        return WaitResult.Object0 + i;
+                    }
+                }
+            }
+
+            if (timedOut)
+            {
+                RemoveFromWaitList((ObjectHeader*)handles[0], current);
+                current->WaitObject = null;
+                _lock.Release();
+                return WaitResult.Timeout;
+            }
+
+            // Still waiting - go back to blocked
+            current->State = ThreadState.Blocked;
+            _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Check if an object is signaled without acquiring it.
+    /// Caller must hold the lock.
+    /// </summary>
+    private static bool IsObjectSignaled(ObjectHeader* header)
+    {
+        switch (header->Type)
+        {
+            case ObjectType.Event:
+                return ((Event*)header)->Signaled;
+
+            case ObjectType.Mutex:
+                var mutex = (Mutex*)header;
+                var current = Scheduler.CurrentThread;
+                return mutex->Owner == null || mutex->Owner == current;
+
+            case ObjectType.Semaphore:
+                return ((Semaphore*)header)->Count > 0;
+
+            case ObjectType.Thread:
+                return ((Thread*)header)->State == ThreadState.Terminated;
+
+            default:
+                return false;
+        }
+    }
 }

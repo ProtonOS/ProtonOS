@@ -163,9 +163,9 @@ public static unsafe class Scheduler
 
         // Initialize thread
         thread->Id = _nextThreadId++;
-        thread->State = (flags & ThreadFlags.CreateSuspended) != 0
-            ? ThreadState.Suspended
-            : ThreadState.Ready;
+        bool createSuspended = (flags & ThreadFlags.CreateSuspended) != 0;
+        thread->State = createSuspended ? ThreadState.Suspended : ThreadState.Ready;
+        thread->SuspendCount = createSuspended ? 1 : 0;
         thread->Priority = ThreadPriority.Normal;
         thread->StackBase = stackTop;
         thread->StackLimit = stackLimit;
@@ -502,4 +502,91 @@ public static unsafe class Scheduler
     /// Get the scheduler lock for safe thread enumeration.
     /// </summary>
     public static ref SpinLock SchedulerLock => ref _lock;
+
+    /// <summary>
+    /// Suspend a thread.
+    /// Increments the suspend count and removes the thread from the ready queue.
+    /// </summary>
+    /// <param name="thread">Thread to suspend</param>
+    /// <returns>Previous suspend count, or -1 on error</returns>
+    public static int SuspendThread(Thread* thread)
+    {
+        if (thread == null || !_initialized)
+            return -1;
+
+        _lock.Acquire();
+
+        // Can't suspend terminated threads
+        if (thread->State == ThreadState.Terminated)
+        {
+            _lock.Release();
+            return -1;
+        }
+
+        int previousCount = thread->SuspendCount;
+        thread->SuspendCount++;
+
+        // If this is the first suspend (count was 0), actually suspend the thread
+        if (previousCount == 0)
+        {
+            if (thread->State == ThreadState.Ready)
+            {
+                // Remove from ready queue
+                RemoveFromReadyQueue(thread);
+            }
+            thread->State = ThreadState.Suspended;
+
+            // If suspending the current thread, need to reschedule
+            if (thread == _currentThread)
+            {
+                _lock.Release();
+                Schedule();
+                return previousCount;
+            }
+        }
+
+        _lock.Release();
+        return previousCount;
+    }
+
+    /// <summary>
+    /// Resume a suspended thread.
+    /// Decrements the suspend count and makes the thread ready if count reaches 0.
+    /// </summary>
+    /// <param name="thread">Thread to resume</param>
+    /// <returns>Previous suspend count, or -1 on error</returns>
+    public static int ResumeThread(Thread* thread)
+    {
+        if (thread == null || !_initialized)
+            return -1;
+
+        _lock.Acquire();
+
+        // Can't resume terminated threads
+        if (thread->State == ThreadState.Terminated)
+        {
+            _lock.Release();
+            return -1;
+        }
+
+        // Can't resume if not suspended
+        if (thread->SuspendCount == 0)
+        {
+            _lock.Release();
+            return 0;  // Already not suspended
+        }
+
+        int previousCount = thread->SuspendCount;
+        thread->SuspendCount--;
+
+        // If suspend count reaches 0, make thread ready
+        if (thread->SuspendCount == 0 && thread->State == ThreadState.Suspended)
+        {
+            thread->State = ThreadState.Ready;
+            AddToReadyQueue(thread);
+        }
+
+        _lock.Release();
+        return previousCount;
+    }
 }

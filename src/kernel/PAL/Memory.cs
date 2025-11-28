@@ -64,6 +64,41 @@ public static class MemoryFreeType
 }
 
 /// <summary>
+/// Memory state constants for VirtualQuery.
+/// </summary>
+public static class MemoryState
+{
+    public const uint MEM_COMMIT = 0x00001000;   // Pages are committed (backed by physical memory)
+    public const uint MEM_RESERVE = 0x00002000;  // Pages are reserved (address space only)
+    public const uint MEM_FREE = 0x00010000;     // Pages are free (not reserved or committed)
+}
+
+/// <summary>
+/// Memory type constants for VirtualQuery.
+/// </summary>
+public static class MemoryType
+{
+    public const uint MEM_PRIVATE = 0x00020000;  // Private memory
+    public const uint MEM_MAPPED = 0x00040000;   // Mapped view
+    public const uint MEM_IMAGE = 0x01000000;    // Mapped image (executable)
+}
+
+/// <summary>
+/// MEMORY_BASIC_INFORMATION structure for VirtualQuery.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MemoryBasicInformation
+{
+    public nuint BaseAddress;          // Base address of the region
+    public nuint AllocationBase;       // Base address of the allocation
+    public uint AllocationProtect;     // Initial protection when allocated
+    public nuint RegionSize;           // Size of the region
+    public uint State;                 // MEM_COMMIT, MEM_RESERVE, or MEM_FREE
+    public uint Protect;               // Current protection
+    public uint Type;                  // MEM_PRIVATE, MEM_MAPPED, or MEM_IMAGE
+}
+
+/// <summary>
 /// PAL heap handle structure.
 /// Allows multiple heaps with different characteristics.
 /// </summary>
@@ -440,5 +475,80 @@ public static unsafe class Memory
             flags |= PageFlags.CacheDisable;
 
         return flags;
+    }
+
+    /// <summary>
+    /// Query information about a range of virtual memory.
+    /// </summary>
+    /// <param name="lpAddress">Address to query</param>
+    /// <param name="lpBuffer">Pointer to MEMORY_BASIC_INFORMATION to receive info</param>
+    /// <param name="dwLength">Size of buffer</param>
+    /// <returns>Number of bytes written to buffer, or 0 on failure</returns>
+    public static ulong VirtualQuery(void* lpAddress, MemoryBasicInformation* lpBuffer, ulong dwLength)
+    {
+        if (!_initialized) Init();
+
+        if (lpBuffer == null || dwLength < (ulong)sizeof(MemoryBasicInformation))
+            return 0;
+
+        ulong queryAddr = (ulong)lpAddress;
+        ulong pageAligned = queryAddr & ~(VirtualMemory.PageSize - 1);
+
+        // Try to find this address in our allocation table
+        ulong allocBase = VirtualMemory.FindAllocation(queryAddr, out ulong allocSize);
+
+        if (allocBase != 0)
+        {
+            // Address is within a known allocation
+            lpBuffer->AllocationBase = (nuint)allocBase;
+            lpBuffer->BaseAddress = (nuint)pageAligned;
+            lpBuffer->RegionSize = (nuint)(allocBase + allocSize - pageAligned);
+            lpBuffer->Type = MemoryType.MEM_PRIVATE;
+
+            // Check if pages are actually mapped (committed)
+            ulong pageEntry = VirtualMemory.GetPageEntry(pageAligned);
+            if ((pageEntry & PageFlags.Present) != 0)
+            {
+                lpBuffer->State = MemoryState.MEM_COMMIT;
+                lpBuffer->Protect = PageFlagsToProtection(pageEntry);
+            }
+            else
+            {
+                lpBuffer->State = MemoryState.MEM_RESERVE;
+                lpBuffer->Protect = MemoryProtection.PAGE_NOACCESS;
+            }
+
+            // Initial protection is same as current for our simple implementation
+            lpBuffer->AllocationProtect = lpBuffer->Protect;
+
+            return (ulong)sizeof(MemoryBasicInformation);
+        }
+
+        // Not in allocation table - check if it's mapped anyway (kernel memory, etc.)
+        ulong pageEntry2 = VirtualMemory.GetPageEntry(pageAligned);
+        if ((pageEntry2 & PageFlags.Present) != 0)
+        {
+            // Page is mapped but not in our allocation table (kernel memory)
+            lpBuffer->BaseAddress = (nuint)pageAligned;
+            lpBuffer->AllocationBase = (nuint)pageAligned;  // Unknown allocation base
+            lpBuffer->RegionSize = (nuint)VirtualMemory.PageSize;
+            lpBuffer->State = MemoryState.MEM_COMMIT;
+            lpBuffer->Protect = PageFlagsToProtection(pageEntry2);
+            lpBuffer->AllocationProtect = lpBuffer->Protect;
+            lpBuffer->Type = MemoryType.MEM_PRIVATE;
+
+            return (ulong)sizeof(MemoryBasicInformation);
+        }
+
+        // Address is free (not reserved or committed)
+        lpBuffer->BaseAddress = (nuint)pageAligned;
+        lpBuffer->AllocationBase = 0;
+        lpBuffer->AllocationProtect = 0;
+        lpBuffer->RegionSize = (nuint)VirtualMemory.PageSize;  // Minimum region size
+        lpBuffer->State = MemoryState.MEM_FREE;
+        lpBuffer->Protect = MemoryProtection.PAGE_NOACCESS;
+        lpBuffer->Type = 0;
+
+        return (ulong)sizeof(MemoryBasicInformation);
     }
 }
