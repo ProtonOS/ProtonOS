@@ -143,7 +143,7 @@ public static unsafe class Mernel
         DebugConsole.WriteLine("[Test] Initialized SRW lock");
 
         // Create test threads
-        uint id1, id2, id3, id4, id5, id6, id7, id8;
+        uint id1, id2, id3, id4, id5, id6, id7, id8, id9;
         var thread1 = KernelScheduler.CreateThread(&TestThread1, null, 0, 0, out id1);
         var thread2 = KernelScheduler.CreateThread(&TestThread2, null, 0, 0, out id2);
         var thread3 = KernelScheduler.CreateThread(&SyncTestWaiter, null, 0, 0, out id3);
@@ -152,9 +152,10 @@ public static unsafe class Mernel
         var thread6 = KernelScheduler.CreateThread(&SRWTestWriter, null, 0, 0, out id6);
         var thread7 = KernelScheduler.CreateThread(&SRWTestReader, (void*)1, 0, 0, out id7);
         var thread8 = KernelScheduler.CreateThread(&SRWTestReader, (void*)2, 0, 0, out id8);
+        var thread9 = KernelScheduler.CreateThread(&MemoryTestThread, null, 0, 0, out id9);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
-            thread5 != null && thread6 != null && thread7 != null && thread8 != null)
+            thread5 != null && thread6 != null && thread7 != null && thread8 != null && thread9 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -172,6 +173,8 @@ public static unsafe class Mernel
             DebugConsole.WriteHex((ushort)id7);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id8);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id9);
             DebugConsole.WriteLine();
         }
     }
@@ -482,6 +485,146 @@ public static unsafe class Mernel
         DebugConsole.Write("[SRW Reader ");
         DebugConsole.WriteHex((ushort)readerId);
         DebugConsole.WriteLine("] SRW test SUCCESS!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Memory test thread - tests HeapAlloc/HeapFree and VirtualAlloc/VirtualFree
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint MemoryTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Memory Test] Starting memory API tests...");
+
+        // Test 1: HeapAlloc/HeapFree
+        var heap = KernelMemoryOps.GetProcessHeap();
+        if (heap == null)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: GetProcessHeap returned null");
+            return 1;
+        }
+
+        DebugConsole.Write("[Memory Test] Process heap at 0x");
+        DebugConsole.WriteHex((ulong)heap);
+        DebugConsole.WriteLine();
+
+        // Allocate some memory
+        byte* ptr1 = (byte*)KernelMemoryOps.HeapAlloc(heap, 0, 256);
+        if (ptr1 == null)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: HeapAlloc returned null");
+            return 1;
+        }
+
+        DebugConsole.Write("[Memory Test] HeapAlloc(256) = 0x");
+        DebugConsole.WriteHex((ulong)ptr1);
+        DebugConsole.WriteLine();
+
+        // Write some data
+        for (int i = 0; i < 256; i++)
+            ptr1[i] = (byte)i;
+
+        // Verify data
+        bool dataOk = true;
+        for (int i = 0; i < 256; i++)
+        {
+            if (ptr1[i] != (byte)i)
+            {
+                dataOk = false;
+                break;
+            }
+        }
+
+        if (!dataOk)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: Data verification failed");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Memory Test] HeapAlloc data write/read OK");
+
+        // Allocate with zero flag
+        byte* ptr2 = (byte*)KernelMemoryOps.HeapAlloc(heap, HeapFlags.HEAP_ZERO_MEMORY, 128);
+        if (ptr2 == null)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: HeapAlloc(ZERO) returned null");
+            return 1;
+        }
+
+        // Verify zeroed
+        bool isZeroed = true;
+        for (int i = 0; i < 128; i++)
+        {
+            if (ptr2[i] != 0)
+            {
+                isZeroed = false;
+                break;
+            }
+        }
+
+        if (!isZeroed)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: HEAP_ZERO_MEMORY not zeroed");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Memory Test] HeapAlloc HEAP_ZERO_MEMORY OK");
+
+        // Free memory
+        KernelMemoryOps.HeapFree(heap, 0, ptr1);
+        KernelMemoryOps.HeapFree(heap, 0, ptr2);
+        DebugConsole.WriteLine("[Memory Test] HeapFree OK");
+
+        // Test 2: VirtualAlloc/VirtualFree
+        void* vaddr = KernelMemoryOps.VirtualAlloc(
+            null,
+            4096,
+            MemoryAllocationType.MEM_COMMIT | MemoryAllocationType.MEM_RESERVE,
+            MemoryProtection.PAGE_READWRITE);
+
+        if (vaddr == null)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: VirtualAlloc returned null");
+            return 1;
+        }
+
+        DebugConsole.Write("[Memory Test] VirtualAlloc(4096) = 0x");
+        DebugConsole.WriteHex((ulong)vaddr);
+        DebugConsole.WriteLine();
+
+        // Write to virtual memory
+        byte* vptr = (byte*)vaddr;
+        for (int i = 0; i < 4096; i++)
+            vptr[i] = (byte)(i & 0xFF);
+
+        // Verify
+        bool vdataOk = true;
+        for (int i = 0; i < 4096; i++)
+        {
+            if (vptr[i] != (byte)(i & 0xFF))
+            {
+                vdataOk = false;
+                break;
+            }
+        }
+
+        if (!vdataOk)
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: VirtualAlloc data verification failed");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Memory Test] VirtualAlloc data write/read OK");
+
+        // Free virtual memory
+        if (!KernelMemoryOps.VirtualFree(vaddr, 0, MemoryFreeType.MEM_RELEASE))
+        {
+            DebugConsole.WriteLine("[Memory Test] FAILED: VirtualFree returned false");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Memory Test] VirtualFree OK");
+        DebugConsole.WriteLine("[Memory Test] All memory tests PASSED!");
         return 0;
     }
 }
