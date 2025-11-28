@@ -173,12 +173,15 @@ public static unsafe class Kernel
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
         var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
+        uint id20;
+        var thread20 = Scheduler.CreateThread(&SyncExTestThread, null, 0, 0, out id20);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
-            thread16 != null && thread17 != null && thread18 != null && thread19 != null)
+            thread16 != null && thread17 != null && thread18 != null && thread19 != null &&
+            thread20 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -218,6 +221,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id18);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id19);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id20);
             DebugConsole.WriteLine();
         }
     }
@@ -2020,6 +2025,303 @@ public static unsafe class Kernel
         EnvironmentApi.SetEnvironmentVariableW(varName, null);
 
         DebugConsole.WriteLine("[Env API Test] All Environment API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Test thread for CreateEventEx, CreateMutexEx, CreateSemaphoreEx, and SignalObjectAndWait
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint SyncExTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[SyncEx Test] Starting extended sync API tests...");
+
+        // Test 1: CreateEventEx with manual reset and initial set flags
+        DebugConsole.WriteLine("[SyncEx Test] Test 1: CreateEventEx");
+
+        // Create manual-reset, initially-signaled event
+        var evt1 = PAL.Sync.CreateEventEx(
+            null, null,
+            PAL.Sync.EventFlags.CREATE_EVENT_MANUAL_RESET | PAL.Sync.EventFlags.CREATE_EVENT_INITIAL_SET,
+            0);
+
+        if (evt1 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 1: FAILED - CreateEventEx returned null");
+            return 1;
+        }
+
+        // Should be able to wait on it immediately (already signaled)
+        var result = PAL.Sync.WaitForSingleObject(evt1, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.Write("[SyncEx Test] Test 1: FAILED - event not initially signaled, result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Manual reset - should still be signaled
+        result = PAL.Sync.WaitForSingleObject(evt1, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 1: FAILED - manual reset event auto-reset");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 1: CreateEventEx with flags - PASSED");
+
+        // Test 2: CreateEventEx auto-reset (no MANUAL_RESET flag)
+        DebugConsole.WriteLine("[SyncEx Test] Test 2: CreateEventEx auto-reset");
+
+        var evt2 = PAL.Sync.CreateEventEx(
+            null, null,
+            PAL.Sync.EventFlags.CREATE_EVENT_INITIAL_SET,  // No manual reset
+            0);
+
+        if (evt2 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 2: FAILED - CreateEventEx returned null");
+            return 1;
+        }
+
+        // First wait should succeed
+        result = PAL.Sync.WaitForSingleObject(evt2, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 2: FAILED - event not initially signaled");
+            return 1;
+        }
+
+        // Second wait should timeout (auto-reset)
+        result = PAL.Sync.WaitForSingleObject(evt2, 0);
+        if (result != WaitResult.Timeout)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 2: FAILED - event did not auto-reset");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 2: CreateEventEx auto-reset - PASSED");
+
+        // Test 3: CreateEventEx with name should fail (not supported)
+        DebugConsole.WriteLine("[SyncEx Test] Test 3: CreateEventEx with name (should fail)");
+
+        char* fakeName = stackalloc char[8];
+        fakeName[0] = 'T'; fakeName[1] = 'e'; fakeName[2] = 's'; fakeName[3] = 't';
+        fakeName[4] = '\0';
+
+        var evt3 = PAL.Sync.CreateEventEx(null, fakeName, 0, 0);
+        if (evt3 != null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 3: FAILED - CreateEventEx with name should return null");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 3: Named event rejected - PASSED");
+
+        // Test 4: CreateMutexEx with initial owner
+        DebugConsole.WriteLine("[SyncEx Test] Test 4: CreateMutexEx with initial owner");
+
+        var mutex1 = PAL.Sync.CreateMutexEx(
+            null, null,
+            PAL.Sync.MutexFlags.CREATE_MUTEX_INITIAL_OWNER,
+            0);
+
+        if (mutex1 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 4: FAILED - CreateMutexEx returned null");
+            return 1;
+        }
+
+        // We own it, so we can acquire it again (recursive)
+        result = PAL.Sync.WaitForSingleObject(mutex1, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 4: FAILED - could not recursively acquire mutex");
+            return 1;
+        }
+
+        // Release twice (we acquired it twice - once on creation, once manually)
+        PAL.Sync.ReleaseMutex(mutex1);
+        PAL.Sync.ReleaseMutex(mutex1);
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 4: CreateMutexEx with initial owner - PASSED");
+
+        // Test 5: CreateMutexEx without initial owner
+        DebugConsole.WriteLine("[SyncEx Test] Test 5: CreateMutexEx without initial owner");
+
+        var mutex2 = PAL.Sync.CreateMutexEx(null, null, 0, 0);
+
+        if (mutex2 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 5: FAILED - CreateMutexEx returned null");
+            return 1;
+        }
+
+        // Should be able to acquire (no owner)
+        result = PAL.Sync.WaitForSingleObject(mutex2, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 5: FAILED - could not acquire unowned mutex");
+            return 1;
+        }
+
+        PAL.Sync.ReleaseMutex(mutex2);
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 5: CreateMutexEx without owner - PASSED");
+
+        // Test 6: CreateSemaphoreEx
+        DebugConsole.WriteLine("[SyncEx Test] Test 6: CreateSemaphoreEx");
+
+        var sem1 = PAL.Sync.CreateSemaphoreEx(null, 2, 5, null, 0, 0);
+
+        if (sem1 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 6: FAILED - CreateSemaphoreEx returned null");
+            return 1;
+        }
+
+        // Should be able to acquire twice (initial count = 2)
+        result = PAL.Sync.WaitForSingleObject(sem1, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 6: FAILED - first acquire failed");
+            return 1;
+        }
+
+        result = PAL.Sync.WaitForSingleObject(sem1, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 6: FAILED - second acquire failed");
+            return 1;
+        }
+
+        // Third should timeout (count is now 0)
+        result = PAL.Sync.WaitForSingleObject(sem1, 0);
+        if (result != WaitResult.Timeout)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 6: FAILED - third acquire should timeout");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 6: CreateSemaphoreEx - PASSED");
+
+        // Test 7: SignalObjectAndWait with event
+        DebugConsole.WriteLine("[SyncEx Test] Test 7: SignalObjectAndWait");
+
+        // Create two events: one to signal, one to wait on
+        var evtToSignal = PAL.Sync.CreateEvent(false, false);
+        var evtToWait = PAL.Sync.CreateEvent(false, true);  // Already signaled
+
+        if (evtToSignal == null || evtToWait == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 7: FAILED - could not create events");
+            return 1;
+        }
+
+        // SignalObjectAndWait: signal evtToSignal, wait on evtToWait
+        result = PAL.Sync.SignalObjectAndWait(evtToSignal, evtToWait, 0, false);
+
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.Write("[SyncEx Test] Test 7: FAILED - SignalObjectAndWait returned: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify evtToSignal was signaled
+        result = PAL.Sync.WaitForSingleObject(evtToSignal, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 7: FAILED - signal object was not signaled");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 7: SignalObjectAndWait - PASSED");
+
+        // Test 8: SignalObjectAndWait with mutex
+        DebugConsole.WriteLine("[SyncEx Test] Test 8: SignalObjectAndWait with mutex");
+
+        var mutexToRelease = PAL.Sync.CreateMutex(true);  // We own it
+        var evtToWait2 = PAL.Sync.CreateEvent(false, true);  // Already signaled
+
+        if (mutexToRelease == null || evtToWait2 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 8: FAILED - could not create objects");
+            return 1;
+        }
+
+        // SignalObjectAndWait: release mutex, wait on event
+        result = PAL.Sync.SignalObjectAndWait(mutexToRelease, evtToWait2, 0, false);
+
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.Write("[SyncEx Test] Test 8: FAILED - result: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify mutex was released (we can acquire it again)
+        result = PAL.Sync.WaitForSingleObject(mutexToRelease, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 8: FAILED - mutex was not released");
+            return 1;
+        }
+
+        PAL.Sync.ReleaseMutex(mutexToRelease);
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 8: SignalObjectAndWait with mutex - PASSED");
+
+        // Test 9: SignalObjectAndWait with timeout
+        DebugConsole.WriteLine("[SyncEx Test] Test 9: SignalObjectAndWait with timeout");
+
+        var evtToSignal2 = PAL.Sync.CreateEvent(false, false);
+        var evtToWait3 = PAL.Sync.CreateEvent(false, false);  // Not signaled
+
+        if (evtToSignal2 == null || evtToWait3 == null)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 9: FAILED - could not create events");
+            return 1;
+        }
+
+        // Should timeout since evtToWait3 is not signaled
+        result = PAL.Sync.SignalObjectAndWait(evtToSignal2, evtToWait3, 50, false);
+
+        if (result != WaitResult.Timeout)
+        {
+            DebugConsole.Write("[SyncEx Test] Test 9: FAILED - expected timeout, got: 0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify evtToSignal2 was still signaled (signal happens before wait)
+        result = PAL.Sync.WaitForSingleObject(evtToSignal2, 0);
+        if (result != WaitResult.Object0)
+        {
+            DebugConsole.WriteLine("[SyncEx Test] Test 9: FAILED - signal object was not signaled");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[SyncEx Test] Test 9: SignalObjectAndWait timeout - PASSED");
+
+        // Clean up
+        PAL.Sync.CloseHandle(evt1);
+        PAL.Sync.CloseHandle(evt2);
+        PAL.Sync.CloseHandle(mutex1);
+        PAL.Sync.CloseHandle(mutex2);
+        PAL.Sync.CloseHandle(sem1);
+        PAL.Sync.CloseHandle(evtToSignal);
+        PAL.Sync.CloseHandle(evtToWait);
+        PAL.Sync.CloseHandle(mutexToRelease);
+        PAL.Sync.CloseHandle(evtToWait2);
+        PAL.Sync.CloseHandle(evtToSignal2);
+        PAL.Sync.CloseHandle(evtToWait3);
+
+        DebugConsole.WriteLine("[SyncEx Test] All extended sync API tests PASSED!");
         return 0;
     }
 }

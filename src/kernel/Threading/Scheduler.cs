@@ -332,7 +332,7 @@ public static unsafe class Scheduler
         _lock.Acquire();
 
         // Calculate wake time
-        thread->WakeTime = Apic.TickCount + (milliseconds / 10);  // 10ms per tick
+        thread->WakeTime = Apic.TickCount + milliseconds;  // 1ms per tick
         thread->State = ThreadState.Blocked;
         thread->Alertable = alertable;
         thread->WaitResult = 0;  // Will be set to IoCompletion if woken by APC
@@ -486,7 +486,7 @@ public static unsafe class Scheduler
             return;
 
         // Only reschedule every N ticks to avoid too much overhead
-        // With 10ms timer, this gives 100ms time slices
+        // With 1ms timer, this gives 10ms time slices
         if (Apic.TickCount % 10 == 0)
         {
             Schedule();

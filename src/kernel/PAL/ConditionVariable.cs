@@ -79,7 +79,7 @@ public static unsafe class ConditionVariableOps
         // Set up wait timeout
         if (dwMilliseconds != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + (dwMilliseconds / 10);  // 10ms per tick
+            current->WakeTime = Apic.TickCount + dwMilliseconds;  // 1ms per tick
         }
         else
         {
@@ -157,7 +157,7 @@ public static unsafe class ConditionVariableOps
         // Set up wait timeout
         if (dwMilliseconds != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + (dwMilliseconds / 10);  // 10ms per tick
+            current->WakeTime = Apic.TickCount + dwMilliseconds;  // 1ms per tick
         }
         else
         {

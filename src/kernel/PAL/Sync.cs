@@ -99,6 +99,35 @@ public static unsafe class Sync
     }
 
     /// <summary>
+    /// Event creation flags for CreateEventEx
+    /// </summary>
+    public static class EventFlags
+    {
+        public const uint CREATE_EVENT_INITIAL_SET = 0x00000002;
+        public const uint CREATE_EVENT_MANUAL_RESET = 0x00000001;
+    }
+
+    /// <summary>
+    /// Create an event object with extended options.
+    /// Named objects are not supported - lpName must be null.
+    /// </summary>
+    /// <param name="lpEventAttributes">Security attributes (ignored)</param>
+    /// <param name="lpName">Event name - must be null (named objects not supported)</param>
+    /// <param name="dwFlags">CREATE_EVENT_MANUAL_RESET (0x1) and/or CREATE_EVENT_INITIAL_SET (0x2)</param>
+    /// <param name="dwDesiredAccess">Desired access (ignored)</param>
+    /// <returns>Event pointer, or null on failure or if lpName is not null</returns>
+    public static Event* CreateEventEx(void* lpEventAttributes, char* lpName, uint dwFlags, uint dwDesiredAccess)
+    {
+        // Named objects not supported yet - fail if name provided
+        if (lpName != null)
+            return null;
+
+        bool manualReset = (dwFlags & EventFlags.CREATE_EVENT_MANUAL_RESET) != 0;
+        bool initialState = (dwFlags & EventFlags.CREATE_EVENT_INITIAL_SET) != 0;
+        return CreateEvent(manualReset, initialState);
+    }
+
+    /// <summary>
     /// Set an event to signaled state.
     /// Wakes one (auto-reset) or all (manual-reset) waiting threads.
     /// </summary>
@@ -166,6 +195,33 @@ public static unsafe class Sync
     }
 
     /// <summary>
+    /// Mutex creation flags for CreateMutexEx
+    /// </summary>
+    public static class MutexFlags
+    {
+        public const uint CREATE_MUTEX_INITIAL_OWNER = 0x00000001;
+    }
+
+    /// <summary>
+    /// Create a mutex object with extended options.
+    /// Named objects are not supported - lpName must be null.
+    /// </summary>
+    /// <param name="lpMutexAttributes">Security attributes (ignored)</param>
+    /// <param name="lpName">Mutex name - must be null (named objects not supported)</param>
+    /// <param name="dwFlags">CREATE_MUTEX_INITIAL_OWNER (0x1) to own mutex on creation</param>
+    /// <param name="dwDesiredAccess">Desired access (ignored)</param>
+    /// <returns>Mutex pointer, or null on failure or if lpName is not null</returns>
+    public static Mutex* CreateMutexEx(void* lpMutexAttributes, char* lpName, uint dwFlags, uint dwDesiredAccess)
+    {
+        // Named objects not supported yet - fail if name provided
+        if (lpName != null)
+            return null;
+
+        bool initialOwner = (dwFlags & MutexFlags.CREATE_MUTEX_INITIAL_OWNER) != 0;
+        return CreateMutex(initialOwner);
+    }
+
+    /// <summary>
     /// Release a mutex.
     /// </summary>
     public static bool ReleaseMutex(Mutex* mutex)
@@ -218,6 +274,32 @@ public static unsafe class Sync
         sem->MaxCount = maxCount;
 
         return sem;
+    }
+
+    /// <summary>
+    /// Create a semaphore object with extended options.
+    /// Named objects are not supported - lpName must be null.
+    /// </summary>
+    /// <param name="lpSemaphoreAttributes">Security attributes (ignored)</param>
+    /// <param name="lInitialCount">Initial count (must be >= 0 and <= lMaximumCount)</param>
+    /// <param name="lMaximumCount">Maximum count</param>
+    /// <param name="lpName">Semaphore name - must be null (named objects not supported)</param>
+    /// <param name="dwFlags">Reserved, must be 0</param>
+    /// <param name="dwDesiredAccess">Desired access (ignored)</param>
+    /// <returns>Semaphore pointer, or null on failure or if lpName is not null</returns>
+    public static Semaphore* CreateSemaphoreEx(
+        void* lpSemaphoreAttributes,
+        int lInitialCount,
+        int lMaximumCount,
+        char* lpName,
+        uint dwFlags,
+        uint dwDesiredAccess)
+    {
+        // Named objects not supported yet - fail if name provided
+        if (lpName != null)
+            return null;
+
+        return CreateSemaphore(lInitialCount, lMaximumCount);
     }
 
     /// <summary>
@@ -327,7 +409,7 @@ public static unsafe class Sync
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + (timeoutMs / 10);  // 10ms per tick
+            current->WakeTime = Apic.TickCount + timeoutMs;  // 1ms per tick
         }
         else
         {
@@ -669,7 +751,7 @@ public static unsafe class Sync
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + (timeoutMs / 10);
+            current->WakeTime = Apic.TickCount + timeoutMs;  // 1ms per tick
         }
         else
         {
@@ -767,6 +849,154 @@ public static unsafe class Sync
             // Still waiting - go back to blocked
             current->State = ThreadState.Blocked;
             _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Atomically signal one object and wait on another.
+    /// This prevents race conditions between signaling and waiting.
+    /// </summary>
+    /// <param name="hObjectToSignal">Object to signal (Event, Mutex, or Semaphore)</param>
+    /// <param name="hObjectToWaitOn">Object to wait on</param>
+    /// <param name="dwMilliseconds">Timeout in milliseconds (0xFFFFFFFF = infinite)</param>
+    /// <param name="bAlertable">If true, wait can be interrupted by APCs</param>
+    /// <returns>Wait result code</returns>
+    public static uint SignalObjectAndWait(void* hObjectToSignal, void* hObjectToWaitOn, uint dwMilliseconds, bool bAlertable)
+    {
+        if (hObjectToSignal == null || hObjectToWaitOn == null)
+            return WaitResult.Failed;
+
+        var signalHeader = (ObjectHeader*)hObjectToSignal;
+        var waitHeader = (ObjectHeader*)hObjectToWaitOn;
+
+        var current = Scheduler.CurrentThread;
+        if (current == null)
+            return WaitResult.Failed;
+
+        _lock.Acquire();
+
+        // Signal the object
+        if (!SignalObjectLocked(signalHeader))
+        {
+            _lock.Release();
+            return WaitResult.Failed;
+        }
+
+        // Check if wait object is already signaled
+        if (TryAcquireObject(waitHeader))
+        {
+            _lock.Release();
+            return WaitResult.Object0;
+        }
+
+        _lock.Release();
+
+        // If alertable and APCs are already pending, deliver them
+        if (bAlertable && Scheduler.HasPendingApc(current))
+        {
+            Scheduler.DeliverApcs();
+            return WaitResult.IoCompletion;
+        }
+
+        // If timeout is 0, return immediately
+        if (dwMilliseconds == 0)
+        {
+            return WaitResult.Timeout;
+        }
+
+        _lock.Acquire();
+
+        // Set up wait
+        current->WaitObject = hObjectToWaitOn;
+        current->WaitResult = WaitResult.Timeout;
+        current->Alertable = bAlertable;
+
+        // Calculate wake time for timeout
+        if (dwMilliseconds != 0xFFFFFFFF)
+        {
+            current->WakeTime = Apic.TickCount + dwMilliseconds;  // 1ms per tick
+        }
+        else
+        {
+            current->WakeTime = 0;
+        }
+
+        // Add to wait list
+        AddToWaitList(waitHeader, current);
+
+        // Block the thread
+        current->State = ThreadState.Blocked;
+
+        _lock.Release();
+
+        // Yield to scheduler
+        Scheduler.Schedule();
+
+        // We're back - check result
+        _lock.Acquire();
+
+        RemoveFromWaitList(waitHeader, current);
+        current->WaitObject = null;
+        current->Alertable = false;
+
+        var result = current->WaitResult;
+        current->WaitResult = 0;
+
+        _lock.Release();
+
+        // If woken by APC, deliver all pending APCs
+        if (result == WaitResult.IoCompletion)
+        {
+            Scheduler.DeliverApcs();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Signal an object. Caller must hold the lock.
+    /// </summary>
+    private static bool SignalObjectLocked(ObjectHeader* header)
+    {
+        switch (header->Type)
+        {
+            case ObjectType.Event:
+                var evt = (Event*)header;
+                evt->Signaled = true;
+                if (evt->ManualReset)
+                {
+                    WakeAllWaiters(&evt->Header);
+                }
+                else
+                {
+                    if (WakeOneWaiter(&evt->Header))
+                        evt->Signaled = false;
+                }
+                return true;
+
+            case ObjectType.Mutex:
+                var mutex = (Mutex*)header;
+                var current = Scheduler.CurrentThread;
+                if (mutex->Owner != current)
+                    return false;  // Not owned by current thread
+                mutex->RecursionCount--;
+                if (mutex->RecursionCount == 0)
+                {
+                    mutex->Owner = null;
+                    WakeOneWaiter(&mutex->Header);
+                }
+                return true;
+
+            case ObjectType.Semaphore:
+                var sem = (Semaphore*)header;
+                if (sem->Count >= sem->MaxCount)
+                    return false;  // Already at max
+                sem->Count++;
+                WakeOneWaiter(&sem->Header);
+                return true;
+
+            default:
+                return false;
         }
     }
 

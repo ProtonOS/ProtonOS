@@ -167,8 +167,8 @@ public static unsafe class Arch
                 Apic.CalibrateTimer();
             }
 
-            // Start periodic timer (10ms period = 100Hz)
-            Apic.StartTimer(10);
+            // Start periodic timer (1ms period = 1000Hz)
+            Apic.StartTimer(1);
         }
 
         // Enable interrupts
