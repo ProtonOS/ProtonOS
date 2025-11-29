@@ -136,48 +136,45 @@ src/netlib/
 
 ---
 
-## Phase 2: Exception Support
+## Phase 2: Exception Support ✓ COMPLETE
 
 ### Goal
 Enable try/catch/throw for error handling.
 
-### Tasks
+### Completed Tasks
 
-#### 2.1 Exception class hierarchy
-```csharp
-public class Exception
-{
-    public virtual string Message { get; }
-    public Exception InnerException { get; }
-}
+#### 2.1 Exception class hierarchy ✓
+Implemented in `src/netlib/System/Exception.cs`:
+- Exception base class with Message, InnerException, HResult
+- SystemException, ArgumentException, ArgumentNullException
+- InvalidOperationException, NotSupportedException, NotImplementedException
+- IndexOutOfRangeException, ArrayTypeMismatchException
+- NullReferenceException, InvalidCastException
+- OutOfMemoryException, OverflowException, DivideByZeroException
+- ArithmeticException, FormatException, PlatformNotSupportedException
 
-// Common exceptions
-public class ArgumentException : Exception { }
-public class ArgumentNullException : ArgumentException { }
-public class InvalidOperationException : Exception { }
-public class NotSupportedException : Exception { }
-public class IndexOutOfRangeException : Exception { }
-public class NullReferenceException : Exception { }
-public class OutOfMemoryException : Exception { }
-```
+#### 2.2 ThrowHelpers ✓
+Implemented in `src/netlib/Internal/Stubs.cs`:
+- RhpThrowEx - compiler-generated throw statements
+- RhpRethrow - rethrow current exception
+- RhpThrowHwEx - hardware exceptions (via native.asm)
+- ThrowHelpers class for common throw operations
 
-#### 2.2 ThrowHelpers
-```csharp
-internal static class ThrowHelpers
-{
-    public static void ThrowArgumentNullException(string name);
-    public static void ThrowIndexOutOfRangeException();
-    // etc. - compiler calls these
-}
-```
-
-#### 2.3 Connect to x64 exception dispatch
-Integrate with our existing interrupt/exception handling infrastructure.
+#### 2.3 NativeAOT Exception Dispatch ✓
+Implemented full NativeAOT-compatible exception handling:
+- **native.asm**: RhpThrowEx captures context, calls C# handler, invokes funclet
+- **ExceptionHandling.cs**:
+  - NativePrimitiveDecoder for clause data parsing (custom format, not LEB128)
+  - Unwind block flags parsing (UBF_FUNC_HAS_EHINFO, etc.)
+  - EH clause parsing: tryStart, (tryLen<<2)|kind, handler, typeRva
+  - FindMatchingEHClause for catch handler lookup
+  - Funclet calling convention (CALL handler, JMP to returned continuation)
+- **bflat modification**: Added `--emit-eh-info` flag to enable EH table emission
 
 ### Deliverables
-- [ ] Exception class hierarchy
-- [ ] ThrowHelpers
-- [ ] try/catch/throw works
+- [x] Exception class hierarchy
+- [x] ThrowHelpers and runtime exports
+- [x] try/catch/throw works (tested and passing!)
 
 ---
 
@@ -453,8 +450,8 @@ AssemblyLoader.AddSearchPath("\\EFI\\assemblies\\");
 
 | Phase | Description | Complexity | What It Proves |
 |-------|-------------|------------|----------------|
-| 1 | Fork zerolib → netlib | Low | Build system works |
-| 2 | Exception support | Low-Medium | Error handling |
+| 1 ✓ | Fork zerolib → netlib | Low | Build system works |
+| 2 ✓ | Exception support | Low-Medium | Error handling |
 | 3 | Mark-Sweep GC | High | Managed heap works |
 | 4 | Bootstrap assembly loader | High | Can read PE/metadata |
 | 5 | IL Interpreter | High | Can execute loaded code |
