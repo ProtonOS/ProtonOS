@@ -663,6 +663,8 @@ get_rsp:
 ;; These functions handle context capture at throw site and restoration at catch site.
 
 extern RhpThrowEx_Handler   ; C# exception dispatch handler
+extern RhpThrowHwEx_Handler ; C# hardware exception handler
+extern RhpRethrow_Handler   ; C# rethrow handler
 
 ; ExceptionContext structure layout (must match C# ExceptionContext):
 ;   0x00: Rip, 0x08: Rsp, 0x10: Rbp, 0x18: Rflags
@@ -773,22 +775,144 @@ RhpThrowEx:
 
 ; void RhpRethrow()
 ; Called by compiler-generated code for: throw; (rethrow current exception)
-; TODO: Implement proper rethrow with current exception tracking
+; Captures context and calls C# handler which retrieves current exception from TLS.
 global RhpRethrow
 RhpRethrow:
-    ; For now, just halt - we need current exception tracking
-    hlt
-    ret
+    ; Allocate space for ExceptionContext on stack
+    sub rsp, EXCEPTION_CONTEXT_SIZE
+
+    ; Capture context - save all registers
+    ; Rip = return address (where rethrow instruction was)
+    mov rax, [rsp + EXCEPTION_CONTEXT_SIZE]
+    mov [rsp + 0x00], rax
+
+    ; Rsp = caller's RSP
+    lea rax, [rsp + EXCEPTION_CONTEXT_SIZE + 8]
+    mov [rsp + 0x08], rax
+
+    ; Save all registers (same as RhpThrowEx)
+    mov [rsp + 0x10], rbp
+    pushfq
+    pop rax
+    mov [rsp + 0x18], rax
+    mov [rsp + 0x20], rax
+    mov [rsp + 0x28], rbx
+    mov [rsp + 0x30], rcx
+    mov [rsp + 0x38], rdx
+    mov [rsp + 0x40], rsi
+    mov [rsp + 0x48], rdi
+    mov [rsp + 0x50], r8
+    mov [rsp + 0x58], r9
+    mov [rsp + 0x60], r10
+    mov [rsp + 0x68], r11
+    mov [rsp + 0x70], r12
+    mov [rsp + 0x78], r13
+    mov [rsp + 0x80], r14
+    mov [rsp + 0x88], r15
+    mov ax, cs
+    mov [rsp + 0x90], ax
+    mov ax, ss
+    mov [rsp + 0x92], ax
+
+    ; Call C# handler: void RhpRethrow_Handler(ExceptionContext* context)
+    ; rcx = pointer to context
+    mov rcx, rsp
+    sub rsp, 32             ; shadow space
+    call RhpRethrow_Handler
+    add rsp, 32
+
+    ; If we return, handler modified context - call funclet like RhpThrowEx
+    mov rax, [rsp + 0x00]   ; funclet address
+    mov r11, [rsp + 0x08]   ; establisher frame RSP
+    mov rcx, [rsp + 0x30]   ; exception object
+    mov rdx, [rsp + 0x10]   ; frame pointer (RBP)
+    mov rbx, [rsp + 0x28]
+    mov rbp, [rsp + 0x10]
+    mov r12, [rsp + 0x70]
+    mov r13, [rsp + 0x78]
+    mov r14, [rsp + 0x80]
+    mov r15, [rsp + 0x88]
+    mov rsp, r11
+    and rsp, ~0xF
+    sub rsp, 32
+    call rax
+    add rsp, 32
+    jmp rax
 
 ; void RhpThrowHwEx(uint exceptionCode, void* faultingIP)
 ; Called for hardware exceptions (null ref, divide by zero, etc.)
 ; Windows x64 ABI: exceptionCode in ecx, faultingIP in rdx
-; TODO: Implement by creating exception object and throwing
+; Captures context and calls C# handler which creates appropriate exception object.
 global RhpThrowHwEx
 RhpThrowHwEx:
-    ; For now, just halt
-    hlt
-    ret
+    ; Save exception code and faulting IP
+    push rdx                ; save faultingIP
+    push rcx                ; save exceptionCode (as 64-bit)
+
+    ; Allocate space for ExceptionContext on stack
+    sub rsp, EXCEPTION_CONTEXT_SIZE
+
+    ; Capture context
+    ; Rip = faulting IP (passed in rdx, now saved above)
+    mov rax, [rsp + EXCEPTION_CONTEXT_SIZE + 8]  ; faultingIP from stack
+    mov [rsp + 0x00], rax
+
+    ; Rsp = caller's RSP (after our allocations)
+    lea rax, [rsp + EXCEPTION_CONTEXT_SIZE + 24]  ; +8 for each push + return addr
+    mov [rsp + 0x08], rax
+
+    ; Save all registers
+    mov [rsp + 0x10], rbp
+    pushfq
+    pop rax
+    mov [rsp + 0x18], rax
+    mov [rsp + 0x20], rax
+    mov [rsp + 0x28], rbx
+    mov rax, [rsp + EXCEPTION_CONTEXT_SIZE]       ; get original ecx (exception code)
+    mov [rsp + 0x30], rax
+    mov rax, [rsp + EXCEPTION_CONTEXT_SIZE + 8]   ; get original rdx (faultingIP)
+    mov [rsp + 0x38], rax
+    mov [rsp + 0x40], rsi
+    mov [rsp + 0x48], rdi
+    mov [rsp + 0x50], r8
+    mov [rsp + 0x58], r9
+    mov [rsp + 0x60], r10
+    mov [rsp + 0x68], r11
+    mov [rsp + 0x70], r12
+    mov [rsp + 0x78], r13
+    mov [rsp + 0x80], r14
+    mov [rsp + 0x88], r15
+    mov ax, cs
+    mov [rsp + 0x90], ax
+    mov ax, ss
+    mov [rsp + 0x92], ax
+
+    ; Call C# handler: void RhpThrowHwEx_Handler(uint exceptionCode, ExceptionContext* context)
+    ; ecx = exception code (32-bit)
+    mov ecx, [rsp + EXCEPTION_CONTEXT_SIZE]       ; get exception code
+    ; rdx = pointer to context
+    mov rdx, rsp
+    sub rsp, 32             ; shadow space
+    call RhpThrowHwEx_Handler
+    add rsp, 32
+
+    ; If we return, handler modified context - call funclet like RhpThrowEx
+    mov rax, [rsp + 0x00]   ; funclet address
+    mov r11, [rsp + 0x08]   ; establisher frame RSP
+    mov rcx, [rsp + 0x30]   ; exception object (set by C# handler)
+    mov rdx, [rsp + 0x10]   ; frame pointer (RBP)
+    mov rbx, [rsp + 0x28]
+    mov rbp, [rsp + 0x10]
+    mov r12, [rsp + 0x70]
+    mov r13, [rsp + 0x78]
+    mov r14, [rsp + 0x80]
+    mov r15, [rsp + 0x88]
+    mov rsp, r11
+    and rsp, ~0xF
+    sub rsp, 32
+    call rax
+    add rsp, 32
+    jmp rax
 
 ; void RhpCallCatchFunclet(void* exceptionObject, void* handlerAddress, void* framePointer)
 ; Transfer control to a catch funclet with proper setup

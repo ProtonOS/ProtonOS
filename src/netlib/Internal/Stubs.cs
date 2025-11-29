@@ -49,18 +49,17 @@ namespace Internal.Runtime.CompilerHelpers
     partial class ThrowHelpers
     {
         // These are called by compiler-generated code for various throw scenarios.
-        // For now, they call FailFast since we don't have full exception dispatch.
-        // TODO: Implement proper throw via RhpThrowEx once we have EH tables.
+        // Now that exception handling is implemented, these properly throw exceptions.
 
-        static void ThrowIndexOutOfRangeException() => Environment.FailFast("IndexOutOfRangeException");
-        static void ThrowDivideByZeroException() => Environment.FailFast("DivideByZeroException");
-        static void ThrowPlatformNotSupportedException() => Environment.FailFast("PlatformNotSupportedException");
-        static void ThrowOverflowException() => Environment.FailFast("OverflowException");
-        static void ThrowArgumentOutOfRangeException() => Environment.FailFast("ArgumentOutOfRangeException");
-        static void ThrowArgumentNullException() => Environment.FailFast("ArgumentNullException");
-        static void ThrowNullReferenceException() => Environment.FailFast("NullReferenceException");
-        static void ThrowInvalidCastException() => Environment.FailFast("InvalidCastException");
-        static void ThrowArrayTypeMismatchException() => Environment.FailFast("ArrayTypeMismatchException");
+        static void ThrowIndexOutOfRangeException() => throw new IndexOutOfRangeException();
+        static void ThrowDivideByZeroException() => throw new DivideByZeroException();
+        static void ThrowPlatformNotSupportedException() => throw new PlatformNotSupportedException();
+        static void ThrowOverflowException() => throw new OverflowException();
+        static void ThrowArgumentOutOfRangeException() => throw new ArgumentOutOfRangeException();
+        static void ThrowArgumentNullException() => throw new ArgumentNullException();
+        static void ThrowNullReferenceException() => throw new NullReferenceException();
+        static void ThrowInvalidCastException() => throw new InvalidCastException();
+        static void ThrowArrayTypeMismatchException() => throw new ArrayTypeMismatchException();
     }
 
     // A class that the compiler looks for that has helpers to initialize the

@@ -182,3 +182,13 @@ public class ArrayTypeMismatchException : Exception
     public ArrayTypeMismatchException(string? message) : base(message) { }
     public ArrayTypeMismatchException(string? message, Exception? innerException) : base(message, innerException) { }
 }
+
+/// <summary>
+/// Exception thrown when the execution stack overflows.
+/// </summary>
+public class StackOverflowException : Exception
+{
+    public StackOverflowException() : base() { }
+    public StackOverflowException(string? message) : base(message) { }
+    public StackOverflowException(string? message, Exception? innerException) : base(message, innerException) { }
+}

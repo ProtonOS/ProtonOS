@@ -104,6 +104,7 @@ public static unsafe class Kernel
     // Exception handling test variables
     private static bool _exceptionCaught;
     private static uint _caughtExceptionCode;
+    private static int _rethrowPassCount;
 
     /// <summary>
     /// Test exception handling with try/catch/throw
@@ -113,6 +114,7 @@ public static unsafe class Kernel
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[EH Test] Testing exception handling...");
 
+        // Test 1: Basic throw/catch
         try
         {
             DebugConsole.WriteLine("[EH Test] Inside try block");
@@ -126,11 +128,41 @@ public static unsafe class Kernel
 
         if (_exceptionCaught)
         {
-            DebugConsole.WriteLine("[EH Test] Exception handling test PASSED");
+            DebugConsole.WriteLine("[EH Test] Basic throw/catch PASSED");
         }
         else
         {
-            DebugConsole.WriteLine("[EH Test] Exception handling test FAILED");
+            DebugConsole.WriteLine("[EH Test] Basic throw/catch FAILED");
+        }
+
+        // Test 2: Rethrow with "throw;"
+        _rethrowPassCount = 0;
+        try
+        {
+            try
+            {
+                throw new System.Exception("Rethrow test");
+            }
+            catch (System.Exception)
+            {
+                _rethrowPassCount++;
+                DebugConsole.WriteLine("[EH Test] Caught in inner, rethrowing...");
+                throw;  // Rethrow
+            }
+        }
+        catch (System.Exception)
+        {
+            _rethrowPassCount++;
+            DebugConsole.WriteLine("[EH Test] Caught rethrown in outer!");
+        }
+
+        if (_rethrowPassCount == 2)
+        {
+            DebugConsole.WriteLine("[EH Test] Rethrow test PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[EH Test] Rethrow test FAILED");
         }
     }
 

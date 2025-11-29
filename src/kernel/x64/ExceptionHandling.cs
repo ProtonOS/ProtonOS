@@ -2,6 +2,7 @@
 // Provides SEH-compatible exception handling for JIT code and kernel.
 // Based on Windows x64 exception handling model (RUNTIME_FUNCTION, UNWIND_INFO).
 
+using System;
 using System.Runtime.InteropServices;
 using Kernel.Platform;
 using Kernel.Memory;
@@ -493,6 +494,278 @@ public static unsafe class ExceptionHandling
     }
 
     /// <summary>
+    /// C# handler called by assembly RhpThrowHwEx.
+    /// Converts hardware exception codes to managed exception objects and throws.
+    /// </summary>
+    /// <param name="exceptionCode">The Win32 exception code (e.g., 0xC0000005 for access violation)</param>
+    /// <param name="context">Context captured at fault site</param>
+    [UnmanagedCallersOnly(EntryPoint = "RhpThrowHwEx_Handler")]
+    public static void RhpThrowHwEx_Handler(uint exceptionCode, ExceptionContext* context)
+    {
+        DebugConsole.Write("[EH] RhpThrowHwEx_Handler: code=0x");
+        DebugConsole.WriteHex(exceptionCode);
+        DebugConsole.Write(" RIP=0x");
+        DebugConsole.WriteHex(context->Rip);
+        DebugConsole.WriteLine();
+
+        // Create appropriate exception object based on exception code
+        object exceptionObject = CreateExceptionFromHwCode(exceptionCode);
+
+        // Dispatch the exception using NativeAOT EH tables
+        bool handled = DispatchNativeAotException(&exceptionObject, context);
+
+        if (!handled)
+        {
+            DebugConsole.WriteLine("[EH] FATAL: Unhandled hardware exception!");
+            DebugConsole.Write("[EH] Code: 0x");
+            DebugConsole.WriteHex(exceptionCode);
+            DebugConsole.WriteLine();
+            DebugConsole.Write("[EH] Faulting RIP: 0x");
+            DebugConsole.WriteHex(context->Rip);
+            DebugConsole.WriteLine();
+            PrintStackTrace(context);
+            Cpu.Halt();
+        }
+    }
+
+    /// <summary>
+    /// Create a managed exception object from a hardware exception code.
+    /// </summary>
+    private static object CreateExceptionFromHwCode(uint exceptionCode)
+    {
+        // Map Win32 exception codes to .NET exception types
+        return exceptionCode switch
+        {
+            ExceptionCodes.EXCEPTION_ACCESS_VIOLATION => new NullReferenceException(),
+            ExceptionCodes.EXCEPTION_INT_DIVIDE_BY_ZERO => new DivideByZeroException(),
+            ExceptionCodes.EXCEPTION_FLT_DIVIDE_BY_ZERO => new DivideByZeroException(),
+            ExceptionCodes.EXCEPTION_INT_OVERFLOW => new OverflowException(),
+            ExceptionCodes.EXCEPTION_FLT_OVERFLOW => new OverflowException(),
+            ExceptionCodes.EXCEPTION_ARRAY_BOUNDS_EXCEEDED => new IndexOutOfRangeException(),
+            ExceptionCodes.EXCEPTION_STACK_OVERFLOW => new StackOverflowException(),
+            _ => new Exception() // Generic exception for unknown codes
+        };
+    }
+
+    // ======================== Current Exception Tracking (for rethrow) ========================
+
+    // Per-thread current exception tracking - stored in dedicated TLS slots
+    private const uint InvalidTlsSlot = 0xFFFFFFFF;
+    private static uint _currentExceptionTlsSlot = InvalidTlsSlot;
+    private static uint _currentExceptionRipTlsSlot = InvalidTlsSlot;  // Original throw site RIP
+    private static uint _currentExceptionRspTlsSlot = InvalidTlsSlot;  // Original throw site RSP
+    private static uint _currentExceptionRbpTlsSlot = InvalidTlsSlot;  // Original throw site RBP
+    private static uint _currentHandlerClauseTlsSlot = InvalidTlsSlot; // Which clause caught it
+
+    /// <summary>
+    /// Initialize the TLS slots for current exception tracking.
+    /// Must be called after TLS is initialized.
+    /// </summary>
+    public static void InitCurrentExceptionTracking()
+    {
+        _currentExceptionTlsSlot = PAL.Tls.TlsAlloc();
+        _currentExceptionRipTlsSlot = PAL.Tls.TlsAlloc();
+        _currentExceptionRspTlsSlot = PAL.Tls.TlsAlloc();
+        _currentExceptionRbpTlsSlot = PAL.Tls.TlsAlloc();
+        _currentHandlerClauseTlsSlot = PAL.Tls.TlsAlloc();
+        if (_currentExceptionTlsSlot == InvalidTlsSlot)
+        {
+            DebugConsole.WriteLine("[EH] WARNING: Failed to allocate TLS slot for current exception");
+        }
+    }
+
+    /// <summary>
+    /// Set the current exception for the current thread (called when entering catch block).
+    /// </summary>
+    public static void SetCurrentException(void* exceptionObject)
+    {
+        if (_currentExceptionTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionTlsSlot, exceptionObject);
+        }
+    }
+
+    /// <summary>
+    /// Set the original throw site RIP (called when entering catch block).
+    /// This is used by rethrow to know where to resume exception dispatch.
+    /// </summary>
+    public static void SetCurrentExceptionRip(ulong rip)
+    {
+        if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionRipTlsSlot, (void*)rip);
+        }
+    }
+
+    /// <summary>
+    /// Set the original throw site RSP (called when entering catch block).
+    /// </summary>
+    public static void SetCurrentExceptionRsp(ulong rsp)
+    {
+        if (_currentExceptionRspTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionRspTlsSlot, (void*)rsp);
+        }
+    }
+
+    /// <summary>
+    /// Set the original throw site RBP (called when entering catch block).
+    /// </summary>
+    public static void SetCurrentExceptionRbp(ulong rbp)
+    {
+        if (_currentExceptionRbpTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionRbpTlsSlot, (void*)rbp);
+        }
+    }
+
+    /// <summary>
+    /// Set which clause index caught the exception (called when entering catch block).
+    /// On rethrow, we'll search starting from the NEXT clause.
+    /// </summary>
+    public static void SetCurrentHandlerClause(uint clauseIndex)
+    {
+        if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentHandlerClauseTlsSlot, (void*)(ulong)(clauseIndex + 1));  // +1 so 0 means none
+        }
+    }
+
+    /// <summary>
+    /// Get the current exception for the current thread (for rethrow).
+    /// </summary>
+    public static void* GetCurrentException()
+    {
+        if (_currentExceptionTlsSlot != InvalidTlsSlot)
+        {
+            return PAL.Tls.TlsGetValue(_currentExceptionTlsSlot);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Get the original throw site RIP (for rethrow).
+    /// </summary>
+    public static ulong GetCurrentExceptionRip()
+    {
+        if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
+        {
+            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRipTlsSlot);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the original throw site RSP (for rethrow).
+    /// </summary>
+    public static ulong GetCurrentExceptionRsp()
+    {
+        if (_currentExceptionRspTlsSlot != InvalidTlsSlot)
+        {
+            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRspTlsSlot);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the original throw site RBP (for rethrow).
+    /// </summary>
+    public static ulong GetCurrentExceptionRbp()
+    {
+        if (_currentExceptionRbpTlsSlot != InvalidTlsSlot)
+        {
+            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRbpTlsSlot);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get which clause index caught the exception (for rethrow).
+    /// Returns the index of the NEXT clause to search (0-based), or 0 if none.
+    /// </summary>
+    public static uint GetCurrentHandlerClause()
+    {
+        if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
+        {
+            return (uint)(ulong)PAL.Tls.TlsGetValue(_currentHandlerClauseTlsSlot);
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Clear the current exception (called when leaving catch block normally).
+    /// </summary>
+    public static void ClearCurrentException()
+    {
+        if (_currentExceptionTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionTlsSlot, null);
+        }
+        if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentExceptionRipTlsSlot, null);
+        }
+        if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
+        {
+            PAL.Tls.TlsSetValue(_currentHandlerClauseTlsSlot, null);
+        }
+    }
+
+    /// <summary>
+    /// C# handler called by assembly RhpRethrow.
+    /// Rethrows the current exception (for bare "throw;" statements).
+    /// </summary>
+    /// <param name="context">Context captured at rethrow site</param>
+    [UnmanagedCallersOnly(EntryPoint = "RhpRethrow_Handler")]
+    public static void RhpRethrow_Handler(ExceptionContext* context)
+    {
+        void* currentException = GetCurrentException();
+        ulong originalRip = GetCurrentExceptionRip();
+        ulong originalRsp = GetCurrentExceptionRsp();
+        ulong originalRbp = GetCurrentExceptionRbp();
+        uint startClause = GetCurrentHandlerClause();
+
+        DebugConsole.Write("[EH] RhpRethrow_Handler: exception=0x");
+        DebugConsole.WriteHex((ulong)currentException);
+        DebugConsole.Write(" originalRIP=0x");
+        DebugConsole.WriteHex(originalRip);
+        DebugConsole.Write(" startClause=");
+        DebugConsole.WriteDecimal(startClause);
+        DebugConsole.WriteLine();
+
+        if (currentException == null)
+        {
+            DebugConsole.WriteLine("[EH] FATAL: RhpRethrow called with no current exception!");
+            Cpu.Halt();
+        }
+
+        if (originalRip == 0)
+        {
+            // Fallback: use context values if original not saved
+            originalRip = context->Rip;
+            originalRsp = context->Rsp;
+            originalRbp = context->Rbp;
+        }
+
+        // Create a modified context using the original throw site's RIP/RSP/RBP
+        // This allows us to search for handlers in the original function with correct frame info
+        ExceptionContext rethrowContext = *context;
+        rethrowContext.Rip = originalRip;
+        rethrowContext.Rsp = originalRsp;
+        rethrowContext.Rbp = originalRbp;
+
+        // Dispatch the rethrown exception, starting from the next clause
+        bool handled = DispatchNativeAotExceptionForRethrow(currentException, &rethrowContext, startClause, context);
+
+        if (!handled)
+        {
+            DebugConsole.WriteLine("[EH] FATAL: Unhandled rethrown exception!");
+            PrintStackTrace(context);
+            Cpu.Halt();
+        }
+    }
+
+    /// <summary>
     /// Print a simple stack trace for debugging.
     /// </summary>
     private static void PrintStackTrace(ExceptionContext* context)
@@ -552,6 +825,9 @@ public static unsafe class ExceptionHandling
         _initialized = true;
 
         DebugConsole.WriteLine("[SEH] Exception handling initialized");
+
+        // Initialize TLS slot for current exception tracking (for rethrow support)
+        InitCurrentExceptionTracking();
 
         // Register kernel's function table from PE .pdata section
         RegisterKernelFunctionTable();
@@ -1370,6 +1646,38 @@ public static unsafe class ExceptionHandling
     private const byte UBF_FUNC_REVERSE_PINVOKE = 0x08;
     private const byte UBF_FUNC_HAS_ASSOCIATED_DATA = 0x10;
 
+    /// <summary>
+    /// Check if a function is a funclet (handler or filter) rather than a root function.
+    /// Funclets don't have their own EH info - their parent function does.
+    /// </summary>
+    /// <param name="imageBase">Base address of the image</param>
+    /// <param name="unwindInfo">Pointer to UNWIND_INFO</param>
+    /// <returns>True if this is a funclet, false if root function</returns>
+    public static bool IsFunclet(ulong imageBase, UnwindInfo* unwindInfo)
+    {
+        if (unwindInfo == null)
+            return false;
+
+        // Calculate offset to end of UNWIND_INFO structure
+        int headerSize = 4;
+        int unwindArrayBytes = unwindInfo->CountOfUnwindCodes * 2;
+        int unwindInfoSize = headerSize + unwindArrayBytes;
+
+        if ((unwindInfo->Flags & (UnwindFlags.UNW_FLAG_EHANDLER | UnwindFlags.UNW_FLAG_UHANDLER)) != 0)
+        {
+            unwindInfoSize = (unwindInfoSize + 3) & ~3;
+            unwindInfoSize += 4;
+        }
+
+        // Read unwind block flags byte
+        byte* p = (byte*)unwindInfo + unwindInfoSize;
+        byte unwindBlockFlags = *p;
+
+        // Check func kind - non-zero means funclet (handler or filter)
+        byte funcKind = (byte)(unwindBlockFlags & UBF_FUNC_KIND_MASK);
+        return funcKind != UBF_FUNC_KIND_ROOT;
+    }
+
     public static byte* GetNativeAotEHInfo(ulong imageBase, UnwindInfo* unwindInfo)
     {
         if (unwindInfo == null)
@@ -1510,6 +1818,8 @@ public static unsafe class ExceptionHandling
     /// <param name="offsetInFunction">Offset within function where exception occurred</param>
     /// <param name="exceptionTypeRva">RVA of the exception type (0 for any)</param>
     /// <param name="clause">Receives the matching clause if found</param>
+    /// <param name="foundClauseIndex">Receives the index of the found clause</param>
+    /// <param name="startClause">Start searching from this clause index (for rethrow)</param>
     /// <returns>True if a matching clause was found</returns>
     public static bool FindMatchingEHClause(
         byte* ehInfo,
@@ -1517,9 +1827,12 @@ public static unsafe class ExceptionHandling
         uint functionRva,
         uint offsetInFunction,
         ulong exceptionTypeRva,
-        out NativeAotEHClause clause)
+        out NativeAotEHClause clause,
+        out uint foundClauseIndex,
+        uint startClause = 0)
     {
         clause = default;
+        foundClauseIndex = 0;
 
         if (ehInfo == null)
             return false;
@@ -1533,6 +1846,12 @@ public static unsafe class ExceptionHandling
         DebugConsole.WriteDecimal(clauseCount);
         DebugConsole.Write(" EH clause(s), offset in function: 0x");
         DebugConsole.WriteHex(offsetInFunction);
+        if (startClause > 0)
+        {
+            DebugConsole.Write(" (starting from clause ");
+            DebugConsole.WriteDecimal(startClause);
+            DebugConsole.Write(")");
+        }
         DebugConsole.WriteLine();
 
         // Sanity check clause count
@@ -1596,6 +1915,12 @@ public static unsafe class ExceptionHandling
             }
             DebugConsole.WriteLine();
 
+            // Skip clauses before startClause (for rethrow)
+            if (i < startClause)
+            {
+                continue;
+            }
+
             // Check if the exception offset falls within this try region
             if (offsetInFunction >= tryStart && offsetInFunction < tryEnd)
             {
@@ -1611,6 +1936,7 @@ public static unsafe class ExceptionHandling
                     clause.HandlerOffset = handlerOffset;
                     clause.FilterOffset = filterOffset;
                     clause.CatchTypeRva = catchTypeRva;
+                    foundClauseIndex = i;
 
                     DebugConsole.WriteLine("[EH] Found matching clause!");
                     return true;
@@ -1680,6 +2006,30 @@ public static unsafe class ExceptionHandling
             DebugConsole.WriteDecimal(unwindInfo->CountOfUnwindCodes);
             DebugConsole.WriteLine();
 
+            // Check if this is a funclet (catch/finally handler) - if so, skip EH search
+            // Funclets don't have their own EH clauses, their parent function does
+            bool isFunclet = IsFunclet(imageBase, unwindInfo);
+            if (isFunclet)
+            {
+                DebugConsole.Write("[EH]   (funclet - skipping EH search, unwinding)");
+                // Unwind through the funclet to get to its caller
+                ulong funcletEstablisherFrame;
+                RtlVirtualUnwind(
+                    UNW_HandlerType.UNW_FLAG_NHANDLER,
+                    imageBase,
+                    searchContext.Rip,
+                    funcEntry,
+                    &searchContext,
+                    null,
+                    &funcletEstablisherFrame,
+                    null);
+                DebugConsole.Write(" -> new RIP=0x");
+                DebugConsole.WriteHex(searchContext.Rip);
+                DebugConsole.WriteLine();
+                frame++;
+                continue;
+            }
+
             // Try to get NativeAOT EH info (debug output moved into GetNativeAotEHInfo)
             byte* ehInfo = GetNativeAotEHInfo(imageBase, unwindInfo);
 
@@ -1703,14 +2053,17 @@ public static unsafe class ExceptionHandling
 
                 // Look for matching clause
                 NativeAotEHClause clause;
-                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause))
+                uint foundClauseIndex;
+                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex))
                 {
                     // Found a handler!
                     DebugConsole.Write("[EH] Pass 1: Found handler in frame ");
                     DebugConsole.WriteDecimal(frame);
                     DebugConsole.Write(" at offset 0x");
                     DebugConsole.WriteHex(clause.HandlerOffset);
-                    DebugConsole.WriteLine();
+                    DebugConsole.Write(" (clause ");
+                    DebugConsole.WriteDecimal(foundClauseIndex);
+                    DebugConsole.WriteLine(")");
 
                     // TODO: Pass 2 - unwind and execute finally handlers
                     // For now, just transfer to the catch handler
@@ -1729,6 +2082,13 @@ public static unsafe class ExceptionHandling
                     context->Rip = handlerAddr;
                     context->Rcx = (ulong)exceptionObject;
                     context->Rdx = context->Rbp;  // Pass frame pointer
+
+                    // Set current exception info for rethrow support
+                    SetCurrentException(exceptionObject);
+                    SetCurrentExceptionRip(searchContext.Rip);  // Save where exception occurred
+                    SetCurrentExceptionRsp(searchContext.Rsp);  // Save frame RSP
+                    SetCurrentExceptionRbp(searchContext.Rbp);  // Save frame RBP
+                    SetCurrentHandlerClause(foundClauseIndex);   // Save which clause caught it
 
                     return true;
                 }
@@ -1750,6 +2110,139 @@ public static unsafe class ExceptionHandling
         }
 
         DebugConsole.WriteLine("[EH] No handler found - exception is unhandled");
+        return false;
+    }
+
+    /// <summary>
+    /// Dispatch a rethrown exception.
+    /// Similar to DispatchNativeAotException but starts searching from a specific clause.
+    /// </summary>
+    /// <param name="exceptionObject">The exception object being rethrown</param>
+    /// <param name="searchContext">Context with RIP at the original throw site</param>
+    /// <param name="startClause">Clause index to start searching from (skip previous clauses)</param>
+    /// <param name="actualContext">The actual context to modify for handler transfer</param>
+    /// <returns>True if exception was handled, false if unhandled</returns>
+    public static bool DispatchNativeAotExceptionForRethrow(
+        void* exceptionObject,
+        ExceptionContext* searchContext,
+        uint startClause,
+        ExceptionContext* actualContext)
+    {
+        if (!_initialized) Init();
+
+        DebugConsole.Write("[EH] DispatchRethrow at originalRIP=0x");
+        DebugConsole.WriteHex(searchContext->Rip);
+        DebugConsole.Write(" startClause=");
+        DebugConsole.WriteDecimal(startClause);
+        DebugConsole.WriteLine();
+
+        int maxFrames = 100;
+        int frame = 0;
+        ExceptionContext walkContext = *searchContext;
+
+        while (frame < maxFrames && walkContext.Rip != 0)
+        {
+            ulong imageBase;
+            var funcEntry = LookupFunctionEntry(walkContext.Rip, out imageBase);
+
+            if (funcEntry == null)
+            {
+                walkContext.Rip = *(ulong*)walkContext.Rsp;
+                walkContext.Rsp += 8;
+                frame++;
+                startClause = 0;  // Reset for subsequent frames
+                continue;
+            }
+
+            var unwindInfo = (UnwindInfo*)(imageBase + funcEntry->UnwindInfoAddress);
+
+            DebugConsole.Write("[EH] Rethrow frame ");
+            DebugConsole.WriteDecimal(frame);
+            DebugConsole.Write(": func RVA=0x");
+            DebugConsole.WriteHex(funcEntry->BeginAddress);
+            DebugConsole.Write("-0x");
+            DebugConsole.WriteHex(funcEntry->EndAddress);
+            DebugConsole.WriteLine();
+
+            // Skip funclets
+            bool isFunclet = IsFunclet(imageBase, unwindInfo);
+            if (isFunclet)
+            {
+                DebugConsole.WriteLine("[EH]   (funclet - skipping)");
+                ulong funcletEstablisherFrame;
+                RtlVirtualUnwind(
+                    UNW_HandlerType.UNW_FLAG_NHANDLER,
+                    imageBase,
+                    walkContext.Rip,
+                    funcEntry,
+                    &walkContext,
+                    null,
+                    &funcletEstablisherFrame,
+                    null);
+                frame++;
+                startClause = 0;  // Reset for subsequent frames
+                continue;
+            }
+
+            byte* ehInfo = GetNativeAotEHInfo(imageBase, unwindInfo);
+
+            if (ehInfo != null)
+            {
+                uint offsetInFunc = (uint)(walkContext.Rip - (imageBase + funcEntry->BeginAddress));
+
+                NativeAotEHClause clause;
+                uint foundClauseIndex;
+                // For frame 0, use startClause; for subsequent frames, search from 0
+                uint searchFrom = (frame == 0) ? startClause : 0;
+                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex, searchFrom))
+                {
+                    DebugConsole.Write("[EH] Rethrow: Found handler at offset 0x");
+                    DebugConsole.WriteHex(clause.HandlerOffset);
+                    DebugConsole.Write(" (clause ");
+                    DebugConsole.WriteDecimal(foundClauseIndex);
+                    DebugConsole.WriteLine(")");
+
+                    ulong handlerAddr = imageBase + funcEntry->BeginAddress + clause.HandlerOffset;
+
+                    DebugConsole.Write("[EH] Transferring to handler at 0x");
+                    DebugConsole.WriteHex(handlerAddr);
+                    DebugConsole.WriteLine();
+
+                    // Update the actual context for transfer
+                    // Use walkContext (unwound to parent frame) for frame info,
+                    // not actualContext (which is the funclet's frame)
+                    actualContext->Rip = handlerAddr;
+                    actualContext->Rsp = walkContext.Rsp;  // Parent's stack pointer
+                    actualContext->Rbp = walkContext.Rbp;  // Parent's frame pointer
+                    actualContext->Rcx = (ulong)exceptionObject;
+                    actualContext->Rdx = walkContext.Rbp;  // Pass parent's frame pointer to funclet
+
+                    // Update exception tracking for nested rethrow
+                    SetCurrentException(exceptionObject);
+                    SetCurrentExceptionRip(walkContext.Rip);
+                    SetCurrentHandlerClause(foundClauseIndex);
+
+                    return true;
+                }
+            }
+
+            // Unwind one frame
+            ulong establisherFrame;
+            RtlVirtualUnwind(
+                UNW_HandlerType.UNW_FLAG_NHANDLER,
+                imageBase,
+                walkContext.Rip,
+                funcEntry,
+                &walkContext,
+                null,
+                &establisherFrame,
+                null);
+
+            frame++;
+            startClause = 0;  // Reset for subsequent frames
+        }
+
+        DebugConsole.WriteLine("[EH] Rethrow: No handler found");
         return false;
     }
 
