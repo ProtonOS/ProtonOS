@@ -4,21 +4,17 @@
 
 **netos** is a hybrid managed OS kernel written in C# using .NET Native AOT compilation. The key insight: **C is unnecessary** - everything traditionally done in C can be done in C# with `unsafe`, while privileged CPU instructions require assembly regardless.
 
-### Naming
-- **netos** - The overall project/OS
-- **nernel** - Native kernel (minimal assembly layer)
-- **mernel** - Managed kernel (C# AOT layer)
-
 ### Architecture Layers
-1. **nernel** (~150-200 LOC assembly per arch) - CPU intrinsics only
-2. **mernel** - Core kernel in C# compiled via bflat/NativeAOT
-3. **JIT Extensions (Future)** - Hot-loadable drivers/modules
+1. **native** (~650 LOC assembly per arch) - CPU intrinsics, ISR stubs
+2. **netlib** - Minimal runtime library (forked from bflat zerolib, AGPL v3)
+3. **kernel** - Core kernel in C# compiled via bflat/NativeAOT
+4. **JIT Extensions (Future)** - Hot-loadable drivers/modules
 
 ## Build Environment
 
 Docker-based development using `netos-dev` container:
 - **Base:** Debian Bookworm (12) Slim
-- **bflat:** 8.0.x - C# to Native AOT compiler
+- **bflat:** 10.0.0-rc.1 - C# to Native AOT compiler (.NET 10)
 - **NASM:** 2.16.01 - x86_64 assembler (use `-f win64` for UEFI)
 - **lld-link:** LLVM PE/COFF linker
 - **QEMU:** x86_64/ARM64 emulation with OVMF firmware
@@ -84,41 +80,58 @@ This kills all Docker containers to prevent stale QEMU instances from accumulati
 
 ```
 src/
-├── nernel/              # Native kernel (assembly)
+├── native/              # Native assembly
 │   └── x64/
-│       └── native.asm   # CPU intrinsics, ISR stubs (~280 LOC)
-└── mernel/              # Managed kernel (C#)
-    ├── Mernel.cs        # Main entry point
-    ├── DebugConsole.cs  # COM1 serial output
-    ├── NativeMemory.cs  # Bump allocator for early boot
-    └── x64/             # x64-specific code
-        ├── Arch.cs      # Architecture init, interrupt dispatch
-        ├── Gdt.cs       # Global Descriptor Table + TSS
-        └── Idt.cs       # Interrupt Descriptor Table
+│       └── native.asm   # CPU intrinsics, ISR stubs (~650 LOC)
+├── netlib/              # Runtime library (AGPL v3, from bflat zerolib)
+│   ├── Internal/        # Runtime internals, startup
+│   ├── System/          # Core types (Object, String, Span, etc.)
+│   └── LICENSE          # AGPL v3 license
+└── kernel/              # Managed kernel (C#)
+    ├── Kernel.cs        # Main entry point
+    ├── Memory/          # HeapAllocator, PageAllocator
+    ├── PAL/             # Platform Abstraction Layer (Win32-compatible APIs)
+    ├── Platform/        # UEFI, ACPI, DebugConsole
+    ├── Threading/       # Scheduler, Thread
+    └── x64/             # x64-specific (Arch, Gdt, Idt, Apic, etc.)
 
 build/
 └── x64/
+    ├── native.obj       # Assembled native code
+    ├── kernel.obj       # Compiled C# (netlib + kernel)
     ├── BOOTX64.EFI      # UEFI executable
     └── boot.img         # FAT32 boot image
 ```
 
-### stdlib:zero Constraints
-bflat's `--stdlib:zero` mode has no runtime, so:
-- **No `new` for classes** - Use static classes or structs
-- **No managed delegates** - Use `delegate*<T, void>` function pointers
-- **No arrays via `new`** - Use `NativeMemory.Alloc()` for buffers
-- **No GC** - Manual memory management only
+### stdlib:none Mode
+We use `--stdlib:none` with our own netlib (forked from bflat's zerolib). This provides:
+- Core types: Object, String, Array, Span<T>, etc.
+- Compiler support types: RuntimeHelpers, Unsafe, etc.
+- No GC yet - manual memory management via HeapAllocator
+
+### Export/Import Pattern
+netlib and kernel are compiled together but use export/import for cross-module calls:
+
+```csharp
+// Kernel exports (src/kernel/PAL/Environment.cs)
+[UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
+public static void FailFast() { Cpu.HaltForever(); }
+
+// netlib imports (src/netlib/System/Environment.cs)
+[DllImport("*")]
+private static extern void PalFailFast();
+```
 
 ## Architecture Abstraction
 
-Due to stdlib:zero constraints (no `new` for classes), we use **compile-time architecture selection** instead of runtime interfaces:
+Compile-time architecture selection via preprocessor:
 
 ```csharp
-// In Mernel.cs - compile-time dispatch via preprocessor
+// In Kernel.cs - compile-time dispatch
 #if ARCH_X64
-    Arch.Init();  // Mernel.X64.Arch
+    Arch.Init();  // Kernel.X64.Arch
 #elif ARCH_ARM64
-    Arch.Init();  // Mernel.Arm64.Arch (future)
+    Arch.Init();  // Kernel.Arm64.Arch (future)
 #endif
 ```
 
@@ -127,8 +140,6 @@ Each architecture provides a static `Arch` class with:
 - `RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)`
 - `EnableInterrupts()` / `DisableInterrupts()`
 - `Halt()`
-
-**Future:** Once JIT is available, we can use proper interfaces with runtime polymorphism.
 
 ## Native Assembly Functions (x86_64)
 
@@ -195,11 +206,25 @@ qemu-system-x86_64 \
 
 ## Implementation Status
 
-- [ ] Phase 1: Minimal Boot - UEFI entry, serial console, memory map, "Hello World"
-- [ ] Phase 2: Core Infrastructure - GDT/IDT, interrupts, physical memory, page tables
-- [ ] Phase 3: Kernel Services - Virtual memory, heap, timer, scheduler
-- [ ] Phase 4: Driver Framework - PCI, AHCI, FAT32
-- [ ] Phase 5: JIT Integration - RyuJIT hosting, hot-loadable drivers
+### Kernel Infrastructure (Complete)
+- [x] UEFI boot, serial console, memory map
+- [x] GDT/IDT, interrupt handling, exception dispatch
+- [x] Physical memory allocator (PageAllocator)
+- [x] Virtual memory (4-level paging, higher-half physmap)
+- [x] Kernel heap (HeapAllocator)
+- [x] APIC timer, HPET, RTC
+- [x] Preemptive scheduler with threading
+- [x] Win32-compatible PAL (sync primitives, TLS, SEH, etc.)
+
+### netlib (In Progress)
+- [x] Phase 1: Fork zerolib as netlib foundation
+- [ ] Phase 2: Exception support (try/catch/throw)
+- [ ] Phase 3: Garbage collector
+- [ ] Phase 4: Assembly loader (PE/metadata reader)
+- [ ] Phase 5: IL interpreter
+- [ ] Phase 6-8: Load BCL assemblies, System.Reflection.Metadata
+
+See `docs/NETLIB_PLAN.md` for detailed roadmap.
 
 ## Critical Memory
 - Use `./build.sh` for building - it handles container cleanup and build directory cleaning automatically
