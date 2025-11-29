@@ -524,6 +524,25 @@ public static unsafe class ThreadApi
         lpContext->SegFs = 0;
         lpContext->SegGs = 0;
     }
+
+    /// <summary>
+    /// Restore execution to the context specified in the CONTEXT structure.
+    /// This function does not return - execution continues at Context.Rip.
+    /// Used for exception unwinding and continuation.
+    /// </summary>
+    /// <param name="lpContext">Pointer to CONTEXT structure with target state</param>
+    /// <param name="lpExceptionRecord">Optional exception record (unused, for API compatibility)</param>
+    public static void RtlRestoreContext(Context* lpContext, void* lpExceptionRecord)
+    {
+        if (lpContext == null)
+            return;
+
+        // The restore_pal_context function in assembly does not return
+        // It loads all registers from the Context and jumps to Rip
+        Cpu.RestorePalContext(lpContext);
+
+        // This code is never reached
+    }
 }
 
 /// <summary>

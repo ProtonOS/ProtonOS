@@ -1129,9 +1129,59 @@ public static unsafe class Kernel
         DebugConsole.WriteHex((ushort)tid);
         DebugConsole.WriteLine();
 
+        // Test 4: RtlRestoreContext - restore execution to a previous point
+        // This is tricky to test because it doesn't return, so we use a counter
+        int restoreTestCounter = 0;
+        Context restoreCtx;
+
+        // Capture context at this point
+        ThreadApi.RtlCaptureContext(&restoreCtx);
+
+        // After capture (or after restore returns here), increment counter
+        restoreTestCounter++;
+
+        if (restoreTestCounter == 1)
+        {
+            // First time through - modify RAX in context and restore
+            // We set RAX to a marker value that we can detect
+            // Actually, let's just restore and check counter increments to 2
+            DebugConsole.WriteLine("[Context Test] Test 4: RtlRestoreContext - first pass, about to restore...");
+
+            // Modify a register so we know restore worked - bump the counter check value
+            // When we restore, we'll jump back to after RtlCaptureContext with
+            // restoreTestCounter still = 1 (stack variable), so it will be incremented to 2
+            // Actually, the stack variable IS at the same address, so it will be 1 again...
+            // We need to use a static variable to survive the restore
+            _restoreTestPassCount++;
+
+            if (_restoreTestPassCount == 1)
+            {
+                // First restore - do it
+                ThreadApi.RtlRestoreContext(&restoreCtx, null);
+                // Should not reach here
+                DebugConsole.WriteLine("[Context Test] FAILED: RtlRestoreContext returned!");
+                return 1;
+            }
+        }
+
+        // We get here on the second pass after restore jumps back
+        if (_restoreTestPassCount == 2)
+        {
+            DebugConsole.WriteLine("[Context Test] Test 4: RtlRestoreContext - PASSED (restored successfully)");
+        }
+        else
+        {
+            DebugConsole.Write("[Context Test] Test 4: RtlRestoreContext - pass count: ");
+            DebugConsole.WriteHex((uint)_restoreTestPassCount);
+            DebugConsole.WriteLine();
+        }
+
         DebugConsole.WriteLine("[Context Test] All Thread Context tests PASSED!");
         return 0;
     }
+
+    // Static counter for RtlRestoreContext test (survives context restore)
+    private static int _restoreTestPassCount;
 
     /// <summary>
     /// Fixed-size handle array for WaitForMultipleObjects testing.

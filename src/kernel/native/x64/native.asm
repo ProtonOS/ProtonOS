@@ -495,6 +495,57 @@ load_context:
     ; Jump to new context
     ret
 
+;; ==================== PAL Context Restore ====================
+;; Restore context from PAL CONTEXT structure (different layout from CpuContext)
+
+; PAL CONTEXT structure layout:
+;   0x00: ContextFlags (uint32)
+;   0x04: SegCs (uint16), 0x06: SegDs, 0x08: SegEs, 0x0A: SegFs, 0x0C: SegGs, 0x0E: SegSs
+;   0x10: Rip, 0x18: Rsp, 0x20: Rbp, 0x28: EFlags
+;   0x30: Rax, 0x38: Rbx, 0x40: Rcx, 0x48: Rdx
+;   0x50: Rsi, 0x58: Rdi
+;   0x60: R8, 0x68: R9, 0x70: R10, 0x78: R11
+;   0x80: R12, 0x88: R13, 0x90: R14, 0x98: R15
+
+; void restore_pal_context(Context* ctx)
+; Windows x64 ABI: ctx in rcx
+; This function does not return - it jumps to the context's RIP
+global restore_pal_context
+restore_pal_context:
+    ; Load rsp first
+    mov rsp, [rcx + 0x18]
+
+    ; Push the return address (RIP) onto stack
+    mov rax, [rcx + 0x10]
+    push rax
+
+    ; Load all general purpose registers
+    mov rax, [rcx + 0x30]
+    mov rbx, [rcx + 0x38]
+    ; rcx loaded last since we're using it
+    mov rdx, [rcx + 0x48]
+    mov rsi, [rcx + 0x50]
+    mov rdi, [rcx + 0x58]
+    mov rbp, [rcx + 0x20]
+    mov r8,  [rcx + 0x60]
+    mov r9,  [rcx + 0x68]
+    mov r10, [rcx + 0x70]
+    mov r11, [rcx + 0x78]
+    mov r12, [rcx + 0x80]
+    mov r13, [rcx + 0x88]
+    mov r14, [rcx + 0x90]
+    mov r15, [rcx + 0x98]
+
+    ; Load RFLAGS (EFlags is 64-bit in our struct for alignment)
+    push qword [rcx + 0x28]
+    popfq
+
+    ; Finally load rcx
+    mov rcx, [rcx + 0x40]
+
+    ; Jump to restored context (RIP was pushed onto stack)
+    ret
+
 ;; ==================== Memory Barriers ====================
 ;; CPU memory fence instructions
 

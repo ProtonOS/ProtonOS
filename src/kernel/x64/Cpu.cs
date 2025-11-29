@@ -76,6 +76,10 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void load_context(CpuContext* context);
 
+    // PAL Context Restore (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void restore_pal_context(void* context);
+
     // Memory Barrier (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void mfence();
@@ -235,6 +239,14 @@ public static unsafe class Cpu
     /// </summary>
     public static void LoadContext(CpuContext* context)
         => load_context(context);
+
+    /// <summary>
+    /// Restore a PAL CONTEXT structure.
+    /// This function does not return - execution continues at Context.Rip.
+    /// Used for RtlRestoreContext and exception unwinding.
+    /// </summary>
+    public static void RestorePalContext(void* context)
+        => restore_pal_context(context);
 
     // --- Atomic Operations ---
 

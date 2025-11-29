@@ -186,7 +186,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | SetUnhandledExceptionFilter | [x] | Exception.cs | Global exception filter |
 | RaiseException | [x] | Exception.cs | Throw Win32 exceptions with filter dispatch - tested |
 | RtlCaptureContext | [x] | Thread.cs | Capture current CPU context - tested |
-| RtlRestoreContext | [ ] | - | Restore CPU context |
+| RtlRestoreContext | [x] | Thread.cs | Restore CPU context - tested |
 
 ---
 
@@ -327,14 +327,14 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Synchronization | 29 | 0 | 2 | 31 |
 | Time/Performance | 6 | 0 | 0 | 6 |
 | System Info | 3 | 0 | 0 | 3 |
-| Exception Handling | 3 | 0 | 1 | 4 |
+| Exception Handling | 4 | 0 | 0 | 4 |
 | Interlocked | 13 | 0 | 0 | 13 |
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
 | Process | 2 | 0 | 1 | 3 |
-| **TOTAL** | **91** | **2** | **8** | **101** |
+| **TOTAL** | **92** | **2** | **7** | **101** |
 
-**Coverage: 90% complete, 2% partial, 8% missing**
+**Coverage: 91% complete, 2% partial, 7% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is COMPLETE!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, WaitForMultipleObjectsEx, plus CreateEventEx, CreateMutexEx, CreateSemaphoreEx, SignalObjectAndWait, HeapSize, HeapReAlloc (efficient in-place resize), GetCurrentProcessId, and GetCurrentProcess (all tested). The remaining missing APIs are in categories that aren't critical for initial JIT integration (file I/O, named objects).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is COMPLETE!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, WaitForMultipleObjectsEx, plus CreateEventEx, CreateMutexEx, CreateSemaphoreEx, SignalObjectAndWait, HeapSize, HeapReAlloc (efficient in-place resize), GetCurrentProcessId, and GetCurrentProcess (all tested). **Exception Handling is now 100% COMPLETE** with RtlRestoreContext for exception unwinding. The remaining missing APIs are in categories that aren't critical for initial JIT integration (file I/O, named objects).
