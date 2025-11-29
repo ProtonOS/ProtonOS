@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install bflat (C# AOT compiler - not available as package)
-ARG BFLAT_VERSION=8.0.2
+ARG BFLAT_VERSION=10.0.0-rc.1
 RUN mkdir -p /opt/bflat \
     && curl -fsSL "https://github.com/bflattened/bflat/releases/download/v${BFLAT_VERSION}/bflat-${BFLAT_VERSION}-linux-glibc-x64.tar.gz" \
     | tar -xzC /opt/bflat \
