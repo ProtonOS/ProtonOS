@@ -543,6 +543,64 @@ public static unsafe class ThreadApi
 
         // This code is never reached
     }
+
+    /// <summary>
+    /// Set the description (name) of a thread.
+    /// This is used for debugging and diagnostic purposes.
+    /// </summary>
+    /// <param name="hThread">Thread handle</param>
+    /// <param name="lpThreadDescription">Description string (null-terminated wide string)</param>
+    /// <returns>HRESULT (S_OK on success)</returns>
+    public static int SetThreadDescription(ThreadHandle hThread, char* lpThreadDescription)
+    {
+        // Thread descriptions are not implemented in netos
+        // This is a stub that always succeeds
+        // In a full implementation, we would store this in the Thread structure
+        return 0;  // S_OK
+    }
+
+    /// <summary>
+    /// Get the description (name) of a thread.
+    /// </summary>
+    /// <param name="hThread">Thread handle</param>
+    /// <param name="ppszThreadDescription">Receives pointer to description string</param>
+    /// <returns>HRESULT (S_OK on success)</returns>
+    public static int GetThreadDescription(ThreadHandle hThread, char** ppszThreadDescription)
+    {
+        // Return empty string (not implemented)
+        if (ppszThreadDescription != null)
+            *ppszThreadDescription = null;
+        return 0;  // S_OK
+    }
+
+    /// <summary>
+    /// Enhanced version of QueueUserAPC with additional flags.
+    /// Windows 10+ API that supports special APC flags.
+    /// </summary>
+    /// <param name="pfnAPC">Pointer to the APC function</param>
+    /// <param name="hThread">Handle to the thread</param>
+    /// <param name="dwData">Parameter to pass to APC function</param>
+    /// <param name="dwFlags">APC flags (QUEUE_USER_APC_FLAGS_*)</param>
+    /// <returns>True if APC was queued successfully</returns>
+    public static bool QueueUserAPC2(
+        delegate* unmanaged<nuint, void> pfnAPC,
+        ThreadHandle hThread,
+        nuint dwData,
+        uint dwFlags)
+    {
+        // For now, ignore the flags and use regular QueueUserAPC
+        // QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC (0x1) could be handled differently
+        return QueueUserAPC(pfnAPC, hThread, dwData);
+    }
+}
+
+/// <summary>
+/// QueueUserAPC2 flags.
+/// </summary>
+public static class QueueUserApcFlags
+{
+    public const uint QUEUE_USER_APC_FLAGS_NONE = 0;
+    public const uint QUEUE_USER_APC_FLAGS_SPECIAL_USER_APC = 1;
 }
 
 /// <summary>

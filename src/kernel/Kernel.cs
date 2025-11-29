@@ -173,18 +173,19 @@ public static unsafe class Kernel
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
         var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
-        uint id20, id21, id22, id23;
+        uint id20, id21, id22, id23, id24;
         var thread20 = Scheduler.CreateThread(&SyncExTestThread, null, 0, 0, out id20);
         var thread21 = Scheduler.CreateThread(&ProcessAndHeapTestThread, null, 0, 0, out id21);
         var thread22 = Scheduler.CreateThread(&StringConversionTestThread, null, 0, 0, out id22);
         var thread23 = Scheduler.CreateThread(&StackUnwindTestThread, null, 0, 0, out id23);
+        var thread24 = Scheduler.CreateThread(&NewPalApisTestThread, null, 0, 0, out id24);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
             thread16 != null && thread17 != null && thread18 != null && thread19 != null &&
-            thread20 != null && thread21 != null && thread22 != null && thread23 != null)
+            thread20 != null && thread21 != null && thread22 != null && thread23 != null && thread24 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -232,6 +233,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id22);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id23);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id24);
             DebugConsole.WriteLine();
         }
     }
@@ -3209,5 +3212,324 @@ public static unsafe class Kernel
 
         DebugConsole.WriteLine("[Unwind Test] All Stack Unwinding API tests PASSED!");
         return 0;
+    }
+
+    /// <summary>
+    /// Test thread for new PAL APIs (Console, COM, NativeAOT PAL, XState, System)
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint NewPalApisTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[NewPAL Test] Starting new PAL API tests...");
+
+        // ==================== Console I/O Tests ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 1: GetStdHandle");
+        var hStdOut = PAL.Console.GetStdHandle(PAL.StdHandle.STD_OUTPUT_HANDLE);
+        var hStdErr = PAL.Console.GetStdHandle(PAL.StdHandle.STD_ERROR_HANDLE);
+        var hStdIn = PAL.Console.GetStdHandle(PAL.StdHandle.STD_INPUT_HANDLE);
+        var hInvalid = PAL.Console.GetStdHandle(999);  // Invalid handle type
+
+        if (hStdOut == PAL.ConsoleHandles.InvalidHandle)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 1: FAILED - stdout invalid");
+            return 1;
+        }
+        if (hStdErr == PAL.ConsoleHandles.InvalidHandle)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 1: FAILED - stderr invalid");
+            return 1;
+        }
+        if (hStdIn == PAL.ConsoleHandles.InvalidHandle)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 1: FAILED - stdin invalid");
+            return 1;
+        }
+        if (hInvalid != PAL.ConsoleHandles.InvalidHandle)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 1: FAILED - invalid handle should be INVALID_HANDLE");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 1: GetStdHandle - PASSED");
+
+        // Test 2: WriteFile to stdout
+        DebugConsole.WriteLine("[NewPAL Test] Test 2: WriteFile to stdout");
+        byte* testMsg = stackalloc byte[6];
+        testMsg[0] = (byte)'H';
+        testMsg[1] = (byte)'i';
+        testMsg[2] = (byte)'!';
+        testMsg[3] = (byte)'\r';
+        testMsg[4] = (byte)'\n';
+        testMsg[5] = 0;
+
+        uint bytesWritten = 0;
+        bool writeResult = PAL.Console.WriteFile(hStdOut, testMsg, 5, &bytesWritten, null);
+        if (!writeResult || bytesWritten != 5)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 2: FAILED");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 2: WriteFile - PASSED (you should see 'Hi!' above)");
+
+        // Test 3: IsConsoleHandle
+        DebugConsole.WriteLine("[NewPAL Test] Test 3: IsConsoleHandle");
+        if (!PAL.Console.IsConsoleHandle(hStdOut) || !PAL.Console.IsConsoleHandle(hStdErr))
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 3: FAILED - console handles not recognized");
+            return 1;
+        }
+        if (PAL.Console.IsConsoleHandle((nuint)0x12345678))
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 3: FAILED - random handle recognized as console");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 3: IsConsoleHandle - PASSED");
+
+        // ==================== Process/System Info Tests ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 4: GetProcessAffinityMask");
+        nuint procMask = 0;
+        nuint sysMask = 0;
+        bool affinityResult = PAL.ProcessApi.GetProcessAffinityMask(
+            PAL.ProcessApi.GetCurrentProcess(), &procMask, &sysMask);
+        if (!affinityResult)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 4: FAILED - returned false");
+            return 1;
+        }
+        if (procMask == 0 || sysMask == 0)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 4: FAILED - masks are zero");
+            return 1;
+        }
+        if (procMask != sysMask)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 4: FAILED - masks don't match");
+            return 1;
+        }
+        DebugConsole.Write("[NewPAL Test] Test 4: GetProcessAffinityMask = 0x");
+        DebugConsole.WriteHex((ulong)procMask);
+        DebugConsole.WriteLine(" - PASSED");
+
+        // Test 5: QueryInformationJobObject (should fail - not supported)
+        DebugConsole.WriteLine("[NewPAL Test] Test 5: QueryInformationJobObject (stub)");
+        uint retLen = 0;
+        bool jobResult = PAL.ProcessApi.QueryInformationJobObject(0, 0, null, 0, &retLen);
+        if (jobResult)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 5: FAILED - should return false");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 5: QueryInformationJobObject returns false - PASSED");
+
+        // Test 6: IsWow64Process2
+        DebugConsole.WriteLine("[NewPAL Test] Test 6: IsWow64Process2");
+        ushort procMachine = 0xFFFF;
+        ushort nativeMachine = 0;
+        bool wow64Result = PAL.VersionApi.IsWow64Process2(
+            PAL.ProcessApi.GetCurrentProcess(), &procMachine, &nativeMachine);
+        if (!wow64Result)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 6: FAILED - returned false");
+            return 1;
+        }
+        // procMachine should be 0 (not WOW64), nativeMachine should be AMD64 (0x8664)
+        if (procMachine != 0)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 6: FAILED - procMachine = ");
+            DebugConsole.WriteHex(procMachine);
+            DebugConsole.WriteLine(" (expected 0)");
+            return 1;
+        }
+        if (nativeMachine != PAL.VersionApi.IMAGE_FILE_MACHINE_AMD64)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 6: FAILED - nativeMachine = ");
+            DebugConsole.WriteHex(nativeMachine);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 6: IsWow64Process2 - PASSED (native AMD64)");
+
+        // Test 7: IsWindowsVersionOrGreater
+        DebugConsole.WriteLine("[NewPAL Test] Test 7: IsWindowsVersionOrGreater");
+        // Should return true for Windows 7 (6.1)
+        if (!PAL.VersionApi.IsWindowsVersionOrGreater(6, 1, 0))
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 7: FAILED - not >= Windows 7");
+            return 1;
+        }
+        // Should return true for Windows 10 (10.0)
+        if (!PAL.VersionApi.IsWindowsVersionOrGreater(10, 0, 0))
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 7: FAILED - not >= Windows 10");
+            return 1;
+        }
+        // Should return false for Windows 11 (pretend version 11.0)
+        if (PAL.VersionApi.IsWindowsVersionOrGreater(11, 0, 0))
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 7: FAILED - claims >= Windows 11");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 7: IsWindowsVersionOrGreater - PASSED");
+
+        // ==================== COM Stubs Tests ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx");
+        int hr = PAL.Com.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
+        if (hr != PAL.HResult.S_OK)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 8: FAILED - hr = ");
+            DebugConsole.WriteHex((uint)hr);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        // Second call should return S_FALSE (already initialized)
+        hr = PAL.Com.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
+        if (hr != PAL.HResult.S_FALSE)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 8: FAILED - second call should be S_FALSE");
+            return 1;
+        }
+        PAL.Com.CoUninitialize();
+        DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx/CoUninitialize - PASSED");
+
+        // ==================== NativeAOT PAL Tests ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 9: PalGetModuleBounds");
+        ulong lowerBound = 0, upperBound = 0;
+        bool boundsResult = PAL.NativeAotPal.PalGetModuleBounds(&lowerBound, &upperBound);
+        if (!boundsResult)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 9: FAILED - returned false");
+            return 1;
+        }
+        if (lowerBound == 0 || upperBound == 0 || lowerBound >= upperBound)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 9: FAILED - invalid bounds: ");
+            DebugConsole.WriteHex(lowerBound);
+            DebugConsole.Write(" - ");
+            DebugConsole.WriteHex(upperBound);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.Write("[NewPAL Test] Test 9: PalGetModuleBounds = 0x");
+        DebugConsole.WriteHex(lowerBound);
+        DebugConsole.Write(" - 0x");
+        DebugConsole.WriteHex(upperBound);
+        DebugConsole.WriteLine(" - PASSED");
+
+        // Test 10: PalGetMaximumStackBounds
+        DebugConsole.WriteLine("[NewPAL Test] Test 10: PalGetMaximumStackBounds");
+        ulong stackLow = 0, stackHigh = 0;
+        bool stackResult = PAL.NativeAotPal.PalGetMaximumStackBounds(&stackLow, &stackHigh);
+        if (!stackResult)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 10: FAILED - returned false");
+            return 1;
+        }
+        if (stackLow == 0 || stackHigh == 0 || stackLow >= stackHigh)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 10: FAILED - invalid bounds: ");
+            DebugConsole.WriteHex(stackLow);
+            DebugConsole.Write(" - ");
+            DebugConsole.WriteHex(stackHigh);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        // Verify current RSP is within bounds
+        ulong currentRsp = Cpu.GetRsp();
+        if (currentRsp < stackLow || currentRsp > stackHigh)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 10: FAILED - RSP 0x");
+            DebugConsole.WriteHex(currentRsp);
+            DebugConsole.WriteLine(" not in bounds");
+            return 1;
+        }
+        DebugConsole.Write("[NewPAL Test] Test 10: PalGetMaximumStackBounds = 0x");
+        DebugConsole.WriteHex(stackLow);
+        DebugConsole.Write(" - 0x");
+        DebugConsole.WriteHex(stackHigh);
+        DebugConsole.WriteLine(" - PASSED");
+
+        // Test 11: PalGetModuleFileName
+        DebugConsole.WriteLine("[NewPAL Test] Test 11: PalGetModuleFileName");
+        char* fileNameBuf = stackalloc char[64];
+        uint nameLen = PAL.NativeAotPal.PalGetModuleFileName(null, fileNameBuf, 64);
+        if (nameLen == 0)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 11: FAILED - returned 0 length");
+            return 1;
+        }
+        // Should be "\kernel" or similar
+        DebugConsole.Write("[NewPAL Test] Test 11: PalGetModuleFileName = \"");
+        for (uint i = 0; i < nameLen; i++)
+            DebugConsole.WriteByte((byte)fileNameBuf[i]);
+        DebugConsole.WriteLine("\" - PASSED");
+
+        // ==================== XState Tests ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 12: GetEnabledXStateFeatures");
+        ulong xstateFeatures = PAL.XState.GetEnabledXStateFeatures();
+        // Should have at least legacy FP+SSE
+        if ((xstateFeatures & PAL.XStateFeatures.XSTATE_MASK_LEGACY) != PAL.XStateFeatures.XSTATE_MASK_LEGACY)
+        {
+            DebugConsole.Write("[NewPAL Test] Test 12: FAILED - missing legacy features: ");
+            DebugConsole.WriteHex(xstateFeatures);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.Write("[NewPAL Test] Test 12: GetEnabledXStateFeatures = 0x");
+        DebugConsole.WriteHex(xstateFeatures);
+        DebugConsole.WriteLine(" - PASSED");
+
+        // Test 13: InitializeContext
+        DebugConsole.WriteLine("[NewPAL Test] Test 13: InitializeContext");
+        uint requiredSize = 0;
+        // First call to get required size
+        PAL.XState.InitializeContext(null, 0, null, &requiredSize);
+        if (requiredSize == 0)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 13: FAILED - required size is 0");
+            return 1;
+        }
+        DebugConsole.Write("[NewPAL Test] Test 13: InitializeContext requires ");
+        DebugConsole.WriteDecimal(requiredSize);
+        DebugConsole.WriteLine(" bytes - PASSED");
+
+        // ==================== Thread Description Test ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 14: SetThreadDescription");
+        var currentThread = PAL.ThreadApi.GetCurrentThread();
+        int descResult = PAL.ThreadApi.SetThreadDescription(currentThread, null);
+        if (descResult != 0)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 14: FAILED - SetThreadDescription returned error");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 14: SetThreadDescription - PASSED");
+
+        // ==================== QueueUserAPC2 Test ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 15: QueueUserAPC2");
+        _apc2CallCount = 0;
+        bool apc2Result = PAL.ThreadApi.QueueUserAPC2(
+            &Apc2Callback, currentThread, 0x9999, PAL.QueueUserApcFlags.QUEUE_USER_APC_FLAGS_NONE);
+        if (!apc2Result)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 15: FAILED - QueueUserAPC2 returned false");
+            return 1;
+        }
+        // Use SleepEx to deliver the APC
+        PAL.ThreadApi.SleepEx(0, true);
+        if (_apc2CallCount != 1)
+        {
+            DebugConsole.WriteLine("[NewPAL Test] Test 15: FAILED - APC2 not delivered");
+            return 1;
+        }
+        DebugConsole.WriteLine("[NewPAL Test] Test 15: QueueUserAPC2 - PASSED");
+
+        DebugConsole.WriteLine("[NewPAL Test] All new PAL API tests PASSED!");
+        return 0;
+    }
+
+    private static int _apc2CallCount;
+
+    [UnmanagedCallersOnly]
+    private static void Apc2Callback(nuint param)
+    {
+        _apc2CallCount++;
     }
 }

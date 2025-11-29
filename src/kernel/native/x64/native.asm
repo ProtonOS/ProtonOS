@@ -645,3 +645,15 @@ memcpy:
     pop rsi
     pop rdi
     ret
+
+;; ==================== Register Access ====================
+;; Needed for PAL stack bounds detection
+
+global get_rsp
+
+; ulong get_rsp()
+; Returns: current RSP value
+get_rsp:
+    mov rax, rsp
+    add rax, 8              ; adjust for return address pushed by call
+    ret

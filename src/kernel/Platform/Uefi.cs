@@ -59,6 +59,48 @@ public static class EfiMemoryAttribute
 }
 
 // ============================================================================
+// UEFI GUIDs
+// ============================================================================
+
+/// <summary>
+/// UEFI GUID structure (128-bit identifier)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct EfiGuid
+{
+    public uint Data1;
+    public ushort Data2;
+    public ushort Data3;
+    public unsafe fixed byte Data4[8];
+
+    /// <summary>
+    /// EFI_LOADED_IMAGE_PROTOCOL_GUID
+    /// {5B1B31A1-9562-11D2-8E3F-00A0C969723B}
+    /// </summary>
+    public static EfiGuid LoadedImageProtocol => new EfiGuid
+    {
+        Data1 = 0x5B1B31A1,
+        Data2 = 0x9562,
+        Data3 = 0x11D2,
+    };
+
+    public static unsafe void InitLoadedImageGuid(EfiGuid* guid)
+    {
+        guid->Data1 = 0x5B1B31A1;
+        guid->Data2 = 0x9562;
+        guid->Data3 = 0x11D2;
+        guid->Data4[0] = 0x8E;
+        guid->Data4[1] = 0x3F;
+        guid->Data4[2] = 0x00;
+        guid->Data4[3] = 0xA0;
+        guid->Data4[4] = 0xC9;
+        guid->Data4[5] = 0x69;
+        guid->Data4[6] = 0x72;
+        guid->Data4[7] = 0x3B;
+    }
+}
+
+// ============================================================================
 // UEFI Structures
 // ============================================================================
 
@@ -85,6 +127,33 @@ public struct EfiMemoryDescriptor
     public ulong VirtualStart;           // Virtual address (if mapped)
     public ulong NumberOfPages;          // Size in 4KB pages
     public ulong Attribute;              // Memory attributes
+}
+
+/// <summary>
+/// EFI_LOADED_IMAGE_PROTOCOL - Information about a loaded image
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct EfiLoadedImageProtocol
+{
+    public uint Revision;
+    public void* ParentHandle;
+    public EfiSystemTable* SystemTable;
+
+    // Source location of the image
+    public void* DeviceHandle;
+    public void* FilePath;          // EFI_DEVICE_PATH_PROTOCOL
+    public void* Reserved;
+
+    // Image's load options
+    public uint LoadOptionsSize;
+    public void* LoadOptions;
+
+    // Location where the image was loaded
+    public void* ImageBase;         // Start of image in memory
+    public ulong ImageSize;         // Size of image in bytes
+    public EfiMemoryType ImageCodeType;
+    public EfiMemoryType ImageDataType;
+    public void* Unload;            // Unload function pointer
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -174,7 +243,18 @@ public unsafe struct EfiBootServices
     // InstallProtocolInterface, ReinstallProtocolInterface, UninstallProtocolInterface,
     // HandleProtocol, Reserved, RegisterProtocolNotify, LocateHandle, LocateDevicePath,
     // InstallConfigurationTable
-    private void* _installProto, _reinstallProto, _uninstallProto, _handleProto, _reserved;
+    private void* _installProto, _reinstallProto, _uninstallProto;
+
+    /// <summary>
+    /// HandleProtocol - Get a protocol interface for a handle
+    /// </summary>
+    public delegate* unmanaged<
+        void*,               // Handle
+        EfiGuid*,            // Protocol GUID
+        void**,              // Interface (out)
+        EfiStatus> HandleProtocol;
+
+    private void* _reserved;
     private void* _registerProtoNotify, _locateHandle, _locateDevicePath, _installConfigTable;
 
     // Image Services: LoadImage, StartImage, Exit, UnloadImage (4, offsets 200-224)
@@ -239,6 +319,91 @@ public static unsafe class UefiBoot
     /// Check if boot services are still available
     /// </summary>
     public static bool BootServicesAvailable => !_bootServicesExited && SystemTable != null;
+
+    // Cached loaded image info
+    private static ulong _imageBase;
+    private static ulong _imageSize;
+    private static bool _imageInfoLoaded;
+
+    /// <summary>
+    /// Get the base address where the kernel image is loaded.
+    /// Must be called before ExitBootServices.
+    /// </summary>
+    public static ulong ImageBase
+    {
+        get
+        {
+            if (!_imageInfoLoaded)
+                LoadImageInfo();
+            return _imageBase;
+        }
+    }
+
+    /// <summary>
+    /// Get the size of the kernel image in bytes.
+    /// Must be called before ExitBootServices.
+    /// </summary>
+    public static ulong ImageSize
+    {
+        get
+        {
+            if (!_imageInfoLoaded)
+                LoadImageInfo();
+            return _imageSize;
+        }
+    }
+
+    /// <summary>
+    /// Load image information from EFI_LOADED_IMAGE_PROTOCOL.
+    /// This uses HandleProtocol to get the loaded image protocol for our image handle.
+    /// </summary>
+    private static void LoadImageInfo()
+    {
+        if (_imageInfoLoaded)
+            return;
+
+        _imageInfoLoaded = true;  // Mark as loaded even if we fail, to avoid retry
+
+        var bs = BootServices;
+        if (bs == null)
+        {
+            DebugConsole.WriteLine("[UEFI] Cannot get image info: boot services unavailable");
+            return;
+        }
+
+        var handle = ImageHandle;
+        if (handle == null)
+        {
+            DebugConsole.WriteLine("[UEFI] Cannot get image info: no image handle");
+            return;
+        }
+
+        // Set up the GUID for EFI_LOADED_IMAGE_PROTOCOL
+        EfiGuid guid;
+        EfiGuid.InitLoadedImageGuid(&guid);
+
+        // Call HandleProtocol to get the loaded image protocol
+        EfiLoadedImageProtocol* loadedImage = null;
+        var status = bs->HandleProtocol(handle, &guid, (void**)&loadedImage);
+
+        if (status != EfiStatus.Success || loadedImage == null)
+        {
+            DebugConsole.Write("[UEFI] HandleProtocol failed: 0x");
+            DebugConsole.WriteHex((ulong)status);
+            DebugConsole.WriteLine();
+            return;
+        }
+
+        // Extract image base and size
+        _imageBase = (ulong)loadedImage->ImageBase;
+        _imageSize = loadedImage->ImageSize;
+
+        DebugConsole.Write("[UEFI] Image loaded at 0x");
+        DebugConsole.WriteHex(_imageBase);
+        DebugConsole.Write(", size 0x");
+        DebugConsole.WriteHex(_imageSize);
+        DebugConsole.WriteLine();
+    }
 
     // Static buffer for ExitBootServices memory map (needs fresh map key)
     [StructLayout(LayoutKind.Sequential)]

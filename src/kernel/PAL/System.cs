@@ -339,4 +339,170 @@ public static unsafe class ProcessApi
     {
         return CURRENT_PROCESS_HANDLE;
     }
+
+    /// <summary>
+    /// Get the processor affinity mask for a process.
+    /// Returns a mask indicating which CPUs the process can run on.
+    /// </summary>
+    /// <param name="hProcess">Process handle (ignored - we have one process)</param>
+    /// <param name="lpProcessAffinityMask">Receives process affinity mask</param>
+    /// <param name="lpSystemAffinityMask">Receives system affinity mask</param>
+    /// <returns>True on success</returns>
+    public static bool GetProcessAffinityMask(
+        nuint hProcess,
+        nuint* lpProcessAffinityMask,
+        nuint* lpSystemAffinityMask)
+    {
+        // Get CPU count from system info
+        SystemInfo sysInfo;
+        SystemApi.GetSystemInfo(out sysInfo);
+
+        // Create mask with one bit per CPU
+        nuint mask = 0;
+        for (uint i = 0; i < sysInfo.dwNumberOfProcessors && i < 64; i++)
+        {
+            mask |= (nuint)(1UL << (int)i);
+        }
+
+        if (lpProcessAffinityMask != null)
+            *lpProcessAffinityMask = mask;
+        if (lpSystemAffinityMask != null)
+            *lpSystemAffinityMask = mask;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Query information about a job object.
+    /// Not supported in netos - always returns failure.
+    /// </summary>
+    public static bool QueryInformationJobObject(
+        nuint hJob,
+        int jobObjectInformationClass,
+        void* lpJobObjectInformation,
+        uint cbJobObjectInformationLength,
+        uint* lpReturnLength)
+    {
+        // Job objects not supported
+        if (lpReturnLength != null)
+            *lpReturnLength = 0;
+        return false;
+    }
+}
+
+/// <summary>
+/// PAL Version APIs - Windows version checking functions.
+/// </summary>
+public static unsafe class VersionApi
+{
+    // IMAGE_FILE_MACHINE constants
+    public const ushort IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+    public const ushort IMAGE_FILE_MACHINE_ARM64 = 0xAA64;
+    public const ushort IMAGE_FILE_MACHINE_UNKNOWN = 0;
+
+    /// <summary>
+    /// Determine if a process is running under WOW64 (32-bit on 64-bit).
+    /// In netos, we always run native 64-bit, so this returns false.
+    /// </summary>
+    /// <param name="hProcess">Process handle (ignored)</param>
+    /// <param name="pProcessMachine">Receives the process machine type</param>
+    /// <param name="pNativeMachine">Receives the native machine type</param>
+    /// <returns>True on success</returns>
+    public static bool IsWow64Process2(
+        nuint hProcess,
+        ushort* pProcessMachine,
+        ushort* pNativeMachine)
+    {
+#if ARCH_X64
+        ushort nativeMachine = IMAGE_FILE_MACHINE_AMD64;
+#elif ARCH_ARM64
+        ushort nativeMachine = IMAGE_FILE_MACHINE_ARM64;
+#else
+        ushort nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+#endif
+
+        if (pProcessMachine != null)
+            *pProcessMachine = IMAGE_FILE_MACHINE_UNKNOWN;  // Not WOW64 (native process)
+        if (pNativeMachine != null)
+            *pNativeMachine = nativeMachine;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if the Windows version is equal to or greater than the specified version.
+    /// In netos, we always return true for Windows 10+ version checks.
+    /// </summary>
+    /// <param name="wMajorVersion">Major version to check</param>
+    /// <param name="wMinorVersion">Minor version to check</param>
+    /// <param name="wServicePackMajor">Service pack major version</param>
+    /// <returns>True if system version is >= specified version</returns>
+    public static bool IsWindowsVersionOrGreater(
+        ushort wMajorVersion,
+        ushort wMinorVersion,
+        ushort wServicePackMajor)
+    {
+        // Pretend to be Windows 10 (10.0.0)
+        // This satisfies most version checks in .NET runtime
+        const ushort OUR_MAJOR = 10;
+        const ushort OUR_MINOR = 0;
+        const ushort OUR_SP = 0;
+
+        if (wMajorVersion < OUR_MAJOR) return true;
+        if (wMajorVersion > OUR_MAJOR) return false;
+
+        if (wMinorVersion < OUR_MINOR) return true;
+        if (wMinorVersion > OUR_MINOR) return false;
+
+        return wServicePackMajor <= OUR_SP;
+    }
+
+    /// <summary>
+    /// Get the Windows version (RtlGetVersion equivalent).
+    /// Returns version info indicating Windows 10.
+    /// </summary>
+    /// <param name="lpVersionInformation">Version info structure to fill</param>
+    /// <returns>0 (STATUS_SUCCESS)</returns>
+    public static int RtlGetVersion(OsVersionInfoExW* lpVersionInformation)
+    {
+        if (lpVersionInformation == null)
+            return -1;  // STATUS_INVALID_PARAMETER
+
+        // Check size - accept both OSVERSIONINFOW and OSVERSIONINFOEXW sizes
+        if (lpVersionInformation->dwOSVersionInfoSize != (uint)sizeof(OsVersionInfoExW) &&
+            lpVersionInformation->dwOSVersionInfoSize != 276)  // OSVERSIONINFOW size
+        {
+            return -1;  // STATUS_INVALID_PARAMETER
+        }
+
+        lpVersionInformation->dwMajorVersion = 10;
+        lpVersionInformation->dwMinorVersion = 0;
+        lpVersionInformation->dwBuildNumber = 19041;  // Windows 10 2004
+        lpVersionInformation->dwPlatformId = 2;       // VER_PLATFORM_WIN32_NT
+        lpVersionInformation->wServicePackMajor = 0;
+        lpVersionInformation->wServicePackMinor = 0;
+        lpVersionInformation->wSuiteMask = 0;
+        lpVersionInformation->wProductType = 1;       // VER_NT_WORKSTATION
+
+        return 0;  // STATUS_SUCCESS
+    }
+}
+
+/// <summary>
+/// OSVERSIONINFOEXW structure for RtlGetVersion.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct OsVersionInfoExW
+{
+    public uint dwOSVersionInfoSize;
+    public uint dwMajorVersion;
+    public uint dwMinorVersion;
+    public uint dwBuildNumber;
+    public uint dwPlatformId;
+    public fixed char szCSDVersion[128];
+    public ushort wServicePackMajor;
+    public ushort wServicePackMinor;
+    public ushort wSuiteMask;
+    public byte wProductType;
+    public byte wReserved;
 }

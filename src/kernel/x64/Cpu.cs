@@ -91,6 +91,10 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void* memset(void* dest, int c, ulong count);
 
+    // Register Access
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong get_rsp();
+
     // Atomic Operations - 32-bit (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_cmpxchg32(int* ptr, int newVal, int comparand);
@@ -433,4 +437,12 @@ public static unsafe class Cpu
     /// <param name="count">Number of bytes to zero</param>
     /// <returns>Destination pointer</returns>
     public static void* MemZero(void* dest, ulong count) => memset(dest, 0, count);
+
+    // --- Register Access ---
+
+    /// <summary>
+    /// Get the current RSP (stack pointer) value.
+    /// Used for stack bounds detection.
+    /// </summary>
+    public static ulong GetRsp() => get_rsp();
 }
