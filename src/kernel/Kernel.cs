@@ -66,6 +66,9 @@ public static unsafe class Kernel
         // Create test threads to demonstrate scheduling
         CreateTestThreads();
 
+        // Test exception handling
+        TestExceptionHandling();
+
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
 
@@ -101,6 +104,35 @@ public static unsafe class Kernel
     // Exception handling test variables
     private static bool _exceptionCaught;
     private static uint _caughtExceptionCode;
+
+    /// <summary>
+    /// Test exception handling with try/catch/throw
+    /// </summary>
+    private static void TestExceptionHandling()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[EH Test] Testing exception handling...");
+
+        try
+        {
+            DebugConsole.WriteLine("[EH Test] Inside try block");
+            throw new System.Exception("Test exception");
+        }
+        catch (System.Exception)
+        {
+            DebugConsole.WriteLine("[EH Test] Caught Exception!");
+            _exceptionCaught = true;
+        }
+
+        if (_exceptionCaught)
+        {
+            DebugConsole.WriteLine("[EH Test] Exception handling test PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[EH Test] Exception handling test FAILED");
+        }
+    }
 
     /// <summary>
     /// Create test threads to demonstrate scheduling and synchronization

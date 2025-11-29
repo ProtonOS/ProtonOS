@@ -1,0 +1,3 @@
+[submodule "tools/bflat"]
+	path = tools/bflat
+	url = https://github.com/bflattened/bflat.git

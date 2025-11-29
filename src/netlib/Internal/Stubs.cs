@@ -48,9 +48,19 @@ namespace Internal.Runtime.CompilerHelpers
 {
     partial class ThrowHelpers
     {
-        static void ThrowIndexOutOfRangeException() => Environment.FailFast(null);
-        static void ThrowDivideByZeroException() => Environment.FailFast(null);
-        static void ThrowPlatformNotSupportedException() => Environment.FailFast(null);
+        // These are called by compiler-generated code for various throw scenarios.
+        // For now, they call FailFast since we don't have full exception dispatch.
+        // TODO: Implement proper throw via RhpThrowEx once we have EH tables.
+
+        static void ThrowIndexOutOfRangeException() => Environment.FailFast("IndexOutOfRangeException");
+        static void ThrowDivideByZeroException() => Environment.FailFast("DivideByZeroException");
+        static void ThrowPlatformNotSupportedException() => Environment.FailFast("PlatformNotSupportedException");
+        static void ThrowOverflowException() => Environment.FailFast("OverflowException");
+        static void ThrowArgumentOutOfRangeException() => Environment.FailFast("ArgumentOutOfRangeException");
+        static void ThrowArgumentNullException() => Environment.FailFast("ArgumentNullException");
+        static void ThrowNullReferenceException() => Environment.FailFast("NullReferenceException");
+        static void ThrowInvalidCastException() => Environment.FailFast("InvalidCastException");
+        static void ThrowArrayTypeMismatchException() => Environment.FailFast("ArrayTypeMismatchException");
     }
 
     // A class that the compiler looks for that has helpers to initialize the
@@ -134,23 +144,14 @@ assigningNull:
             *dst = r;
         }
 
+        // Import allocation from kernel PAL
+        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+        static extern MethodTable** PalAllocObject(uint size);
+
         static unsafe MethodTable** AllocObject(uint size)
         {
-#if WINDOWS
-            [DllImport("kernel32"), SuppressGCTransition]
-            static extern MethodTable** LocalAlloc(uint flags, uint size);
-            MethodTable** result = LocalAlloc(0x40, size);
-#elif LINUX
-            [DllImport("libSystem.Native"), SuppressGCTransition]
-            static extern MethodTable** SystemNative_Malloc(nuint size);
-            MethodTable** result = SystemNative_Malloc(size);
-#elif UEFI
-            MethodTable** result;
-            if (EfiSystemTable->BootServices->AllocatePool(2 /* LoaderData*/, (nint)size, (void**)&result) != 0)
-                result = null;
-#else
-#error Nope
-#endif
+            // Use kernel's heap allocator (returns zeroed memory)
+            MethodTable** result = PalAllocObject(size);
 
             if (result == null)
                 Environment.FailFast(null);

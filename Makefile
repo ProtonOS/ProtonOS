@@ -34,7 +34,8 @@ BFLAT_FLAGS := \
 	--no-stacktrace-data \
 	--no-globalization \
 	--no-reflection \
-	--no-exception-messages
+	--no-exception-messages \
+	--emit-eh-info
 
 # Architecture-specific defines
 ifeq ($(ARCH),x64)

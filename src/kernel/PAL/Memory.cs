@@ -557,4 +557,19 @@ public static unsafe class Memory
 
         return (ulong)sizeof(MemoryBasicInformation);
     }
+
+    // ========================================================================
+    // Runtime Heap Exports for netlib
+    // These are exported for netlib's RhpNewFast/RhpNewArray to use
+    // ========================================================================
+
+    /// <summary>
+    /// Allocate zeroed memory for managed object allocation.
+    /// Exported for netlib's StartupCodeHelpers.AllocObject.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "PalAllocObject")]
+    public static void* PalAllocObject(uint size)
+    {
+        return HeapAllocator.AllocZeroed(size);
+    }
 }

@@ -264,6 +264,43 @@ public static class UNW_HandlerType
     public const uint UNW_FLAG_UHANDLER = 2;
 }
 
+// =============================================================================
+// NativeAOT Exception Handling Structures
+// The bflat/NativeAOT compiler emits EH clause data in a custom format.
+// =============================================================================
+
+/// <summary>
+/// Flags for NativeAOT EH info block header.
+/// </summary>
+public static class NativeAotEHFlags
+{
+    public const byte HasEHInfo = 0x02;  // EH clause data follows
+}
+
+/// <summary>
+/// NativeAOT EH clause types.
+/// </summary>
+public enum EHClauseKind : byte
+{
+    Typed = 0,      // catch (SpecificException)
+    Fault = 1,      // fault handler (finally that only runs on exception)
+    Filter = 2,     // catch when (filter expression)
+    Finally = 3,    // finally handler
+}
+
+/// <summary>
+/// Parsed NativeAOT EH clause.
+/// </summary>
+public struct NativeAotEHClause
+{
+    public EHClauseKind Kind;
+    public uint TryStartOffset;   // RVA offset from function start
+    public uint TryEndOffset;     // RVA offset from function start
+    public uint HandlerOffset;    // RVA offset of handler funclet from function start
+    public uint FilterOffset;     // RVA offset of filter funclet (for Filter kind)
+    public ulong CatchTypeRva;    // RVA of catch type (for Typed kind)
+}
+
 /// <summary>
 /// Function table entry for dynamically registered code regions.
 /// Used for JIT-compiled code.
@@ -302,12 +339,191 @@ internal unsafe struct FunctionTableStorage
     public fixed byte Data[64 * 40]; // 64 entries × sizeof(FunctionTableEntry)
 }
 
+// ======================== PE Header Structures for .pdata access ========================
+
+/// <summary>
+/// DOS header - just what we need to get to the PE header
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public unsafe struct ImageDosHeader
+{
+    public ushort e_magic;      // 0x5A4D = "MZ"
+    private fixed byte _padding[58];
+    public int e_lfanew;        // Offset to PE header
+}
+
+/// <summary>
+/// PE file header
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct ImageFileHeader
+{
+    public ushort Machine;
+    public ushort NumberOfSections;
+    public uint TimeDateStamp;
+    public uint PointerToSymbolTable;
+    public uint NumberOfSymbols;
+    public ushort SizeOfOptionalHeader;
+    public ushort Characteristics;
+}
+
+/// <summary>
+/// PE32+ optional header data directories
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct ImageDataDirectory
+{
+    public uint VirtualAddress;
+    public uint Size;
+}
+
+/// <summary>
+/// PE32+ optional header (64-bit)
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public unsafe struct ImageOptionalHeader64
+{
+    public ushort Magic;                // 0x20b = PE32+
+    public byte MajorLinkerVersion;
+    public byte MinorLinkerVersion;
+    public uint SizeOfCode;
+    public uint SizeOfInitializedData;
+    public uint SizeOfUninitializedData;
+    public uint AddressOfEntryPoint;
+    public uint BaseOfCode;
+    public ulong ImageBase;
+    public uint SectionAlignment;
+    public uint FileAlignment;
+    public ushort MajorOperatingSystemVersion;
+    public ushort MinorOperatingSystemVersion;
+    public ushort MajorImageVersion;
+    public ushort MinorImageVersion;
+    public ushort MajorSubsystemVersion;
+    public ushort MinorSubsystemVersion;
+    public uint Win32VersionValue;
+    public uint SizeOfImage;
+    public uint SizeOfHeaders;
+    public uint CheckSum;
+    public ushort Subsystem;
+    public ushort DllCharacteristics;
+    public ulong SizeOfStackReserve;
+    public ulong SizeOfStackCommit;
+    public ulong SizeOfHeapReserve;
+    public ulong SizeOfHeapCommit;
+    public uint LoaderFlags;
+    public uint NumberOfRvaAndSizes;
+
+    // Data directories inline (up to 16)
+    public ImageDataDirectory ExportTable;
+    public ImageDataDirectory ImportTable;
+    public ImageDataDirectory ResourceTable;
+    public ImageDataDirectory ExceptionTable;       // This is .pdata!
+    public ImageDataDirectory CertificateTable;
+    public ImageDataDirectory BaseRelocationTable;
+    public ImageDataDirectory Debug;
+    public ImageDataDirectory Architecture;
+    public ImageDataDirectory GlobalPtr;
+    public ImageDataDirectory TLSTable;
+    public ImageDataDirectory LoadConfigTable;
+    public ImageDataDirectory BoundImport;
+    public ImageDataDirectory IAT;
+    public ImageDataDirectory DelayImportDescriptor;
+    public ImageDataDirectory CLRRuntimeHeader;
+    public ImageDataDirectory Reserved;
+}
+
+/// <summary>
+/// PE NT headers (64-bit)
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct ImageNtHeaders64
+{
+    public uint Signature;              // 0x00004550 = "PE\0\0"
+    public ImageFileHeader FileHeader;
+    public ImageOptionalHeader64 OptionalHeader;
+}
+
 /// <summary>
 /// Exception handling infrastructure for x64.
 /// Manages function tables for SEH and dispatches exceptions.
 /// </summary>
 public static unsafe class ExceptionHandling
 {
+    // ======================== Managed Exception Entry Points ========================
+
+    /// <summary>
+    /// C# handler called by assembly RhpThrowEx.
+    /// This is the main entry point for managed exception throwing.
+    /// </summary>
+    /// <param name="exceptionObject">The exception object being thrown</param>
+    /// <param name="context">Context captured at throw site (can be modified)</param>
+    [UnmanagedCallersOnly(EntryPoint = "RhpThrowEx_Handler")]
+    public static void RhpThrowEx_Handler(void* exceptionObject, ExceptionContext* context)
+    {
+        DebugConsole.Write("[EH] RhpThrowEx_Handler called, exception=0x");
+        DebugConsole.WriteHex((ulong)exceptionObject);
+        DebugConsole.Write(" RIP=0x");
+        DebugConsole.WriteHex(context->Rip);
+        DebugConsole.WriteLine();
+
+        // Dispatch the exception using NativeAOT EH tables
+        bool handled = DispatchNativeAotException(exceptionObject, context);
+
+        if (!handled)
+        {
+            // Unhandled exception - fatal
+            DebugConsole.WriteLine("[EH] FATAL: Unhandled managed exception!");
+            DebugConsole.Write("[EH] Exception object at: 0x");
+            DebugConsole.WriteHex((ulong)exceptionObject);
+            DebugConsole.WriteLine();
+            DebugConsole.Write("[EH] Thrown from RIP: 0x");
+            DebugConsole.WriteHex(context->Rip);
+            DebugConsole.WriteLine();
+
+            // Print stack trace attempt
+            DebugConsole.WriteLine("[EH] Stack trace:");
+            PrintStackTrace(context);
+
+            // Halt - can't continue without a handler
+            Cpu.Halt();
+        }
+
+        // If handled, the context has been modified to point to the handler.
+        // Assembly will restore context and jump to handler address.
+    }
+
+    /// <summary>
+    /// Print a simple stack trace for debugging.
+    /// </summary>
+    private static void PrintStackTrace(ExceptionContext* context)
+    {
+        ExceptionContext walkContext = *context;
+        int maxFrames = 20;
+
+        for (int frame = 0; frame < maxFrames && walkContext.Rip != 0; frame++)
+        {
+            DebugConsole.Write("  [");
+            DebugConsole.WriteDecimal(frame);
+            DebugConsole.Write("] RIP=0x");
+            DebugConsole.WriteHex(walkContext.Rip);
+
+            // Try to find function info
+            ulong imageBase;
+            var funcEntry = LookupFunctionEntry(walkContext.Rip, out imageBase);
+            if (funcEntry != null)
+            {
+                DebugConsole.Write(" (func at 0x");
+                DebugConsole.WriteHex(imageBase + funcEntry->BeginAddress);
+                DebugConsole.Write(")");
+            }
+            DebugConsole.WriteLine();
+
+            // Unwind one frame
+            if (!VirtualUnwind(&walkContext, null))
+                break;
+        }
+    }
+
     private const int MaxFunctionTables = 64;
 
     private static FunctionTableStorage _tableStorage;
@@ -336,6 +552,83 @@ public static unsafe class ExceptionHandling
         _initialized = true;
 
         DebugConsole.WriteLine("[SEH] Exception handling initialized");
+
+        // Register kernel's function table from PE .pdata section
+        RegisterKernelFunctionTable();
+    }
+
+    /// <summary>
+    /// Register the kernel's function table from the PE .pdata section.
+    /// This is needed for exception handling to work on kernel code.
+    /// </summary>
+    private static void RegisterKernelFunctionTable()
+    {
+        // Get kernel image base from UEFI
+        ulong imageBase = UefiBoot.ImageBase;
+        if (imageBase == 0)
+        {
+            DebugConsole.WriteLine("[SEH] Warning: Could not get kernel image base");
+            return;
+        }
+
+        DebugConsole.Write("[SEH] Kernel image base: 0x");
+        DebugConsole.WriteHex(imageBase);
+        DebugConsole.WriteLine();
+
+        // Parse PE header to find .pdata section
+        var dosHeader = (ImageDosHeader*)imageBase;
+
+        // Verify DOS signature
+        if (dosHeader->e_magic != 0x5A4D)  // "MZ"
+        {
+            DebugConsole.WriteLine("[SEH] Invalid DOS signature");
+            return;
+        }
+
+        // Get NT headers
+        var ntHeaders = (ImageNtHeaders64*)(imageBase + (ulong)dosHeader->e_lfanew);
+
+        // Verify PE signature
+        if (ntHeaders->Signature != 0x00004550)  // "PE\0\0"
+        {
+            DebugConsole.WriteLine("[SEH] Invalid PE signature");
+            return;
+        }
+
+        // Verify PE32+ (64-bit)
+        if (ntHeaders->OptionalHeader.Magic != 0x20b)
+        {
+            DebugConsole.WriteLine("[SEH] Not a PE32+ image");
+            return;
+        }
+
+        // Get exception directory (.pdata)
+        var exceptionDir = &ntHeaders->OptionalHeader.ExceptionTable;
+        if (exceptionDir->VirtualAddress == 0 || exceptionDir->Size == 0)
+        {
+            DebugConsole.WriteLine("[SEH] No .pdata section found");
+            return;
+        }
+
+        // Calculate number of RUNTIME_FUNCTION entries
+        uint entryCount = exceptionDir->Size / (uint)sizeof(RuntimeFunction);
+        var functionTable = (RuntimeFunction*)(imageBase + exceptionDir->VirtualAddress);
+
+        DebugConsole.Write("[SEH] Found .pdata at RVA 0x");
+        DebugConsole.WriteHex(exceptionDir->VirtualAddress);
+        DebugConsole.Write(", ");
+        DebugConsole.WriteDecimal(entryCount);
+        DebugConsole.WriteLine(" function entries");
+
+        // Register the kernel's function table
+        if (AddFunctionTable(functionTable, entryCount, imageBase))
+        {
+            DebugConsole.WriteLine("[SEH] Kernel function table registered");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[SEH] Failed to register kernel function table");
+        }
     }
 
     /// <summary>
@@ -1042,6 +1335,422 @@ public static unsafe class ExceptionHandling
             case UnwindRegister.R14: ctxPtrs->R14 = location; break;
             case UnwindRegister.R15: ctxPtrs->R15 = location; break;
         }
+    }
+
+    // =============================================================================
+    // NativeAOT EH Info Parsing
+    // =============================================================================
+
+    /// <summary>
+    /// Get the NativeAOT EH info pointer from a function's UNWIND_INFO.
+    ///
+    /// NativeAOT/bflat format (after standard UNWIND_INFO):
+    /// - [header 4 bytes] [unwind codes] [padding to DWORD] [MethodAssociatedData RVA] [Handler RVA]
+    ///
+    /// Layout:
+    /// - Header: 4 bytes
+    /// - UnwindCodes: CountOfUnwindCodes * 2 bytes
+    /// - Padding: to align to DWORD boundary
+    /// - MethodAssociatedData RVA: 4 bytes - points to managed EH clause data
+    /// - Exception Handler RVA: 4 bytes - points to native handler (e.g., RhpExceptionHandler)
+    ///
+    /// The MethodAssociatedData points to:
+    /// - Clause count (NativeUnsigned encoded)
+    /// - Clause data for each clause
+    /// </summary>
+    /// <param name="imageBase">Base address of the image</param>
+    /// <param name="unwindInfo">Pointer to UNWIND_INFO</param>
+    /// <returns>Pointer to EH info data, or null if none</returns>
+    // Unwind block flags (from NativeAOT runtime)
+    private const byte UBF_FUNC_KIND_MASK = 0x03;
+    private const byte UBF_FUNC_KIND_ROOT = 0x00;
+    private const byte UBF_FUNC_KIND_HANDLER = 0x01;
+    private const byte UBF_FUNC_KIND_FILTER = 0x02;
+    private const byte UBF_FUNC_HAS_EHINFO = 0x04;
+    private const byte UBF_FUNC_REVERSE_PINVOKE = 0x08;
+    private const byte UBF_FUNC_HAS_ASSOCIATED_DATA = 0x10;
+
+    public static byte* GetNativeAotEHInfo(ulong imageBase, UnwindInfo* unwindInfo)
+    {
+        if (unwindInfo == null)
+            return null;
+
+        // Calculate offset to end of UNWIND_INFO structure
+        // Layout per NativeAOT CoffNativeCodeManager.cpp:
+        //   offsetof(UNWIND_INFO, UnwindCode) + sizeof(UNWIND_CODE) * CountOfUnwindCodes
+        // This is header (4 bytes) + CountOfUnwindCodes * 2 (NO rounding to even)
+        int headerSize = 4;
+        int unwindArrayBytes = unwindInfo->CountOfUnwindCodes * 2;
+        int unwindInfoSize = headerSize + unwindArrayBytes;
+
+        // If exception handler flags are set, need to DWORD align and add exception handler RVA
+        if ((unwindInfo->Flags & (UnwindFlags.UNW_FLAG_EHANDLER | UnwindFlags.UNW_FLAG_UHANDLER)) != 0)
+        {
+            // Align to DWORD boundary
+            unwindInfoSize = (unwindInfoSize + 3) & ~3;
+            // Add exception handler RVA
+            unwindInfoSize += 4;
+        }
+
+        // After UNWIND_INFO comes the unwind block flags byte
+        byte* p = (byte*)unwindInfo + unwindInfoSize;
+        byte unwindBlockFlags = *p++;
+
+        DebugConsole.Write("[EH]   unwindBlockFlags=0x");
+        DebugConsole.WriteHex(unwindBlockFlags);
+        DebugConsole.Write(" @offset ");
+        DebugConsole.WriteDecimal(unwindInfoSize);
+
+        // Skip associated data RVA if present
+        if ((unwindBlockFlags & UBF_FUNC_HAS_ASSOCIATED_DATA) != 0)
+        {
+            p += 4;  // Skip 4-byte associated data RVA
+            DebugConsole.Write(" (has assocData)");
+        }
+
+        // Check if function has EH info
+        if ((unwindBlockFlags & UBF_FUNC_HAS_EHINFO) == 0)
+        {
+            DebugConsole.WriteLine(" -> no EH info");
+            return null;
+        }
+
+        // Read the EHInfo RVA
+        uint ehInfoRva = *(uint*)p;
+
+        DebugConsole.Write(" ehInfoRVA=0x");
+        DebugConsole.WriteHex(ehInfoRva);
+
+        // Validate the RVA - it should be non-zero and point to a reasonable address
+        if (ehInfoRva == 0 || ehInfoRva > 0x100000)  // Max 1MB RVA, reasonable for kernel
+        {
+            DebugConsole.WriteLine(" -> invalid RVA");
+            return null;
+        }
+
+        // Return pointer to ehinfo data (starts with clause count)
+        byte* ehInfo = (byte*)(imageBase + ehInfoRva);
+        DebugConsole.WriteLine(" -> OK");
+
+        return ehInfo;
+    }
+
+    /// <summary>
+    /// Read a NativeAOT-encoded unsigned integer from a byte stream.
+    /// This is NOT LEB128 - it uses a custom format from NativePrimitiveDecoder.
+    ///
+    /// Encoding (based on low bits of first byte):
+    /// - bit0 = 0: 1-byte, value = byte >> 1 (0-127)
+    /// - bit1 = 0, bit0 = 1: 2-byte, value = (b0 >> 2) | (b1 << 6)
+    /// - bit2 = 0, bits0-1 = 1: 3-byte, value = (b0 >> 3) | (b1 << 5) | (b2 << 13)
+    /// - bit3 = 0, bits0-2 = 1: 4-byte, value = (b0 >> 4) | (b1 << 4) | (b2 << 12) | (b3 << 20)
+    /// - bits0-3 = 1: 5-byte, skip first byte, read 4-byte little-endian value
+    /// </summary>
+    private static uint ReadNativeUnsigned(ref byte* ptr)
+    {
+        byte b0 = *ptr++;
+
+        // 1-byte encoding: bit 0 = 0
+        if ((b0 & 1) == 0)
+        {
+            return (uint)(b0 >> 1);
+        }
+
+        // 2-byte encoding: bit 1 = 0, bit 0 = 1
+        if ((b0 & 2) == 0)
+        {
+            byte b1 = *ptr++;
+            return (uint)((b0 >> 2) | (b1 << 6));
+        }
+
+        // 3-byte encoding: bit 2 = 0, bits 0-1 = 1
+        if ((b0 & 4) == 0)
+        {
+            byte b1 = *ptr++;
+            byte b2 = *ptr++;
+            return (uint)((b0 >> 3) | (b1 << 5) | (b2 << 13));
+        }
+
+        // 4-byte encoding: bit 3 = 0, bits 0-2 = 1
+        if ((b0 & 8) == 0)
+        {
+            byte b1 = *ptr++;
+            byte b2 = *ptr++;
+            byte b3 = *ptr++;
+            return (uint)((b0 >> 4) | (b1 << 4) | (b2 << 12) | (b3 << 20));
+        }
+
+        // 5-byte encoding: all low nibble bits = 1, full 32-bit follows
+        uint result = (uint)(*ptr++);
+        result |= (uint)(*ptr++) << 8;
+        result |= (uint)(*ptr++) << 16;
+        result |= (uint)(*ptr++) << 24;
+        return result;
+    }
+
+    /// <summary>
+    /// Parse NativeAOT EH clause data and find a matching catch handler.
+    ///
+    /// NativeAOT ehinfo format (per CoffNativeCodeManager.cpp):
+    /// The ehinfo data stream starts DIRECTLY with the clause count - NO flags byte here.
+    /// (The flags byte is in the unwind block extension, which we handle in GetNativeAotEHInfo.)
+    ///
+    /// Format:
+    /// - Clause count (NativeUnsigned)
+    /// - For each clause:
+    ///   - TryStartOffset (NativeUnsigned)
+    ///   - (TryLength << 2) | ClauseKind (NativeUnsigned) - kind is low 2 bits
+    ///   - HandlerOffset (NativeUnsigned) - for typed/fault/finally
+    ///   - TypeRVA (32-bit relative) - for Typed clauses only
+    ///   - FilterOffset (NativeUnsigned) - for Filter clauses only
+    /// </summary>
+    /// <param name="ehInfo">Pointer to EH info data</param>
+    /// <param name="imageBase">Base address of the image</param>
+    /// <param name="functionRva">RVA of the function start</param>
+    /// <param name="offsetInFunction">Offset within function where exception occurred</param>
+    /// <param name="exceptionTypeRva">RVA of the exception type (0 for any)</param>
+    /// <param name="clause">Receives the matching clause if found</param>
+    /// <returns>True if a matching clause was found</returns>
+    public static bool FindMatchingEHClause(
+        byte* ehInfo,
+        ulong imageBase,
+        uint functionRva,
+        uint offsetInFunction,
+        ulong exceptionTypeRva,
+        out NativeAotEHClause clause)
+    {
+        clause = default;
+
+        if (ehInfo == null)
+            return false;
+
+        byte* ptr = ehInfo;
+
+        // Read clause count directly (NO flags byte - that's in the unwind block extension)
+        uint clauseCount = ReadNativeUnsigned(ref ptr);
+
+        DebugConsole.Write("[EH] Found ");
+        DebugConsole.WriteDecimal(clauseCount);
+        DebugConsole.Write(" EH clause(s), offset in function: 0x");
+        DebugConsole.WriteHex(offsetInFunction);
+        DebugConsole.WriteLine();
+
+        // Sanity check clause count
+        if (clauseCount > 100)
+        {
+            DebugConsole.WriteLine("[EH] Warning: Excessive clause count, may be parsing error");
+            return false;
+        }
+
+        // Parse each clause looking for a match
+        for (uint i = 0; i < clauseCount; i++)
+        {
+            // Read try start offset
+            uint tryStart = ReadNativeUnsigned(ref ptr);
+
+            // Read (tryLength << 2) | clauseKind
+            uint tryEndDeltaAndKind = ReadNativeUnsigned(ref ptr);
+            byte kind = (byte)(tryEndDeltaAndKind & 0x3);
+            uint tryLength = tryEndDeltaAndKind >> 2;
+            uint tryEnd = tryStart + tryLength;
+
+            // Read handler offset (for typed/fault/finally)
+            uint handlerOffset = 0;
+            if (kind != (byte)EHClauseKind.Filter)
+            {
+                handlerOffset = ReadNativeUnsigned(ref ptr);
+            }
+
+            // Read type-specific data
+            uint filterOffset = 0;
+            uint catchTypeRva = 0;
+
+            if (kind == (byte)EHClauseKind.Typed)
+            {
+                // Type RVA is a 32-bit relative offset (signed)
+                int typeRvaOffset = *(int*)ptr;
+                ptr += 4;
+                catchTypeRva = (uint)((long)(ulong)ptr - 4 + typeRvaOffset - (long)imageBase);
+            }
+            else if (kind == (byte)EHClauseKind.Filter)
+            {
+                // For filter, read handler offset then filter offset
+                handlerOffset = ReadNativeUnsigned(ref ptr);
+                filterOffset = ReadNativeUnsigned(ref ptr);
+            }
+
+            DebugConsole.Write("[EH] Clause ");
+            DebugConsole.WriteDecimal(i);
+            DebugConsole.Write(": kind=");
+            DebugConsole.WriteDecimal(kind);
+            DebugConsole.Write(" try=[0x");
+            DebugConsole.WriteHex(tryStart);
+            DebugConsole.Write("-0x");
+            DebugConsole.WriteHex(tryEnd);
+            DebugConsole.Write("] handler=0x");
+            DebugConsole.WriteHex(handlerOffset);
+            if (kind == (byte)EHClauseKind.Typed)
+            {
+                DebugConsole.Write(" typeRva=0x");
+                DebugConsole.WriteHex(catchTypeRva);
+            }
+            DebugConsole.WriteLine();
+
+            // Check if the exception offset falls within this try region
+            if (offsetInFunction >= tryStart && offsetInFunction < tryEnd)
+            {
+                // For now, accept any typed catch or finally
+                // TODO: Proper type matching
+                if (kind == (byte)EHClauseKind.Typed ||
+                    kind == (byte)EHClauseKind.Finally ||
+                    kind == (byte)EHClauseKind.Fault)
+                {
+                    clause.Kind = (EHClauseKind)kind;
+                    clause.TryStartOffset = tryStart;
+                    clause.TryEndOffset = tryEnd;
+                    clause.HandlerOffset = handlerOffset;
+                    clause.FilterOffset = filterOffset;
+                    clause.CatchTypeRva = catchTypeRva;
+
+                    DebugConsole.WriteLine("[EH] Found matching clause!");
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Dispatch a .NET exception using NativeAOT EH tables.
+    /// This performs the two-pass exception handling:
+    /// Pass 1: Search for a matching catch handler
+    /// Pass 2: Unwind stack and execute finally/fault handlers
+    /// </summary>
+    /// <param name="exceptionObject">The exception object being thrown</param>
+    /// <param name="context">Context at the point of throw</param>
+    /// <returns>True if exception was handled, false if unhandled</returns>
+    public static bool DispatchNativeAotException(void* exceptionObject, ExceptionContext* context)
+    {
+        if (!_initialized) Init();
+
+        DebugConsole.Write("[EH] DispatchNativeAotException at RIP=0x");
+        DebugConsole.WriteHex(context->Rip);
+        DebugConsole.WriteLine();
+
+        // Pass 1: Search for a handler
+        ExceptionContext searchContext = *context;
+        int maxFrames = 100;
+        int frame = 0;
+
+        while (frame < maxFrames && searchContext.Rip != 0)
+        {
+            ulong imageBase;
+            var funcEntry = LookupFunctionEntry(searchContext.Rip, out imageBase);
+
+            if (funcEntry == null)
+            {
+                // No unwind info - assume leaf function, just pop return address
+                searchContext.Rip = *(ulong*)searchContext.Rsp;
+                searchContext.Rsp += 8;
+                frame++;
+                continue;
+            }
+
+            // Get UNWIND_INFO
+            var unwindInfo = (UnwindInfo*)(imageBase + funcEntry->UnwindInfoAddress);
+
+            DebugConsole.Write("[EH] Frame ");
+            DebugConsole.WriteDecimal(frame);
+            DebugConsole.Write(": func RVA=0x");
+            DebugConsole.WriteHex(funcEntry->BeginAddress);
+            DebugConsole.Write("-0x");
+            DebugConsole.WriteHex(funcEntry->EndAddress);
+            DebugConsole.Write(" unwindRVA=0x");
+            DebugConsole.WriteHex(funcEntry->UnwindInfoAddress);
+            DebugConsole.WriteLine();
+
+            DebugConsole.Write("[EH]   unwind ver=");
+            DebugConsole.WriteDecimal(unwindInfo->Version);
+            DebugConsole.Write(" flags=0x");
+            DebugConsole.WriteHex(unwindInfo->Flags);
+            DebugConsole.Write(" prolog=");
+            DebugConsole.WriteDecimal(unwindInfo->SizeOfProlog);
+            DebugConsole.Write(" codes=");
+            DebugConsole.WriteDecimal(unwindInfo->CountOfUnwindCodes);
+            DebugConsole.WriteLine();
+
+            // Try to get NativeAOT EH info (debug output moved into GetNativeAotEHInfo)
+            byte* ehInfo = GetNativeAotEHInfo(imageBase, unwindInfo);
+
+            DebugConsole.Write("[EH]   ehInfo=0x");
+            DebugConsole.WriteHex((ulong)ehInfo);
+            if (ehInfo != null)
+            {
+                DebugConsole.Write(" first bytes: ");
+                for (int b = 0; b < 8; b++)
+                {
+                    DebugConsole.WriteHex(ehInfo[b]);
+                    DebugConsole.Write(" ");
+                }
+            }
+            DebugConsole.WriteLine();
+
+            if (ehInfo != null)
+            {
+                // Calculate offset within function
+                uint offsetInFunc = (uint)(searchContext.Rip - (imageBase + funcEntry->BeginAddress));
+
+                // Look for matching clause
+                NativeAotEHClause clause;
+                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause))
+                {
+                    // Found a handler!
+                    DebugConsole.Write("[EH] Pass 1: Found handler in frame ");
+                    DebugConsole.WriteDecimal(frame);
+                    DebugConsole.Write(" at offset 0x");
+                    DebugConsole.WriteHex(clause.HandlerOffset);
+                    DebugConsole.WriteLine();
+
+                    // TODO: Pass 2 - unwind and execute finally handlers
+                    // For now, just transfer to the catch handler
+
+                    // Calculate handler address
+                    ulong handlerAddr = imageBase + funcEntry->BeginAddress + clause.HandlerOffset;
+
+                    DebugConsole.Write("[EH] Transferring to handler at 0x");
+                    DebugConsole.WriteHex(handlerAddr);
+                    DebugConsole.WriteLine();
+
+                    // Transfer control to handler
+                    // The handler funclet expects:
+                    // - RCX = exception object
+                    // - RDX = frame pointer (for accessing locals)
+                    context->Rip = handlerAddr;
+                    context->Rcx = (ulong)exceptionObject;
+                    context->Rdx = context->Rbp;  // Pass frame pointer
+
+                    return true;
+                }
+            }
+
+            // Unwind one frame for pass 1 search
+            ulong establisherFrame;
+            RtlVirtualUnwind(
+                UNW_HandlerType.UNW_FLAG_NHANDLER,
+                imageBase,
+                searchContext.Rip,
+                funcEntry,
+                &searchContext,
+                null,
+                &establisherFrame,
+                null);
+
+            frame++;
+        }
+
+        DebugConsole.WriteLine("[EH] No handler found - exception is unhandled");
+        return false;
     }
 
     /// <summary>

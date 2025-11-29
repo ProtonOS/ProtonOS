@@ -228,4 +228,12 @@ public static unsafe class Exception
     {
         return ExceptionHandling.VirtualUnwind(context, contextPointers);
     }
+
+    // ========================================================================
+    // Runtime Exception Exports for netlib
+    // These are called by compiler-generated code for throw statements.
+    // ========================================================================
+    // RhpThrowEx, RhpRethrow, RhpThrowHwEx are implemented in native.asm
+    // They capture context and call RhpThrowEx_Handler in ExceptionHandling.cs
+    // ========================================================================
 }

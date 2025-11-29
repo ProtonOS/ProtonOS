@@ -430,6 +430,10 @@ public static unsafe class UefiBoot
         if (st == null || st->BootServices == null)
             return false;
 
+        // Cache image info before we lose access to boot services
+        // This is needed later for exception handling (parsing PE .pdata section)
+        LoadImageInfo();
+
         DebugConsole.WriteLine("[UEFI] Exiting boot services...");
 
         // ExitBootServices requires a fresh map key. If the memory map changes

@@ -657,3 +657,158 @@ get_rsp:
     mov rax, rsp
     add rax, 8              ; adjust for return address pushed by call
     ret
+
+;; ==================== Managed Exception Support ====================
+;; Assembly support for NativeAOT/managed exception handling.
+;; These functions handle context capture at throw site and restoration at catch site.
+
+extern RhpThrowEx_Handler   ; C# exception dispatch handler
+
+; ExceptionContext structure layout (must match C# ExceptionContext):
+;   0x00: Rip, 0x08: Rsp, 0x10: Rbp, 0x18: Rflags
+;   0x20: Rax, 0x28: Rbx, 0x30: Rcx, 0x38: Rdx
+;   0x40: Rsi, 0x48: Rdi
+;   0x50: R8, 0x58: R9, 0x60: R10, 0x68: R11
+;   0x70: R12, 0x78: R13, 0x80: R14, 0x88: R15
+;   0x90: Cs (ushort), 0x92: Ss (ushort)
+EXCEPTION_CONTEXT_SIZE equ 0x98
+
+; void RhpThrowEx(void* exceptionObject)
+; Called by compiler-generated code for: throw exception;
+; Windows x64 ABI: exceptionObject in rcx
+; This captures the full context at the throw site and calls the C# handler.
+global RhpThrowEx
+RhpThrowEx:
+    ; Allocate space for ExceptionContext on stack
+    sub rsp, EXCEPTION_CONTEXT_SIZE
+
+    ; Capture context - save all registers
+    ; Rip = return address (where throw instruction was)
+    mov rax, [rsp + EXCEPTION_CONTEXT_SIZE]  ; return address
+    mov [rsp + 0x00], rax
+
+    ; Rsp = caller's RSP (after our stack allocation and return address)
+    lea rax, [rsp + EXCEPTION_CONTEXT_SIZE + 8]
+    mov [rsp + 0x08], rax
+
+    ; Rbp
+    mov [rsp + 0x10], rbp
+
+    ; Rflags
+    pushfq
+    pop rax
+    mov [rsp + 0x18], rax
+
+    ; General purpose registers
+    mov [rsp + 0x20], rax   ; Rax (already in rax from flags)
+    mov [rsp + 0x28], rbx
+    mov [rsp + 0x30], rcx   ; Rcx = exceptionObject (save it)
+    mov [rsp + 0x38], rdx
+    mov [rsp + 0x40], rsi
+    mov [rsp + 0x48], rdi
+    mov [rsp + 0x50], r8
+    mov [rsp + 0x58], r9
+    mov [rsp + 0x60], r10
+    mov [rsp + 0x68], r11
+    mov [rsp + 0x70], r12
+    mov [rsp + 0x78], r13
+    mov [rsp + 0x80], r14
+    mov [rsp + 0x88], r15
+
+    ; Segment registers
+    mov ax, cs
+    mov [rsp + 0x90], ax
+    mov ax, ss
+    mov [rsp + 0x92], ax
+
+    ; Call C# handler: void RhpThrowEx_Handler(void* exceptionObject, ExceptionContext* context)
+    ; rcx = exceptionObject (already there)
+    ; rdx = pointer to context on stack
+    mov rdx, rsp
+    sub rsp, 32             ; shadow space
+    call RhpThrowEx_Handler
+    add rsp, 32
+
+    ; If we return here, handler modified context to point to catch funclet
+    ; NativeAOT funclets:
+    ; - Are called with: RCX = exception object, RDX = frame pointer (RBP of faulting frame)
+    ; - Return in RAX the address to continue execution at (after the try-catch block)
+    ; We need to:
+    ; 1. Call the funclet with proper args (already set in context by C# code)
+    ; 2. Jump to the continuation address returned by the funclet
+
+    ; Load handler address (funclet) and establisher frame
+    mov rax, [rsp + 0x00]   ; new Rip = funclet address
+    mov r11, [rsp + 0x08]   ; new Rsp = establisher frame RSP
+
+    ; Load the funclet arguments from context (set by C# handler)
+    mov rcx, [rsp + 0x30]   ; Rcx = exception object
+    mov rdx, [rsp + 0x10]   ; Rdx = frame pointer (RBP) - establisher frame
+
+    ; Load callee-saved registers that funclet might need from parent frame
+    mov rbx, [rsp + 0x28]
+    mov rbp, [rsp + 0x10]   ; RBP = establisher frame pointer
+    mov r12, [rsp + 0x70]
+    mov r13, [rsp + 0x78]
+    mov r14, [rsp + 0x80]
+    mov r15, [rsp + 0x88]
+
+    ; Set up stack for funclet call
+    ; Funclet expects to be called on the establisher frame's stack
+    mov rsp, r11
+
+    ; Ensure 16-byte stack alignment before call
+    and rsp, ~0xF
+    sub rsp, 32             ; shadow space for Windows x64 calling convention
+
+    ; Call the funclet - it returns continuation address in RAX
+    call rax
+
+    ; RAX now contains the continuation address
+    ; Clean up shadow space and continue
+    add rsp, 32
+
+    ; Jump to continuation address (where execution continues after the try-catch)
+    jmp rax
+
+; void RhpRethrow()
+; Called by compiler-generated code for: throw; (rethrow current exception)
+; TODO: Implement proper rethrow with current exception tracking
+global RhpRethrow
+RhpRethrow:
+    ; For now, just halt - we need current exception tracking
+    hlt
+    ret
+
+; void RhpThrowHwEx(uint exceptionCode, void* faultingIP)
+; Called for hardware exceptions (null ref, divide by zero, etc.)
+; Windows x64 ABI: exceptionCode in ecx, faultingIP in rdx
+; TODO: Implement by creating exception object and throwing
+global RhpThrowHwEx
+RhpThrowHwEx:
+    ; For now, just halt
+    hlt
+    ret
+
+; void RhpCallCatchFunclet(void* exceptionObject, void* handlerAddress, void* framePointer)
+; Transfer control to a catch funclet with proper setup
+; Windows x64 ABI: exceptionObject in rcx, handlerAddress in rdx, framePointer in r8
+; The catch funclet expects: rcx = exception object, rdx = frame pointer
+global RhpCallCatchFunclet
+RhpCallCatchFunclet:
+    ; Set up for funclet call
+    mov rax, rdx            ; handler address
+    mov rdx, r8             ; frame pointer goes in rdx for funclet
+    ; rcx already has exception object
+    jmp rax                 ; tail-call to funclet
+
+; void RhpCallFinallyFunclet(void* handlerAddress, void* framePointer)
+; Transfer control to a finally funclet
+; Windows x64 ABI: handlerAddress in rcx, framePointer in rdx
+global RhpCallFinallyFunclet
+RhpCallFinallyFunclet:
+    ; Set up for funclet call
+    mov rax, rcx            ; handler address
+    ; rdx already has frame pointer
+    call rax                ; call funclet (it returns)
+    ret
