@@ -173,17 +173,18 @@ public static unsafe class Kernel
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
         var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
-        uint id20, id21, id22;
+        uint id20, id21, id22, id23;
         var thread20 = Scheduler.CreateThread(&SyncExTestThread, null, 0, 0, out id20);
         var thread21 = Scheduler.CreateThread(&ProcessAndHeapTestThread, null, 0, 0, out id21);
         var thread22 = Scheduler.CreateThread(&StringConversionTestThread, null, 0, 0, out id22);
+        var thread23 = Scheduler.CreateThread(&StackUnwindTestThread, null, 0, 0, out id23);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
             thread16 != null && thread17 != null && thread18 != null && thread19 != null &&
-            thread20 != null && thread21 != null && thread22 != null)
+            thread20 != null && thread21 != null && thread22 != null && thread23 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -229,6 +230,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id21);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id22);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id23);
             DebugConsole.WriteLine();
         }
     }
@@ -2993,6 +2996,218 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("[String Test] Test 8: WideCharToMultiByte surrogate - PASSED");
 
         DebugConsole.WriteLine("[String Test] All String Conversion API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Test thread for stack unwinding (PAL_VirtualUnwind, RtlVirtualUnwind)
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint StackUnwindTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Unwind Test] Starting Stack Unwinding API tests...");
+
+        // Test 1: Test RtlLookupFunctionEntry on an unregistered address
+        DebugConsole.WriteLine("[Unwind Test] Test 1: RtlLookupFunctionEntry (no entry)");
+        ulong imageBase;
+        var entry = PAL.Exception.RtlLookupFunctionEntry(0x12345678UL, out imageBase, null);
+        if (entry == null)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 1: RtlLookupFunctionEntry returns null for unregistered - PASSED");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 1: FAILED - expected null");
+            return 1;
+        }
+
+        // Test 2: Create a synthetic function and register it
+        DebugConsole.WriteLine("[Unwind Test] Test 2: RtlAddFunctionTable and RtlLookupFunctionEntry");
+
+        // Use stackalloc for UNWIND_INFO buffer (16 bytes)
+        byte* unwindInfoData = stackalloc byte[16];
+
+        // Create a simple UNWIND_INFO:
+        // - Version 1, no flags (no handler)
+        // - PrologSize = 4
+        // - CountOfUnwindCodes = 1
+        // - FrameRegister = 0, FrameOffset = 0
+        // - UWOP_ALLOC_SMALL with OpInfo = 3 (allocates 8*3+8 = 32 bytes)
+        unwindInfoData[0] = 0x01;    // Version=1, Flags=0
+        unwindInfoData[1] = 0x04;    // SizeOfProlog = 4
+        unwindInfoData[2] = 0x01;    // CountOfUnwindCodes = 1
+        unwindInfoData[3] = 0x00;    // FrameRegister=0, FrameOffset=0
+        // UNWIND_CODE: CodeOffset=4, UnwindOp=2 (UWOP_ALLOC_SMALL), OpInfo=3
+        unwindInfoData[4] = 0x04;    // CodeOffset
+        unwindInfoData[5] = 0x32;    // OpInfo=3 (high 4 bits), UnwindOp=2 (low 4 bits)
+        unwindInfoData[6] = 0x00;    // Padding to even count
+        unwindInfoData[7] = 0x00;
+
+        // Use a "fake" base address for our synthetic function
+        // We'll use the unwindInfoData address as the base for simplicity
+        ulong fakeBase = (ulong)unwindInfoData;
+
+        // Create RUNTIME_FUNCTION on stack
+        RuntimeFunction funcTableEntry;
+        RuntimeFunction* funcTable = &funcTableEntry;
+        // Function spans RVA 0x100 to 0x200, UNWIND_INFO at RVA 0 (which is our buffer)
+        funcTable[0].BeginAddress = 0x100;
+        funcTable[0].EndAddress = 0x200;
+        funcTable[0].UnwindInfoAddress = 0;  // UnwindInfo is at base + 0
+
+        // Register the function table
+        bool addResult = PAL.Exception.RtlAddFunctionTable(funcTable, 1, fakeBase);
+        if (!addResult)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 2: FAILED - RtlAddFunctionTable returned false");
+            return 1;
+        }
+        DebugConsole.WriteLine("[Unwind Test] Test 2: RtlAddFunctionTable - PASSED");
+
+        // Test 3: Look up the function we just registered
+        DebugConsole.WriteLine("[Unwind Test] Test 3: RtlLookupFunctionEntry (registered function)");
+        ulong foundBase;
+        var foundEntry = PAL.Exception.RtlLookupFunctionEntry(fakeBase + 0x150UL, out foundBase, null);
+        if (foundEntry == null)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 3: FAILED - entry not found");
+            return 1;
+        }
+        if (foundBase != fakeBase)
+        {
+            DebugConsole.Write("[Unwind Test] Test 3: FAILED - wrong imageBase: ");
+            DebugConsole.WriteHex(foundBase);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        if (foundEntry->BeginAddress != 0x100 || foundEntry->EndAddress != 0x200)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 3: FAILED - wrong function addresses");
+            return 1;
+        }
+        DebugConsole.WriteLine("[Unwind Test] Test 3: RtlLookupFunctionEntry found function - PASSED");
+
+        // Test 4: Test RtlVirtualUnwind with our synthetic function
+        DebugConsole.WriteLine("[Unwind Test] Test 4: RtlVirtualUnwind");
+
+        // Create a fake stack with return address on stack
+        ulong* fakeStack = stackalloc ulong[8];
+        fakeStack[0] = 0xAAAA0000UL; // slot 0
+        fakeStack[1] = 0xAAAA1111UL; // slot 1
+        fakeStack[2] = 0xAAAA2222UL; // slot 2
+        fakeStack[3] = 0xAAAA3333UL; // slot 3
+        fakeStack[4] = 0xDEADBEEF12345678UL; // Return address at RSP+32
+
+        // Create context: we're at RIP within the function, RSP points to our fake stack
+        ExceptionContext ctx;
+        ctx.Rip = fakeBase + 0x150UL;  // Inside the function
+        ctx.Rsp = (ulong)fakeStack;    // Point to our fake stack
+        ctx.Rbp = 0UL;
+        ctx.Rflags = 0UL;
+        ctx.Rax = 0x1111UL;
+        ctx.Rbx = 0x2222UL;
+        ctx.Rcx = 0x3333UL;
+        ctx.Rdx = 0x4444UL;
+        ctx.Rsi = 0x5555UL;
+        ctx.Rdi = 0x6666UL;
+        ctx.R8 = 0UL;
+        ctx.R9 = 0UL;
+        ctx.R10 = 0UL;
+        ctx.R11 = 0UL;
+        ctx.R12 = 0UL;
+        ctx.R13 = 0UL;
+        ctx.R14 = 0UL;
+        ctx.R15 = 0UL;
+        ctx.Cs = 0x08;
+        ctx.Ss = 0x10;
+
+        ulong establisherFrame = 0UL;
+        void* handlerData = null;
+
+        // Call RtlVirtualUnwind
+        void* handler = PAL.Exception.RtlVirtualUnwind(
+            0, // UNW_FLAG_NHANDLER
+            fakeBase,
+            ctx.Rip,
+            foundEntry,
+            &ctx,
+            &handlerData,
+            &establisherFrame,
+            null);
+
+        // After unwinding:
+        // - RSP should have been adjusted by +32 (undoing ALLOC_SMALL) + 8 (popping return addr)
+        // - RIP should be the return address (0xDEADBEEF12345678)
+        ulong originalStackAddr = (ulong)fakeStack;
+        ulong expectedRsp = originalStackAddr + 40UL;  // Original + 32 (alloc) + 8 (ret addr pop)
+        ulong expectedRip = 0xDEADBEEF12345678UL;
+
+        if (ctx.Rip != expectedRip)
+        {
+            DebugConsole.Write("[Unwind Test] Test 4: FAILED - RIP wrong. Expected: ");
+            DebugConsole.WriteHex(expectedRip);
+            DebugConsole.Write(" Got: ");
+            DebugConsole.WriteHex(ctx.Rip);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        if (ctx.Rsp != expectedRsp)
+        {
+            DebugConsole.Write("[Unwind Test] Test 4: FAILED - RSP wrong. Expected: ");
+            DebugConsole.WriteHex(expectedRsp);
+            DebugConsole.Write(" Got: ");
+            DebugConsole.WriteHex(ctx.Rsp);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.Write("[Unwind Test] Test 4: RtlVirtualUnwind - RIP=0x");
+        DebugConsole.WriteHex(ctx.Rip);
+        DebugConsole.Write(" RSP=0x");
+        DebugConsole.WriteHex(ctx.Rsp);
+        DebugConsole.WriteLine(" - PASSED");
+
+        // Test 5: Test PAL_VirtualUnwind (simpler API)
+        DebugConsole.WriteLine("[Unwind Test] Test 5: PAL_VirtualUnwind");
+
+        // Reset context
+        ctx.Rip = fakeBase + 0x150UL;
+        ctx.Rsp = (ulong)fakeStack;
+
+        bool unwindResult = PAL.Exception.PAL_VirtualUnwind(&ctx, null);
+        if (!unwindResult)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 5: FAILED - PAL_VirtualUnwind returned false");
+            return 1;
+        }
+
+        if (ctx.Rip != expectedRip || ctx.Rsp != expectedRsp)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 5: FAILED - wrong result");
+            return 1;
+        }
+        DebugConsole.WriteLine("[Unwind Test] Test 5: PAL_VirtualUnwind - PASSED");
+
+        // Test 6: RtlDeleteFunctionTable
+        DebugConsole.WriteLine("[Unwind Test] Test 6: RtlDeleteFunctionTable");
+        bool delResult = PAL.Exception.RtlDeleteFunctionTable(funcTable);
+        if (!delResult)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 6: FAILED - delete returned false");
+            return 1;
+        }
+
+        // Verify it's no longer found
+        entry = PAL.Exception.RtlLookupFunctionEntry(fakeBase + 0x150UL, out imageBase, null);
+        if (entry != null)
+        {
+            DebugConsole.WriteLine("[Unwind Test] Test 6: FAILED - entry still found after delete");
+            return 1;
+        }
+        DebugConsole.WriteLine("[Unwind Test] Test 6: RtlDeleteFunctionTable - PASSED");
+
+        DebugConsole.WriteLine("[Unwind Test] All Stack Unwinding API tests PASSED!");
         return 0;
     }
 }

@@ -266,13 +266,15 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ---
 
-## 12. Stack Unwinding (CRITICAL FOR JIT)
+## 12. Stack Unwinding (COMPLETE)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
-| PAL_VirtualUnwind | [ ] | - | Stack unwinding for exception handling and GC |
-| RtlLookupFunctionEntry | [ ] | - | Find UNWIND_INFO for an address |
-| RtlVirtualUnwind | [ ] | - | Windows-style stack unwinding |
+| PAL_VirtualUnwind | [x] | Exception.cs | Stack unwinding for exception handling and GC - tested |
+| RtlLookupFunctionEntry | [x] | Exception.cs | Find RUNTIME_FUNCTION/UNWIND_INFO for an address - tested |
+| RtlVirtualUnwind | [x] | Exception.cs | Windows-style stack unwinding with UNWIND_CODE support - tested |
+| RtlAddFunctionTable | [x] | Exception.cs | Register dynamically generated code - tested |
+| RtlDeleteFunctionTable | [x] | Exception.cs | Unregister function table - tested |
 
 ---
 
@@ -371,16 +373,17 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 16. [x] GetCurrentProcessId, GetCurrentProcess - Process identification - **TESTED**
 
 ### Phase 4 - JIT/Runtime Integration (IN PROGRESS)
-17. [ ] PAL_VirtualUnwind - Stack unwinding for exception handling and GC
-18. [x] MultiByteToWideChar / WideCharToMultiByte - String conversion - **TESTED**
-19. [x] GetACP / GetCPInfo - Code page support - **TESTED**
-20. [ ] Module loading (LoadLibrary, GetProcAddress)
-21. [ ] File mapping (MapViewOfFile)
+17. [x] PAL_VirtualUnwind - Stack unwinding for exception handling and GC - **TESTED**
+18. [x] RtlVirtualUnwind, RtlLookupFunctionEntry, RtlAddFunctionTable, RtlDeleteFunctionTable - **TESTED**
+19. [x] MultiByteToWideChar / WideCharToMultiByte - String conversion - **TESTED**
+20. [x] GetACP / GetCPInfo - Code page support - **TESTED**
+21. [ ] Module loading (LoadLibrary, GetProcAddress)
+22. [ ] File mapping (MapViewOfFile)
 
 ### Phase 5 - Future (After JIT Works)
-22. [ ] File I/O subsystem
-23. [ ] Named objects (OpenEvent, OpenMutex, etc.)
-24. [ ] PAL_Random, PAL_GetStackBase/Limit
+23. [ ] File I/O subsystem
+24. [ ] Named objects (OpenEvent, OpenMutex, etc.)
+25. [ ] PAL_Random, PAL_GetStackBase/Limit
 
 ---
 
@@ -399,16 +402,16 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
 | Handle Management | 1 | 1 | 1 | 3 |
-| Stack Unwinding | 0 | 0 | 3 | 3 |
+| Stack Unwinding | 5 | 0 | 0 | 5 |
 | String Conversion | 4 | 0 | 0 | 4 |
 | Module Loading | 0 | 0 | 7 | 7 |
 | File Mapping | 0 | 0 | 4 | 4 |
 | File/IO | 0 | 0 | 4 | 4 |
 | Miscellaneous | 0 | 0 | 4 | 4 |
 | Process | 2 | 0 | 1 | 3 |
-| **TOTAL** | **96** | **3** | **30** | **129** |
+| **TOTAL** | **101** | **3** | **27** | **131** |
 
-**Coverage: 74% complete, 2% partial, 24% missing**
+**Coverage: 77% complete, 2% partial, 21% missing**
 
 ---
 
@@ -418,7 +421,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 **Phase 4 (JIT/Runtime Integration) is in progress:**
 - [x] **String Conversion** - MultiByteToWideChar/WideCharToMultiByte with full UTF-8/UTF-16 support including surrogate pairs - **COMPLETE**
-- [ ] **Stack Unwinding** - PAL_VirtualUnwind is essential for exception handling and GC stack walking
+- [x] **Stack Unwinding** - PAL_VirtualUnwind, RtlVirtualUnwind, RtlLookupFunctionEntry, RtlAddFunctionTable, RtlDeleteFunctionTable - **COMPLETE**
 - [ ] **Module Loading** - LoadLibrary/GetProcAddress needed to load JIT DLL
 - [ ] **File Mapping** - MapViewOfFile needed for loading assemblies
 

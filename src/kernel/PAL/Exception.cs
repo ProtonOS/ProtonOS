@@ -182,4 +182,50 @@ public static unsafe class Exception
         var record = GetExceptionInformation();
         return record != null ? record->ExceptionCode : 0;
     }
+
+    /// <summary>
+    /// Virtually unwind to the caller of the context frame.
+    /// This is the equivalent of RtlVirtualUnwind from the Windows API.
+    /// </summary>
+    /// <param name="handlerType">Type of handler to look for (UNW_FLAG_* values)</param>
+    /// <param name="imageBase">Base address of the image containing the function</param>
+    /// <param name="controlPc">The instruction pointer to unwind from</param>
+    /// <param name="functionEntry">The RUNTIME_FUNCTION for the function</param>
+    /// <param name="context">The context to unwind (modified in place)</param>
+    /// <param name="handlerData">Receives handler-specific data if a handler is found</param>
+    /// <param name="establisherFrame">Receives the establisher frame pointer (RSP)</param>
+    /// <param name="contextPointers">Optional pointers to where registers were saved</param>
+    /// <returns>Pointer to the exception handler routine, or null if none</returns>
+    public static void* RtlVirtualUnwind(
+        uint handlerType,
+        ulong imageBase,
+        ulong controlPc,
+        RuntimeFunction* functionEntry,
+        ExceptionContext* context,
+        void** handlerData,
+        ulong* establisherFrame,
+        KNonvolatileContextPointers* contextPointers)
+    {
+        return ExceptionHandling.RtlVirtualUnwind(
+            handlerType,
+            imageBase,
+            controlPc,
+            functionEntry,
+            context,
+            handlerData,
+            establisherFrame,
+            contextPointers);
+    }
+
+    /// <summary>
+    /// Virtually unwind one stack frame (PAL-style simplified API).
+    /// This is the equivalent of PAL_VirtualUnwind from the CoreCLR PAL.
+    /// </summary>
+    /// <param name="context">The context to unwind (modified in place)</param>
+    /// <param name="contextPointers">Optional pointers to where registers were saved</param>
+    /// <returns>True if unwinding succeeded, false if at end of stack</returns>
+    public static bool PAL_VirtualUnwind(ExceptionContext* context, KNonvolatileContextPointers* contextPointers)
+    {
+        return ExceptionHandling.VirtualUnwind(context, contextPointers);
+    }
 }
