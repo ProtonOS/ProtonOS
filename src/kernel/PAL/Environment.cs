@@ -5,6 +5,7 @@
 using System.Runtime.InteropServices;
 using Kernel.Memory;
 using Kernel.Threading;
+using Kernel.X64;
 
 namespace Kernel.PAL;
 
@@ -393,5 +394,15 @@ public static unsafe class EnvironmentApi
 
         WideStringCopy(lpDst, lpSrc, srcLen);
         return (uint)(srcLen + 1);
+    }
+
+    /// <summary>
+    /// Terminate execution immediately due to a fatal error.
+    /// Exported for netlib's Environment.FailFast to import via DllImport.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
+    public static void FailFast()
+    {
+        Cpu.HaltForever();
     }
 }

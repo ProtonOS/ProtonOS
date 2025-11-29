@@ -6,7 +6,8 @@ ARCH ?= x64
 # Directories
 BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
-NATIVE_DIR := $(KERNEL_DIR)/native
+NATIVE_DIR := src/native
+NETLIB_DIR := src/netlib
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -29,7 +30,7 @@ LD_FLAGS := -subsystem:efi_application -entry:EfiEntry
 BFLAT_FLAGS := \
 	--os:uefi \
 	--arch:$(ARCH) \
-	--stdlib:zero \
+	--stdlib:none \
 	--no-stacktrace-data \
 	--no-globalization \
 	--no-reflection \
@@ -49,11 +50,12 @@ rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(su
 
 # Source files
 NATIVE_SRC := $(wildcard $(NATIVE_DIR)/$(ARCH)/*.asm)
+NETLIB_SRC := $(call rwildcard,$(NETLIB_DIR),*.cs)
 KERNEL_SRC := $(call rwildcard,$(KERNEL_DIR),*.cs)
 
 # Object files
-NATIVE_OBJ := $(patsubst $(NATIVE_DIR)/$(ARCH)/%.asm,$(BUILD_DIR)/native/%.obj,$(NATIVE_SRC))
-KERNEL_OBJ := $(BUILD_DIR)/kernel/kernel.obj
+NATIVE_OBJ := $(BUILD_DIR)/native.obj
+KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 
 # Targets
 .PHONY: all clean native kernel image run
@@ -62,21 +64,19 @@ all: $(BUILD_DIR)/$(EFI_NAME)
 
 # Create build directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/native $(BUILD_DIR)/kernel
+	mkdir -p $(BUILD_DIR)
 
 # Assemble native code
-$(BUILD_DIR)/native/%.obj: $(NATIVE_DIR)/$(ARCH)/%.asm | $(BUILD_DIR)
+$(NATIVE_OBJ): $(NATIVE_SRC) | $(BUILD_DIR)
 	@echo "NASM $<"
-	@mkdir -p $(dir $@)
-	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/native/$*.lst
+	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/native.lst
 
 native: $(NATIVE_OBJ)
 
-# Compile kernel (all C# files into single object)
-$(KERNEL_OBJ): $(KERNEL_SRC) | $(BUILD_DIR)
+# Compile kernel (netlib + kernel C# sources together)
+$(KERNEL_OBJ): $(NETLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
 	@echo "BFLAT kernel"
-	@mkdir -p $(dir $@)
-	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(KERNEL_SRC)
+	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(NETLIB_SRC) $(KERNEL_SRC)
 
 kernel: $(KERNEL_OBJ)
 
@@ -108,7 +108,6 @@ info:
 	@echo "ARCH:       $(ARCH)"
 	@echo "BUILD_DIR:  $(BUILD_DIR)"
 	@echo "NATIVE_SRC: $(NATIVE_SRC)"
-	@echo "NATIVE_OBJ: $(NATIVE_OBJ)"
-	@echo "KERNEL_SRC: $(KERNEL_SRC)"
-	@echo "KERNEL_OBJ: $(KERNEL_OBJ)"
+	@echo "NETLIB_SRC: $(words $(NETLIB_SRC)) files"
+	@echo "KERNEL_SRC: $(words $(KERNEL_SRC)) files"
 	@echo "EFI_NAME:   $(EFI_NAME)"

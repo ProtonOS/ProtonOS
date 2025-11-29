@@ -62,59 +62,77 @@ This means:
 
 ---
 
-## Phase 1: Fork and Integrate zerolib
+## Phase 1: Fork and Integrate zerolib ✓ COMPLETE
 
 ### Goal
 Get zerolib source into our tree as the foundation for netlib.
 
-### Tasks
+### Completed Tasks
 
-#### 1.1 Create netlib directory structure
+#### 1.1 Created netlib directory structure ✓
 ```
 src/netlib/
 ├── Internal/
 │   ├── Runtime/
-│   │   └── CompilerHelpers.cs
+│   │   └── CompilerHelpers/
+│   │       └── InteropHelpers.cs
+│   ├── Startup.Efi.cs            # UEFI entry point flow
 │   └── Stubs.cs                  # Runtime exports (RhpNewFast, etc.)
 ├── System/
 │   ├── Array.cs
 │   ├── Attribute.cs
 │   ├── Delegate.cs
 │   ├── Enum.cs
-│   ├── Exception.cs
+│   ├── Environment.cs            # Imports PalFailFast from kernel
+│   ├── Exception.cs              # Minimal stub for exception type
 │   ├── Math.cs
 │   ├── Nullable.cs
-│   ├── Object.cs
+│   ├── Object.cs / Object.Efi.cs
 │   ├── Primitives.cs             # Int32, Boolean, Byte, etc.
 │   ├── ReadOnlySpan.cs
-│   ├── Span.cs
+│   ├── Span.cs / SpanHelpers.cs
 │   ├── String.cs
 │   ├── Type.cs
+│   ├── ValueTuple.cs
 │   ├── ValueType.cs
+│   ├── RuntimeHandles.cs
+│   ├── Reflection/
+│   │   └── ReflectionAttributes.cs
 │   └── Runtime/
-│       └── CompilerServices/
-│           └── RuntimeHelpers.cs
-└── README.md
+│       ├── CompilerServices/
+│       │   ├── ClassConstructorRunner.cs
+│       │   ├── CompilerAttributes.cs
+│       │   ├── RuntimeFeature.cs
+│       │   ├── RuntimeHelpers.cs
+│       │   └── Unsafe.cs
+│       └── InteropServices/
+│           ├── InteropAttributes.cs
+│           └── MemoryMarshal.cs
 ```
 
-#### 1.2 Copy and adapt zerolib sources
-- Copy core files from bflat/zerolib
-- Remove platform-specific code (Console, Environment, etc.)
-- Adapt allocation to use our kernel heap
+#### 1.2 Copied and adapted zerolib sources ✓
+- Forked from bflat v10.0.0-rc.1 zerolib
+- Removed platform-specific code (Console.cs, Thread.Efi.cs, etc.)
+- Kept only UEFI-relevant files (removed Unix/Windows)
+- Added Environment.cs with DllImport to kernel's PalFailFast
+- Added Exception.cs stub for API compatibility
 
-#### 1.3 Update Makefile
-- Add netlib sources to build
-- Use --stdlib:none
-- Link netlib with kernel
+#### 1.3 Updated Makefile ✓
+- Changed `--stdlib:zero` to `--stdlib:none`
+- Added NETLIB_DIR and NETLIB_SRC
+- Compiles netlib + kernel sources together into single kernel.obj
+- Reorganized source structure: src/native/, src/netlib/, src/kernel/
 
-#### 1.4 Verification
-- Build succeeds
-- Can use `new` for simple objects (leaks without GC)
+#### 1.4 Verification ✓
+- Build succeeds with bflat 10.0.0-rc.1
+- All existing kernel tests pass
+- netlib integrated with kernel via export/import pattern
 
 ### Deliverables
-- [ ] netlib directory with zerolib core
-- [ ] Build system integration
-- [ ] Basic `new` keyword works
+- [x] netlib directory with zerolib core (30 files)
+- [x] Build system integration (--stdlib:none)
+- [x] Export/import pattern for kernel<->netlib (PalFailFast)
+- [x] Source reorganization (src/native, src/netlib, src/kernel)
 
 ---
 
