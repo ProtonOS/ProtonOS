@@ -173,15 +173,16 @@ public static unsafe class Kernel
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
         var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
-        uint id20;
+        uint id20, id21;
         var thread20 = Scheduler.CreateThread(&SyncExTestThread, null, 0, 0, out id20);
+        var thread21 = Scheduler.CreateThread(&ProcessAndHeapTestThread, null, 0, 0, out id21);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
             thread16 != null && thread17 != null && thread18 != null && thread19 != null &&
-            thread20 != null)
+            thread20 != null && thread21 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -223,6 +224,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id19);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id20);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id21);
             DebugConsole.WriteLine();
         }
     }
@@ -2322,6 +2325,336 @@ public static unsafe class Kernel
         PAL.Sync.CloseHandle(evtToWait3);
 
         DebugConsole.WriteLine("[SyncEx Test] All extended sync API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Test thread for GetCurrentProcessId, GetCurrentProcess, and HeapSize
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint ProcessAndHeapTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[Process/Heap Test] Starting Process and Heap API tests...");
+
+        // Test 1: GetCurrentProcessId
+        DebugConsole.WriteLine("[Process/Heap Test] Test 1: GetCurrentProcessId");
+
+        uint pid = ProcessApi.GetCurrentProcessId();
+        if (pid != 0)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 1: FAILED - expected PID 0 (kernel), got: ");
+            DebugConsole.WriteHex(pid);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 1: GetCurrentProcessId = 0 (kernel) - PASSED");
+
+        // Test 2: GetCurrentProcess
+        DebugConsole.WriteLine("[Process/Heap Test] Test 2: GetCurrentProcess");
+
+        nuint processHandle = ProcessApi.GetCurrentProcess();
+        // Should be -1 (pseudo-handle for current process)
+        if (processHandle != unchecked((nuint)(nint)(-1)))
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 2: FAILED - expected -1, got: 0x");
+            DebugConsole.WriteHex((ulong)processHandle);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 2: GetCurrentProcess = -1 (pseudo-handle) - PASSED");
+
+        // Test 3: HeapSize with valid allocation
+        DebugConsole.WriteLine("[Process/Heap Test] Test 3: HeapSize");
+
+        var heap = PAL.Memory.GetProcessHeap();
+        void* ptr = PAL.Memory.HeapAlloc(heap, 0, 256);
+
+        if (ptr == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 3: FAILED - HeapAlloc returned null");
+            return 1;
+        }
+
+        ulong size = PAL.Memory.HeapSize(heap, 0, ptr);
+        // Size should be at least 256 (may be larger due to alignment)
+        if (size < 256)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 3: FAILED - HeapSize returned: ");
+            DebugConsole.WriteHex(size);
+            DebugConsole.WriteLine(" (expected >= 256)");
+            PAL.Memory.HeapFree(heap, 0, ptr);
+            return 1;
+        }
+
+        DebugConsole.Write("[Process/Heap Test] Test 3: HeapSize = ");
+        DebugConsole.WriteHex(size);
+        DebugConsole.WriteLine(" - PASSED");
+
+        PAL.Memory.HeapFree(heap, 0, ptr);
+
+        // Test 4: HeapSize with null pointer
+        DebugConsole.WriteLine("[Process/Heap Test] Test 4: HeapSize with null");
+
+        size = PAL.Memory.HeapSize(heap, 0, null);
+        if (size != 0)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 4: FAILED - HeapSize(null) returned: ");
+            DebugConsole.WriteHex(size);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 4: HeapSize(null) = 0 - PASSED");
+
+        // Test 5: HeapSize with different allocation sizes
+        DebugConsole.WriteLine("[Process/Heap Test] Test 5: HeapSize with various sizes");
+
+        void* ptr1 = PAL.Memory.HeapAlloc(heap, 0, 64);
+        void* ptr2 = PAL.Memory.HeapAlloc(heap, 0, 1024);
+        void* ptr3 = PAL.Memory.HeapAlloc(heap, 0, 4096);
+
+        if (ptr1 == null || ptr2 == null || ptr3 == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 5: FAILED - HeapAlloc returned null");
+            return 1;
+        }
+
+        ulong size1 = PAL.Memory.HeapSize(heap, 0, ptr1);
+        ulong size2 = PAL.Memory.HeapSize(heap, 0, ptr2);
+        ulong size3 = PAL.Memory.HeapSize(heap, 0, ptr3);
+
+        bool ok = size1 >= 64 && size2 >= 1024 && size3 >= 4096;
+        if (!ok)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 5: FAILED - sizes: ");
+            DebugConsole.WriteHex(size1);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex(size2);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex(size3);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.Write("[Process/Heap Test] Test 5: HeapSize(64)=");
+        DebugConsole.WriteHex(size1);
+        DebugConsole.Write(", HeapSize(1024)=");
+        DebugConsole.WriteHex(size2);
+        DebugConsole.Write(", HeapSize(4096)=");
+        DebugConsole.WriteHex(size3);
+        DebugConsole.WriteLine(" - PASSED");
+
+        PAL.Memory.HeapFree(heap, 0, ptr1);
+        PAL.Memory.HeapFree(heap, 0, ptr2);
+        PAL.Memory.HeapFree(heap, 0, ptr3);
+
+        // Test 6: HeapSize after free should return 0 (block is marked free)
+        DebugConsole.WriteLine("[Process/Heap Test] Test 6: HeapSize after free");
+
+        void* ptrFree = PAL.Memory.HeapAlloc(heap, 0, 128);
+        if (ptrFree == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 6: FAILED - HeapAlloc returned null");
+            return 1;
+        }
+
+        // Get size before free
+        ulong sizeBefore = PAL.Memory.HeapSize(heap, 0, ptrFree);
+        if (sizeBefore < 128)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 6: FAILED - HeapSize before free too small");
+            return 1;
+        }
+
+        PAL.Memory.HeapFree(heap, 0, ptrFree);
+
+        // Get size after free - should be 0 because block is marked free
+        ulong sizeAfter = PAL.Memory.HeapSize(heap, 0, ptrFree);
+        if (sizeAfter != 0)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 6: FAILED - HeapSize after free returned: ");
+            DebugConsole.WriteHex(sizeAfter);
+            DebugConsole.WriteLine(" (expected 0)");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 6: HeapSize after free = 0 - PASSED");
+
+        // Test 7: HeapReAlloc - shrink (should stay in place)
+        DebugConsole.WriteLine("[Process/Heap Test] Test 7: HeapReAlloc shrink");
+
+        void* ptrRealloc = PAL.Memory.HeapAlloc(heap, 0, 1024);
+        if (ptrRealloc == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 7: FAILED - initial HeapAlloc failed");
+            return 1;
+        }
+
+        // Write a pattern to verify data is preserved
+        byte* pattern = (byte*)ptrRealloc;
+        for (int i = 0; i < 256; i++)
+            pattern[i] = (byte)(i & 0xFF);
+
+        void* shrunk = PAL.Memory.HeapReAlloc(heap, 0, ptrRealloc, 256);
+        if (shrunk == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 7: FAILED - HeapReAlloc shrink returned null");
+            return 1;
+        }
+
+        // Shrink should stay in place
+        if (shrunk != ptrRealloc)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 7: Note - shrink moved (OK but not optimal)");
+        }
+
+        // Verify data preserved
+        byte* verifyPattern = (byte*)shrunk;
+        bool patternOk = true;
+        for (int i = 0; i < 256; i++)
+        {
+            if (verifyPattern[i] != (byte)(i & 0xFF))
+            {
+                patternOk = false;
+                break;
+            }
+        }
+
+        if (!patternOk)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 7: FAILED - data not preserved after shrink");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 7: HeapReAlloc shrink - PASSED");
+
+        // Test 8: HeapReAlloc - grow (may or may not stay in place)
+        DebugConsole.WriteLine("[Process/Heap Test] Test 8: HeapReAlloc grow");
+
+        void* grown = PAL.Memory.HeapReAlloc(heap, 0, shrunk, 2048);
+        if (grown == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 8: FAILED - HeapReAlloc grow returned null");
+            return 1;
+        }
+
+        // Verify original data still intact
+        verifyPattern = (byte*)grown;
+        patternOk = true;
+        for (int i = 0; i < 256; i++)
+        {
+            if (verifyPattern[i] != (byte)(i & 0xFF))
+            {
+                patternOk = false;
+                break;
+            }
+        }
+
+        if (!patternOk)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 8: FAILED - data not preserved after grow");
+            return 1;
+        }
+
+        // Verify new size is at least 2048
+        ulong grownSize = PAL.Memory.HeapSize(heap, 0, grown);
+        if (grownSize < 2048)
+        {
+            DebugConsole.Write("[Process/Heap Test] Test 8: FAILED - grown size too small: ");
+            DebugConsole.WriteHex(grownSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        DebugConsole.Write("[Process/Heap Test] Test 8: HeapReAlloc grow to ");
+        DebugConsole.WriteHex(grownSize);
+        DebugConsole.WriteLine(" - PASSED");
+
+        PAL.Memory.HeapFree(heap, 0, grown);
+
+        // Test 9: HeapReAlloc with HEAP_ZERO_MEMORY
+        DebugConsole.WriteLine("[Process/Heap Test] Test 9: HeapReAlloc with HEAP_ZERO_MEMORY");
+
+        void* ptrZero = PAL.Memory.HeapAlloc(heap, 0, 64);
+        if (ptrZero == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 9: FAILED - initial alloc failed");
+            return 1;
+        }
+
+        // Get the usable size (may be larger than 64 due to alignment)
+        ulong usableSize = PAL.Memory.HeapSize(heap, 0, ptrZero);
+
+        // Fill the entire usable area with non-zero pattern
+        byte* fill = (byte*)ptrZero;
+        for (ulong i = 0; i < usableSize; i++)
+            fill[i] = 0xAA;
+
+        // Grow with HEAP_ZERO_MEMORY (0x08) - request more than current usable size
+        ulong newRequestedSize = usableSize + 64;
+        void* grownZero = PAL.Memory.HeapReAlloc(heap, 0x08, ptrZero, newRequestedSize);
+        if (grownZero == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 9: FAILED - HeapReAlloc failed");
+            return 1;
+        }
+
+        // Original data should be preserved, new portion should be zeroed
+        byte* checkZero = (byte*)grownZero;
+        bool zeroOk = true;
+
+        // Original usable area should still be 0xAA
+        for (ulong i = 0; i < usableSize; i++)
+        {
+            if (checkZero[i] != 0xAA)
+            {
+                zeroOk = false;
+                break;
+            }
+        }
+
+        // New portion (from usableSize to newRequestedSize) should be 0
+        for (ulong i = usableSize; i < newRequestedSize; i++)
+        {
+            if (checkZero[i] != 0)
+            {
+                zeroOk = false;
+                break;
+            }
+        }
+
+        if (!zeroOk)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 9: FAILED - HEAP_ZERO_MEMORY not working");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 9: HeapReAlloc HEAP_ZERO_MEMORY - PASSED");
+        PAL.Memory.HeapFree(heap, 0, grownZero);
+
+        // Test 10: HeapReAlloc with null (should behave like HeapAlloc)
+        DebugConsole.WriteLine("[Process/Heap Test] Test 10: HeapReAlloc with null ptr");
+
+        void* fromNull = PAL.Memory.HeapReAlloc(heap, 0, null, 512);
+        if (fromNull == null)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 10: FAILED - HeapReAlloc(null) returned null");
+            return 1;
+        }
+
+        ulong fromNullSize = PAL.Memory.HeapSize(heap, 0, fromNull);
+        if (fromNullSize < 512)
+        {
+            DebugConsole.WriteLine("[Process/Heap Test] Test 10: FAILED - size too small");
+            return 1;
+        }
+
+        DebugConsole.WriteLine("[Process/Heap Test] Test 10: HeapReAlloc(null) - PASSED");
+        PAL.Memory.HeapFree(heap, 0, fromNull);
+
+        DebugConsole.WriteLine("[Process/Heap Test] All Process and Heap API tests PASSED!");
         return 0;
     }
 }

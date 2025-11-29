@@ -4,6 +4,7 @@
 
 using System.Runtime.InteropServices;
 using Kernel.Platform;
+using Kernel.X64;
 
 namespace Kernel.Memory;
 
@@ -239,6 +240,172 @@ public static unsafe class HeapAllocator
 
         // Coalesce adjacent free blocks
         CoalesceBlocks();
+    }
+
+    /// <summary>
+    /// Get the usable size of an allocated block.
+    /// </summary>
+    /// <param name="ptr">Pointer returned by Alloc</param>
+    /// <returns>Usable size in bytes, or 0 if invalid</returns>
+    public static ulong GetSize(void* ptr)
+    {
+        if (!_initialized || ptr == null)
+            return 0;
+
+        // Get block header (located before the user pointer)
+        var block = (HeapBlock*)((byte*)ptr - sizeof(HeapBlock));
+
+        // Validate magic number
+        if (block->Magic != HeapBlock.MagicValue)
+            return 0;
+
+        // Don't return size for free blocks
+        if (block->IsFree)
+            return 0;
+
+        // Return usable size (total size minus header)
+        return block->DataSize;
+    }
+
+    /// <summary>
+    /// Reallocate memory, attempting in-place resize when possible.
+    /// </summary>
+    /// <param name="ptr">Pointer returned by Alloc (null = new allocation)</param>
+    /// <param name="newSize">New size in bytes (0 = free)</param>
+    /// <returns>Pointer to reallocated memory, or null on failure</returns>
+    public static void* Realloc(void* ptr, ulong newSize)
+    {
+        if (!_initialized)
+            return null;
+
+        // Null pointer = new allocation
+        if (ptr == null)
+            return Alloc(newSize);
+
+        // Size 0 = free
+        if (newSize == 0)
+        {
+            Free(ptr);
+            return null;
+        }
+
+        // Get block header
+        var block = (HeapBlock*)((byte*)ptr - sizeof(HeapBlock));
+
+        // Validate
+        if (block->Magic != HeapBlock.MagicValue || block->IsFree)
+            return null;
+
+        ulong oldSize = block->DataSize;
+
+        // Calculate new total block size needed
+        ulong newTotalSize = (ulong)sizeof(HeapBlock) + newSize;
+        newTotalSize = Align(newTotalSize, Alignment);
+        if (newTotalSize < MinBlockSize)
+            newTotalSize = MinBlockSize;
+
+        ulong oldTotalSize = block->Size;
+
+        // Case 1: New size fits in current block (shrinking or same)
+        if (newTotalSize <= oldTotalSize)
+        {
+            ulong remaining = oldTotalSize - newTotalSize;
+
+            // If there's enough space left over, split and free the remainder
+            if (remaining >= MinBlockSize)
+            {
+                // Create new free block from the remainder
+                var newBlock = (HeapBlock*)((byte*)block + newTotalSize);
+                newBlock->Size = remaining;
+                newBlock->Next = null;
+                newBlock->Magic = HeapBlock.MagicValue;
+                newBlock->Flags = HeapBlock.FlagFree;
+
+                // Shrink current block
+                block->Size = newTotalSize;
+
+                // Update stats
+                _totalAllocated -= remaining;
+                _totalFree += remaining;
+
+                // Insert remainder into free list and coalesce
+                InsertFreeBlock(newBlock);
+                CoalesceBlocks();
+            }
+            // else: remainder too small to split, just keep the extra space
+
+            return ptr;
+        }
+
+        // Case 2: Need more space - check if next block is free and adjacent
+        ulong blockEnd = (ulong)block + oldTotalSize;
+        ulong extraNeeded = newTotalSize - oldTotalSize;
+
+        // Search free list for adjacent block
+        HeapBlock* prevFree = null;
+        HeapBlock* nextFree = _freeList;
+
+        while (nextFree != null)
+        {
+            if ((ulong)nextFree == blockEnd)
+            {
+                // Found adjacent free block - can we use it?
+                if (nextFree->Size >= extraNeeded)
+                {
+                    // Yes! Expand into the free block
+                    ulong freeSize = nextFree->Size;
+                    ulong combined = oldTotalSize + freeSize;
+                    ulong remaining = combined - newTotalSize;
+
+                    // Remove free block from free list
+                    if (prevFree == null)
+                        _freeList = nextFree->Next;
+                    else
+                        prevFree->Next = nextFree->Next;
+
+                    _totalFree -= freeSize;
+
+                    if (remaining >= MinBlockSize)
+                    {
+                        // Expand and create new smaller free block
+                        block->Size = newTotalSize;
+                        _totalAllocated += (newTotalSize - oldTotalSize);
+
+                        var remainBlock = (HeapBlock*)((byte*)block + newTotalSize);
+                        remainBlock->Size = remaining;
+                        remainBlock->Next = null;
+                        remainBlock->Magic = HeapBlock.MagicValue;
+                        remainBlock->Flags = HeapBlock.FlagFree;
+
+                        _totalFree += remaining;
+                        InsertFreeBlock(remainBlock);
+                    }
+                    else
+                    {
+                        // Use entire combined space
+                        block->Size = combined;
+                        _totalAllocated += (combined - oldTotalSize);
+                    }
+
+                    return ptr;
+                }
+                break;  // Found adjacent but too small
+            }
+            prevFree = nextFree;
+            nextFree = nextFree->Next;
+        }
+
+        // Case 3: Cannot expand in place - allocate new, copy, free old
+        void* newPtr = Alloc(newSize);
+        if (newPtr == null)
+            return null;
+
+        // Copy old data using fast memcpy (only up to old size)
+        ulong copySize = oldSize < newSize ? oldSize : newSize;
+        Cpu.MemCopy(newPtr, ptr, copySize);
+
+        Free(ptr);
+        return newPtr;
     }
 
     /// <summary>

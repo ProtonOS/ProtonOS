@@ -28,8 +28,8 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | HeapDestroy | [x] | Memory.cs | Frees private heaps |
 | HeapAlloc | [x] | Memory.cs | HEAP_ZERO_MEMORY supported |
 | HeapFree | [x] | Memory.cs | Works for process heap |
-| HeapReAlloc | [~] | Memory.cs | Basic impl, doesn't track old sizes |
-| HeapSize | [ ] | Memory.cs | Stub returns 0 - needs allocation tracking |
+| HeapReAlloc | [x] | Memory.cs | In-place resize with shrink/grow optimization - tested |
+| HeapSize | [x] | Memory.cs | Uses HeapBlock header to get allocation size - tested |
 
 ### Other Memory
 | API | Status | File | Notes |
@@ -277,12 +277,12 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ---
 
-## 13. Process Management (LOW PRIORITY FOR JIT)
+## 13. Process Management (PARTIAL)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
-| GetCurrentProcessId | [ ] | - | Easy to add |
-| GetCurrentProcess | [ ] | - | Easy to add |
+| GetCurrentProcessId | [x] | System.cs | Returns 0 (kernel PID, Linux convention) - tested |
+| GetCurrentProcess | [x] | System.cs | Returns -1 pseudo-handle - tested |
 | ... | [ ] | - | Full process API deferred |
 
 ---
@@ -309,12 +309,12 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 12. [x] WaitForMultipleObjectsEx - Alertable multi-wait - **TESTED**
 13. [x] CreateEventEx, CreateMutexEx, CreateSemaphoreEx - Extended sync APIs - **TESTED**
 14. [x] SignalObjectAndWait - Atomic signal + wait - **TESTED**
-15. [ ] HeapSize - Allocation tracking
+15. [x] HeapSize - Allocation size tracking - **TESTED**
+16. [x] GetCurrentProcessId, GetCurrentProcess - Process identification - **TESTED**
 
 ### Phase 4 - Future (After JIT Works)
-15. [ ] File I/O subsystem
-16. [ ] Process management
-17. [ ] Named objects (OpenEvent, OpenMutex, etc.)
+17. [ ] File I/O subsystem
+18. [ ] Named objects (OpenEvent, OpenMutex, etc.)
 
 ---
 
@@ -322,7 +322,7 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 | Category | Complete | Partial | Missing | Total |
 |----------|----------|---------|---------|-------|
-| Memory | 7 | 1 | 2 | 10 |
+| Memory | 9 | 0 | 2 | 11 |
 | Threading | 14 | 1 | 2 | 17 |
 | Synchronization | 29 | 0 | 2 | 31 |
 | Time/Performance | 6 | 0 | 0 | 6 |
@@ -332,8 +332,9 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
-| **TOTAL** | **87** | **3** | **7** | **97** |
+| Process | 2 | 0 | 1 | 3 |
+| **TOTAL** | **91** | **2** | **8** | **101** |
 
-**Coverage: 90% complete, 3% partial, 7% missing**
+**Coverage: 90% complete, 2% partial, 8% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is COMPLETE!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, WaitForMultipleObjectsEx, plus CreateEventEx, CreateMutexEx, CreateSemaphoreEx, and SignalObjectAndWait (all tested). The remaining missing APIs are in categories that aren't critical for initial JIT integration (file I/O, process management, named objects).
+**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is COMPLETE!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, WaitForMultipleObjectsEx, plus CreateEventEx, CreateMutexEx, CreateSemaphoreEx, SignalObjectAndWait, HeapSize, HeapReAlloc (efficient in-place resize), GetCurrentProcessId, and GetCurrentProcess (all tested). The remaining missing APIs are in categories that aren't critical for initial JIT integration (file I/O, named objects).

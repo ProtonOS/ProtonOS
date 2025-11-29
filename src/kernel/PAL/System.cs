@@ -307,3 +307,36 @@ public static unsafe class DebugApi
         Cpu.Breakpoint();
     }
 }
+
+/// <summary>
+/// PAL Process APIs - Win32-compatible process management functions.
+/// In our single-process kernel, these return fixed values.
+/// </summary>
+public static unsafe class ProcessApi
+{
+    // PID 0 = kernel (like Linux), PID 1 reserved for future init process
+    private const uint KERNEL_PROCESS_ID = 0;
+
+    // Pseudo-handle value for current process (matches Windows convention)
+    private static readonly nuint CURRENT_PROCESS_HANDLE = unchecked((nuint)(nint)(-1));
+
+    /// <summary>
+    /// Get the process ID of the current process.
+    /// Returns 0 for kernel context (like Linux swapper/idle).
+    /// </summary>
+    /// <returns>Current process ID</returns>
+    public static uint GetCurrentProcessId()
+    {
+        return KERNEL_PROCESS_ID;
+    }
+
+    /// <summary>
+    /// Get a pseudo-handle to the current process.
+    /// Returns -1 which is interpreted as "current process" (Win32 convention).
+    /// </summary>
+    /// <returns>Pseudo-handle to current process</returns>
+    public static nuint GetCurrentProcess()
+    {
+        return CURRENT_PROCESS_HANDLE;
+    }
+}

@@ -312,30 +312,35 @@ public static unsafe class Memory
 
     /// <summary>
     /// Reallocate memory from a heap.
+    /// Attempts in-place resize when possible for efficiency.
     /// </summary>
     public static void* HeapReAlloc(Heap* hHeap, uint dwFlags, void* lpMem, ulong dwBytes)
     {
         if (hHeap == null || hHeap->Magic != Heap.MagicValue)
             return null;
 
-        // Simple implementation: allocate new, copy, free old
-        void* newPtr = HeapAlloc(hHeap, dwFlags, dwBytes);
-        if (newPtr == null)
+        // Get old usable size before realloc (needed for HEAP_ZERO_MEMORY)
+        // This is the *usable* size, which may be larger than what was requested
+        ulong oldUsableSize = lpMem != null ? HeapAllocator.GetSize(lpMem) : 0;
+
+        // Use the efficient Realloc which attempts in-place resize
+        void* result = HeapAllocator.Realloc(lpMem, dwBytes);
+
+        if (result == null)
             return null;
 
-        if (lpMem != null)
+        // Handle HEAP_ZERO_MEMORY flag for growth case
+        // We zero from the old usable size to the new requested size
+        // This may leave some bytes unzeroed if the old block was larger
+        // than what was originally requested, but that matches Win32 behavior
+        // where HEAP_ZERO_MEMORY zeroes "additional memory" beyond the original
+        if ((dwFlags & HeapFlags.HEAP_ZERO_MEMORY) != 0 && dwBytes > oldUsableSize)
         {
-            // Copy old data - we don't know the old size, so this is a simplification
-            // In a real implementation, we'd track allocation sizes
-            byte* src = (byte*)lpMem;
-            byte* dst = (byte*)newPtr;
-            for (ulong i = 0; i < dwBytes; i++)
-                dst[i] = src[i];
-
-            HeapFree(hHeap, 0, lpMem);
+            // Zero the portion beyond the old usable size
+            Cpu.MemZero((byte*)result + oldUsableSize, dwBytes - oldUsableSize);
         }
 
-        return newPtr;
+        return result;
     }
 
     /// <summary>
@@ -343,8 +348,9 @@ public static unsafe class Memory
     /// </summary>
     public static ulong HeapSize(Heap* hHeap, uint dwFlags, void* lpMem)
     {
-        // This requires tracking allocation sizes - return 0 for now
-        return 0;
+        // We use a single process heap, so ignore hHeap
+        // dwFlags is unused (HEAP_NO_SERIALIZE not relevant in kernel)
+        return HeapAllocator.GetSize(lpMem);
     }
 
     // ==================== Virtual Memory APIs ====================

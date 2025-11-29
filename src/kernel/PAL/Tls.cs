@@ -182,6 +182,7 @@ public static unsafe class Tls
 
     /// <summary>
     /// Grow a thread's TLS slot array to accommodate at least the given number of slots.
+    /// Uses HeapAllocator.Realloc for efficient in-place growth when possible.
     /// </summary>
     private static bool GrowThreadTlsSlots(Thread* thread, uint minSlots)
     {
@@ -192,18 +193,18 @@ public static unsafe class Tls
         if (newCount > MaxTlsSlots)
             newCount = MaxTlsSlots;
 
-        // Allocate new array
-        var newSlots = (void**)HeapAllocator.AllocZeroed(newCount * (uint)sizeof(void*));
+        ulong newSize = newCount * (uint)sizeof(void*);
+        ulong oldSize = thread->TlsSlotCount * (uint)sizeof(void*);
+
+        // Use Realloc - attempts in-place growth, falls back to copy if needed
+        var newSlots = (void**)HeapAllocator.Realloc(thread->TlsSlots, newSize);
         if (newSlots == null)
             return false;
 
-        // Copy existing slots
-        if (thread->TlsSlots != null)
+        // Zero the new portion (Realloc doesn't zero new memory)
+        if (newSize > oldSize)
         {
-            for (uint i = 0; i < thread->TlsSlotCount; i++)
-                newSlots[i] = thread->TlsSlots[i];
-
-            HeapAllocator.Free(thread->TlsSlots);
+            Cpu.MemZero((byte*)newSlots + oldSize, newSize - oldSize);
         }
 
         thread->TlsSlots = newSlots;

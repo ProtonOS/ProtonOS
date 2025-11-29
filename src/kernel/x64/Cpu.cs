@@ -80,6 +80,13 @@ public static unsafe class Cpu
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void mfence();
 
+    // Memory Operations
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void* memcpy(void* dest, void* src, ulong count);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void* memset(void* dest, int c, ulong count);
+
     // Atomic Operations - 32-bit (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern int atomic_cmpxchg32(int* ptr, int newVal, int comparand);
@@ -386,4 +393,32 @@ public static unsafe class Cpu
     /// Full memory barrier (prevents all reordering across the barrier)
     /// </summary>
     public static void MemoryBarrier() => mfence();
+
+    // --- Memory Operations ---
+
+    /// <summary>
+    /// Copy memory from source to destination using optimized rep movsb.
+    /// </summary>
+    /// <param name="dest">Destination pointer</param>
+    /// <param name="src">Source pointer</param>
+    /// <param name="count">Number of bytes to copy</param>
+    /// <returns>Destination pointer</returns>
+    public static void* MemCopy(void* dest, void* src, ulong count) => memcpy(dest, src, count);
+
+    /// <summary>
+    /// Fill memory with a byte value using optimized rep stosb.
+    /// </summary>
+    /// <param name="dest">Destination pointer</param>
+    /// <param name="value">Byte value to fill with</param>
+    /// <param name="count">Number of bytes to fill</param>
+    /// <returns>Destination pointer</returns>
+    public static void* MemSet(void* dest, byte value, ulong count) => memset(dest, value, count);
+
+    /// <summary>
+    /// Zero memory using optimized rep stosb.
+    /// </summary>
+    /// <param name="dest">Destination pointer</param>
+    /// <param name="count">Number of bytes to zero</param>
+    /// <returns>Destination pointer</returns>
+    public static void* MemZero(void* dest, ulong count) => memset(dest, 0, count);
 }
