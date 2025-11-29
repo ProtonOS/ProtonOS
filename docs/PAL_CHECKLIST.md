@@ -266,18 +266,76 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 
 ---
 
-## 12. File/IO (LOW PRIORITY FOR JIT)
+## 12. Stack Unwinding (CRITICAL FOR JIT)
+
+| API | Status | File | Notes |
+|-----|--------|------|-------|
+| PAL_VirtualUnwind | [ ] | - | Stack unwinding for exception handling and GC |
+| RtlLookupFunctionEntry | [ ] | - | Find UNWIND_INFO for an address |
+| RtlVirtualUnwind | [ ] | - | Windows-style stack unwinding |
+
+---
+
+## 13. String Conversion (HIGH PRIORITY)
+
+| API | Status | File | Notes |
+|-----|--------|------|-------|
+| MultiByteToWideChar | [ ] | - | UTF-8 to UTF-16 conversion |
+| WideCharToMultiByte | [ ] | - | UTF-16 to UTF-8 conversion |
+| GetACP | [ ] | - | Get active code page (return UTF-8 = 65001) |
+| GetCPInfo | [ ] | - | Code page information |
+
+---
+
+## 14. Module Loading (HIGH PRIORITY)
+
+| API | Status | File | Notes |
+|-----|--------|------|-------|
+| LoadLibraryW | [ ] | - | Load DLL/shared library |
+| LoadLibraryExW | [ ] | - | Load with flags |
+| FreeLibrary | [ ] | - | Unload library |
+| GetProcAddress | [ ] | - | Get function pointer from module |
+| GetModuleFileNameW | [ ] | - | Get path of loaded module |
+| PAL_LOADLoadPEFile | [ ] | - | Load PE file and map sections |
+| PAL_RegisterModule | [ ] | - | Register module for exception handling |
+
+---
+
+## 15. File Mapping (MEDIUM PRIORITY)
+
+| API | Status | File | Notes |
+|-----|--------|------|-------|
+| CreateFileMappingW | [ ] | - | Create file mapping object |
+| MapViewOfFile | [ ] | - | Map file into memory |
+| MapViewOfFileEx | [ ] | - | Map at specific address |
+| UnmapViewOfFile | [ ] | - | Unmap file from memory |
+
+---
+
+## 16. File/IO (LOW PRIORITY FOR JIT)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
 | CreateFileW | [ ] | - | Not needed for basic JIT |
 | ReadFile | [ ] | - | Not needed for basic JIT |
 | WriteFile | [ ] | - | Not needed for basic JIT |
+| GetTempPathW | [ ] | - | Temp directory path |
 | ... | [ ] | - | Entire file subsystem deferred |
 
 ---
 
-## 13. Process Management (PARTIAL)
+## 17. Miscellaneous (MEDIUM PRIORITY)
+
+| API | Status | File | Notes |
+|-----|--------|------|-------|
+| PAL_Random | [ ] | - | Secure random number generation |
+| SetErrorMode | [ ] | - | Error handling mode |
+| PAL_GetStackBase | [ ] | - | Get thread stack base |
+| PAL_GetStackLimit | [ ] | - | Get thread stack limit |
+
+---
+
+## 18. Process Management (PARTIAL)
 
 | API | Status | File | Notes |
 |-----|--------|------|-------|
@@ -312,9 +370,17 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 15. [x] HeapSize - Allocation size tracking - **TESTED**
 16. [x] GetCurrentProcessId, GetCurrentProcess - Process identification - **TESTED**
 
-### Phase 4 - Future (After JIT Works)
-17. [ ] File I/O subsystem
-18. [ ] Named objects (OpenEvent, OpenMutex, etc.)
+### Phase 4 - JIT/Runtime Integration (IN PROGRESS)
+17. [ ] PAL_VirtualUnwind - Stack unwinding for exception handling and GC
+18. [ ] MultiByteToWideChar / WideCharToMultiByte - String conversion
+19. [ ] GetACP / GetCPInfo - Code page support
+20. [ ] Module loading (LoadLibrary, GetProcAddress)
+21. [ ] File mapping (MapViewOfFile)
+
+### Phase 5 - Future (After JIT Works)
+22. [ ] File I/O subsystem
+23. [ ] Named objects (OpenEvent, OpenMutex, etc.)
+24. [ ] PAL_Random, PAL_GetStackBase/Limit
 
 ---
 
@@ -332,9 +398,28 @@ Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/
 | TLS | 4 | 0 | 0 | 4 |
 | Debug | 4 | 0 | 0 | 4 |
 | Environment | 4 | 1 | 0 | 5 |
+| Handle Management | 1 | 1 | 1 | 3 |
+| Stack Unwinding | 0 | 0 | 3 | 3 |
+| String Conversion | 0 | 0 | 4 | 4 |
+| Module Loading | 0 | 0 | 7 | 7 |
+| File Mapping | 0 | 0 | 4 | 4 |
+| File/IO | 0 | 0 | 4 | 4 |
+| Miscellaneous | 0 | 0 | 4 | 4 |
 | Process | 2 | 0 | 1 | 3 |
-| **TOTAL** | **92** | **2** | **7** | **101** |
+| **TOTAL** | **92** | **3** | **34** | **129** |
 
-**Coverage: 91% complete, 2% partial, 7% missing**
+**Coverage: 71% complete, 2% partial, 27% missing**
 
-**Phase 1 (critical for JIT) is COMPLETE!** All critical APIs for JIT integration are implemented and tested. **Phase 2 (Important for Runtime) is COMPLETE!** Wall-clock time APIs (GetSystemTimeAsFileTime, GetSystemTime) are now implemented using RTC for boot time and HPET for elapsed time tracking. **Phase 3 (Nice to Have) is COMPLETE!** Full APC support is now implemented: QueueUserAPC, SleepEx, WaitForSingleObjectEx, WaitForMultipleObjectsEx, plus CreateEventEx, CreateMutexEx, CreateSemaphoreEx, SignalObjectAndWait, HeapSize, HeapReAlloc (efficient in-place resize), GetCurrentProcessId, and GetCurrentProcess (all tested). **Exception Handling is now 100% COMPLETE** with RtlRestoreContext for exception unwinding. The remaining missing APIs are in categories that aren't critical for initial JIT integration (file I/O, named objects).
+---
+
+## Status Notes
+
+**Phases 1-3 (Win32 PAL Core) COMPLETE!** Basic PAL APIs for memory, threading, synchronization, exceptions, TLS, time, and debug support are all implemented and tested.
+
+**Phase 4 (JIT/Runtime Integration) is the next focus.** After deeper analysis of CoreCLR's PAL requirements, we identified additional critical APIs needed:
+- **Stack Unwinding** - PAL_VirtualUnwind is essential for exception handling and GC stack walking
+- **String Conversion** - MultiByteToWideChar/WideCharToMultiByte used throughout CoreCLR
+- **Module Loading** - LoadLibrary/GetProcAddress needed to load JIT DLL
+- **File Mapping** - MapViewOfFile needed for loading assemblies
+
+The original checklist focused on Win32 APIs. The new categories cover PAL-specific and runtime integration requirements discovered by analyzing [CoreCLR's pal.h](https://github.com/dotnet/coreclr/blob/master/src/pal/inc/pal.h).
