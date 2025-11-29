@@ -173,16 +173,17 @@ public static unsafe class Kernel
         var thread17 = Scheduler.CreateThread(&DebugApiTestThread, null, 0, 0, out id17);
         var thread18 = Scheduler.CreateThread(&EnvironmentApiTestThread, null, 0, 0, out id18);
         var thread19 = Scheduler.CreateThread(&ApcTestThread, null, 0, 0, out id19);
-        uint id20, id21;
+        uint id20, id21, id22;
         var thread20 = Scheduler.CreateThread(&SyncExTestThread, null, 0, 0, out id20);
         var thread21 = Scheduler.CreateThread(&ProcessAndHeapTestThread, null, 0, 0, out id21);
+        var thread22 = Scheduler.CreateThread(&StringConversionTestThread, null, 0, 0, out id22);
 
         if (thread1 != null && thread2 != null && thread3 != null && thread4 != null &&
             thread5 != null && thread6 != null && thread7 != null && thread8 != null &&
             thread9 != null && thread10 != null && thread11 != null &&
             thread12 != null && thread13 != null && thread14 != null && thread15 != null &&
             thread16 != null && thread17 != null && thread18 != null && thread19 != null &&
-            thread20 != null && thread21 != null)
+            thread20 != null && thread21 != null && thread22 != null)
         {
             DebugConsole.Write("[Test] Created threads ");
             DebugConsole.WriteHex((ushort)id1);
@@ -226,6 +227,8 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ushort)id20);
             DebugConsole.Write(", ");
             DebugConsole.WriteHex((ushort)id21);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteHex((ushort)id22);
             DebugConsole.WriteLine();
         }
     }
@@ -2705,6 +2708,291 @@ public static unsafe class Kernel
         PAL.Memory.HeapFree(heap, 0, fromNull);
 
         DebugConsole.WriteLine("[Process/Heap Test] All Process and Heap API tests PASSED!");
+        return 0;
+    }
+
+    /// <summary>
+    /// Test thread 22 - String Conversion APIs (MultiByteToWideChar, WideCharToMultiByte)
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint StringConversionTestThread(void* param)
+    {
+        DebugConsole.WriteLine("[String Test] Starting String Conversion API tests...");
+
+        // Test 1: GetACP
+        DebugConsole.WriteLine("[String Test] Test 1: GetACP");
+        uint acp = PAL.StringApi.GetACP();
+        if (acp != PAL.CodePage.CP_UTF8)
+        {
+            DebugConsole.Write("[String Test] Test 1: FAILED - expected UTF-8 (65001), got: ");
+            DebugConsole.WriteHex(acp);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 1: GetACP = 65001 (UTF-8) - PASSED");
+
+        // Test 2: GetCPInfo for UTF-8
+        DebugConsole.WriteLine("[String Test] Test 2: GetCPInfo");
+        PAL.CpInfo cpInfo;
+        bool result = PAL.StringApi.GetCPInfo(PAL.CodePage.CP_UTF8, &cpInfo);
+        if (!result)
+        {
+            DebugConsole.WriteLine("[String Test] Test 2: FAILED - GetCPInfo returned false");
+            return 1;
+        }
+        if (cpInfo.MaxCharSize != 4)
+        {
+            DebugConsole.Write("[String Test] Test 2: FAILED - MaxCharSize expected 4, got: ");
+            DebugConsole.WriteHex(cpInfo.MaxCharSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 2: GetCPInfo MaxCharSize = 4 - PASSED");
+
+        // Test 3: MultiByteToWideChar - simple ASCII "Hello"
+        DebugConsole.WriteLine("[String Test] Test 3: MultiByteToWideChar ASCII");
+
+        // "Hello" in UTF-8 (null-terminated)
+        byte* utf8Hello = stackalloc byte[6];
+        utf8Hello[0] = (byte)'H';
+        utf8Hello[1] = (byte)'e';
+        utf8Hello[2] = (byte)'l';
+        utf8Hello[3] = (byte)'l';
+        utf8Hello[4] = (byte)'o';
+        utf8Hello[5] = 0;
+
+        // Query required size
+        int requiredSize = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Hello, -1, null, 0);
+        if (requiredSize != 6) // 5 chars + null
+        {
+            DebugConsole.Write("[String Test] Test 3: FAILED - expected size 6, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Actually convert
+        char* wideHello = stackalloc char[6];
+        int converted = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Hello, -1, wideHello, 6);
+        if (converted != 6)
+        {
+            DebugConsole.Write("[String Test] Test 3: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify content
+        if (wideHello[0] != 'H' || wideHello[1] != 'e' || wideHello[2] != 'l' ||
+            wideHello[3] != 'l' || wideHello[4] != 'o' || wideHello[5] != 0)
+        {
+            DebugConsole.WriteLine("[String Test] Test 3: FAILED - content mismatch");
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 3: MultiByteToWideChar ASCII - PASSED");
+
+        // Test 4: WideCharToMultiByte - simple ASCII
+        DebugConsole.WriteLine("[String Test] Test 4: WideCharToMultiByte ASCII");
+
+        // Query required size
+        requiredSize = PAL.StringApi.WideCharToMultiByte(PAL.CodePage.CP_UTF8, 0, wideHello, -1, null, 0, null, null);
+        if (requiredSize != 6) // 5 bytes + null
+        {
+            DebugConsole.Write("[String Test] Test 4: FAILED - expected size 6, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Actually convert
+        byte* utf8Back = stackalloc byte[6];
+        converted = PAL.StringApi.WideCharToMultiByte(PAL.CodePage.CP_UTF8, 0, wideHello, -1, utf8Back, 6, null, null);
+        if (converted != 6)
+        {
+            DebugConsole.Write("[String Test] Test 4: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify round-trip
+        bool match = true;
+        for (int i = 0; i < 6; i++)
+        {
+            if (utf8Hello[i] != utf8Back[i])
+            {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+        {
+            DebugConsole.WriteLine("[String Test] Test 4: FAILED - round-trip mismatch");
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 4: WideCharToMultiByte ASCII - PASSED");
+
+        // Test 5: MultiByteToWideChar - 2-byte UTF-8 (é = U+00E9 = 0xC3 0xA9)
+        DebugConsole.WriteLine("[String Test] Test 5: MultiByteToWideChar 2-byte UTF-8");
+
+        byte* utf8Cafe = stackalloc byte[6];
+        utf8Cafe[0] = (byte)'c';
+        utf8Cafe[1] = (byte)'a';
+        utf8Cafe[2] = (byte)'f';
+        utf8Cafe[3] = 0xC3; // é in UTF-8 (first byte)
+        utf8Cafe[4] = 0xA9; // é in UTF-8 (second byte)
+        utf8Cafe[5] = 0;
+
+        requiredSize = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Cafe, -1, null, 0);
+        if (requiredSize != 5) // 4 chars + null (é is single UTF-16 code unit)
+        {
+            DebugConsole.Write("[String Test] Test 5: FAILED - expected size 5, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        char* wideCafe = stackalloc char[5];
+        converted = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Cafe, -1, wideCafe, 5);
+        if (converted != 5)
+        {
+            DebugConsole.Write("[String Test] Test 5: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // é = U+00E9
+        if (wideCafe[0] != 'c' || wideCafe[1] != 'a' || wideCafe[2] != 'f' ||
+            wideCafe[3] != (char)0x00E9 || wideCafe[4] != 0)
+        {
+            DebugConsole.Write("[String Test] Test 5: FAILED - content mismatch, char3=");
+            DebugConsole.WriteHex((ushort)wideCafe[3]);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 5: MultiByteToWideChar 2-byte UTF-8 - PASSED");
+
+        // Test 6: MultiByteToWideChar - 3-byte UTF-8 (€ = U+20AC = 0xE2 0x82 0xAC)
+        DebugConsole.WriteLine("[String Test] Test 6: MultiByteToWideChar 3-byte UTF-8");
+
+        byte* utf8Euro = stackalloc byte[4];
+        utf8Euro[0] = 0xE2; // € in UTF-8
+        utf8Euro[1] = 0x82;
+        utf8Euro[2] = 0xAC;
+        utf8Euro[3] = 0;
+
+        requiredSize = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Euro, -1, null, 0);
+        if (requiredSize != 2) // 1 char + null
+        {
+            DebugConsole.Write("[String Test] Test 6: FAILED - expected size 2, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        char* wideEuro = stackalloc char[2];
+        converted = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Euro, -1, wideEuro, 2);
+        if (converted != 2)
+        {
+            DebugConsole.Write("[String Test] Test 6: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // € = U+20AC
+        if (wideEuro[0] != (char)0x20AC || wideEuro[1] != 0)
+        {
+            DebugConsole.Write("[String Test] Test 6: FAILED - expected 0x20AC, got: ");
+            DebugConsole.WriteHex((ushort)wideEuro[0]);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 6: MultiByteToWideChar 3-byte UTF-8 - PASSED");
+
+        // Test 7: MultiByteToWideChar - 4-byte UTF-8 (surrogate pair: 😀 = U+1F600)
+        // U+1F600 in UTF-8 = 0xF0 0x9F 0x98 0x80
+        DebugConsole.WriteLine("[String Test] Test 7: MultiByteToWideChar 4-byte UTF-8 (surrogate)");
+
+        byte* utf8Emoji = stackalloc byte[5];
+        utf8Emoji[0] = 0xF0;
+        utf8Emoji[1] = 0x9F;
+        utf8Emoji[2] = 0x98;
+        utf8Emoji[3] = 0x80;
+        utf8Emoji[4] = 0;
+
+        requiredSize = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Emoji, -1, null, 0);
+        if (requiredSize != 3) // 2 chars (surrogate pair) + null
+        {
+            DebugConsole.Write("[String Test] Test 7: FAILED - expected size 3, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        char* wideEmoji = stackalloc char[3];
+        converted = PAL.StringApi.MultiByteToWideChar(PAL.CodePage.CP_UTF8, 0, utf8Emoji, -1, wideEmoji, 3);
+        if (converted != 3)
+        {
+            DebugConsole.Write("[String Test] Test 7: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // U+1F600 = surrogate pair 0xD83D 0xDE00
+        if (wideEmoji[0] != (char)0xD83D || wideEmoji[1] != (char)0xDE00 || wideEmoji[2] != 0)
+        {
+            DebugConsole.Write("[String Test] Test 7: FAILED - expected 0xD83D 0xDE00, got: ");
+            DebugConsole.WriteHex((ushort)wideEmoji[0]);
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex((ushort)wideEmoji[1]);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 7: MultiByteToWideChar 4-byte UTF-8 - PASSED");
+
+        // Test 8: WideCharToMultiByte with surrogate pair
+        DebugConsole.WriteLine("[String Test] Test 8: WideCharToMultiByte surrogate pair");
+
+        requiredSize = PAL.StringApi.WideCharToMultiByte(PAL.CodePage.CP_UTF8, 0, wideEmoji, -1, null, 0, null, null);
+        if (requiredSize != 5) // 4 bytes + null
+        {
+            DebugConsole.Write("[String Test] Test 8: FAILED - expected size 5, got: ");
+            DebugConsole.WriteHex((uint)requiredSize);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        byte* utf8EmojiBack = stackalloc byte[5];
+        converted = PAL.StringApi.WideCharToMultiByte(PAL.CodePage.CP_UTF8, 0, wideEmoji, -1, utf8EmojiBack, 5, null, null);
+        if (converted != 5)
+        {
+            DebugConsole.Write("[String Test] Test 8: FAILED - converted count wrong: ");
+            DebugConsole.WriteHex((uint)converted);
+            DebugConsole.WriteLine();
+            return 1;
+        }
+
+        // Verify round-trip
+        match = true;
+        for (int i = 0; i < 5; i++)
+        {
+            if (utf8Emoji[i] != utf8EmojiBack[i])
+            {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+        {
+            DebugConsole.WriteLine("[String Test] Test 8: FAILED - round-trip mismatch");
+            return 1;
+        }
+        DebugConsole.WriteLine("[String Test] Test 8: WideCharToMultiByte surrogate - PASSED");
+
+        DebugConsole.WriteLine("[String Test] All String Conversion API tests PASSED!");
         return 0;
     }
 }
