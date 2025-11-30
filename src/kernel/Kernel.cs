@@ -37,6 +37,9 @@ public static unsafe class Kernel
         ReadyToRunInfo.Init();
         ReadyToRunInfo.DumpSections();
 
+        // Test GCDesc parsing with frozen objects
+        GCDescHelper.TestWithFrozenObjects();
+
         // Initialize page allocator (requires UEFI boot services)
         PageAllocator.Init();
 
@@ -55,6 +58,9 @@ public static unsafe class Kernel
 
         // Initialize kernel heap
         HeapAllocator.Init();
+
+        // Test GCDesc with heap-allocated object that has references
+        GCDescHelper.TestWithHeapObject();
 
         // Initialize scheduler (creates boot thread)
         Scheduler.Init();

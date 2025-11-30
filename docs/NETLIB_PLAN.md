@@ -219,6 +219,42 @@ Created infrastructure for locating and parsing NativeAOT runtime metadata:
 [GCInfo] All functions validated successfully!
 ```
 
+#### 3.1 MethodTable and GCDesc Parsing ✓ COMPLETE
+
+Created infrastructure for parsing MethodTable flags and GCDesc reference field metadata:
+
+**New files created:**
+- `src/kernel/Runtime/MethodTable.cs` - Kernel-side MethodTable struct with flag accessors
+- `src/kernel/Runtime/GCDesc.cs` - GCDesc parser for enumerating object reference fields
+
+**MethodTable features:**
+- Mirrors NativeAOT's MethodTable layout exactly
+- Correct flag values from MethodTable.h:
+  - `HasPointers = 0x01000000` (type contains GC references)
+  - `HasFinalizer = 0x00100000` (type has finalizer)
+  - `IsArray = 0x00080000` (type is an array)
+- Provides `CombinedFlags` property for flag checking
+- Helper properties: `HasPointers`, `HasFinalizer`, `IsArray`, `ComponentSize`
+
+**GCDesc features:**
+- `GetSeriesCount()` - Gets number of reference series from GCDesc
+- `GetSeriesArray()` - Gets pointer to series entries (stored before MethodTable)
+- `EnumerateReferences()` - Walks all reference fields in an object
+- `EnumerateValueTypeArrayReferences()` - Handles struct arrays with refs
+- `TestWithFrozenObjects()` - Validates by walking frozen object region
+- `TestWithHeapObject()` - Validates with heap-allocated Exception
+
+**Validation results:**
+```
+[GCDesc] Frozen region: 79184 bytes
+[GCDesc] 414 objects (414 strings), 0 with refs, 0 total ref slots
+[GCDesc] Exception MT=0x... BaseSize=32 Flags=0x51000000 [HasPtrs] Series=1 [off=8,cnt=2] Total=2
+```
+
+- Frozen objects: 414 string literals successfully walked (strings have no refs)
+- Heap object: Exception has 2 reference fields (`_message`, `_innerException`) at offset 8
+- GCDesc series format correctly decoded for mark phase traversal
+
 ### Object Layout
 
 Every managed object has an 8-byte header before the MethodTable pointer:
