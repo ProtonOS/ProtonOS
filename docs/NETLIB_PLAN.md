@@ -178,10 +178,79 @@ Implemented full NativeAOT-compatible exception handling:
 
 ---
 
-## Phase 3: Garbage Collector
+## Phase 3: Garbage Collector (In Progress)
 
 ### Goal
-Implement mark-sweep GC for managed heap.
+Implement mark-sweep GC for managed heap, designed to evolve into generational GC.
+
+### Progress
+
+#### 3.0 ReadyToRun Header and GCInfo Parsing ✓ COMPLETE
+
+Created infrastructure for locating and parsing NativeAOT runtime metadata:
+
+**New files created:**
+- `src/kernel/Runtime/ReadyToRunInfo.cs` - RTR header parsing via .modules section
+- `src/kernel/Runtime/GCInfo.cs` - GCInfo decoder for stack maps
+
+**ReadyToRunInfo features:**
+- Locates RTR header via `.modules` PE section pointer
+- Enumerates all NativeAOT sections (GCStaticRegion, FrozenObjects, TypeManager, etc.)
+- Caches commonly-used section pointers for fast access
+- Validated: 31 sections found in kernel
+
+**GCInfoDecoder features:**
+- Bit-stream based decoder matching .NET runtime's exact format
+- Decodes slim and fat headers correctly
+- Parses variable-length integers with proper XOR-continuation encoding
+- Handles slim header implicit stack base register (RBP)
+- Decodes slot table with presence bits for each count
+- **Validated: 290/290 functions (100%) decoded successfully!**
+
+**Key implementation details:**
+- Slim headers: `HasStackBaseRegister=true` means implicit RBP (no value encoded)
+- Variable-length integers: uses XOR with continuation chunks per .NET runtime spec
+- Slot counts: each preceded by 1-bit presence flag (0 = count is 0)
+
+**Validation output:**
+```
+[GCInfo] Results: 290 OK, 0 no-gcinfo, 0 hdr-fail, 0 slot-fail, 0 sanity-fail
+[GCInfo] Stats: totalSP=2928 totalSlots=1057 maxCode=4397 maxSP=208 maxSlots=162
+[GCInfo] All functions validated successfully!
+```
+
+### Object Layout
+
+Every managed object has an 8-byte header before the MethodTable pointer:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Object Header (64 bits)                     │
+├─────────────────────────────┬───────────────────────────────────┤
+│ Bits 0-31                   │ Bits 32-63                        │
+│ Flags (3) + Sync Index (29) │ Identity Hash Code (32)           │
+└─────────────────────────────┴───────────────────────────────────┘
+│                      MethodTable* (64 bits)                      │
+├─────────────────────────────────────────────────────────────────┤
+│                      Fields...                                   │
+└─────────────────────────────────────────────────────────────────┘
+
+Low 32 bits:
+  Bit 0:      GC Mark bit (1 = reachable)
+  Bit 1:      Pinned (cannot be relocated)
+  Bits 2-3:   Generation (0, 1, or 2)
+  Bits 4-31:  Sync Block Index (28 bits = 256M entries)
+
+High 32 bits:
+  Bits 32-63: Identity Hash Code (matches int GetHashCode())
+              Value 0 = not yet computed, actual 0 maps to 1
+```
+
+**Key points:**
+- Object reference points at MethodTable*, header is at `obj - 8`
+- `RhpNewFast` allocates `8 + size`, returns pointer past header
+- Hash is lazily computed on first `GetHashCode()` call
+- Generation bits reserved for future generational GC
 
 ### Tasks
 
@@ -206,17 +275,714 @@ static void* RhpNewArray(MethodTable* mt, int length);
 static void RhpAssignRef(void** dst, void* src);
 ```
 
+### MethodTable and GCDesc
+
+NativeAOT/bflat emits a GCDesc **before** each MethodTable in memory. The GCDesc describes
+which fields in an object contain references (for the mark phase to traverse).
+
+```
+Memory layout (grows backward from MethodTable):
+
+         ┌─────────────────────────┐
+         │ GCDescSeries[n-1]       │  ← Series n-1 (offset, size)
+         ├─────────────────────────┤
+         │ ...                     │
+         ├─────────────────────────┤
+         │ GCDescSeries[0]         │  ← Series 0 (offset, size)
+         ├─────────────────────────┤
+         │ Series Count (nint)     │  ← Positive = normal, Negative = value array
+         ├─────────────────────────┤
+mt ───►  │ MethodTable             │  ← Object reference points here
+         │   _usComponentSize      │
+         │   _usFlags              │  ← HasPointersFlag (0x01000000) indicates GCDesc present
+         │   _uBaseSize            │
+         │   _relatedType          │
+         │   _usNumVtableSlots     │
+         │   _usNumInterfaces      │
+         │   _uHashCode            │
+         │   VTable[...]           │
+         └─────────────────────────┘
+```
+
+**GCDescSeries structure (16 bytes on x64):**
+```csharp
+struct GCDescSeries
+{
+    nint SeriesSize;    // Adjusted size (actual_size - base_size)
+    nint StartOffset;   // Offset from object start to first ref in series
+}
+```
+
+**Interpreting series (positive count):**
+- Series count at `((nint*)mt)[-1]`
+- Each series describes a contiguous run of reference fields
+- `StartOffset` = byte offset from object reference to first ref
+- `SeriesSize` = (actual_bytes - base_size), add base_size back to get true size
+- Number of refs in series = `(SeriesSize + BaseSize) / sizeof(nint)`
+
+**Example: Enumerating references:**
+```csharp
+static unsafe void EnumerateReferences(object obj, Action<nint> callback)
+{
+    MethodTable* mt = obj.m_pMethodTable;
+    nint* pMT = (nint*)mt;
+    nint seriesCount = pMT[-1];
+
+    if (seriesCount <= 0)
+        return;  // No refs, or value-type array (handle separately)
+
+    nint baseSize = mt->_uBaseSize;
+    GCDescSeries* series = (GCDescSeries*)(pMT - 1);
+
+    for (int i = 1; i <= seriesCount; i++)
+    {
+        nint offset = series[-i].StartOffset;
+        nint size = series[-i].SeriesSize + baseSize;
+        nint* refPtr = (nint*)((byte*)obj + offset);
+        nint count = size / sizeof(nint);
+
+        for (nint j = 0; j < count; j++)
+            callback(refPtr[j]);
+    }
+}
+```
+
+**Key flag:**
+- `HasPointersFlag = 0x01000000` in `_usFlags` indicates the type contains GC references
+- If this flag is clear, no GCDesc exists and object has no refs to scan
+
+### Stack Maps for Root Scanning
+
+To properly scan stack roots, we need **stack maps** - metadata that tells the GC which stack
+slots and registers contain live object references at each potential GC safepoint.
+
+**Why stack maps matter:**
+- Conservative scanning (treating every pointer-like value as a potential ref) is fragile
+- Can't relocate objects if we might have false positives
+- Generational GC needs accurate root information
+
+**NativeAOT stack map format:**
+NativeAOT emits GC info for each method that describes:
+1. Which stack slots contain refs at each safepoint (call sites, loops)
+2. Which callee-saved registers contain refs
+3. Return address locations for stack walking
+
+**Implementation approach:**
+1. Parse GC info emitted by bflat/NativeAOT compiler
+2. At GC time, walk the stack using return addresses
+3. For each frame, look up the GC info by instruction pointer
+4. Enumerate live refs from stack slots and saved registers
+
+**Key data structures:**
+```csharp
+// Per-method GC info (lookup by instruction pointer range)
+struct GCInfo
+{
+    nint StartIP;
+    nint EndIP;
+    // Encoded safepoint data...
+}
+
+// Runtime needs to maintain a sorted table of GCInfo by IP for lookup
+```
+
+**Confirmed:** bflat/NativeAOT **already emits GCInfo** for every method! Verified via `--map`:
+```xml
+<MethodCode Name="kernel_Kernel_Kernel__Main" Length="435" />
+<GCInfo Name="kernel_Kernel_Kernel__Main" Length="57" />
+```
+
+**GCInfo location in .xdata (verified by manual parsing):**
+
+```
+.xdata section layout for each method:
+
+┌─────────────────────────────────────────┐
+│ UNWIND_INFO (Windows standard)          │
+│   - Header (4 bytes)                    │
+│   - UnwindCodes (CountOfCodes * 2)      │
+├─────────────────────────────────────────┤
+│ unwindBlockFlags (1 byte)               │  ← NativeAOT extension
+│   bit 0-1: func kind (0=root,1=handler) │
+│   bit 2: UBF_FUNC_HAS_EHINFO            │
+│   bit 3: UBF_FUNC_REVERSE_PINVOKE       │
+│   bit 4: UBF_FUNC_HAS_ASSOCIATED_DATA   │
+├─────────────────────────────────────────┤
+│ Associated data RVA (4 bytes, optional) │  ← if bit 4 set
+├─────────────────────────────────────────┤
+│ EH info RVA (4 bytes, optional)         │  ← if bit 2 set
+├─────────────────────────────────────────┤
+│ GCInfo (variable length)                │  ← Stack maps here!
+└─────────────────────────────────────────┘
+```
+
+**Verified examples:**
+- `Main` (no EH): UNWIND_INFO=22 bytes, flags=0x00, GCInfo at offset 23 (57 bytes)
+- `TestExceptionHandling` (has EH): UNWIND_INFO=10 bytes, flags=0x04, EH RVA, GCInfo at offset 15 (65 bytes)
+
+**GCInfo format (confirmed - contains full stack maps):**
+Uses the standard NativeAOT/CoreCLR GcInfoDecoder format. The GCInfo blob encodes:
+
+**Header Information:**
+- Header flags (fat vs. slim format)
+- Return kind
+- Code length (denormalized)
+- Prolog/epilog size
+
+**Stack/Security Management:**
+- GS cookie stack slot (stack guard offset)
+- Valid range (where GS cookie is valid)
+- PSP symbol stack slot
+- Stack base register (frame pointer)
+
+**Generic Context:**
+- Generics instantiation context stack slot
+
+**Interruptibility Information:**
+- Number of interruptible ranges (GC-safe regions in code)
+- Interruptible range deltas (start/stop offsets)
+
+**Safe Points (the "stack map"):**
+- Number of safe points (call sites, loops where GC can occur)
+- Safe point offsets (normalized code offsets)
+
+**Slot Table (tracked references):**
+- Number of tracked slots (registers + stack)
+- For each slot: register ID or stack offset, flags (pinned, interior pointer)
+- Slot array describes which locations CAN hold references
+
+**Live State Per Safe Point:**
+- Bit vector or RLE-compressed liveness
+- For each safe point, indicates WHICH slots are live (contain valid refs)
+- This is the actual "stack map" - tells GC exactly what to scan at each IP
+
+**Lifetime Transitions:**
+- State changes within code chunks
+- Tracks when slots become live/dead
+
+Reference: [gcinfodecoder.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/vm/gcinfodecoder.cpp)
+
+**Implementation approach:**
+We already have `GetNativeAotEHInfo()` in ExceptionHandling.cs that parses this structure.
+For GC, we create a similar `GetGCInfo()` that:
+1. Reuses RUNTIME_FUNCTION lookup (already implemented)
+2. Parses past UNWIND_INFO using existing logic
+3. Skips unwindBlockFlags and optional RVAs
+4. Returns pointer to GCInfo for decoder
+
 #### 3.3 Mark phase
-- Scan static roots
-- Scan stack roots
-- Traverse object graph
+- Scan static roots (global variables containing refs)
+- Scan stack roots using stack maps (walk frames, decode GC info per IP)
+- For each root, mark object and recursively traverse using GCDesc
 
 #### 3.4 Sweep phase
-- Free unmarked objects
-- Maintain free list
+- Walk GC heap linearly
+- Free unmarked objects to free list
+- Clear mark bits on surviving objects
+
+### Research Summary
+
+| Topic | Status | Notes |
+|-------|--------|-------|
+| Object Header | ✓ Designed | 64-bit: flags+sync (32) + hash (32) |
+| GCDesc | ✓ Documented | Series format before MethodTable |
+| GCInfo/Stack Maps | ✓ Confirmed | Emitted by bflat, location verified |
+| GCInfo Header | ✓ Complete | Slim/fat headers 100% decoded (273/273) |
+| GCInfo Varint | ✓ Verified | No XOR, simple accumulation |
+| GCInfo Safe Points | ✓ Verified | Absolute offsets, direct liveness decoding |
+| GCInfo Slot Table | ✓ Verified | Register/stack slots with delta encoding |
+| GCInfo Liveness | ✓ Verified | Direct bit vector (1 bit per slot per SP) |
+| Interruptible Ranges | ⚠ Needs impl | Format understood, decode values TBD |
+| Interior/Pinned Ptrs | ⚠ Needs impl | Slot flags documented, not yet decoded |
+| Indirect Liveness | ⚠ Needs impl | Deduplication format not yet verified |
+| Static Roots | ✓ Verified | __GCStaticRegion format documented |
+| Write Barriers | ✓ Documented | Simple store for mark-sweep |
+| MethodTable Flags | ✓ Documented | HasPointers, HasFinalizer |
+| Allocation Context | ✓ Documented | Per-thread bump allocation |
+| Finalization | ⏸ Deferred | Not needed for initial GC |
+| Weak References | ⏸ Deferred | Not needed for initial GC |
+| Thread Suspension | ✓ Documented | Design for SMP from start |
+| RTR Header | ✓ Verified | .modules section → RTR header location |
+| UNWIND_INFO Size | ✓ Verified | 4 + CountCodes*2, NO padding |
+
+---
+
+### ReadyToRun (RTR) Header Structure
+
+NativeAOT embeds a ReadyToRunHeader in the PE file containing section pointers for runtime
+metadata including GC static regions, frozen objects, and type manager indirection.
+
+#### Locating the RTR Header
+
+```
+.modules PE section (at RVA 0x3C000 in our kernel):
+┌────────────────────────────────┐
+│ Pointer to RTR Header (8 bytes)│ → Points to RVA 0x3480 in .rdata
+└────────────────────────────────┘
+
+The .modules section contains an array of pointers to ReadyToRunHeader structures.
+For single-module NativeAOT executables, there's typically one entry.
+```
+
+#### RTR Header Format (NativeAOT)
+
+```
+Offset  Size  Field
+──────────────────────────────────────────────────
+0x00    4     Signature         0x00525452 ('RTR\0')
+0x04    2     MajorVersion      16 (current)
+0x06    2     MinorVersion      0
+0x08    4     Flags             0
+0x0C    2     NumberOfSections  31 (in our kernel)
+0x0E    1     EntrySize         24 bytes per section entry
+0x0F    1     EntryType         1 (pointer-based entries)
+──────────────────────────────────────────────────
+0x10    varies  Section entries array
+```
+
+#### Section Entry Format (ModuleInfoRow)
+
+Each section entry is 24 bytes:
+```
+Offset  Size  Field
+──────────────────────────────────────────────────
+0x00    4     SectionId         ReadyToRunSectionType enum
+0x04    4     Flags             ModuleInfoFlags (bit 0 = HasEndPointer)
+0x08    8     Start             Absolute VA (pointer)
+0x10    8     End               Absolute VA (or same as Start if no end)
+```
+
+#### NativeAOT Section Types (200+ range)
+
+| ID  | Name                   | Description                              |
+|-----|------------------------|------------------------------------------|
+| 200 | StringTable            | String constants                         |
+| 201 | GCStaticRegion         | Pointers to GC static data blocks        |
+| 202 | ThreadStaticRegion     | Thread-local static data                 |
+| 204 | TypeManagerIndirection | Pointer to TypeManager                   |
+| 205 | EagerCctor             | Static constructors to run at startup    |
+| 206 | FrozenObjectRegion     | Pre-allocated frozen objects (strings)   |
+| 207 | DehydratedData         | Compressed metadata (if present)         |
+| 208 | ThreadStaticOffsetRegion | Thread static offsets                  |
+| 212 | ImportAddressTables    | Import tables for DllImport              |
+| 213 | ModuleInitializerList  | Module initializer function pointers     |
+| 300-399 | ReadonlyBlobRegion | RhFindBlob compatibility blobs          |
+
+#### Kernel Binary RTR Analysis (Verified)
+
+Our BOOTX64.EFI contains:
+- RTR Header at RVA 0x3480 (file offset 0x1A80)
+- 31 sections with 24-byte entries
+- Key sections:
+  - GCStaticRegion (201): RVA 0x7810, 4 bytes
+  - FrozenObjectRegion (206): RVA 0x7828-0x19E00, 75KB of frozen objects
+  - ModuleInitializerList (213): Empty (no module initializers)
+  - Various ReadonlyBlob sections for runtime data
+
+Source references:
+- [ModuleHeaders.h](https://github.com/dotnet/runtime/blob/main/src/coreclr/nativeaot/Runtime/inc/ModuleHeaders.h)
+- [CoffObjectWriter.Aot.cs](https://github.com/dotnet/runtime/blob/main/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/ObjectWriter/CoffObjectWriter.Aot.cs)
+
+---
+
+### Pending Research
+
+#### Static Roots (Verified)
+NativeAOT emits these symbols for static fields:
+- `__NONGCSTATICS` - Non-reference statics (primitives, pointers, structs)
+- `__GCSTATICS` - Reference statics (object fields) - 8 bytes per object reference
+- `__GCStaticEEType_XX` - EEType for each GC statics block (for GC scanning)
+- `__GCStaticRegion` - Array of pointers to GC static blocks
+
+**Verified with test:** Added `static object? _gcTestObject` to Kernel class:
+```xml
+<GCStatics Name="?__GCSTATICS@kernel_Kernel_Kernel@@" Length="8" />
+<GCStaticEEType Name="__GCStaticEEType_01" Length="40" />
+<ArrayOfEmbeddedPointers Name="__GCStaticRegion" Length="4" />
+```
+
+**Format of __GCStaticRegion:**
+- Array of pointers to GC static blocks
+- Each entry points to a `__GCSTATICS` block for a class
+- Entry format: pointer with flags in low bits
+  - Bit 0: Uninitialized flag
+  - Bit 1: Has pre-initialized data blob flag
+- The `__GCStaticEEType` describes the layout of reference fields in the block
+
+**To enumerate static roots:**
+1. Get `__GCStaticRegion` start/end pointers
+2. Iterate through each entry (4 or 8 bytes depending on relative/direct pointers)
+3. For each initialized entry, use the associated EEType to find reference offsets
+4. Report each reference field as a GC root
+
+#### GcInfoDecoder (Confirmed: Stack Maps ARE Emitted)
+NativeAOT/bflat emits complete stack maps in GCInfo. No additional compiler flags needed.
+
+**Implementation approach:**
+1. **Port full C++ decoder to C#** - Implement complete GcInfoDecoder
+   - Reference: [gcinfodecoder.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/vm/gcinfodecoder.cpp)
+   - Test against our own kernel binary to validate correctness
+   - Enumerate all methods, decode GCInfo, print slot tables and safe points
+2. Once decoder is working, integrate with stack walker for root enumeration
+3. Conservative scanning can be used as fallback/validation during development
+
+##### GCInfo Location in .xdata
+
+GCInfo is located after UNWIND_INFO in the .xdata section. We already have parsing code in
+`ExceptionHandling.cs:GetNativeAotEHInfo()` that locates EH info - GCInfo follows immediately.
+
+```
+.xdata layout for each method:
+┌──────────────────────────────────────────────────┐
+│ UNWIND_INFO (Windows x64 standard)               │
+│   - VersionAndFlags (1 byte)                     │
+│   - SizeOfProlog (1 byte)                        │
+│   - CountOfUnwindCodes (1 byte)                  │
+│   - FrameRegisterAndOffset (1 byte)              │
+│   - UnwindCodes[CountOfUnwindCodes] (2 bytes ea) │
+├──────────────────────────────────────────────────┤
+│ [DWORD-align if EHANDLER/UHANDLER flag set]      │
+│ [Exception Handler RVA - 4 bytes, if flags set]  │
+├──────────────────────────────────────────────────┤
+│ unwindBlockFlags (1 byte) - NativeAOT extension  │
+│   Bits 0-1: Func kind (0=root, 1=handler, 2=flt) │
+│   Bit 2: UBF_FUNC_HAS_EHINFO                     │
+│   Bit 3: UBF_FUNC_REVERSE_PINVOKE                │
+│   Bit 4: UBF_FUNC_HAS_ASSOCIATED_DATA            │
+├──────────────────────────────────────────────────┤
+│ [Associated Data RVA - 4 bytes, if bit 4 set]    │
+├──────────────────────────────────────────────────┤
+│ [EH Info RVA - 4 bytes, if bit 2 set]            │
+├──────────────────────────────────────────────────┤
+│ GCInfo (variable length) ◄── STARTS HERE         │
+└──────────────────────────────────────────────────┘
+```
+
+##### Variable-Length Integer Encoding
+
+GCInfo uses a custom variable-length encoding with a `base` parameter:
+
+```csharp
+// Encoding algorithm (EncodeVarLengthUnsigned):
+// - Each chunk is (base + 1) bits
+// - High bit of chunk is continuation flag (1 = more chunks follow)
+// - Low 'base' bits are payload
+// - Multi-chunk values: accumulate with left shift, NO XOR
+//
+// Example with base=8 (AMD64):
+//   Values 0-255: encoded in 9 bits (8 payload + continuation=0)
+//   Values 256+:  first chunk has continuation=1, value bits 0-7
+//                 second chunk has continuation=0, value bits 8-15
+//                 Result = chunk0_value | (chunk1_value << 8)
+
+size_t DecodeVarLengthUnsigned(int base)
+{
+    size_t result = 0;
+    int shift = 0;
+    while (true) {
+        size_t chunk = Read(base + 1);
+        result |= (chunk & ((1 << base) - 1)) << shift;
+        if ((chunk >> base) == 0)  // No continuation?
+            break;
+        shift += base;
+    }
+    return result;
+}
+```
+
+##### GCInfo Header Format (100% Verified Against Kernel Binary)
+
+GCInfo uses a slim/fat header distinction controlled by the first bit:
+
+**Slim Header (bit0=0) - 173 functions (63%) in our kernel:**
+```
+Bit 0:      Header type = 0 (slim)
+Bit 1:      Stack base register present flag
+Bits 2+:    Code length (varint, base=8 for AMD64)
+            ... remaining fields ...
+```
+
+**Fat Header (bit0=1) - 100 functions (37%) in our kernel:**
+```
+Bit 0:      Header type = 1 (fat)
+Bit 1:      IsVarArg
+Bit 2:      Unused (was hasSecurityObject)
+Bit 3:      HasGSCookie
+Bit 4:      Unused (was hasPSPSymStackSlot)
+Bits 5-6:   ContextParamType (2 bits)
+Bit 7:      HasStackBaseRegister
+Bit 8:      WantsReportOnlyLeaf (AMD64-specific)
+Bit 9:      HasEditAndContinuePreservedArea
+Bit 10:     HasReversePInvokeFrame
+Bits 11+:   Code length (varint, base=8 for AMD64)
+            ... remaining fields ...
+```
+
+**IMPORTANT:** The `code_length` in GCInfo covers the ROOT function PLUS all its funclets
+(exception handlers/filters). For functions with try/catch, the GCInfo code_length will be
+larger than the RUNTIME_FUNCTION length because it includes the handler code.
+
+**Verified: 273/273 ROOT functions (100%) decode correctly!**
+(Including 2 functions with funclets where GCInfo code_length covers root + handlers)
+
+**Example - Slim header, Function #0 (507 bytes):**
+```
+GCInfo: EE 0F C0 AE C3 89 ...
+Binary: 11101110 00001111 ...
+        ^^------ Header bits (0b10 = slim header, has stack base)
+          ^^^^^^ Code length starts at bit 2
+Decoded code_length = 507 ✓
+```
+
+**Example - Fat header, Function #62 (445 bytes):**
+```
+GCInfo: 81 E8 1D 00 08 ...
+Binary: 10000001 11101000 ...
+        ^------- Fat indicator (1)
+         ^^^^^^^ Flags: vararg=0, gs=0, ctx=0, stack=1, leaf=0, enc=0, rp=0
+               ^^ Code length starts at bit 11
+Decoded code_length = 445 ✓
+```
+
+**Source reference:**
+- [gcinfoencoder.cpp](https://github.com/dotnet/runtime/blob/main/src/coreclr/gcinfo/gcinfoencoder.cpp) - Build() method
+
+##### Full Header Field Order (after code_length)
+
+```
+1.  Header type (1 bit)           - 0=slim, 1=fat
+2.  [Slim] Stack base flag (1 bit)
+    [Fat] Header flags            - GcInfoHeaderFlags (size varies)
+3.  Code length                   - DecodeVarLengthUnsigned(base=8) ← VERIFIED
+4.  [If GS cookie] Prolog size    - DecodeVarLengthUnsigned(base=5)
+5.  [If GS cookie] Epilog size    - DecodeVarLengthUnsigned(base=5)
+6.  GS cookie stack slot          - DecodeVarLengthSigned(base=6)
+7.  [Old format] PSP sym slot     - DecodeVarLengthSigned(base=6)
+8.  Generics inst context slot    - DecodeVarLengthSigned(base=6)
+9.  Stack base register           - DecodeVarLengthUnsigned(base=2)
+10. E&C preserved area size       - DecodeVarLengthUnsigned(base=3)
+11. Reverse P/Invoke frame slot   - DecodeVarLengthSigned(base=6)
+12. Number of safe points         - DecodeVarLengthUnsigned(base=2)
+13. Number of interruptible ranges- DecodeVarLengthUnsigned(base=1)
+```
+
+##### Slot Table Format (VERIFIED)
+
+After safe points/interruptible ranges comes the slot table:
+
+```
+Slot table decoding (all verified against kernel binary):
+1. Register count                 - DecodeVarLengthUnsigned(base=2)
+2. Stack slot count               - DecodeVarLengthUnsigned(base=2)
+3. Untracked slot count           - DecodeVarLengthUnsigned(base=1)
+
+For first register slot:
+  - Register number               - DecodeVarLengthUnsigned(base=3) [0=RAX, 1=RCX, ...]
+  - Flags (2 bits)                - bit0=interior, bit1=pinned
+
+For subsequent register slots (delta encoded):
+  - Register delta                - DecodeVarLengthUnsigned(base=2) + 1 from previous
+  - Flags (2 bits)
+
+For first stack slot:
+  - Stack slot base (2 bits)      - 0=SP_REL, 1=CALLER_SP_REL, 2=FRAMEREG_REL
+  - Stack offset                  - DecodeVarLengthUnsigned(base=6)
+  - Flags (2 bits)
+
+For subsequent stack slots (delta encoded):
+  - Offset delta                  - DecodeVarLengthUnsigned(base=4)
+  - Flags (2 bits)
+```
+
+##### Safe Points and Liveness (VERIFIED)
+
+Safe points are code offsets where GC can occur (call sites, loop back-edges):
+
+```
+Safe point encoding:
+1. Safe point offsets             - ABSOLUTE, NOT delta-encoded!
+   - Each offset: fixed-width bits = ceil(log2(code_length + 1))
+   - Example: code_length=507 → offset_width=9 bits
+
+After slot table comes liveness data:
+1. Indirection flag (1 bit)       - 0=direct, 1=indirect
+2. If direct (flag=0):
+   - For each safe point: 1 bit per tracked slot
+   - bit=1 means slot contains live GC reference at that point
+   - Example: 3 tracked slots × 52 safe points = 156 bits
+
+Verified example from Function #0:
+  SP #7 @ offset 103: bits=010 → RCX is live (slot 1)
+  SP #8 @ offset 113: bits=000 → no live refs
+```
+
+##### AMD64-Specific Encoding Constants
+
+```csharp
+// From gcinfotypes.h - AMD64GcInfoEncoding
+// All values VERIFIED against kernel binary parsing
+
+// Header fields
+const int CODE_LENGTH_ENCBASE = 8;                    // ← VERIFIED
+const int NORM_PROLOG_SIZE_ENCBASE = 5;               // +1 denormalization
+const int NORM_EPILOG_SIZE_ENCBASE = 3;
+const int SIZE_OF_EDIT_AND_CONTINUE_PRESERVED_AREA_ENCBASE = 4;
+const int STACK_BASE_REGISTER_ENCBASE = 3;            // ← VERIFIED (was 2 in docs)
+const int GS_COOKIE_STACK_SLOT_ENCBASE = 6;
+const int GENERICS_INST_CONTEXT_STACK_SLOT_ENCBASE = 6;
+const int REVERSE_PINVOKE_FRAME_ENCBASE = 6;          // ← VERIFIED
+
+// Counts
+const int NUM_SAFE_POINTS_ENCBASE = 2;                // ← VERIFIED
+const int NUM_INTERRUPTIBLE_RANGES_ENCBASE = 1;       // ← VERIFIED (fat headers only)
+const int NUM_REGISTERS_ENCBASE = 2;
+const int NUM_STACK_SLOTS_ENCBASE = 2;                // ← Was 5 in docs, using 2
+const int NUM_UNTRACKED_SLOTS_ENCBASE = 1;            // ← Was 5 in docs, using 1
+
+// Slot table
+const int REGISTER_ENCBASE = 3;
+const int REGISTER_DELTA_ENCBASE = 2;
+const int STACK_SLOT_ENCBASE = 6;
+const int STACK_SLOT_DELTA_ENCBASE = 4;
+
+// Safe points and liveness
+const int NORM_CODE_OFFSET_DELTA_ENCBASE = 3;
+const int INTERRUPTIBLE_RANGE_DELTA1_ENCBASE = 6;
+const int INTERRUPTIBLE_RANGE_DELTA2_ENCBASE = 6;
+const int LIVESTATE_RLE_RUN_ENCBASE = 2;
+const int LIVESTATE_RLE_SKIP_ENCBASE = 4;
+```
+
+**Key insight:** The slot table describes WHERE refs CAN live. The liveness bits per safe point
+tell you WHICH slots actually contain refs at that instruction. Combined with IP from stack walk,
+gives precise root enumeration.
+
+##### Items to Verify During Implementation
+
+These features are understood conceptually but need verification during C# implementation:
+
+1. **Interruptible Ranges** - Cumulative delta encoding for fully-interruptible code regions.
+   Investigation showed decoded values were too large; may be bit position issue or different
+   encoding base. Will verify incrementally during implementation.
+
+2. **Interior/Pinned Pointer Flags** - Slot flags (2 bits after each slot) encode interior=bit0,
+   pinned=bit1. Interior pointers point within objects (not at header). Pinned objects can't move.
+   Need to verify flag decoding and handle appropriately during root enumeration.
+
+3. **Indirect Liveness** - When liveness flag=1, uses deduplication with live state table.
+   16 functions in kernel use this. Will implement after direct liveness works.
+
+4. **Untracked Slots** - 71 functions have untracked slots. These are always-live references
+   that don't need per-safe-point tracking. Need to enumerate separately.
+
+#### Thread Suspension (Required - Design for SMP)
+GC must be designed for multicore from the start. SMP support may be added before GC implementation.
+
+**Key components:**
+- `RhpGcPoll` - Called at safepoints (loop back-edges, method entries)
+- `RhpTrapThreads` - Global flag checked by poll, emitted by compiler as data symbol
+
+**Stop-the-world mechanism for SMP:**
+1. GC thread sets `RhpTrapThreads = 1`
+2. All threads check flag at next safepoint via `RhpGcPoll`
+3. Threads reaching safepoint: save context, signal ready, wait
+4. GC thread waits for all threads to reach safepoint
+5. GC performs collection
+6. GC thread clears flag, signals threads to resume
+
+**Implementation needs:**
+- Per-thread state: running/suspended/waiting flags
+- Synchronization primitive for thread coordination (spinlock or futex-like)
+- IPI (Inter-Processor Interrupt) for threads in kernel mode or long-running native code
+- Memory barriers to ensure flag visibility across cores
+
+**NativeAOT/CoreCLR approach:**
+- Threads voluntarily suspend at safepoints via `RhpGcPoll`
+- **Hijacking** for threads not at safepoints: modify return address on stack to redirect
+  to suspension helper when method returns (all call sites are GC-safe)
+- If thread is in loop without calls, method must be "FullyInterruptible" (GC-safe everywhere)
+- Repeat hijack if thread hasn't reached safe point after return
+
+**Our approach:**
+- Implement `RhpGcPoll` to check `RhpTrapThreads` flag
+- Use IPI (Inter-Processor Interrupt) to interrupt threads on other cores
+- IPI handler checks if thread is at safepoint, if not sets pending flag
+- Thread checks pending flag on next safepoint or kernel entry/exit
+- For kernel threads: ensure kernel code has periodic safepoint checks
+
+Reference: [Thread suspension review](https://github.com/dotnet/runtime/issues/73655)
+
+#### Write Barriers (Verified)
+The compiler emits calls to write barrier helpers when storing references to heap locations.
+
+**Functions:**
+- `RhpAssignRef(void** dst, void* ref)` - Unchecked write barrier
+- `RhpCheckedAssignRef(void** dst, void* ref)` - Checked (validates dst in heap)
+
+**Current implementation:** Simple pointer store (sufficient for mark-sweep)
+```csharp
+public static unsafe void RhpAssignRef(void** dst, void* r) { *dst = r; }
+```
+
+**Full implementation (for generational GC):**
+1. Write reference: `mov [rcx], rdx`
+2. Check if ref points to ephemeral generation (`g_ephemeral_low` to `g_ephemeral_high`)
+3. If yes, update card table: `shr rcx, 11; mov byte [rcx + g_card_table], 0xFF`
+
+**Card table:** Divides heap into 2KB cards (2^11 bytes). Each byte in card table represents
+one card. Value 0xFF means "this card contains refs to ephemeral objects - scan during minor GC".
+
+Reference: [WriteBarriers.asm in CoreRT](https://github.com/dotnet/corert/blob/master/src/Native/Runtime/amd64/WriteBarriers.asm)
+
+#### MethodTable Flags (Verified)
+Key flags in `MethodTable._usFlags` for GC:
+- `HasPointersFlag = 0x01000000` - Type contains GC references (GCDesc present)
+- `HasFinalizerFlag = 0x00100000` - Type requires finalization
+- `CollectibleFlag = 0x00200000` - For collectible assemblies
+- `HasCriticalFinalizerFlag = 0x0002` (extended) - Critical finalizer ordering
+
+#### Finalization (Deferred)
+Not needed for initial GC. When implemented:
+- Track finalizable objects in separate queue during allocation
+- On collection, move unreachable finalizable objects to "f-reachable" queue
+- Finalizer thread processes f-reachable queue
+- `GC.SuppressFinalize` sets bit in object header to skip finalization
+
+Reference: [Finalization Implementation Details](https://devblogs.microsoft.com/dotnet/finalization-implementation-details/)
+
+#### Weak References / GCHandle (Deferred)
+Not needed for initial GC. When implemented:
+- `RhHandleAlloc(object, GCHandleType)` - Allocate handle
+- `RhHandleGet/Set` - Access handle target
+- Handle types: Weak, WeakTrackResurrection, Normal, Pinned
+- Handle table scanned as roots, weak handles cleared when target unreachable
+
+#### Allocation Context (Verified)
+NativeAOT uses per-thread bump allocation:
+
+**Thread allocation context:**
+```csharp
+struct AllocationContext {
+    void* alloc_ptr;    // Current bump pointer
+    void* alloc_limit;  // End of current allocation region
+}
+```
+
+**RhpNewFast fast path:**
+1. Read `base_size` from MethodTable
+2. `new_ptr = alloc_ptr + base_size`
+3. If `new_ptr <= alloc_limit`: update `alloc_ptr`, return old ptr
+4. Else: call `RhpGcAlloc` slow path (may trigger GC)
+
+**Our initial implementation:** Can use simple bump allocator from a GC heap region.
+When region exhausted, trigger collection or allocate new region.
 
 ### Deliverables
-- [ ] GC heap allocation
+- [ ] Object header implementation
+- [ ] GCDesc parsing and reference enumeration
+- [ ] Static roots enumeration (GCStaticRegion parsing)
+- [ ] Stack map parsing and stack root enumeration
+- [ ] GC heap allocation (separate from kernel heap)
 - [ ] Mark-sweep collection
 - [ ] Runtime exports working
 

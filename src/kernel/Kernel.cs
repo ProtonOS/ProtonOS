@@ -7,6 +7,7 @@ using Kernel.PAL;
 using Kernel.Memory;
 using Kernel.Threading;
 using Kernel.Platform;
+using Kernel.Runtime;
 
 namespace Kernel;
 
@@ -31,6 +32,10 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ulong)systemTable->BootServices);
         }
         DebugConsole.WriteLine();
+
+        // Initialize ReadyToRun info (must be before anything needing runtime metadata)
+        ReadyToRunInfo.Init();
+        ReadyToRunInfo.DumpSections();
 
         // Initialize page allocator (requires UEFI boot services)
         PageAllocator.Init();
@@ -69,6 +74,12 @@ public static unsafe class Kernel
         // Test exception handling
         TestExceptionHandling();
 
+        // Test GC static root - store an object in static field
+        _gcTestObject = new object();
+        DebugConsole.Write("[GC] Static object test: ");
+        DebugConsole.WriteHex((ulong)System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!));
+        DebugConsole.WriteLine();
+
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
 
@@ -88,6 +99,10 @@ public static unsafe class Kernel
 
     // Shared TLS slot for testing
     private static uint _testTlsSlot;
+
+    // Static object reference - causes NativeAOT to emit GCStatic region
+    // Used for GC root testing (verified: creates __GCSTATICS, __GCStaticEEType, __GCStaticRegion)
+    private static object? _gcTestObject;
 
     // Shared critical section and condition variable for testing
     private static CriticalSection _testCS;
