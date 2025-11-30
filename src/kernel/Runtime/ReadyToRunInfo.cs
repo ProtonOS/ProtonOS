@@ -358,6 +358,9 @@ public static unsafe class ReadyToRunInfo
 
         // Also dump GCInfo samples
         GCInfoHelper.DumpSamples(_imageBase);
+
+        // Run comprehensive validation
+        GCInfoHelper.ValidateComprehensive(_imageBase);
     }
 
     /// <summary>

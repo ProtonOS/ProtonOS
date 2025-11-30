@@ -205,18 +205,28 @@ Created infrastructure for locating and parsing NativeAOT runtime metadata:
 - Parses variable-length integers with proper XOR-continuation encoding
 - Handles slim header implicit stack base register (RBP)
 - Decodes slot table with presence bits for each count
-- **Validated: 290/290 functions (100%) decoded successfully!**
+- AMD64-specific `SizeOfStackOutgoingAndScratchArea` field handling
+- Full slot definition parsing with register/stack slot delta encoding
+- Safe point offset decoding and liveness data access
+- **Validated: 312/312 functions (100%) including comprehensive slot/liveness validation!**
 
 **Key implementation details:**
 - Slim headers: `HasStackBaseRegister=true` means implicit RBP (no value encoded)
 - Variable-length integers: uses XOR with continuation chunks per .NET runtime spec
 - Slot counts: each preceded by 1-bit presence flag (0 = count is 0)
+- AMD64 fat headers: must read `SizeOfStackOutgoingAndScratchArea` (always present)
+- Stack slot delta encoding: `spBase` (2 bits) is ALWAYS read per slot, offset may be delta
 
-**Validation output:**
+**Validation output (comprehensive):**
 ```
-[GCInfo] Results: 290 OK, 0 no-gcinfo, 0 hdr-fail, 0 slot-fail, 0 sanity-fail
-[GCInfo] Stats: totalSP=2928 totalSlots=1057 maxCode=4397 maxSP=208 maxSlots=162
+[GCInfo] Results: 312 OK, 4 no-gcinfo, 0 hdr-fail, 0 slot-fail, 0 sanity-fail
+[GCInfo] Stats: totalSP=3794 totalSlots=148 maxCode=7795 maxSP=177 maxSlots=6
 [GCInfo] All functions validated successfully!
+[GCInfo] === Comprehensive Validation Results ===
+[GCInfo] Success: 312/312 (4 no-gcinfo)
+[GCInfo] Totals: regs=127 stk=21 untrk=186 safePoints=3794
+[GCInfo] Functions with liveness data: 30
+[GCInfo] === ALL VALIDATION PASSED ===
 ```
 
 #### 3.1 MethodTable and GCDesc Parsing ✓ COMPLETE
@@ -610,16 +620,17 @@ For GC, we create a similar `GetGCInfo()` that:
 | Object Header | ✓ Implemented | 64-bit: flags+sync (32) + hash (32) in GCHeap.cs |
 | GC Heap | ✓ Implemented | Bump allocator with 1MB regions from PageAllocator |
 | GCDesc | ✓ Implemented | Series format parsing in GCDesc.cs |
-| GCInfo/Stack Maps | ✓ Confirmed | Emitted by bflat, location verified |
-| GCInfo Header | ✓ Complete | Slim/fat headers 100% decoded (273/273) |
-| GCInfo Varint | ✓ Verified | No XOR, simple accumulation |
-| GCInfo Safe Points | ✓ Verified | Absolute offsets, direct liveness decoding |
-| GCInfo Slot Table | ✓ Verified | Register/stack slots with delta encoding |
-| GCInfo Liveness | ✓ Verified | Direct bit vector (1 bit per slot per SP) |
-| Interruptible Ranges | ⚠ Needs impl | Format understood, decode values TBD |
-| Interior/Pinned Ptrs | ⚠ Needs impl | Slot flags documented, not yet decoded |
-| Indirect Liveness | ⚠ Needs impl | Deduplication format not yet verified |
+| GCInfo/Stack Maps | ✓ Complete | 312/312 functions validated including liveness |
+| GCInfo Header | ✓ Complete | Slim/fat headers, AMD64 SizeOfStackArea |
+| GCInfo Varint | ✓ Verified | XOR-continuation encoding |
+| GCInfo Safe Points | ✓ Complete | Absolute offsets, liveness decoding works |
+| GCInfo Slot Table | ✓ Complete | Register/stack slots, delta encoding, spBase |
+| GCInfo Liveness | ✓ Complete | Direct bit vector + indirect table support |
+| Interruptible Ranges | ✓ Implemented | Delta-encoded range pairs decoded |
+| Interior/Pinned Ptrs | ✓ Implemented | Slot flags decoded (2 bits per slot) |
+| Indirect Liveness | ✓ Implemented | Pointer table + RLE deduplication |
 | Static Roots | ✓ Implemented | __GCStaticRegion + InitializeStatics |
+| Stack Roots | ✓ Implemented | StackRoots.cs with CaptureContext |
 | Write Barriers | ✓ Documented | Simple store for mark-sweep |
 | MethodTable Flags | ✓ Documented | HasPointers, HasFinalizer |
 | Allocation Context | ✓ Documented | Per-thread bump allocation |

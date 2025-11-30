@@ -936,3 +936,72 @@ RhpCallFinallyFunclet:
     ; rdx already has frame pointer
     call rax                ; call funclet (it returns)
     ret
+
+;; ==================== Context Capture for GC ====================
+;; Captures current thread context for GC stack root enumeration
+
+; void capture_context(ExceptionContext* context)
+; Captures all registers into the provided ExceptionContext structure.
+; Windows x64 ABI: context pointer in rcx
+; ExceptionContext layout (offsets in bytes):
+;   0x00: Rip
+;   0x08: Rsp
+;   0x10: Rbp
+;   0x18: Rflags
+;   0x20: Rax
+;   0x28: Rbx
+;   0x30: Rcx
+;   0x38: Rdx
+;   0x40: Rsi
+;   0x48: Rdi
+;   0x50: R8
+;   0x58: R9
+;   0x60: R10
+;   0x68: R11
+;   0x70: R12
+;   0x78: R13
+;   0x80: R14
+;   0x88: R15
+;   0x90: Cs
+;   0x92: Ss
+global capture_context
+capture_context:
+    ; Rip = return address (instruction after call)
+    mov rax, [rsp]
+    mov [rcx + 0x00], rax
+
+    ; Rsp = caller's RSP (after return address)
+    lea rax, [rsp + 8]
+    mov [rcx + 0x08], rax
+
+    ; Rbp
+    mov [rcx + 0x10], rbp
+
+    ; Rflags
+    pushfq
+    pop rax
+    mov [rcx + 0x18], rax
+
+    ; General purpose registers
+    mov [rcx + 0x20], rax   ; Rax (has flags, but that's fine - caller didn't rely on it)
+    mov [rcx + 0x28], rbx
+    mov [rcx + 0x30], rcx   ; Rcx (context pointer, but we're done with it)
+    mov [rcx + 0x38], rdx
+    mov [rcx + 0x40], rsi
+    mov [rcx + 0x48], rdi
+    mov [rcx + 0x50], r8
+    mov [rcx + 0x58], r9
+    mov [rcx + 0x60], r10
+    mov [rcx + 0x68], r11
+    mov [rcx + 0x70], r12
+    mov [rcx + 0x78], r13
+    mov [rcx + 0x80], r14
+    mov [rcx + 0x88], r15
+
+    ; Segment registers
+    mov ax, cs
+    mov [rcx + 0x90], ax
+    mov ax, ss
+    mov [rcx + 0x92], ax
+
+    ret

@@ -96,6 +96,9 @@ public static unsafe class Kernel
         // Test static roots enumeration
         StaticRoots.DumpStaticRoots();
 
+        // Test stack root enumeration - pass in an object to ensure there's a root on the stack
+        TestStackRoots(_gcTestObject!);
+
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
 
@@ -136,6 +139,33 @@ public static unsafe class Kernel
     private static bool _exceptionCaught;
     private static uint _caughtExceptionCode;
     private static int _rethrowPassCount;
+
+    /// <summary>
+    /// Test stack root enumeration with a managed object on the stack.
+    /// The object parameter ensures there's a GC root that should be found.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void TestStackRoots(object obj)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[StackRoots] Testing with object on stack...");
+
+        nint objAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref obj);
+        DebugConsole.Write("[StackRoots] Object param at 0x");
+        DebugConsole.WriteHex((ulong)objAddr);
+        DebugConsole.WriteLine();
+
+        // Dump stack roots - should find the 'obj' parameter
+        StackRoots.DumpStackRoots();
+
+        // Keep obj alive past the enumeration
+        if (obj != null)
+        {
+            DebugConsole.Write("[StackRoots] Object still at 0x");
+            DebugConsole.WriteHex((ulong)objAddr);
+            DebugConsole.WriteLine();
+        }
+    }
 
     /// <summary>
     /// Test exception handling with try/catch/throw
