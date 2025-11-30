@@ -38,6 +38,10 @@ public static unsafe class StackRoots
             return 0;
 
         int totalRoots = 0;
+        int totalFrames = 0;
+        int framesWithSlots = 0;
+        int liveSlotsChecked = 0;
+        int slotsInHeap = 0;
         ExceptionContext walkContext = *context;
         int maxFrames = 100; // Safety limit
 
@@ -57,33 +61,55 @@ public static unsafe class StackRoots
                 byte* gcInfo = GCInfoHelper.GetGCInfo(imageBase, unwindInfo);
 
                 // Debug: show frame info (first few frames only)
-                if (frameIndex < 5)
-                {
-                    DebugConsole.Write("  Frame ");
-                    DebugConsole.WriteDecimal((uint)frameIndex);
-                    DebugConsole.Write(": RIP=0x");
-                    DebugConsole.WriteHex(walkContext.Rip);
-                    DebugConsole.Write(" offset=");
-                    DebugConsole.WriteDecimal(codeOffset);
-                    DebugConsole.Write(" gcInfo=");
-                    DebugConsole.WriteHex((ulong)gcInfo);
-                    DebugConsole.Write(" uwFlags=0x");
-                    DebugConsole.WriteHex(unwindInfo->Flags);
-                    DebugConsole.Write(" uwCodes=");
-                    DebugConsole.WriteDecimal(unwindInfo->CountOfUnwindCodes);
-                    DebugConsole.WriteLine();
-                }
+                // Disabled verbose output - too much noise
+                // if (frameIndex < 5) { ... }
 
                 if (gcInfo != null)
                 {
+                    totalFrames++;
+
+                    // Compute CallerSP by virtually unwinding a copy of the context
+                    // CallerSP = the RSP value after unwinding this frame completely
+                    ExceptionContext unwoundContext = walkContext;
+                    ulong callerSP;
+                    if (ExceptionHandling.VirtualUnwind(&unwoundContext, null))
+                    {
+                        callerSP = unwoundContext.Rsp;
+                    }
+                    else
+                    {
+                        // Can't unwind - use RSP + 8 as fallback (return address)
+                        callerSP = walkContext.Rsp + 8;
+                    }
+
                     // Enumerate live slots at this code offset
                     int frameRoots = EnumerateFrameRoots(
                         gcInfo,
                         codeOffset,
                         &walkContext,
+                        callerSP,
                         callback,
                         callbackContext,
-                        frameIndex < 5); // Pass debug flag for first few frames
+                        false, // Disable verbose debug
+                        out int numSlots,
+                        out int numLive,
+                        out int numHeap);
+
+                    if (numSlots > 0) framesWithSlots++;
+                    liveSlotsChecked += numLive;
+                    slotsInHeap += numHeap;
+
+                    // Print when we find roots
+                    if (frameRoots > 0)
+                    {
+                        DebugConsole.Write("  [StackRoot] Frame ");
+                        DebugConsole.WriteDecimal((uint)frameIndex);
+                        DebugConsole.Write(" offset=");
+                        DebugConsole.WriteDecimal(codeOffset);
+                        DebugConsole.Write(": ");
+                        DebugConsole.WriteDecimal((uint)frameRoots);
+                        DebugConsole.WriteLine(" root(s)");
+                    }
                     totalRoots += frameRoots;
                 }
 
@@ -105,63 +131,59 @@ public static unsafe class StackRoots
             }
         }
 
+        // Print summary for current thread
+        DebugConsole.Write("  [Stack] ");
+        DebugConsole.WriteDecimal((uint)totalFrames);
+        DebugConsole.Write(" frames, ");
+        DebugConsole.WriteDecimal((uint)framesWithSlots);
+        DebugConsole.Write(" with slots, ");
+        DebugConsole.WriteDecimal((uint)liveSlotsChecked);
+        DebugConsole.Write(" live, ");
+        DebugConsole.WriteDecimal((uint)slotsInHeap);
+        DebugConsole.WriteLine(" in heap");
+
         return totalRoots;
     }
 
     /// <summary>
     /// Enumerate GC roots in a single stack frame.
     /// </summary>
+    /// <param name="callerSP">The stack pointer of the caller (RSP after unwinding this frame)</param>
     private static int EnumerateFrameRoots(
         byte* gcInfo,
         uint codeOffset,
         ExceptionContext* context,
+        ulong callerSP,
         delegate*<void**, void*, void> callback,
         void* callbackContext,
-        bool debug = false)
+        bool debug,
+        out int numSlots,
+        out int numLive,
+        out int numHeap)
     {
+        numSlots = 0;
+        numLive = 0;
+        numHeap = 0;
+
         var decoder = new GCInfoDecoder(gcInfo);
 
         if (!decoder.DecodeHeader(debug))
-        {
-            if (debug) DebugConsole.WriteLine("    -> DecodeHeader failed");
             return 0;
-        }
 
         if (!decoder.DecodeSlotTable())
-        {
-            if (debug) DebugConsole.WriteLine("    -> DecodeSlotTable failed");
             return 0;
-        }
 
-        if (debug)
-        {
-            DebugConsole.Write("    -> regs=");
-            DebugConsole.WriteDecimal(decoder.NumRegisters);
-            DebugConsole.Write(" stk=");
-            DebugConsole.WriteDecimal(decoder.NumStackSlots);
-            DebugConsole.Write(" safePoints=");
-            DebugConsole.WriteDecimal(decoder.NumSafePoints);
-            DebugConsole.WriteLine();
-        }
+        numSlots = (int)decoder.NumTrackedSlots;
 
         // If no tracked slots, nothing to report
         if (decoder.NumTrackedSlots == 0)
             return 0;
 
         if (!decoder.DecodeSlotDefinitionsAndSafePoints(debug))
-        {
-            if (debug) DebugConsole.WriteLine("    -> DecodeSlotDefinitionsAndSafePoints failed");
             return 0;
-        }
 
         // Find safe point for this code offset
         uint safePointIndex = decoder.FindSafePointIndex(codeOffset);
-        if (debug)
-        {
-            DebugConsole.Write("    -> safePointIndex=");
-            DebugConsole.WriteDecimal(safePointIndex);
-            DebugConsole.WriteLine();
-        }
 
         if (safePointIndex >= decoder.NumSafePoints)
             return 0; // Not at a safe point
@@ -173,54 +195,56 @@ public static unsafe class StackRoots
         {
             bool isLive = decoder.IsSlotLiveAtSafePoint(safePointIndex, slotIndex);
 
-            if (debug)
-            {
-                GCSlot slotInfo = decoder.GetSlot(slotIndex);
-                DebugConsole.Write("    -> slot ");
-                DebugConsole.WriteDecimal(slotIndex);
-                DebugConsole.Write(" live=");
-                DebugConsole.Write(isLive ? "Y" : "N");
-                DebugConsole.Write(" isReg=");
-                DebugConsole.Write(slotInfo.IsRegister ? "Y" : "N");
-                if (slotInfo.IsRegister)
-                {
-                    DebugConsole.Write(" reg=");
-                    DebugConsole.WriteDecimal(slotInfo.RegisterNumber);
-                }
-                else
-                {
-                    DebugConsole.Write(" off=");
-                    DebugConsole.WriteDecimal((uint)slotInfo.StackOffset);
-                }
-                DebugConsole.WriteLine();
-            }
-
             if (!isLive)
                 continue;
 
+            numLive++;
             GCSlot slot = decoder.GetSlot(slotIndex);
 
             // Compute the address of this slot
-            void** slotAddress = GetSlotAddress(&slot, context, decoder.StackBaseRegister);
+            void** slotAddress = GetSlotAddress(&slot, context, callerSP, decoder.StackBaseRegister);
 
             if (slotAddress != null)
             {
                 // Only report if it actually points to something in the GC heap
                 void* objRef = *slotAddress;
-                if (debug)
+                if (objRef != null && GCHeap.IsInHeap(objRef))
                 {
-                    DebugConsole.Write("      addr=0x");
+                    numHeap++;
+                    callback(slotAddress, callbackContext);
+                    rootCount++;
+                }
+                else if (objRef != null)
+                {
+                    // Debug: print live slot not in heap with slot details
+                    DebugConsole.Write("    [NotInHeap] slot=");
+                    DebugConsole.WriteDecimal(slotIndex);
+                    if (slot.IsRegister)
+                    {
+                        DebugConsole.Write(" REG=");
+                        DebugConsole.WriteDecimal(slot.RegisterNumber);
+                    }
+                    else
+                    {
+                        DebugConsole.Write(" STK base=");
+                        DebugConsole.WriteDecimal((uint)slot.StackBase);
+                        DebugConsole.Write(" off=");
+                        // Print signed offset
+                        if (slot.StackOffset < 0)
+                        {
+                            DebugConsole.Write("-");
+                            DebugConsole.WriteDecimal((uint)(-slot.StackOffset));
+                        }
+                        else
+                        {
+                            DebugConsole.WriteDecimal((uint)slot.StackOffset);
+                        }
+                    }
+                    DebugConsole.Write(" addr=0x");
                     DebugConsole.WriteHex((ulong)slotAddress);
                     DebugConsole.Write(" val=0x");
                     DebugConsole.WriteHex((ulong)objRef);
-                    DebugConsole.Write(" inHeap=");
-                    DebugConsole.Write(objRef != null && GCHeap.IsInHeap(objRef) ? "Y" : "N");
                     DebugConsole.WriteLine();
-                }
-                if (objRef != null && GCHeap.IsInHeap(objRef))
-                {
-                    callback(slotAddress, callbackContext);
-                    rootCount++;
                 }
             }
         }
@@ -231,7 +255,8 @@ public static unsafe class StackRoots
     /// <summary>
     /// Compute the address of a GC slot given the current context.
     /// </summary>
-    private static void** GetSlotAddress(GCSlot* slot, ExceptionContext* context, int stackBaseRegister)
+    /// <param name="callerSP">The stack pointer of the caller (RSP after unwinding this frame)</param>
+    private static void** GetSlotAddress(GCSlot* slot, ExceptionContext* context, ulong callerSP, int stackBaseRegister)
     {
         if (slot->IsRegister)
         {
@@ -249,10 +274,9 @@ public static unsafe class StackRoots
                     baseAddr = context->Rsp;
                     break;
                 case GCSlotBase.CallerSP:
-                    // Relative to caller's RSP (RSP + frame size)
-                    // This is tricky - for now, treat as RSP-relative
-                    // In practice, the offset should account for this
-                    baseAddr = context->Rsp;
+                    // Relative to caller's RSP (the SP value after unwinding this frame)
+                    // CallerSP is the value of RSP in the caller before it made the call
+                    baseAddr = callerSP;
                     break;
                 case GCSlotBase.FramePointer:
                     // Relative to frame pointer (RBP or other)
@@ -270,8 +294,10 @@ public static unsafe class StackRoots
                     return null;
             }
 
-            // Stack offsets are already denormalized to bytes in GCInfo decoder
-            return (void**)(baseAddr + (ulong)slot->StackOffset);
+            // Stack offsets are signed and already denormalized to bytes in GCInfo decoder
+            // Important: We need signed arithmetic here since offsets can be negative (above RSP)
+            long signedOffset = slot->StackOffset;
+            return (void**)((long)baseAddr + signedOffset);
         }
     }
 

@@ -178,10 +178,14 @@ Implemented full NativeAOT-compatible exception handling:
 
 ---
 
-## Phase 3: Garbage Collector (In Progress)
+## Phase 3: Garbage Collector ✓ COMPLETE (Mark Phase)
 
 ### Goal
 Implement mark-sweep GC for managed heap, designed to evolve into generational GC.
+
+### Status
+Mark phase is fully operational with stop-the-world collection, static roots, and stack roots.
+Sweep phase is deferred (TODO marker in code).
 
 ### Progress
 
@@ -219,13 +223,13 @@ Created infrastructure for locating and parsing NativeAOT runtime metadata:
 
 **Validation output (comprehensive):**
 ```
-[GCInfo] Results: 312 OK, 4 no-gcinfo, 0 hdr-fail, 0 slot-fail, 0 sanity-fail
-[GCInfo] Stats: totalSP=3794 totalSlots=148 maxCode=7795 maxSP=177 maxSlots=6
+[GCInfo] Results: 331 OK, 4 no-gcinfo, 0 hdr-fail, 0 slot-fail, 0 sanity-fail
+[GCInfo] Stats: totalSP=3866 totalSlots=171 maxCode=7795 maxSP=177 maxSlots=6
 [GCInfo] All functions validated successfully!
 [GCInfo] === Comprehensive Validation Results ===
-[GCInfo] Success: 312/312 (4 no-gcinfo)
-[GCInfo] Totals: regs=127 stk=21 untrk=186 safePoints=3794
-[GCInfo] Functions with liveness data: 30
+[GCInfo] Success: 331/331 (4 no-gcinfo)
+[GCInfo] Totals: regs=145 stk=26 untrk=197 safePoints=3866
+[GCInfo] Functions with liveness data: 34
 [GCInfo] === ALL VALIDATION PASSED ===
 ```
 
@@ -361,6 +365,7 @@ High 32 bits:
 #### 3.3 GC Heap ✓ COMPLETE
 
 Implemented separate GC heap with proper object headers in `src/kernel/Memory/GCHeap.cs`.
+Static root objects now allocated from GCHeap so GC can find and mark them.
 
 **Features:**
 - Bump allocator within contiguous 1MB regions obtained from PageAllocator
@@ -407,6 +412,68 @@ static void* RhpNewArray(MethodTable* mt, int length);
 [RuntimeExport("RhpAssignRef")]
 static void RhpAssignRef(void** dst, void* src);
 ```
+
+#### 3.5 Stack Root Enumeration ✓ COMPLETE
+
+Implemented precise stack root enumeration using GCInfo liveness data in `src/kernel/x64/StackRoots.cs`.
+
+**Features:**
+- Walks stack frames using RUNTIME_FUNCTION and VirtualUnwind
+- Decodes GCInfo for each frame to find safe point and slot liveness
+- Supports all three slot base types:
+  - `GC_SP_REL` - Relative to current RSP
+  - `GC_CALLER_SP_REL` - Relative to caller's SP (computed via VirtualUnwind)
+  - `GC_FRAMEREG_REL` - Relative to frame pointer (RBP or custom)
+- Handles register slots (callee-saved registers in context)
+- Proper signed offset arithmetic for negative stack offsets
+
+**CallerSP Handling:**
+For CallerSP-relative slots, we compute CallerSP by virtually unwinding a copy of the context
+before enumerating each frame's roots. CallerSP = RSP value after unwinding the current frame.
+
+**Validation:**
+```
+[GC] Walking stack from RIP=0x... RSP=0x...
+  [StackRoot] Frame 4 offset=53: 1 root(s)
+  [Stack] 9 frames, 4 with slots, 1 live, 1 in heap
+[GC] Current thread: 1 stack roots
+```
+
+#### 3.6 Mark Phase GarbageCollector ✓ COMPLETE
+
+Implemented full mark phase with stop-the-world collection in `src/kernel/Memory/GarbageCollector.cs`.
+
+**Features:**
+- Stop-the-world thread suspension using Scheduler
+- Mark bit storage in object headers (bit 0)
+- Iterative marking with explicit work stack (avoids recursion overflow)
+- Root enumeration:
+  - Static roots from GCStaticRegion via `StaticRoots.EnumerateStaticRoots`
+  - Stack roots from all threads via `StackRoots.EnumerateStackRoots`
+- Transitive closure via GCDesc reference enumeration
+
+**Mark Phase Algorithm:**
+1. Stop the world (disable scheduling, suspend all threads except GC thread)
+2. Clear all mark bits on heap objects
+3. Enumerate roots: static roots + stack roots from all threads
+4. For each root, mark object and push to work stack
+5. Process work stack: for each object, traverse references via GCDesc, mark and push
+6. Resume the world
+
+**Test Results:**
+```
+[GC] Starting collection #1...
+[GC] Stopping the world...
+[GC] Cleared marks on 7 objects in 1 region(s)
+[GC] Current thread: 1 stack roots
+[GC] Mark phase complete: 2 roots, 2 objects marked
+[GC] Resuming the world...
+[GC Test] Stack object marked: YES
+[GC Test] Static object marked: YES
+[GC Test] Total marked: 2 objects
+```
+
+**Sweep Phase:** Deferred (TODO in code). Mark phase correctly identifies all reachable objects.
 
 ### MethodTable and GCDesc
 
@@ -1113,13 +1180,14 @@ struct AllocationContext {
 When region exhausted, trigger collection or allocate new region.
 
 ### Deliverables
-- [ ] Object header implementation
-- [ ] GCDesc parsing and reference enumeration
-- [ ] Static roots enumeration (GCStaticRegion parsing)
-- [ ] Stack map parsing and stack root enumeration
-- [ ] GC heap allocation (separate from kernel heap)
-- [ ] Mark-sweep collection
-- [ ] Runtime exports working
+- [x] Object header implementation (8-byte header with mark bit, sync index, hash)
+- [x] GCDesc parsing and reference enumeration (GCDescHelper.EnumerateReferences)
+- [x] Static roots enumeration (GCStaticRegion parsing + InitializeStatics)
+- [x] Stack map parsing and stack root enumeration (GCInfo decoder + StackRoots)
+- [x] GC heap allocation (GCHeap.cs - separate from kernel heap)
+- [x] Mark phase (GarbageCollector.cs - stop-the-world, multi-thread)
+- [ ] Sweep phase (TODO - free unmarked objects)
+- [x] Runtime exports working (RhpNewFast uses GCHeap)
 
 ---
 
@@ -1353,7 +1421,7 @@ AssemblyLoader.AddSearchPath("\\EFI\\assemblies\\");
 |-------|-------------|------------|----------------|
 | 1 ✓ | Fork zerolib → netlib | Low | Build system works |
 | 2 ✓ | Exception support | Low-Medium | Error handling |
-| 3 | Mark-Sweep GC | High | Managed heap works |
+| 3 ✓ | Mark-Sweep GC (mark phase) | High | Managed heap works, roots found |
 | 4 | Bootstrap assembly loader | High | Can read PE/metadata |
 | 5 | IL Interpreter | High | Can execute loaded code |
 | 6 | Load BCL assemblies | Medium | Runtime compatibility |

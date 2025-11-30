@@ -23,6 +23,12 @@ public static unsafe class StaticRoots
     /// Enumerate all static GC roots.
     /// </summary>
     /// <param name="callback">Called for each static root with pointer to the object reference slot.</param>
+    /// <remarks>
+    /// After InitializeStatics runs, each static block contains a pointer to a "static holder"
+    /// object that holds all static fields for a type. The holder's MethodTable has GCDesc
+    /// metadata describing which fields contain GC references. We enumerate those reference
+    /// fields and report them as roots.
+    /// </remarks>
     public static void EnumerateStaticRoots(delegate*<void**, void> callback)
     {
         if (!ReadyToRunInfo.GetGCStaticRegion(out void* start, out void* end))
@@ -31,26 +37,38 @@ public static unsafe class StaticRoots
             return;
         }
 
-        // The region is an array of pointers to static GC blocks
-        // Each pointer points to a StaticGcDesc which describes a set of static fields
-        void** current = (void**)start;
-        void** regionEnd = (void**)end;
+        // The GCStaticRegion uses relative pointers (int32 offsets)
+        // Each entry is a 4-byte relative pointer to a "static block"
+        int* current = (int*)start;
+        int* regionEnd = (int*)end;
 
         while (current < regionEnd)
         {
-            void* staticBlock = *current;
-            if (staticBlock != null)
+            int relOffset = *current;
+            if (relOffset != 0)
             {
-                // The static block pointer points to a location that may contain:
-                // - A direct object reference (most common for single field)
-                // - A structure with multiple object references
-                //
-                // For NativeAOT, each entry in GCStaticRegion is a pointer to a
-                // "GC static cell" - a memory location holding one or more object refs.
-                //
-                // The simplest form: each entry is a pointer to a single object reference slot.
-                // The static field address IS the cell address.
-                callback((void**)staticBlock);
+                // Relative pointer: target = &relOffset + relOffset
+                nint* pBlock = (nint*)((byte*)current + relOffset);
+
+                // The block value contains either:
+                // - An uninitialized marker (low bit set) with relative EEType pointer
+                // - An initialized pointer to a "static holder" object
+                nint blockValue = *pBlock;
+
+                const nint Uninitialized = 1;
+                if ((blockValue & Uninitialized) == 0 && blockValue != 0)
+                {
+                    // Initialized - blockValue is a pointer to the static holder object
+                    void* holderObj = (void*)blockValue;
+
+                    // Get the holder's MethodTable to enumerate its reference fields
+                    MethodTable* mt = *(MethodTable**)holderObj;
+                    if (mt != null && mt->HasPointers)
+                    {
+                        // Use GCDesc to enumerate reference fields in the holder
+                        GCDescHelper.EnumerateReferences(holderObj, mt, callback);
+                    }
+                }
             }
             current++;
         }

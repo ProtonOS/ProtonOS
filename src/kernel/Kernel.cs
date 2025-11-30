@@ -65,6 +65,9 @@ public static unsafe class Kernel
         // Initialize static GC fields (must be after GC heap, before using any static object fields)
         InitializeStatics.Init();
 
+        // Initialize garbage collector (must be after GCHeap and PageAllocator)
+        GarbageCollector.Init();
+
         // Test GCDesc with heap-allocated object that has references
         GCDescHelper.TestWithHeapObject();
 
@@ -98,6 +101,9 @@ public static unsafe class Kernel
 
         // Test stack root enumeration - pass in an object to ensure there's a root on the stack
         TestStackRoots(_gcTestObject!);
+
+        // Initialize and test garbage collector
+        TestGarbageCollector();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
@@ -165,6 +171,99 @@ public static unsafe class Kernel
             DebugConsole.WriteHex((ulong)objAddr);
             DebugConsole.WriteLine();
         }
+    }
+
+    /// <summary>
+    /// Test the garbage collector mark phase.
+    /// </summary>
+    private static void TestGarbageCollector()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[GC Test] Testing garbage collector...");
+
+        if (!GarbageCollector.IsInitialized)
+        {
+            DebugConsole.WriteLine("[GC Test] SKIPPED: GC not initialized");
+            return;
+        }
+
+        // Create a test object and pass it through a call chain
+        // This ensures the compiler tracks it as a GC root at call sites
+        var testObj = new object();
+        nint testAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref testObj);
+
+        DebugConsole.Write("[GC Test] Test object at 0x");
+        DebugConsole.WriteHex((ulong)testAddr);
+        DebugConsole.WriteLine();
+
+        // Call helper that triggers GC while keeping testObj alive
+        int markedCount = TestGCWithStackRoot(testObj);
+
+        // Verify the object is marked
+        bool objMarked = GarbageCollector.IsObjectMarked((void*)testAddr);
+        DebugConsole.Write("[GC Test] Stack object marked: ");
+        DebugConsole.WriteLine(objMarked ? "YES" : "NO");
+
+        // Also check the static test object
+        if (_gcTestObject != null)
+        {
+            nint staticAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!);
+            bool staticMarked = GarbageCollector.IsObjectMarked((void*)staticAddr);
+            DebugConsole.Write("[GC Test] Static object marked: ");
+            DebugConsole.WriteLine(staticMarked ? "YES" : "NO");
+        }
+
+        DebugConsole.Write("[GC Test] Total marked: ");
+        DebugConsole.WriteDecimal((uint)markedCount);
+        DebugConsole.WriteLine(" objects");
+
+        // Keep object alive
+        if (testObj != null)
+        {
+            DebugConsole.WriteLine("[GC Test] Test complete");
+        }
+    }
+
+    /// <summary>
+    /// Helper to trigger GC while an object is live on the caller's stack.
+    /// NoInlining ensures this is a separate stack frame with a call site.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static int TestGCWithStackRoot(object liveObject)
+    {
+        // At this call site, liveObject should be tracked as a GC root
+        // in the caller's frame (TestGarbageCollector)
+        DebugConsole.WriteLine("[GC Test] Triggering GC with stack root...");
+
+        // Call a nested helper to add more call depth
+        int result = TriggerGCAndReturnCount(liveObject);
+
+        // Use liveObject after GC to ensure it's kept alive
+        if (liveObject != null)
+        {
+            nint addr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref liveObject);
+            DebugConsole.Write("[GC Test] Object still at 0x");
+            DebugConsole.WriteHex((ulong)addr);
+            DebugConsole.WriteLine();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Actually trigger the GC. Called from TestGCWithStackRoot.
+    /// At the call to this function, liveObject in the caller is definitely live.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static int TriggerGCAndReturnCount(object liveObject)
+    {
+        // The 'liveObject' parameter should be tracked in THIS frame across the GC call
+        int result = GarbageCollector.Collect();
+
+        // Force usage after GC
+        System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref liveObject);
+
+        return result;
     }
 
     /// <summary>

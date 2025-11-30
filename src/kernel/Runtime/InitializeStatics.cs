@@ -102,10 +102,11 @@ public static unsafe class InitializeStatics
                 }
 
                 // Allocate the static object using the base size from MethodTable
+                // IMPORTANT: Allocate from GCHeap so GC can find and mark these objects!
                 uint objectSize = mt->BaseSize;
                 if (objectSize < 24) objectSize = 24; // Minimum object size (MT* + sync block)
 
-                void* obj = HeapAllocator.AllocZeroed(objectSize);
+                void* obj = GCHeap.AllocZeroed(objectSize);
                 if (obj == null)
                 {
                     DebugConsole.WriteLine("[InitStatics] Failed to allocate static object!");

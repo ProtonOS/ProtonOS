@@ -768,12 +768,25 @@ public unsafe struct GCInfoDecoder
             // Remember where the pointer table starts
             _pointerTableBitPosition = _bitPosition;
 
-            // Skip the pointer table - it has numSafePoints entries of _liveSlotPointerBits bits each
-            _bitPosition += (int)(numSafePoints * (uint)_liveSlotPointerBits);
-        }
+            // Calculate where live states data starts - BYTE ALIGNED after pointer table
+            // Reference: liveStatesStart = ((offsetTablePos + m_NumSafePoints * numBitsPerOffset + 7) & (~7))
+            int pointerTableEndBitPos = _bitPosition + (int)(numSafePoints * (uint)_liveSlotPointerBits);
+            _liveStateDataBitPosition = (pointerTableEndBitPos + 7) & ~7;  // Round up to next byte boundary
 
-        // Remember where the actual live state data starts
-        _liveStateDataBitPosition = _bitPosition;
+            if (debug)
+            {
+                DebugConsole.Write("      [Decode] ptrTableEnd=");
+                DebugConsole.WriteDecimal((uint)pointerTableEndBitPos);
+                DebugConsole.Write(" liveStatesStart=");
+                DebugConsole.WriteDecimal((uint)_liveStateDataBitPosition);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            // No indirect table - live state data starts right here
+            _liveStateDataBitPosition = _bitPosition;
+        }
 
         return true;
     }
@@ -840,7 +853,13 @@ public unsafe struct GCInfoDecoder
     /// <summary>
     /// Check if a slot is live at a given safe point.
     /// Must call DecodeSlotDefinitionsAndSafePoints() first.
-    /// The liveness data uses RLE encoding with an optional pointer table.
+    ///
+    /// Reference: gcinfodecoder.cpp lines 838-911
+    /// Two cases:
+    ///   1. Indirect table (numBitsPerOffset > 0): Each safe point has an offset to its live state.
+    ///      The live state can be RLE-encoded or 1-bit-per-slot.
+    ///   2. Non-indirect (numBitsPerOffset == 0): Simple 1-bit-per-slot for all safe points,
+    ///      stored sequentially (skip safePointIndex * numSlots bits to get to the right one).
     /// </summary>
     public bool IsSlotLiveAtSafePoint(uint safePointIndex, uint slotIndex)
     {
@@ -851,50 +870,148 @@ public unsafe struct GCInfoDecoder
         if (numTracked > MAX_SLOTS)
             numTracked = MAX_SLOTS;
 
-        // Find the start of the live state data for this safe point
-        int liveStateOffset;
+        int bitPos;
+
         if (_hasIndirectLiveSlotTable)
         {
-            // Read offset from pointer table
+            // Indirect table: read offset from pointer table to find live state for this safe point
             int ptrBitPos = _pointerTableBitPosition + (int)(safePointIndex * (uint)_liveSlotPointerBits);
-            liveStateOffset = (int)ReadBitsAt(ptrBitPos, _liveSlotPointerBits);
+            int liveStateOffset = (int)ReadBitsAt(ptrBitPos, _liveSlotPointerBits);
+
+            // The live states start at _liveStateDataBitPosition (byte-aligned after pointer table)
+            bitPos = _liveStateDataBitPosition + liveStateOffset;
+
+            // First bit: is this RLE encoded?
+            uint isRLE = ReadBitsAt(bitPos, 1);
+            bitPos++;
+
+            if (isRLE != 0)
+            {
+                // RLE encoded - use RLE decoding
+                return IsSlotLiveInRLE(ref bitPos, slotIndex, numTracked);
+            }
+            else
+            {
+                // Not RLE - just 1 bit per slot
+                // Skip to the slot we're interested in
+                bitPos += (int)slotIndex;
+                return ReadBitsAt(bitPos, 1) != 0;
+            }
         }
         else
         {
-            // Direct layout - need to scan through previous safe points
-            // For now, just return false for non-indirect tables (rare case)
-            return false;
+            // Non-indirect table: simple 1-bit-per-slot for each safe point
+            // Each safe point has numTracked bits, stored sequentially
+            // Skip to the safe point we want, then to the slot within it
+            bitPos = _liveStateDataBitPosition + (int)(safePointIndex * numTracked) + (int)slotIndex;
+            return ReadBitsAt(bitPos, 1) != 0;
         }
+    }
 
-        // Parse RLE-encoded live slots starting at offset
-        int bitPos = _liveStateDataBitPosition + liveStateOffset;
+    /// <summary>
+    /// Parse RLE-encoded liveness data and check if target slot is live.
+    ///
+    /// Reference: gcinfodecoder.cpp lines 860-888
+    /// The RLE format works as follows:
+    ///   1. First bit: 0 = "skip first" (fSkip=true), 1 = "report first" (fSkip=false)
+    ///   2. First value decoded using SKIP or RUN base (no +1)
+    ///   3. Toggle fSkip
+    ///   4. Loop: decode value+1, if fReport then report as LIVE, advance position, toggle both
+    ///
+    /// The key insight: fReport controls whether slots are LIVE (true) or DEAD (false).
+    /// fReport starts true and alternates each loop iteration.
+    /// The first chunk (before the loop) establishes the starting position but is NOT reported.
+    ///
+    /// If fSkip=true initially (bit=0): first value is SKIP count → slots 0 to readSlots-1 are DEAD
+    /// If fSkip=false initially (bit=1): first value is RUN count → slots 0 to readSlots-1 are LIVE
+    /// </summary>
+    private bool IsSlotLiveInRLE(ref int bitPos, uint slotIndex, uint numTracked)
+    {
+        // Read the skip-first/run-first indicator bit
+        // 0 means fSkip=true (first chunk is skip count, slots before first transition are DEAD)
+        // 1 means fSkip=false (first chunk is run count, slots before first transition are LIVE)
+        bool fSkip = ReadBitsAt(bitPos, 1) == 0;
+        bitPos++;
 
-        // Decode RLE: alternating skip/run sequences
-        uint numSkipped = 0;
-        while (numSkipped < numTracked)
+        bool fReport = true;
+
+        // First chunk - decode using current fSkip, NO +1
+        uint readSlots = DecodeVarLengthAt(ref bitPos, fSkip ? LIVESTATE_RLE_SKIP_ENCBASE : LIVESTATE_RLE_RUN_ENCBASE);
+
+        // The first chunk represents slots BEFORE the first transition.
+        // If fSkip=false (bit was 1), these slots (0 to readSlots-1) are LIVE
+        // If fSkip=true (bit was 0), these slots (0 to readSlots-1) are DEAD
+        if (!fSkip && slotIndex < readSlots)
+            return true;  // First chunk was RUN, and our slot is in it
+
+        if (fSkip && slotIndex < readSlots)
+            return false;  // First chunk was SKIP, and our slot is in it
+
+        // Toggle fSkip after first chunk (reference line 865)
+        fSkip = !fSkip;
+
+        // Process remaining chunks in loop
+        while (readSlots < numTracked)
         {
-            // Read skip count
-            uint skip = DecodeVarLengthAt(ref bitPos, LIVESTATE_RLE_SKIP_ENCBASE);
-            numSkipped += skip;
+            // Decode next chunk (WITH +1, reference line 868)
+            uint cnt = DecodeVarLengthAt(ref bitPos, fSkip ? LIVESTATE_RLE_SKIP_ENCBASE : LIVESTATE_RLE_RUN_ENCBASE) + 1;
 
-            // If we've skipped past our target slot without finding it in a live run, it's not live
-            if (numSkipped > slotIndex)
-                return false;
+            // If fReport is true, these slots are LIVE
+            if (fReport)
+            {
+                if (slotIndex >= readSlots && slotIndex < readSlots + cnt)
+                    return true;
+            }
+            else
+            {
+                // fReport is false, these slots are DEAD
+                if (slotIndex >= readSlots && slotIndex < readSlots + cnt)
+                    return false;
+            }
 
-            if (numSkipped >= numTracked)
-                break;
+            readSlots += cnt;
 
-            // Read run length (consecutive live slots)
-            uint runLength = DecodeVarLengthAt(ref bitPos, LIVESTATE_RLE_RUN_ENCBASE) + 1;
-
-            // Check if our target slot is in this live run
-            if (slotIndex >= numSkipped && slotIndex < numSkipped + runLength)
-                return true;
-
-            numSkipped += runLength;
+            // Toggle both (reference lines 884-885)
+            fSkip = !fSkip;
+            fReport = !fReport;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Skip over liveness data for one safe point (used if we need to scan sequentially).
+    /// This follows the same format as IsSlotLiveInRLE but doesn't check any particular slot.
+    /// </summary>
+    private void SkipLivenessData(ref int bitPos, uint numTracked)
+    {
+        // First bit: is RLE?
+        uint isRLE = ReadBitsAt(bitPos, 1);
+        bitPos++;
+
+        if (isRLE != 0)
+        {
+            // Skip RLE data - same pattern as decoding but we don't check slots
+            bool fSkip = ReadBitsAt(bitPos, 1) == 0;
+            bitPos++;
+
+            // First chunk (no +1)
+            uint readSlots = DecodeVarLengthAt(ref bitPos, fSkip ? LIVESTATE_RLE_SKIP_ENCBASE : LIVESTATE_RLE_RUN_ENCBASE);
+            fSkip = !fSkip;
+
+            // Remaining chunks (with +1)
+            while (readSlots < numTracked)
+            {
+                uint cnt = DecodeVarLengthAt(ref bitPos, fSkip ? LIVESTATE_RLE_SKIP_ENCBASE : LIVESTATE_RLE_RUN_ENCBASE) + 1;
+                readSlots += cnt;
+                fSkip = !fSkip;
+            }
+        }
+        else
+        {
+            // Non-RLE: just skip numTracked bits (one bit per slot)
+            bitPos += (int)numTracked;
+        }
     }
 
     /// <summary>
