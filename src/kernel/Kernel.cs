@@ -59,7 +59,10 @@ public static unsafe class Kernel
         // Initialize kernel heap
         HeapAllocator.Init();
 
-        // Initialize static GC fields (must be after heap, before using any static object fields)
+        // Initialize GC heap (managed object heap with proper object headers)
+        GCHeap.Init();
+
+        // Initialize static GC fields (must be after GC heap, before using any static object fields)
         InitializeStatics.Init();
 
         // Test GCDesc with heap-allocated object that has references

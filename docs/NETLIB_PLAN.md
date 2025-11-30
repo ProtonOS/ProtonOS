@@ -348,16 +348,45 @@ High 32 bits:
 
 ### Tasks
 
-#### 3.1 GC Heap
+#### 3.3 GC Heap ✓ COMPLETE
+
+Implemented separate GC heap with proper object headers in `src/kernel/Memory/GCHeap.cs`.
+
+**Features:**
+- Bump allocator within contiguous 1MB regions obtained from PageAllocator
+- 8-byte object header before MethodTable pointer:
+  - Bit 0: Mark bit (for GC mark phase)
+  - Bit 1: Pinned flag
+  - Bits 2-3: Reserved for generation
+  - Bits 4-31: Sync block index (28 bits)
+  - Bits 32-63: Identity hash code (computed lazily)
+- Automatic region allocation when current region fills
+- Virtual address mapping via physmap (higher-half)
+- `PalAllocObject` updated to use GCHeap (falls back to HeapAllocator during early boot)
+
+**API:**
 ```csharp
 public static class GCHeap
 {
-    public static void* Alloc(nuint size);
-    public static void Collect();
+    public static void* Alloc(uint size);       // Allocate with header
+    public static void* AllocZeroed(uint size); // Allocate and zero
+    public static ulong* GetHeader(void* obj);  // Get header before object
+    public static bool IsMarked(void* obj);     // Check mark bit
+    public static void SetMark(void* obj);      // Set mark bit
+    public static void ClearMark(void* obj);    // Clear mark bit
+    public static int GetHashCode(void* obj);   // Get/compute hash
+    public static bool IsInHeap(void* ptr);     // Check if in GC heap
 }
 ```
 
-#### 3.2 Runtime exports
+**Validation:**
+```
+[GCHeap] Initialized: FFFF800000100000 - FFFF800000200000 (1024 KB)
+[InitStatics] Initialized 1 blocks, skipped 0
+[GCDesc] Exception MT=... BaseSize=32 Flags=0x51000000 [HasPtrs] Series=1
+```
+
+#### 3.4 Runtime exports (existing)
 ```csharp
 [RuntimeExport("RhpNewFast")]
 static void* RhpNewFast(MethodTable* mt);
@@ -578,8 +607,9 @@ For GC, we create a similar `GetGCInfo()` that:
 
 | Topic | Status | Notes |
 |-------|--------|-------|
-| Object Header | ✓ Designed | 64-bit: flags+sync (32) + hash (32) |
-| GCDesc | ✓ Documented | Series format before MethodTable |
+| Object Header | ✓ Implemented | 64-bit: flags+sync (32) + hash (32) in GCHeap.cs |
+| GC Heap | ✓ Implemented | Bump allocator with 1MB regions from PageAllocator |
+| GCDesc | ✓ Implemented | Series format parsing in GCDesc.cs |
 | GCInfo/Stack Maps | ✓ Confirmed | Emitted by bflat, location verified |
 | GCInfo Header | ✓ Complete | Slim/fat headers 100% decoded (273/273) |
 | GCInfo Varint | ✓ Verified | No XOR, simple accumulation |

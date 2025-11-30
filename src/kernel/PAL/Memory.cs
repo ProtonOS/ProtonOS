@@ -566,10 +566,16 @@ public static unsafe class Memory
     /// <summary>
     /// Allocate zeroed memory for managed object allocation.
     /// Exported for netlib's StartupCodeHelpers.AllocObject.
+    /// Uses GCHeap when available (proper object header), falls back to HeapAllocator during early boot.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "PalAllocObject")]
     public static void* PalAllocObject(uint size)
     {
+        // Use GC heap if initialized (has proper object header for GC)
+        if (GCHeap.IsInitialized)
+            return GCHeap.AllocZeroed(size);
+
+        // Fall back to kernel heap during early boot (before GCHeap.Init)
         return HeapAllocator.AllocZeroed(size);
     }
 }
