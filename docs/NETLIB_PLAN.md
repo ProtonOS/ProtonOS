@@ -255,6 +255,64 @@ Created infrastructure for parsing MethodTable flags and GCDesc reference field 
 - Heap object: Exception has 2 reference fields (`_message`, `_innerException`) at offset 8
 - GCDesc series format correctly decoded for mark phase traversal
 
+#### 3.2 Static Roots Enumeration and InitializeStatics ✓ COMPLETE
+
+Implemented NativeAOT's static GC roots initialization and enumeration:
+
+**New files created:**
+- `src/kernel/Runtime/StaticRoots.cs` - Static roots enumeration and diagnostics
+- `src/kernel/Runtime/InitializeStatics.cs` - GCStaticRegion initialization
+
+**GCStaticRegion Format:**
+The GCStaticRegion is an array of 4-byte relative pointers to "static blocks":
+```
+GCStaticRegion: [relptr32][relptr32][relptr32]...
+                    |
+                    v
+               Static Block (before initialization):
+               +0: int32 value = (relptr_to_EEType) | flags
+                   Bit 0: Uninitialized flag
+                   Bit 1: HasPreInitializedData flag
+
+               Static Block (after initialization):
+               +0: nint value = object reference (holder object)
+               The holder object contains the actual static field slots
+```
+
+**InitializeStatics Implementation:**
+1. Walks GCStaticRegion as array of 4-byte relative pointers
+2. For each entry, decodes relative pointer to get static block address
+3. Reads block value as 32-bit signed (critical: must be signed for negative offsets!)
+4. If Uninitialized flag set:
+   - Masks off flags to get EEType relative offset
+   - Computes MethodTable address: `block_addr + signed_offset`
+   - Allocates holder object from heap using `BaseSize` from MethodTable
+   - Sets MethodTable pointer in allocated object
+   - Stores object reference back in block (clears Uninitialized flag)
+
+**Key Implementation Detail:**
+The block value before initialization is a **32-bit signed relative pointer** with flags.
+On x64, reading as `nint` (64-bit) would incorrectly interpret negative offsets as large
+positive values. Must read as `int` and use signed arithmetic for pointer calculation.
+
+Example:
+- Block value: `0xFFFE76D9` (32-bit)
+- Flags masked: `0xFFFE76D8` = `-0x18928` as signed int32
+- Block at: `0x0DCDFDB0`
+- MethodTable: `0x0DCDFDB0 + (-0x18928) = 0x0DCC7488` ✓
+
+**Validation output:**
+```
+[InitStatics] Processing 1 static blocks...
+[InitStatics] Initialized 1 blocks, skipped 0
+[StaticRoots] BlockVal=0x000000000000D018 -> ObjRef=0x000000000000D018 MT=0x0DCC7488
+```
+
+**Integration:**
+- Called from Kernel.Main() after HeapAllocator.Init()
+- Must run before any code accesses static GC fields
+- Static field assignments (e.g., `_gcTestObject = new object()`) now work correctly
+
 ### Object Layout
 
 Every managed object has an 8-byte header before the MethodTable pointer:
@@ -531,7 +589,7 @@ For GC, we create a similar `GetGCInfo()` that:
 | Interruptible Ranges | ⚠ Needs impl | Format understood, decode values TBD |
 | Interior/Pinned Ptrs | ⚠ Needs impl | Slot flags documented, not yet decoded |
 | Indirect Liveness | ⚠ Needs impl | Deduplication format not yet verified |
-| Static Roots | ✓ Verified | __GCStaticRegion format documented |
+| Static Roots | ✓ Implemented | __GCStaticRegion + InitializeStatics |
 | Write Barriers | ✓ Documented | Simple store for mark-sweep |
 | MethodTable Flags | ✓ Documented | HasPointers, HasFinalizer |
 | Allocation Context | ✓ Documented | Per-thread bump allocation |

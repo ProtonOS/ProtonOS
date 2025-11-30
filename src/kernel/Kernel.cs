@@ -59,6 +59,9 @@ public static unsafe class Kernel
         // Initialize kernel heap
         HeapAllocator.Init();
 
+        // Initialize static GC fields (must be after heap, before using any static object fields)
+        InitializeStatics.Init();
+
         // Test GCDesc with heap-allocated object that has references
         GCDescHelper.TestWithHeapObject();
 
@@ -80,11 +83,15 @@ public static unsafe class Kernel
         // Test exception handling
         TestExceptionHandling();
 
-        // Test GC static root - store an object in static field
+        // Test GC static field - store an object to ensure GCStaticRegion is generated
         _gcTestObject = new object();
-        DebugConsole.Write("[GC] Static object test: ");
-        DebugConsole.WriteHex((ulong)System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!));
+        DebugConsole.Write("[GC] Static object stored at: ");
+        nint objAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!);
+        DebugConsole.WriteHex((ulong)objAddr);
         DebugConsole.WriteLine();
+
+        // Test static roots enumeration
+        StaticRoots.DumpStaticRoots();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
