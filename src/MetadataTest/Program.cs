@@ -28,6 +28,21 @@ public interface ITestInterface
     void InterfaceMethod();
 }
 
+// Interface for explicit implementation testing (generates MethodImpl table)
+public interface IExplicitInterface
+{
+    void ExplicitMethod();
+    int ExplicitProperty { get; }
+}
+
+// Class with explicit interface implementation - generates MethodImpl entries
+public class ExplicitImplementation : IExplicitInterface
+{
+    // Explicit implementation - creates MethodImpl entry
+    void IExplicitInterface.ExplicitMethod() { }
+    int IExplicitInterface.ExplicitProperty => 42;
+}
+
 public interface IGenericInterface<T>
 {
     T GetValue();
@@ -562,6 +577,30 @@ public static class MethodSpecTests
         _ = Identity(3.14);
         _ = Identity<object>(new object());
         _ = Convert(42, x => x.ToString());
+    }
+}
+
+// =============================================================================
+// FieldRVA - static fields with RVA-based data
+// =============================================================================
+
+public static class FieldRvaTests
+{
+    // Static fields initialized with array data generate FieldRVA entries
+    // The compiler stores the initial data in a special PE section
+    public static readonly byte[] StaticByteArray = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    public static readonly int[] StaticIntArray = { 10, 20, 30, 40, 50 };
+    public static readonly long[] StaticLongArray = { 100L, 200L, 300L };
+
+    // Struct arrays with initial values also use FieldRVA
+    public static readonly TestStruct[] StaticStructArray = {
+        new TestStruct { X = 1, Y = 2 },
+        new TestStruct { X = 3, Y = 4 }
+    };
+
+    public static int UseFields()
+    {
+        return StaticByteArray[0] + StaticIntArray[0] + (int)StaticLongArray[0] + StaticStructArray[0].X;
     }
 }
 
