@@ -134,10 +134,77 @@ public static unsafe class Kernel
         if (_testAssemblySize >= 2 && _testAssembly[0] == 'M' && _testAssembly[1] == 'Z')
         {
             DebugConsole.WriteLine("[Kernel] PE signature verified (MZ)");
+
+            // Parse CLI header and metadata
+            ParseAssemblyMetadata();
         }
         else
         {
             DebugConsole.WriteLine("[Kernel] WARNING: Not a valid PE file");
         }
+    }
+
+    /// <summary>
+    /// Parse the CLI header and metadata from the loaded test assembly.
+    /// The assembly is loaded as raw file bytes, not memory-mapped.
+    /// </summary>
+    private static void ParseAssemblyMetadata()
+    {
+        // Get CLI header (using file-based RVA translation)
+        var corHeader = PEHelper.GetCorHeaderFromFile(_testAssembly);
+        if (corHeader == null)
+        {
+            DebugConsole.WriteLine("[Kernel] No CLI header found");
+            return;
+        }
+
+        DebugConsole.Write("[Kernel] CLI header: runtime ");
+        DebugConsole.WriteDecimal(corHeader->MajorRuntimeVersion);
+        DebugConsole.Write(".");
+        DebugConsole.WriteDecimal(corHeader->MinorRuntimeVersion);
+        DebugConsole.Write(", flags 0x");
+        DebugConsole.WriteHex(corHeader->Flags);
+        DebugConsole.WriteLine();
+
+        DebugConsole.Write("[Kernel] Metadata RVA 0x");
+        DebugConsole.WriteHex(corHeader->MetaData.VirtualAddress);
+        DebugConsole.Write(", size 0x");
+        DebugConsole.WriteHex(corHeader->MetaData.Size);
+        DebugConsole.WriteLine();
+
+        // Get metadata root (using file-based RVA translation)
+        var metadataRoot = (byte*)PEHelper.GetMetadataRootFromFile(_testAssembly);
+        if (metadataRoot == null)
+        {
+            DebugConsole.WriteLine("[Kernel] Failed to locate metadata");
+            return;
+        }
+
+        // Verify BSJB signature
+        uint signature = *(uint*)metadataRoot;
+        if (signature == PEConstants.METADATA_SIGNATURE)
+        {
+            DebugConsole.WriteLine("[Kernel] Metadata signature verified (BSJB)");
+        }
+        else
+        {
+            DebugConsole.Write("[Kernel] Invalid metadata signature: 0x");
+            DebugConsole.WriteHex(signature);
+            DebugConsole.WriteLine();
+            return;
+        }
+
+        // Read version info from metadata header
+        ushort majorVer = *(ushort*)(metadataRoot + 4);
+        ushort minorVer = *(ushort*)(metadataRoot + 6);
+        uint versionLen = *(uint*)(metadataRoot + 12);
+
+        DebugConsole.Write("[Kernel] Metadata version ");
+        DebugConsole.WriteDecimal(majorVer);
+        DebugConsole.Write(".");
+        DebugConsole.WriteDecimal(minorVer);
+        DebugConsole.Write(", version string len ");
+        DebugConsole.WriteDecimal(versionLen);
+        DebugConsole.WriteLine();
     }
 }
