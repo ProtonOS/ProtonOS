@@ -1799,3 +1799,457 @@ public struct ExceptionClause
     public int HandlerLength;      // Length of handler in bytes
     public int ClassTokenOrFilterOffset;  // Type token (Catch) or filter IL offset (Filter)
 }
+
+// ============================================================================
+// Signature Constants and Types (ECMA-335 II.23.2)
+// ============================================================================
+
+/// <summary>
+/// Element type codes for signatures (ECMA-335 II.23.1.16)
+/// </summary>
+public static class ElementType
+{
+    public const byte End = 0x00;
+    public const byte Void = 0x01;
+    public const byte Boolean = 0x02;
+    public const byte Char = 0x03;
+    public const byte I1 = 0x04;      // sbyte
+    public const byte U1 = 0x05;      // byte
+    public const byte I2 = 0x06;      // short
+    public const byte U2 = 0x07;      // ushort
+    public const byte I4 = 0x08;      // int
+    public const byte U4 = 0x09;      // uint
+    public const byte I8 = 0x0A;      // long
+    public const byte U8 = 0x0B;      // ulong
+    public const byte R4 = 0x0C;      // float
+    public const byte R8 = 0x0D;      // double
+    public const byte String = 0x0E;
+    public const byte Ptr = 0x0F;     // Pointer type
+    public const byte ByRef = 0x10;   // Managed reference (ref/out)
+    public const byte ValueType = 0x11;
+    public const byte Class = 0x12;
+    public const byte Var = 0x13;     // Generic type parameter
+    public const byte Array = 0x14;   // Multi-dimensional array
+    public const byte GenericInst = 0x15;  // Generic instantiation
+    public const byte TypedByRef = 0x16;
+    public const byte I = 0x18;       // IntPtr
+    public const byte U = 0x19;       // UIntPtr
+    public const byte FnPtr = 0x1B;   // Function pointer
+    public const byte Object = 0x1C;
+    public const byte SzArray = 0x1D; // Single-dimension array
+    public const byte MVar = 0x1E;    // Generic method parameter
+    public const byte CModReqd = 0x1F;
+    public const byte CModOpt = 0x20;
+    public const byte Internal = 0x21;
+    public const byte Modifier = 0x40;
+    public const byte Sentinel = 0x41;
+    public const byte Pinned = 0x45;
+}
+
+/// <summary>
+/// Signature header byte encoding (ECMA-335 II.23.2.1-3)
+/// Low nibble (0x0F): calling convention or signature kind
+/// High nibble (0xF0): attributes (generic, hasthis, explicitthis)
+/// </summary>
+public static class SignatureHeader
+{
+    // Calling conventions (low nibble for method signatures)
+    public const byte Default = 0x00;
+    public const byte CDecl = 0x01;
+    public const byte StdCall = 0x02;
+    public const byte ThisCall = 0x03;
+    public const byte FastCall = 0x04;
+    public const byte VarArg = 0x05;
+    public const byte Unmanaged = 0x09;
+
+    // Signature kinds (low nibble for non-method signatures)
+    public const byte Field = 0x06;
+    public const byte LocalSig = 0x07;
+    public const byte Property = 0x08;
+    public const byte GenericInst = 0x0A;
+
+    // Masks
+    public const byte CallingConventionMask = 0x0F;
+
+    // Attributes (high nibble flags)
+    public const byte Generic = 0x10;    // Generic method with explicit generic param count
+    public const byte HasThis = 0x20;    // Instance method (has 'this' pointer)
+    public const byte ExplicitThis = 0x40; // 'this' is explicitly passed as first param
+
+    /// <summary>
+    /// Check if signature header indicates a method signature
+    /// </summary>
+    public static bool IsMethod(byte header)
+    {
+        byte kind = (byte)(header & CallingConventionMask);
+        return kind <= VarArg || kind == Unmanaged;
+    }
+}
+
+/// <summary>
+/// Parsed method signature from blob
+/// </summary>
+public unsafe struct MethodSignature
+{
+    public byte Header;            // Raw header byte
+    public byte CallingConvention; // Calling convention (low nibble)
+    public bool HasThis;           // Instance method
+    public bool ExplicitThis;      // Explicit this parameter
+    public bool IsGeneric;         // Has generic parameters
+    public uint GenericParamCount; // Number of generic type parameters
+    public uint ParamCount;        // Number of parameters (not including return)
+    public TypeSig ReturnType;     // Return type
+}
+
+/// <summary>
+/// Parsed type from signature
+/// </summary>
+public struct TypeSig
+{
+    public byte ElementType;       // ElementType constant
+    public uint Token;             // TypeDef/TypeRef/TypeSpec token (for class/valuetype)
+    public uint GenericParamIndex; // For Var/MVar
+    public bool IsValid;           // True if successfully parsed
+}
+
+/// <summary>
+/// Signature reader/decoder
+/// </summary>
+public static unsafe class SignatureReader
+{
+    /// <summary>
+    /// Parse a method signature from blob data
+    /// </summary>
+    public static bool ReadMethodSignature(byte* blob, uint blobLength, out MethodSignature sig)
+    {
+        sig = default;
+
+        if (blob == null || blobLength == 0)
+            return false;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLength;
+
+        // Read header byte
+        sig.Header = *ptr++;
+        sig.CallingConvention = (byte)(sig.Header & SignatureHeader.CallingConventionMask);
+        sig.HasThis = (sig.Header & SignatureHeader.HasThis) != 0;
+        sig.ExplicitThis = (sig.Header & SignatureHeader.ExplicitThis) != 0;
+        sig.IsGeneric = (sig.Header & SignatureHeader.Generic) != 0;
+
+        // Verify it's a method signature
+        if (!SignatureHeader.IsMethod(sig.Header))
+            return false;
+
+        // Generic param count (only if generic flag set)
+        if (sig.IsGeneric)
+        {
+            sig.GenericParamCount = MetadataReader.ReadCompressedUInt(ref ptr);
+        }
+
+        // Parameter count
+        if (ptr >= end) return false;
+        sig.ParamCount = MetadataReader.ReadCompressedUInt(ref ptr);
+
+        // Return type
+        if (ptr >= end) return false;
+        sig.ReturnType = ReadTypeSig(ref ptr, end);
+
+        return sig.ReturnType.IsValid;
+    }
+
+    /// <summary>
+    /// Parse a single type from signature data
+    /// </summary>
+    public static TypeSig ReadTypeSig(ref byte* ptr, byte* end)
+    {
+        TypeSig type = default;
+
+        if (ptr >= end)
+            return type;
+
+        byte elemType = *ptr++;
+        type.ElementType = elemType;
+
+        switch (elemType)
+        {
+            // Primitive types - no additional data
+            case ElementType.Void:
+            case ElementType.Boolean:
+            case ElementType.Char:
+            case ElementType.I1:
+            case ElementType.U1:
+            case ElementType.I2:
+            case ElementType.U2:
+            case ElementType.I4:
+            case ElementType.U4:
+            case ElementType.I8:
+            case ElementType.U8:
+            case ElementType.R4:
+            case ElementType.R8:
+            case ElementType.String:
+            case ElementType.I:
+            case ElementType.U:
+            case ElementType.Object:
+            case ElementType.TypedByRef:
+                type.IsValid = true;
+                break;
+
+            // Types with a TypeDefOrRef token
+            case ElementType.Class:
+            case ElementType.ValueType:
+                if (ptr >= end) return type;
+                type.Token = MetadataReader.ReadCompressedUInt(ref ptr);
+                type.IsValid = true;
+                break;
+
+            // Generic type/method parameters
+            case ElementType.Var:
+            case ElementType.MVar:
+                if (ptr >= end) return type;
+                type.GenericParamIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                type.IsValid = true;
+                break;
+
+            // Pointer and ByRef - recurse for element type
+            case ElementType.Ptr:
+            case ElementType.ByRef:
+            case ElementType.SzArray:
+            case ElementType.Pinned:
+                // Skip the inner type for now (just mark as valid)
+                // A full implementation would recursively parse
+                SkipType(ref ptr, end);
+                type.IsValid = true;
+                break;
+
+            // Generic instantiation: GENERICINST (CLASS|VALUETYPE) TypeDefOrRef GenArgCount Type*
+            case ElementType.GenericInst:
+                {
+                    if (ptr >= end) return type;
+                    byte classOrValue = *ptr++;  // CLASS or VALUETYPE
+                    if (ptr >= end) return type;
+                    type.Token = MetadataReader.ReadCompressedUInt(ref ptr);
+                    if (ptr >= end) return type;
+                    uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                    // Skip all type arguments
+                    for (uint i = 0; i < argCount && ptr < end; i++)
+                    {
+                        SkipType(ref ptr, end);
+                    }
+                    type.ElementType = classOrValue;  // Store the actual CLASS/VALUETYPE
+                    type.IsValid = true;
+                }
+                break;
+
+            // Multi-dimensional array
+            case ElementType.Array:
+                {
+                    // Skip element type
+                    SkipType(ref ptr, end);
+                    if (ptr >= end) return type;
+                    uint rank = MetadataReader.ReadCompressedUInt(ref ptr);
+                    if (ptr >= end) return type;
+                    uint numSizes = MetadataReader.ReadCompressedUInt(ref ptr);
+                    for (uint i = 0; i < numSizes && ptr < end; i++)
+                        MetadataReader.ReadCompressedUInt(ref ptr);
+                    if (ptr >= end) return type;
+                    uint numLoBounds = MetadataReader.ReadCompressedUInt(ref ptr);
+                    for (uint i = 0; i < numLoBounds && ptr < end; i++)
+                        MetadataReader.ReadCompressedInt(ref ptr);
+                    type.IsValid = true;
+                }
+                break;
+
+            // Function pointer
+            case ElementType.FnPtr:
+                // Skip the entire method signature
+                SkipMethodSig(ref ptr, end);
+                type.IsValid = true;
+                break;
+
+            // Custom modifiers - skip modifier and continue with type
+            case ElementType.CModReqd:
+            case ElementType.CModOpt:
+                if (ptr >= end) return type;
+                MetadataReader.ReadCompressedUInt(ref ptr);  // Skip type token
+                return ReadTypeSig(ref ptr, end);  // Continue with actual type
+
+            default:
+                // Unknown element type
+                return type;
+        }
+
+        return type;
+    }
+
+    /// <summary>
+    /// Skip over a type in the signature stream
+    /// </summary>
+    public static void SkipType(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end) return;
+
+        byte elemType = *ptr++;
+
+        switch (elemType)
+        {
+            case ElementType.Void:
+            case ElementType.Boolean:
+            case ElementType.Char:
+            case ElementType.I1:
+            case ElementType.U1:
+            case ElementType.I2:
+            case ElementType.U2:
+            case ElementType.I4:
+            case ElementType.U4:
+            case ElementType.I8:
+            case ElementType.U8:
+            case ElementType.R4:
+            case ElementType.R8:
+            case ElementType.String:
+            case ElementType.I:
+            case ElementType.U:
+            case ElementType.Object:
+            case ElementType.TypedByRef:
+                // No additional data
+                break;
+
+            case ElementType.Class:
+            case ElementType.ValueType:
+            case ElementType.Var:
+            case ElementType.MVar:
+                MetadataReader.ReadCompressedUInt(ref ptr);
+                break;
+
+            case ElementType.Ptr:
+            case ElementType.ByRef:
+            case ElementType.SzArray:
+            case ElementType.Pinned:
+                SkipType(ref ptr, end);
+                break;
+
+            case ElementType.GenericInst:
+                ptr++;  // Skip CLASS/VALUETYPE
+                MetadataReader.ReadCompressedUInt(ref ptr);  // Type token
+                uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                for (uint i = 0; i < argCount && ptr < end; i++)
+                    SkipType(ref ptr, end);
+                break;
+
+            case ElementType.Array:
+                SkipType(ref ptr, end);
+                uint rank = MetadataReader.ReadCompressedUInt(ref ptr);
+                uint numSizes = MetadataReader.ReadCompressedUInt(ref ptr);
+                for (uint i = 0; i < numSizes && ptr < end; i++)
+                    MetadataReader.ReadCompressedUInt(ref ptr);
+                uint numLoBounds = MetadataReader.ReadCompressedUInt(ref ptr);
+                for (uint i = 0; i < numLoBounds && ptr < end; i++)
+                    MetadataReader.ReadCompressedInt(ref ptr);
+                break;
+
+            case ElementType.FnPtr:
+                SkipMethodSig(ref ptr, end);
+                break;
+
+            case ElementType.CModReqd:
+            case ElementType.CModOpt:
+                MetadataReader.ReadCompressedUInt(ref ptr);
+                SkipType(ref ptr, end);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Skip over a method signature in the stream
+    /// </summary>
+    public static void SkipMethodSig(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end) return;
+
+        byte header = *ptr++;
+        if ((header & SignatureHeader.Generic) != 0)
+            MetadataReader.ReadCompressedUInt(ref ptr);  // Generic param count
+
+        uint paramCount = MetadataReader.ReadCompressedUInt(ref ptr);
+
+        // Skip return type
+        SkipType(ref ptr, end);
+
+        // Skip all parameters
+        for (uint i = 0; i < paramCount && ptr < end; i++)
+        {
+            SkipType(ref ptr, end);
+        }
+    }
+
+    /// <summary>
+    /// Get a human-readable name for an element type
+    /// </summary>
+    public static void PrintElementType(byte elemType)
+    {
+        switch (elemType)
+        {
+            case ElementType.Void: DebugConsole.Write("void"); break;
+            case ElementType.Boolean: DebugConsole.Write("bool"); break;
+            case ElementType.Char: DebugConsole.Write("char"); break;
+            case ElementType.I1: DebugConsole.Write("sbyte"); break;
+            case ElementType.U1: DebugConsole.Write("byte"); break;
+            case ElementType.I2: DebugConsole.Write("short"); break;
+            case ElementType.U2: DebugConsole.Write("ushort"); break;
+            case ElementType.I4: DebugConsole.Write("int"); break;
+            case ElementType.U4: DebugConsole.Write("uint"); break;
+            case ElementType.I8: DebugConsole.Write("long"); break;
+            case ElementType.U8: DebugConsole.Write("ulong"); break;
+            case ElementType.R4: DebugConsole.Write("float"); break;
+            case ElementType.R8: DebugConsole.Write("double"); break;
+            case ElementType.String: DebugConsole.Write("string"); break;
+            case ElementType.I: DebugConsole.Write("IntPtr"); break;
+            case ElementType.U: DebugConsole.Write("UIntPtr"); break;
+            case ElementType.Object: DebugConsole.Write("object"); break;
+            case ElementType.TypedByRef: DebugConsole.Write("TypedReference"); break;
+            case ElementType.Ptr: DebugConsole.Write("ptr"); break;
+            case ElementType.ByRef: DebugConsole.Write("ref"); break;
+            case ElementType.ValueType: DebugConsole.Write("valuetype"); break;
+            case ElementType.Class: DebugConsole.Write("class"); break;
+            case ElementType.Var: DebugConsole.Write("!T"); break;
+            case ElementType.MVar: DebugConsole.Write("!!M"); break;
+            case ElementType.Array: DebugConsole.Write("array"); break;
+            case ElementType.GenericInst: DebugConsole.Write("generic"); break;
+            case ElementType.SzArray: DebugConsole.Write("[]"); break;
+            case ElementType.FnPtr: DebugConsole.Write("fnptr"); break;
+            default:
+                DebugConsole.Write("0x");
+                DebugConsole.WriteHex(elemType);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Print a method signature for debugging
+    /// </summary>
+    public static void PrintMethodSignature(ref MethodSignature sig)
+    {
+        // Return type
+        PrintElementType(sig.ReturnType.ElementType);
+        if (sig.ReturnType.Token != 0)
+        {
+            DebugConsole.Write("[0x");
+            DebugConsole.WriteHex(sig.ReturnType.Token);
+            DebugConsole.Write("]");
+        }
+
+        DebugConsole.Write(" (");
+
+        // Flags
+        if (sig.HasThis) DebugConsole.Write("instance ");
+        if (sig.IsGeneric)
+        {
+            DebugConsole.Write("<");
+            DebugConsole.WriteDecimal(sig.GenericParamCount);
+            DebugConsole.Write("> ");
+        }
+
+        DebugConsole.WriteDecimal(sig.ParamCount);
+        DebugConsole.Write(" params)");
+    }
+}

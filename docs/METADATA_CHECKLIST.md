@@ -224,19 +224,29 @@ struct {
 - [ ] Coded index types and tag bits
 - [ ] All 45 table schemas (columns and types)
 
-#### Signature Format
+#### Signature Format ✅
 
-- [ ] Calling conventions (default, vararg, generic, etc.)
-- [ ] Type encoding (primitives, classes, generics, arrays)
-- [ ] Compressed integers in signatures
-- [ ] MethodDefSig, FieldSig, LocalVarSig, TypeSpec formats
+- [x] Calling conventions (default, vararg, generic, etc.)
+- [x] Type encoding (primitives, classes, generics, arrays)
+- [x] Compressed integers in signatures
+- [x] MethodDefSig, FieldSig, LocalVarSig, TypeSpec formats
 
-#### IL Method Bodies
+**Reference Files:**
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/Signatures/SignatureTypeCode.cs`
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/Internal/CorElementType.cs`
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/Signatures/SignatureHeader.cs`
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/Ecma335/SignatureDecoder.cs`
 
-- [ ] Tiny vs fat header format
-- [ ] Local variable signature token
-- [ ] Exception handling clause formats (small/fat)
-- [ ] Section header format for EH data
+#### IL Method Bodies ✅
+
+- [x] Tiny vs fat header format
+- [x] Local variable signature token
+- [x] Exception handling clause formats (small/fat)
+- [x] Section header format for EH data
+
+**Reference Files:**
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/IL/MethodBodyBlock.cs`
+- `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/IL/ExceptionRegion.cs`
 
 #### .NET Runtime Source Locations
 
@@ -422,33 +432,48 @@ Generics:
 - MVID: {7262FC15-F77D-464D-80A5-515853BEFAE1} from #GUID
 - TypeDef names: "<Module>", "Program" from #Strings
 
-#### 5.7 Signature Decoding
+#### 5.7 Signature Decoding ✅
 
-**Files**: `src/kernel/Runtime/Metadata/SignatureDecoder.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs` (ElementType, SignatureHeader, MethodSignature, TypeSig, SignatureReader)
 
 Calling conventions:
-- [ ] DEFAULT (0x00)
-- [ ] VARARG (0x05)
-- [ ] GENERIC (0x10)
-- [ ] HASTHIS (0x20)
-- [ ] EXPLICITTHIS (0x40)
+- [x] DEFAULT (0x00)
+- [x] VARARG (0x05)
+- [x] GENERIC (0x10)
+- [x] HASTHIS (0x20)
+- [x] EXPLICITTHIS (0x40)
 
 Element types:
-- [ ] VOID, BOOLEAN, CHAR, I1-I8, U1-U8, R4, R8
-- [ ] STRING, OBJECT, TYPEDBYREF
-- [ ] PTR, BYREF, VALUETYPE, CLASS
-- [ ] VAR, GENERICINST, ARRAY, SZARRAY
-- [ ] FNPTR, MVAR
-- [ ] CMOD_REQD, CMOD_OPT
-- [ ] SENTINEL, PINNED
+- [x] VOID, BOOLEAN, CHAR, I1-I8, U1-U8, R4, R8
+- [x] STRING, OBJECT, TYPEDBYREF
+- [x] PTR, BYREF, VALUETYPE, CLASS
+- [x] VAR, GENERICINST, ARRAY, SZARRAY
+- [x] FNPTR, MVAR
+- [x] CMOD_REQD, CMOD_OPT
+- [x] SENTINEL, PINNED
 
 Signature types:
-- [ ] MethodDefSig
+- [x] MethodDefSig (ReadMethodSignature)
 - [ ] MethodRefSig
 - [ ] FieldSig
 - [ ] PropertySig
 - [ ] LocalVarSig
 - [ ] TypeSpec signatures
+
+**Implementation includes:**
+- `ElementType` constants (0x00-0x45)
+- `SignatureHeader` constants for calling conventions and attributes
+- `MethodSignature` struct with parsed header, param count, return type
+- `TypeSig` struct with element type, token, generic param index
+- `SignatureReader` static class with:
+  - `ReadMethodSignature()` - parse MethodDef signature blob
+  - `ReadTypeSig()` - parse a single type
+  - `SkipType()` / `SkipMethodSig()` - skip over types in stream
+  - `PrintElementType()` / `PrintMethodSignature()` - debug output
+
+**Tested:** MetadataTest.dll signatures parsed correctly:
+- `Main`: `void (0 params)` - static method
+- `.ctor`: `void (instance 0 params)` - instance method with HasThis flag
 
 #### 5.8 IL Method Body Reading ✅
 
