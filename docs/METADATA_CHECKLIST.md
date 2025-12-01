@@ -217,12 +217,12 @@ struct {
 
 **Reference:** `dotnet/src/libraries/System.Reflection.Metadata/src/System/Reflection/Metadata/Internal/COR20Constants.cs`
 
-#### Metadata Tables
+#### Metadata Tables ✅
 
-- [ ] Table row counts encoding
-- [ ] Simple index sizes (2 vs 4 bytes based on row count)
-- [ ] Coded index types and tag bits
-- [ ] All 45 table schemas (columns and types)
+- [x] Table row counts encoding
+- [x] Simple index sizes (2 vs 4 bytes based on row count)
+- [x] Coded index types and tag bits
+- [x] All 45 table schemas (columns and types) - accessors for all applicable tables
 
 #### Signature Format ✅
 
@@ -354,7 +354,7 @@ metadata at RVA 0x205C with valid BSJB signature, version 1.1.
 
 **Tested:** ResolutionScope correctly decodes TypeRef rows to AssemblyRef[1] and nested TypeRef[3].
 
-#### 5.5 Metadata Tables (In Progress)
+#### 5.5 Metadata Tables ✅
 
 **File**: `src/kernel/Runtime/MetadataReader.cs` (TableSizes struct + table accessor methods)
 
@@ -527,12 +527,24 @@ Signature types:
 
 ## Testing
 
+**MetadataTest.dll Validation** - Comprehensive test assembly exercising 30 metadata tables:
+
+- [x] Parse MetadataTest.dll from boot image
+- [x] Module, TypeRef, TypeDef, Field, MethodDef, Param, InterfaceImpl tables
+- [x] MemberRef, Constant, CustomAttribute, DeclSecurity tables
+- [x] ClassLayout, FieldLayout, StandAloneSig tables
+- [x] EventMap, Event, PropertyMap, Property, MethodSemantics tables
+- [x] MethodImpl, ModuleRef, TypeSpec, ImplMap, FieldRVA tables
+- [x] Assembly, AssemblyRef, NestedClass tables
+- [x] GenericParam, MethodSpec, GenericParamConstraint tables
+- [x] Method signature parsing (all primitive types, arrays, generics, pointers, spans)
+- [x] IL method body parsing (tiny and fat formats)
+- [x] Exception handling clause parsing
+
+**Future testing:**
 - [ ] Parse our own BOOTX64.EFI (NativeAOT output)
-- [ ] Parse a simple .NET DLL (HelloWorld)
 - [ ] Parse System.Runtime.dll from BCL
-- [ ] Parse System.Collections.dll
 - [ ] Enumerate all types in an assembly
-- [ ] Read IL for a specific method
 - [ ] Resolve cross-assembly type references
 
 ---
@@ -548,7 +560,9 @@ Signature types:
 5. ~~**Parse #~ header** - extract row counts and heap size flags~~ ✅
 6. ~~**Add coded index support** - all 13 coded index types with decode/size helpers~~ ✅
 7. ~~**Implement core tables** - Module, TypeDef, TypeRef, MethodDef with accessors~~ ✅
-8. **Iterate** - add remaining tables/features as needed for JIT integration ← **NEXT**
+8. ~~**Complete all table accessors** - all 45 ECMA-335 tables have accessors~~ ✅
+9. **Type Resolution** - TypeDef lookup, TypeRef resolution, generic instantiation ← **NEXT**
+10. **Assembly Identity** - version matching, AssemblyRef resolution
 
 ### Gotchas
 
