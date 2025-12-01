@@ -1,5 +1,5 @@
 #!/bin/bash
-# netos QEMU launcher
+# ProtonOS QEMU launcher
 # Run from inside the dev container
 
 set -e

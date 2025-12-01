@@ -185,7 +185,7 @@ If you see "ELF" anywhere, something is misconfigured.
 │   │   │   └────────────┘ └────────────┘ └────────────┘ └────────────┘ │  │  │
 │   │   │                                                                │  │  │
 │   │   │   ┌────────────┐ ┌────────────┐ ┌────────────────────────────┐│  │  │
-│   │   │   │    QEMU    │ │   OVMF/    │ │  /usr/src/netos (mount)    ││  │  │
+│   │   │   │    QEMU    │ │   OVMF/    │ │  /usr/src/protonos (mount)    ││  │  │
 │   │   │   │ (Emulator) │ │   AAVMF    │ │   - Source code            ││  │  │
 │   │   │   └────────────┘ └────────────┘ │   - Build outputs          ││  │  │
 │   │   │                                  └────────────────────────────┘│  │  │
@@ -195,7 +195,7 @@ If you see "ELF" anywhere, something is misconfigured.
 │                                                                              │
 │   ┌────────────────────────────────────────┐                                │
 │   │         Project Directory               │                                │
-│   │   /path/to/netos/                      │  ← Mounted as /usr/src/netos   │
+│   │   /path/to/ProtonOS/                      │  ← Mounted as /usr/src/protonos   │
 │   └────────────────────────────────────────┘                                │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -204,7 +204,7 @@ If you see "ELF" anywhere, something is misconfigured.
 ### Workflow
 
 1. **Edit** source files on host (VS Code, Rider, etc.)
-2. **Build** inside container (sources mounted at `/usr/src/netos`)
+2. **Build** inside container (sources mounted at `/usr/src/protonos`)
 3. **Test** with QEMU inside container (or on host with forwarded display)
 4. **Debug** with GDB inside container or attach from host
 
@@ -240,9 +240,9 @@ docker build -t managedkernel-dev .
 
 # Or manually:
 docker run -it --rm \
-    -v "$(pwd):/usr/src/netos" \
-    -w /usr/src/netos \
-    netos-dev
+    -v "$(pwd):/usr/src/protonos" \
+    -w /usr/src/protonos \
+    protonos-dev
 
 # Inside container:
 ./build.sh
@@ -787,10 +787,10 @@ VS Code can automatically use the Docker container for development:
 
 # Or manually:
 docker run -it --rm \
-    -v "$(pwd):/usr/src/netos" \
-    -w /usr/src/netos \
-    --name netos-dev \
-    netos-dev
+    -v "$(pwd):/usr/src/protonos" \
+    -w /usr/src/protonos \
+    --name protonos-dev \
+    protonos-dev
 
 # Now you have access to all tools:
 bflat -v

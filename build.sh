@@ -1,5 +1,5 @@
 #!/bin/bash
-# netos build script - kills containers, cleans, and builds
+# ProtonOS build script - kills containers, cleans, and builds
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -15,6 +15,6 @@ fi
 
 # Run clean.sh then make image inside container
 docker run $DOCKER_FLAGS --rm \
-    -v "${SCRIPT_DIR}:/usr/src/netos" \
-    -w /usr/src/netos \
-    netos-dev bash -c "./clean.sh && make image"
+    -v "${SCRIPT_DIR}:/usr/src/protonos" \
+    -w /usr/src/protonos \
+    protonos-dev bash -c "./clean.sh && make image"
