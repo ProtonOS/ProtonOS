@@ -403,6 +403,6 @@ public static unsafe class EnvironmentApi
     [UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
     public static void FailFast()
     {
-        Cpu.HaltForever();
+        CPU.HaltForever();
     }
 }

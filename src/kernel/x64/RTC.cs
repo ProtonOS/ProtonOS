@@ -11,7 +11,7 @@ namespace Kernel.X64;
 /// RTC (Real-Time Clock) driver for reading wall-clock time from CMOS.
 /// The RTC provides calendar time (year, month, day, hour, minute, second).
 /// </summary>
-public static unsafe class Rtc
+public static unsafe class RTC
 {
     // CMOS/RTC I/O ports
     private const ushort CMOS_ADDRESS = 0x70;
@@ -107,9 +107,9 @@ public static unsafe class Rtc
         _bootTimeFileTime = DateTimeToFileTime(year, month, day, hour, minute, second);
 
         // Record HPET ticks at boot time
-        if (Hpet.IsInitialized)
+        if (HPET.IsInitialized)
         {
-            _bootHpetTicks = Hpet.ReadCounter();
+            _bootHpetTicks = HPET.ReadCounter();
         }
 
         _initialized = true;
@@ -327,14 +327,14 @@ public static unsafe class Rtc
             return 0;
 
         // If HPET is available, add elapsed time since boot
-        if (Hpet.IsInitialized)
+        if (HPET.IsInitialized)
         {
-            ulong currentHpetTicks = Hpet.ReadCounter();
+            ulong currentHpetTicks = HPET.ReadCounter();
             ulong elapsedTicks = currentHpetTicks - _bootHpetTicks;
 
             // Convert HPET ticks to 100-nanosecond intervals (FILETIME units)
             // HPET gives nanoseconds via TicksToNanoseconds, divide by 100 for FILETIME
-            ulong elapsedNs = Hpet.TicksToNanoseconds(elapsedTicks);
+            ulong elapsedNs = HPET.TicksToNanoseconds(elapsedTicks);
             ulong elapsed100Ns = elapsedNs / 100;
 
             return _bootTimeFileTime + elapsed100Ns;

@@ -12,7 +12,7 @@ namespace Kernel.X64;
 /// <summary>
 /// Local APIC Register offsets (memory-mapped at APIC base)
 /// </summary>
-public static class ApicRegisters
+public static class APICRegisters
 {
     public const uint Id = 0x020;                    // Local APIC ID
     public const uint Version = 0x030;              // Local APIC Version
@@ -36,7 +36,7 @@ public static class ApicRegisters
 /// <summary>
 /// Local APIC Timer modes
 /// </summary>
-public static class ApicTimerMode
+public static class APICTimerMode
 {
     public const uint OneShot = 0 << 17;    // One-shot mode
     public const uint Periodic = 1 << 17;   // Periodic mode
@@ -46,7 +46,7 @@ public static class ApicTimerMode
 /// <summary>
 /// Local APIC Timer divide values (for TimerDivideConfig register)
 /// </summary>
-public static class ApicTimerDivide
+public static class APICTimerDivide
 {
     public const uint By1 = 0b1011;   // Divide by 1
     public const uint By2 = 0b0000;   // Divide by 2
@@ -61,7 +61,7 @@ public static class ApicTimerDivide
 /// <summary>
 /// Local APIC LVT entry masks
 /// </summary>
-public static class ApicLvt
+public static class APICLVT
 {
     public const uint VectorMask = 0xFF;          // Bits 0-7: interrupt vector
     public const uint DeliveryStatus = 1 << 12;   // Bit 12: delivery status (read-only)
@@ -71,15 +71,15 @@ public static class ApicLvt
 /// <summary>
 /// APIC MSR addresses
 /// </summary>
-public static class ApicMsr
+public static class APICMSR
 {
-    public const uint ApicBase = 0x1B;  // IA32_APIC_BASE MSR
+    public const uint APICBase = 0x1B;  // IA32_APIC_BASE MSR
 }
 
 /// <summary>
 /// Local APIC driver
 /// </summary>
-public static unsafe class Apic
+public static unsafe class APIC
 {
     // Default Local APIC base address
     private const ulong DefaultApicBase = 0xFEE00000;
@@ -136,7 +136,7 @@ public static unsafe class Apic
         DebugConsole.WriteLine("[APIC] Initializing Local APIC...");
 
         // Read APIC base from MSR
-        ulong apicBaseMsr = Cpu.ReadMsr(ApicMsr.ApicBase);
+        ulong apicBaseMsr = CPU.ReadMsr(APICMSR.APICBase);
         _apicBase = apicBaseMsr & 0xFFFFF000;  // Bits 12-35 are the base address
 
         // Check if APIC is enabled globally (bit 11)
@@ -151,13 +151,13 @@ public static unsafe class Apic
         {
             // Enable APIC globally
             apicBaseMsr |= (1UL << 11);
-            Cpu.WriteMsr(ApicMsr.ApicBase, apicBaseMsr);
+            CPU.WriteMsr(APICMSR.APICBase, apicBaseMsr);
             DebugConsole.WriteLine("[APIC] Enabled globally via MSR");
         }
 
         // Read APIC ID and version
-        uint apicId = ReadRegister(ApicRegisters.Id) >> 24;
-        uint version = ReadRegister(ApicRegisters.Version);
+        uint apicId = ReadRegister(APICRegisters.Id) >> 24;
+        uint version = ReadRegister(APICRegisters.Version);
         uint maxLvtEntry = ((version >> 16) & 0xFF) + 1;
 
         DebugConsole.Write("[APIC] ID: ");
@@ -170,20 +170,20 @@ public static unsafe class Apic
 
         // Enable APIC via Spurious Interrupt Vector Register
         // Set spurious vector to 0xFF and set bit 8 (APIC software enable)
-        WriteRegister(ApicRegisters.SpuriousInterrupt, 0xFF | (1 << 8));
+        WriteRegister(APICRegisters.SpuriousInterrupt, 0xFF | (1 << 8));
 
         // Mask all LVT entries initially
-        WriteRegister(ApicRegisters.LvtTimer, ApicLvt.Masked);
-        WriteRegister(ApicRegisters.LvtLint0, ApicLvt.Masked);
-        WriteRegister(ApicRegisters.LvtLint1, ApicLvt.Masked);
-        WriteRegister(ApicRegisters.LvtError, ApicLvt.Masked);
+        WriteRegister(APICRegisters.LvtTimer, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtLint0, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtLint1, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtError, APICLVT.Masked);
         if (maxLvtEntry > 4)
-            WriteRegister(ApicRegisters.LvtPerformance, ApicLvt.Masked);
+            WriteRegister(APICRegisters.LvtPerformance, APICLVT.Masked);
         if (maxLvtEntry > 5)
-            WriteRegister(ApicRegisters.LvtThermal, ApicLvt.Masked);
+            WriteRegister(APICRegisters.LvtThermal, APICLVT.Masked);
 
         // Clear any pending errors
-        WriteRegister(ApicRegisters.ErrorStatus, 0);
+        WriteRegister(APICRegisters.ErrorStatus, 0);
 
         _initialized = true;
         DebugConsole.WriteLine("[APIC] Local APIC enabled");
@@ -193,7 +193,7 @@ public static unsafe class Apic
 
     /// <summary>
     /// Calibrate APIC timer using HPET.
-    /// Must be called after Hpet.Init().
+    /// Must be called after HPET.Init().
     /// </summary>
     public static bool CalibrateTimer()
     {
@@ -203,7 +203,7 @@ public static unsafe class Apic
             return false;
         }
 
-        if (!Hpet.IsInitialized)
+        if (!HPET.IsInitialized)
         {
             DebugConsole.WriteLine("[APIC] HPET not available for calibration!");
             return false;
@@ -212,31 +212,31 @@ public static unsafe class Apic
         DebugConsole.WriteLine("[APIC] Calibrating timer using HPET...");
 
         // Set timer divide to 1 for maximum resolution
-        WriteRegister(ApicRegisters.TimerDivideConfig, ApicTimerDivide.By1);
+        WriteRegister(APICRegisters.TimerDivideConfig, APICTimerDivide.By1);
 
         // Use a 10ms calibration period
         const ulong calibrationMs = 10;
         const ulong calibrationNs = calibrationMs * 1_000_000;
 
         // Start APIC timer with maximum initial count (one-shot mode)
-        WriteRegister(ApicRegisters.LvtTimer, ApicLvt.Masked | ApicTimerMode.OneShot | TimerVector);
-        WriteRegister(ApicRegisters.TimerInitialCount, 0xFFFFFFFF);
+        WriteRegister(APICRegisters.LvtTimer, APICLVT.Masked | APICTimerMode.OneShot | TimerVector);
+        WriteRegister(APICRegisters.TimerInitialCount, 0xFFFFFFFF);
 
         // Wait using HPET
-        ulong hpetStart = Hpet.ReadCounter();
-        ulong hpetTicksToWait = Hpet.NanosecondsToTicks(calibrationNs);
+        ulong hpetStart = HPET.ReadCounter();
+        ulong hpetTicksToWait = HPET.NanosecondsToTicks(calibrationNs);
         ulong hpetEnd = hpetStart + hpetTicksToWait;
 
-        while (Hpet.ReadCounter() < hpetEnd)
+        while (HPET.ReadCounter() < hpetEnd)
         {
-            Cpu.Pause();
+            CPU.Pause();
         }
 
         // Read how many APIC ticks elapsed
-        uint apicTicksElapsed = 0xFFFFFFFF - ReadRegister(ApicRegisters.TimerCurrentCount);
+        uint apicTicksElapsed = 0xFFFFFFFF - ReadRegister(APICRegisters.TimerCurrentCount);
 
         // Stop the timer
-        WriteRegister(ApicRegisters.TimerInitialCount, 0);
+        WriteRegister(APICRegisters.TimerInitialCount, 0);
 
         // Calculate ticks per millisecond
         _ticksPerMs = apicTicksElapsed / calibrationMs;
@@ -273,9 +273,9 @@ public static unsafe class Apic
         DebugConsole.WriteLine();
 
         // Configure timer: periodic mode, unmasked, vector 32
-        WriteRegister(ApicRegisters.TimerDivideConfig, ApicTimerDivide.By1);
-        WriteRegister(ApicRegisters.TimerInitialCount, initialCount);
-        WriteRegister(ApicRegisters.LvtTimer, ApicTimerMode.Periodic | TimerVector);
+        WriteRegister(APICRegisters.TimerDivideConfig, APICTimerDivide.By1);
+        WriteRegister(APICRegisters.TimerInitialCount, initialCount);
+        WriteRegister(APICRegisters.LvtTimer, APICTimerMode.Periodic | TimerVector);
     }
 
     /// <summary>
@@ -287,8 +287,8 @@ public static unsafe class Apic
             return;
 
         // Mask the timer and set initial count to 0
-        WriteRegister(ApicRegisters.LvtTimer, ApicLvt.Masked);
-        WriteRegister(ApicRegisters.TimerInitialCount, 0);
+        WriteRegister(APICRegisters.LvtTimer, APICLVT.Masked);
+        WriteRegister(APICRegisters.TimerInitialCount, 0);
     }
 
     /// <summary>
@@ -298,7 +298,7 @@ public static unsafe class Apic
     {
         if (!_initialized)
             return;
-        WriteRegister(ApicRegisters.Eoi, 0);
+        WriteRegister(APICRegisters.Eoi, 0);
     }
 
     /// <summary>

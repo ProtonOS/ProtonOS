@@ -93,7 +93,7 @@ src/
     ├── PAL/             # Platform Abstraction Layer (Win32-compatible APIs)
     ├── Platform/        # UEFI, ACPI, DebugConsole
     ├── Threading/       # Scheduler, Thread
-    └── x64/             # x64-specific (Arch, Gdt, Idt, Apic, etc.)
+    └── x64/             # x64-specific (Arch, GDT, IDT, APIC, etc.)
 
 build/
 └── x64/
@@ -107,7 +107,7 @@ build/
 We use `--stdlib:none` with our own netlib (forked from bflat's zerolib). This provides:
 - Core types: Object, String, Array, Span<T>, etc.
 - Compiler support types: RuntimeHelpers, Unsafe, etc.
-- No GC yet - manual memory management via HeapAllocator
+- Mark-sweep GC with stack/static root enumeration
 
 ### Export/Import Pattern
 netlib and kernel are compiled together but use export/import for cross-module calls:
@@ -115,7 +115,7 @@ netlib and kernel are compiled together but use export/import for cross-module c
 ```csharp
 // Kernel exports (src/kernel/PAL/Environment.cs)
 [UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
-public static void FailFast() { Cpu.HaltForever(); }
+public static void FailFast() { CPU.HaltForever(); }
 
 // netlib imports (src/netlib/System/Environment.cs)
 [DllImport("*")]

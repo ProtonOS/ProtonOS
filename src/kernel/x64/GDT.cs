@@ -13,7 +13,7 @@ namespace Kernel.X64;
 /// GDT segment selectors (byte offsets into GDT)
 /// Layout optimized for syscall/sysret instructions.
 /// </summary>
-public static class GdtSelectors
+public static class GDTSelectors
 {
     public const ushort Null = 0x00;
     public const ushort KernelCode = 0x08;
@@ -27,7 +27,7 @@ public static class GdtSelectors
 /// 8-byte GDT entry structure
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct GdtEntry
+public struct GDTEntry
 {
     public ushort LimitLow;      // Limit bits 0-15
     public ushort BaseLow;       // Base bits 0-15
@@ -39,14 +39,14 @@ public struct GdtEntry
     /// <summary>
     /// Create a null descriptor
     /// </summary>
-    public static GdtEntry Null() => default;
+    public static GDTEntry Null() => default;
 
     /// <summary>
     /// Create a 64-bit kernel code segment descriptor (Ring 0)
     /// </summary>
-    public static GdtEntry KernelCode64()
+    public static GDTEntry KernelCode64()
     {
-        return new GdtEntry
+        return new GDTEntry
         {
             LimitLow = 0,
             BaseLow = 0,
@@ -64,9 +64,9 @@ public struct GdtEntry
     /// <summary>
     /// Create a 64-bit kernel data segment descriptor (Ring 0)
     /// </summary>
-    public static GdtEntry KernelData64()
+    public static GDTEntry KernelData64()
     {
-        return new GdtEntry
+        return new GDTEntry
         {
             LimitLow = 0,
             BaseLow = 0,
@@ -83,9 +83,9 @@ public struct GdtEntry
     /// <summary>
     /// Create a 64-bit user code segment descriptor (Ring 3)
     /// </summary>
-    public static GdtEntry UserCode64()
+    public static GDTEntry UserCode64()
     {
-        return new GdtEntry
+        return new GDTEntry
         {
             LimitLow = 0,
             BaseLow = 0,
@@ -102,9 +102,9 @@ public struct GdtEntry
     /// <summary>
     /// Create a 64-bit user data segment descriptor (Ring 3)
     /// </summary>
-    public static GdtEntry UserData64()
+    public static GDTEntry UserData64()
     {
-        return new GdtEntry
+        return new GDTEntry
         {
             LimitLow = 0,
             BaseLow = 0,
@@ -183,7 +183,7 @@ public struct Tss64
 /// GDT pointer structure for lgdt instruction
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct GdtPointer
+public struct GDTPointer
 {
     public ushort Limit;  // Size of GDT - 1
     public ulong Base;    // Linear address of GDT
@@ -193,7 +193,7 @@ public struct GdtPointer
 /// Static storage for GDT entries (fixed buffer wrapper)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct GdtStorage
+internal unsafe struct GDTStorage
 {
     // 7 GDT entries × 8 bytes = 56 bytes
     public fixed byte Data[7 * 8];
@@ -212,16 +212,16 @@ internal unsafe struct TssStorage
 /// <summary>
 /// Global Descriptor Table management
 /// </summary>
-public static unsafe class Gdt
+public static unsafe class GDT
 {
     // GDT layout: null + kernel code + kernel data + user data + user code + TSS (2 slots)
-    // Total: 7 GdtEntry slots (TSS takes 2)
-    private const int GdtEntryCount = 7;
+    // Total: 7 GDTEntry slots (TSS takes 2)
+    private const int GDTEntryCount = 7;
 
     // Static storage for GDT and TSS (fixed buffers, no heap allocation)
-    private static GdtStorage _gdtStorage;
+    private static GDTStorage _gdtStorage;
     private static TssStorage _tssStorage;
-    private static GdtPointer _gdtPointer;
+    private static GDTPointer _gdtPointer;
 
     /// <summary>
     /// Initialize and load our GDT
@@ -232,7 +232,7 @@ public static unsafe class Gdt
         fixed (byte* gdtPtr = _gdtStorage.Data)
         fixed (byte* tssPtr = _tssStorage.Data)
         {
-            GdtEntry* gdt = (GdtEntry*)gdtPtr;
+            GDTEntry* gdt = (GDTEntry*)gdtPtr;
             Tss64* tss = (Tss64*)tssPtr;
 
             // Clear TSS
@@ -240,35 +240,35 @@ public static unsafe class Gdt
                 tssPtr[i] = 0;
 
             // Set up GDT entries
-            gdt[0] = GdtEntry.Null();                              // 0x00: Null
-            gdt[1] = GdtEntry.KernelCode64();                      // 0x08: Kernel Code
-            gdt[2] = GdtEntry.KernelData64();                      // 0x10: Kernel Data
-            gdt[3] = GdtEntry.UserData64();                        // 0x18: User Data
-            gdt[4] = GdtEntry.UserCode64();                        // 0x20: User Code
+            gdt[0] = GDTEntry.Null();                              // 0x00: Null
+            gdt[1] = GDTEntry.KernelCode64();                      // 0x08: Kernel Code
+            gdt[2] = GDTEntry.KernelData64();                      // 0x10: Kernel Data
+            gdt[3] = GDTEntry.UserData64();                        // 0x18: User Data
+            gdt[4] = GDTEntry.UserCode64();                        // 0x20: User Code
 
             // TSS descriptor (16 bytes = 2 GDT slots)
             var tssDesc = TssDescriptor.Create((ulong)tss, (ushort)(sizeof(Tss64) - 1));
             *(TssDescriptor*)&gdt[5] = tssDesc;                    // 0x28: TSS
 
             // Set up GDT pointer
-            _gdtPointer.Limit = (ushort)(GdtEntryCount * sizeof(GdtEntry) - 1);
+            _gdtPointer.Limit = (ushort)(GDTEntryCount * sizeof(GDTEntry) - 1);
             _gdtPointer.Base = (ulong)gdt;
 
             DebugConsole.Write("[GDT] Loading... ");
 
             // Load the GDT
-            fixed (GdtPointer* ptr = &_gdtPointer)
+            fixed (GDTPointer* ptr = &_gdtPointer)
             {
-                Cpu.LoadGdt(ptr);
+                CPU.LoadGdt(ptr);
             }
             DebugConsole.Write("lgdt ");
 
             // Reload segment registers with our selectors
-            Cpu.ReloadSegments(GdtSelectors.KernelCode, GdtSelectors.KernelData);
+            CPU.ReloadSegments(GDTSelectors.KernelCode, GDTSelectors.KernelData);
             DebugConsole.Write("segs ");
 
             // Load the TSS
-            Cpu.LoadTr(GdtSelectors.Tss);
+            CPU.LoadTr(GDTSelectors.Tss);
             DebugConsole.Write("tss ");
 
             DebugConsole.Write("at 0x");

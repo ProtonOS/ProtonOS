@@ -23,10 +23,10 @@ public static unsafe class Kernel
         DebugConsole.WriteLine();
 
         // Verify we have access to UEFI system table
-        var systemTable = UefiBoot.SystemTable;
+        var systemTable = UEFIBoot.SystemTable;
         DebugConsole.Write("[UEFI] SystemTable at 0x");
         DebugConsole.WriteHex((ulong)systemTable);
-        if (systemTable != null && UefiBoot.BootServicesAvailable)
+        if (systemTable != null && UEFIBoot.BootServicesAvailable)
         {
             DebugConsole.Write(" BootServices at 0x");
             DebugConsole.WriteHex((ulong)systemTable->BootServices);
@@ -44,10 +44,10 @@ public static unsafe class Kernel
         PageAllocator.Init();
 
         // Initialize ACPI (requires UEFI - must be before ExitBootServices)
-        Acpi.Init();
+        ACPI.Init();
 
         // Exit UEFI boot services - we now own the hardware
-        UefiBoot.ExitBootServices();
+        UEFIBoot.ExitBootServices();
 
         // Initialize architecture-specific code (GDT, IDT, virtual memory)
 #if ARCH_X64
@@ -66,7 +66,7 @@ public static unsafe class Kernel
         InitializeStatics.Init();
 
         // Initialize garbage collector (must be after GCHeap and PageAllocator)
-        GarbageCollector.Init();
+        GC.Init();
 
         // Test GCDesc with heap-allocated object that has references
         GCDescHelper.TestWithHeapObject();
@@ -75,7 +75,7 @@ public static unsafe class Kernel
         Scheduler.Init();
 
         // Initialize PAL subsystems
-        Tls.Init();
+        TLS.Init();
         PAL.Memory.Init();
 
         // Second-stage arch init (timers, enable interrupts)
@@ -115,7 +115,7 @@ public static unsafe class Kernel
         // Boot thread becomes idle thread - wait for interrupts
         while (true)
         {
-            Cpu.Halt();
+            CPU.Halt();
         }
     }
 
@@ -181,7 +181,7 @@ public static unsafe class Kernel
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[GC Test] Testing garbage collector...");
 
-        if (!GarbageCollector.IsInitialized)
+        if (!GC.IsInitialized)
         {
             DebugConsole.WriteLine("[GC Test] SKIPPED: GC not initialized");
             return;
@@ -189,7 +189,7 @@ public static unsafe class Kernel
 
         // Step 1: Run initial GC to clear any garbage from startup
         DebugConsole.WriteLine("[GC Test] Step 1: Initial collection to clear startup garbage...");
-        GarbageCollector.Collect();
+        GC.Collect();
 
         // Get baseline free list stats
         GCHeap.GetFreeListStats(out ulong baselineFreeBytes, out ulong baselineFreeCount);
@@ -221,9 +221,9 @@ public static unsafe class Kernel
 
         // Step 3: Trigger GC - should free exactly 7 objects
         DebugConsole.WriteLine("[GC Test] Step 3: Triggering collection...");
-        GarbageCollector.SetTraceGC(true);
+        GC.SetTraceGC(true);
         int markedCount = RunGCWithLiveObjects(live1!, live2!, live3!);
-        GarbageCollector.SetTraceGC(false);
+        GC.SetTraceGC(false);
 
         // Step 4: Verify results
         GCHeap.GetFreeListStats(out ulong newFreeBytes, out ulong newFreeCount);
@@ -320,7 +320,7 @@ public static unsafe class Kernel
     private static int RunGCWithLiveObjects(object obj1, object obj2, object obj3)
     {
         // These parameters are live across the GC call
-        int result = GarbageCollector.Collect();
+        int result = GC.Collect();
 
         // Use the objects after GC to ensure they're kept alive
         KeepAlive(obj1);
@@ -416,7 +416,7 @@ public static unsafe class Kernel
         }
 
         // Allocate TLS slot for testing
-        _testTlsSlot = Tls.TlsAlloc();
+        _testTlsSlot = TLS.TlsAlloc();
         if (_testTlsSlot != 0xFFFFFFFF)
         {
             DebugConsole.Write("[Test] Allocated TLS slot: ");
@@ -552,7 +552,7 @@ public static unsafe class Kernel
             // Busy wait to consume time slice
             for (ulong i = 0; i < 10_000_000; i++)
             {
-                Cpu.Pause();
+                CPU.Pause();
             }
         }
 
@@ -580,7 +580,7 @@ public static unsafe class Kernel
             // Busy wait to consume time slice
             for (ulong i = 0; i < 10_000_000; i++)
             {
-                Cpu.Pause();
+                CPU.Pause();
             }
         }
 
@@ -624,7 +624,7 @@ public static unsafe class Kernel
 
         // Store thread ID in TLS slot
         uint threadId = Scheduler.GetCurrentThreadId();
-        bool setResult = Tls.TlsSetValue(_testTlsSlot, (void*)(ulong)threadId);
+        bool setResult = TLS.TlsSetValue(_testTlsSlot, (void*)(ulong)threadId);
         if (!setResult)
         {
             DebugConsole.WriteLine("[TLS Test] FAILED to set TLS value!");
@@ -632,7 +632,7 @@ public static unsafe class Kernel
         }
 
         // Read it back
-        void* value = Tls.TlsGetValue(_testTlsSlot);
+        void* value = TLS.TlsGetValue(_testTlsSlot);
         uint readBack = (uint)(ulong)value;
 
         if (readBack == threadId)
@@ -662,7 +662,7 @@ public static unsafe class Kernel
                 // Busy wait a bit
                 for (ulong j = 0; j < 5_000_000; j++)
                 {
-                    Cpu.Pause();
+                    CPU.Pause();
                 }
 
                 // Enter critical section, update counter, signal consumer
@@ -751,7 +751,7 @@ public static unsafe class Kernel
                 // Busy wait a bit before acquiring
                 for (ulong j = 0; j < 3_000_000; j++)
                 {
-                    Cpu.Pause();
+                    CPU.Pause();
                 }
 
                 DebugConsole.WriteLine("[SRW Writer] Acquiring exclusive lock...");
@@ -774,7 +774,7 @@ public static unsafe class Kernel
                 // Hold lock briefly
                 for (ulong j = 0; j < 1_000_000; j++)
                 {
-                    Cpu.Pause();
+                    CPU.Pause();
                 }
 
                 SRWLockOps.ReleaseSRWLockExclusive(srwPtr);
@@ -806,13 +806,13 @@ public static unsafe class Kernel
                 // Busy wait a bit before acquiring
                 for (ulong j = 0; j < 2_000_000; j++)
                 {
-                    Cpu.Pause();
+                    CPU.Pause();
                 }
 
                 SRWLockOps.AcquireSRWLockShared(srwPtr);
 
                 // Increment reader count atomically
-                Cpu.AtomicIncrement(ref _srwReaderCount);
+                CPU.AtomicIncrement(ref _srwReaderCount);
 
                 int value = _srwSharedData;
                 DebugConsole.Write("[SRW Reader ");
@@ -826,11 +826,11 @@ public static unsafe class Kernel
                 // Hold lock briefly
                 for (ulong j = 0; j < 500_000; j++)
                 {
-                    Cpu.Pause();
+                    CPU.Pause();
                 }
 
                 // Decrement reader count atomically
-                Cpu.AtomicDecrement(ref _srwReaderCount);
+                CPU.AtomicDecrement(ref _srwReaderCount);
 
                 SRWLockOps.ReleaseSRWLockShared(srwPtr);
                 readCount++;
@@ -1059,7 +1059,7 @@ public static unsafe class Kernel
         // Use a volatile write to a local before and after to prove execution continued
         int testVal = 42;
 
-        Cpu.Breakpoint(); // This triggers INT3 (exception vector 3)
+        CPU.Breakpoint(); // This triggers INT3 (exception vector 3)
 
         // If we reach here, the exception was handled and we continued
         testVal = 123;
@@ -1127,7 +1127,7 @@ public static unsafe class Kernel
         // Wait a bit and read again to verify it advances
         for (ulong i = 0; i < 5_000_000; i++)
         {
-            Cpu.Pause();
+            CPU.Pause();
         }
 
         long counter2;
@@ -1194,7 +1194,7 @@ public static unsafe class Kernel
         // Wait and verify it advances
         for (ulong i = 0; i < 5_000_000; i++)
         {
-            Cpu.Pause();
+            CPU.Pause();
         }
 
         ulong tick2 = SystemApi.GetTickCount64();
@@ -1686,7 +1686,7 @@ public static unsafe class Kernel
         {
             _suspendTestCounter++;
             // Small busy loop
-            for (int i = 0; i < 1000; i++) Cpu.Pause();
+            for (int i = 0; i < 1000; i++) CPU.Pause();
         }
         return 0;
     }
@@ -3670,7 +3670,7 @@ public static unsafe class Kernel
 
         // ==================== COM Stubs Tests ====================
         DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx");
-        int hr = PAL.Com.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
+        int hr = PAL.COM.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
         if (hr != PAL.HResult.S_OK)
         {
             DebugConsole.Write("[NewPAL Test] Test 8: FAILED - hr = ");
@@ -3679,19 +3679,19 @@ public static unsafe class Kernel
             return 1;
         }
         // Second call should return S_FALSE (already initialized)
-        hr = PAL.Com.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
+        hr = PAL.COM.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
         if (hr != PAL.HResult.S_FALSE)
         {
             DebugConsole.WriteLine("[NewPAL Test] Test 8: FAILED - second call should be S_FALSE");
             return 1;
         }
-        PAL.Com.CoUninitialize();
+        PAL.COM.CoUninitialize();
         DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx/CoUninitialize - PASSED");
 
         // ==================== NativeAOT PAL Tests ====================
         DebugConsole.WriteLine("[NewPAL Test] Test 9: PalGetModuleBounds");
         ulong lowerBound = 0, upperBound = 0;
-        bool boundsResult = PAL.NativeAotPal.PalGetModuleBounds(&lowerBound, &upperBound);
+        bool boundsResult = PAL.NativeAOTPAL.GetModuleBounds(&lowerBound, &upperBound);
         if (!boundsResult)
         {
             DebugConsole.WriteLine("[NewPAL Test] Test 9: FAILED - returned false");
@@ -3715,7 +3715,7 @@ public static unsafe class Kernel
         // Test 10: PalGetMaximumStackBounds
         DebugConsole.WriteLine("[NewPAL Test] Test 10: PalGetMaximumStackBounds");
         ulong stackLow = 0, stackHigh = 0;
-        bool stackResult = PAL.NativeAotPal.PalGetMaximumStackBounds(&stackLow, &stackHigh);
+        bool stackResult = PAL.NativeAOTPAL.GetMaximumStackBounds(&stackLow, &stackHigh);
         if (!stackResult)
         {
             DebugConsole.WriteLine("[NewPAL Test] Test 10: FAILED - returned false");
@@ -3731,7 +3731,7 @@ public static unsafe class Kernel
             return 1;
         }
         // Verify current RSP is within bounds
-        ulong currentRsp = Cpu.GetRsp();
+        ulong currentRsp = CPU.GetRsp();
         if (currentRsp < stackLow || currentRsp > stackHigh)
         {
             DebugConsole.Write("[NewPAL Test] Test 10: FAILED - RSP 0x");
@@ -3748,7 +3748,7 @@ public static unsafe class Kernel
         // Test 11: PalGetModuleFileName
         DebugConsole.WriteLine("[NewPAL Test] Test 11: PalGetModuleFileName");
         char* fileNameBuf = stackalloc char[64];
-        uint nameLen = PAL.NativeAotPal.PalGetModuleFileName(null, fileNameBuf, 64);
+        uint nameLen = PAL.NativeAOTPAL.GetModuleFileName(null, fileNameBuf, 64);
         if (nameLen == 0)
         {
             DebugConsole.WriteLine("[NewPAL Test] Test 11: FAILED - returned 0 length");

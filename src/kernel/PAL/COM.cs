@@ -49,7 +49,7 @@ public static class HResult
 /// COM is not supported in netos, but these stubs allow code that calls
 /// these APIs to continue without crashing.
 /// </summary>
-public static unsafe class Com
+public static unsafe class COM
 {
     private static bool _comInitialized;
     private static uint _comFlags;

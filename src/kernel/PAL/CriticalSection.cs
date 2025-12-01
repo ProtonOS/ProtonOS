@@ -121,7 +121,7 @@ public static unsafe class CriticalSectionOps
 
         // Fast path: try to acquire without contention
         // Increment LockCount atomically - if it was -1, we got the lock
-        int oldCount = Cpu.AtomicIncrement(ref cs->LockCount);
+        int oldCount = CPU.AtomicIncrement(ref cs->LockCount);
         if (oldCount == -1)
         {
             // We got the lock (LockCount went from -1 to 0)
@@ -143,12 +143,12 @@ public static unsafe class CriticalSectionOps
         {
             for (uint i = 0; i < cs->SpinCount; i++)
             {
-                Cpu.Pause();
+                CPU.Pause();
 
                 // Try to acquire - look for LockCount == 0 (unlocked after decrement)
                 if (cs->LockCount < 0)
                 {
-                    oldCount = Cpu.AtomicIncrement(ref cs->LockCount);
+                    oldCount = CPU.AtomicIncrement(ref cs->LockCount);
                     if (oldCount == -1)
                     {
                         cs->OwningThread = current;
@@ -183,7 +183,7 @@ public static unsafe class CriticalSectionOps
         var current = Scheduler.CurrentThread;
 
         // Try to acquire without contention
-        int oldCount = Cpu.AtomicIncrement(ref cs->LockCount);
+        int oldCount = CPU.AtomicIncrement(ref cs->LockCount);
         if (oldCount == -1)
         {
             cs->OwningThread = current;
@@ -199,7 +199,7 @@ public static unsafe class CriticalSectionOps
         }
 
         // Contention - restore lock count and fail
-        Cpu.AtomicDecrement(ref cs->LockCount);
+        CPU.AtomicDecrement(ref cs->LockCount);
         return false;
     }
 
@@ -216,7 +216,7 @@ public static unsafe class CriticalSectionOps
         if (cs->RecursionCount > 0)
         {
             // Still held recursively - just decrement LockCount
-            Cpu.AtomicDecrement(ref cs->LockCount);
+            CPU.AtomicDecrement(ref cs->LockCount);
             return;
         }
 
@@ -224,7 +224,7 @@ public static unsafe class CriticalSectionOps
         cs->OwningThread = null;
 
         // Decrement LockCount
-        int newCount = Cpu.AtomicDecrement(ref cs->LockCount);
+        int newCount = CPU.AtomicDecrement(ref cs->LockCount);
 
         // If newCount >= 0, there are waiters
         if (newCount >= 0 && cs->LockSemaphore != null)

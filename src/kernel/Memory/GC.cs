@@ -29,7 +29,7 @@ namespace Kernel.Memory;
 /// Garbage collector for the managed heap.
 /// Currently implements mark-sweep with stop-the-world collection.
 /// </summary>
-public static unsafe class GarbageCollector
+public static unsafe class GC
 {
     // Mark stack (work queue) for iterative marking
     // Fixed-size array to avoid heap allocation during GC
@@ -498,7 +498,7 @@ public static unsafe class GarbageCollector
     /// </summary>
     private static void MarkThreadStackRoots(Thread* thread)
     {
-        // Convert CpuContext to ExceptionContext
+        // Convert CPUContext to ExceptionContext
         // The layouts are similar but not identical
         ExceptionContext context;
         context.Rip = thread->Context.Rip;

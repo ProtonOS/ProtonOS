@@ -11,7 +11,7 @@ namespace Kernel.X64;
 /// <summary>
 /// CPU intrinsics for x64 - all native function imports in one place
 /// </summary>
-public static unsafe class Cpu
+public static unsafe class CPU
 {
     // ==================== Native Imports ====================
 
@@ -71,10 +71,10 @@ public static unsafe class Cpu
 
     // Context Switching (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void switch_context(CpuContext* oldContext, CpuContext* newContext);
+    private static extern void switch_context(CPUContext* oldContext, CPUContext* newContext);
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void load_context(CpuContext* context);
+    private static extern void load_context(CPUContext* context);
 
     // PAL Context Restore (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -234,14 +234,14 @@ public static unsafe class Cpu
     /// Switch from current context to new context.
     /// Saves current CPU state to oldContext, loads newContext.
     /// </summary>
-    public static void SwitchContext(CpuContext* oldContext, CpuContext* newContext)
+    public static void SwitchContext(CPUContext* oldContext, CPUContext* newContext)
         => switch_context(oldContext, newContext);
 
     /// <summary>
     /// Load a context without saving current state.
     /// Used for initial thread switch.
     /// </summary>
-    public static void LoadContext(CpuContext* context)
+    public static void LoadContext(CPUContext* context)
         => load_context(context);
 
     /// <summary>
@@ -249,7 +249,7 @@ public static unsafe class Cpu
     /// This function does not return - execution continues at Context.Rip.
     /// Used for RtlRestoreContext and exception unwinding.
     /// </summary>
-    public static void RestorePalContext(void* context)
+    public static void RestorePALContext(void* context)
         => restore_pal_context(context);
 
     // --- Atomic Operations ---

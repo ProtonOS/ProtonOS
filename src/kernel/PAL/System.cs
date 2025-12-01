@@ -52,13 +52,13 @@ public static unsafe class SystemApi
     /// </summary>
     public static bool QueryPerformanceCounter(out long lpPerformanceCount)
     {
-        if (!Hpet.IsInitialized)
+        if (!HPET.IsInitialized)
         {
             lpPerformanceCount = 0;
             return false;
         }
 
-        lpPerformanceCount = (long)Hpet.ReadCounter();
+        lpPerformanceCount = (long)HPET.ReadCounter();
         return true;
     }
 
@@ -68,13 +68,13 @@ public static unsafe class SystemApi
     /// </summary>
     public static bool QueryPerformanceFrequency(out long lpFrequency)
     {
-        if (!Hpet.IsInitialized)
+        if (!HPET.IsInitialized)
         {
             lpFrequency = 0;
             return false;
         }
 
-        lpFrequency = (long)Hpet.FrequencyHz;
+        lpFrequency = (long)HPET.FrequencyHz;
         return true;
     }
 
@@ -138,11 +138,11 @@ public static unsafe class SystemApi
     /// </summary>
     public static uint GetTickCount()
     {
-        if (!Hpet.IsInitialized)
+        if (!HPET.IsInitialized)
             return 0;
 
-        ulong ticks = Hpet.ReadCounter();
-        ulong ms = Hpet.TicksToNanoseconds(ticks) / 1_000_000;
+        ulong ticks = HPET.ReadCounter();
+        ulong ms = HPET.TicksToNanoseconds(ticks) / 1_000_000;
         return (uint)ms;
     }
 
@@ -152,11 +152,11 @@ public static unsafe class SystemApi
     /// </summary>
     public static ulong GetTickCount64()
     {
-        if (!Hpet.IsInitialized)
+        if (!HPET.IsInitialized)
             return 0;
 
-        ulong ticks = Hpet.ReadCounter();
-        return Hpet.TicksToNanoseconds(ticks) / 1_000_000;
+        ulong ticks = HPET.ReadCounter();
+        return HPET.TicksToNanoseconds(ticks) / 1_000_000;
     }
 
     /// <summary>
@@ -169,7 +169,7 @@ public static unsafe class SystemApi
         if (lpSystemTimeAsFileTime == null)
             return;
 
-        ulong ft = Rtc.GetSystemTimeAsFileTime();
+        ulong ft = RTC.GetSystemTimeAsFileTime();
         lpSystemTimeAsFileTime->dwLowDateTime = (uint)(ft & 0xFFFFFFFF);
         lpSystemTimeAsFileTime->dwHighDateTime = (uint)(ft >> 32);
     }
@@ -183,7 +183,7 @@ public static unsafe class SystemApi
         if (lpSystemTime == null)
             return;
 
-        Rtc.GetSystemTime(out int year, out int month, out int day,
+        RTC.GetSystemTime(out int year, out int month, out int day,
                           out int hour, out int minute, out int second,
                           out int millisecond);
 
@@ -300,11 +300,11 @@ public static unsafe class DebugApi
 
     /// <summary>
     /// Trigger a debug break (INT 3 instruction).
-    /// This is the same as Cpu.Breakpoint but provided for PAL compatibility.
+    /// This is the same as CPU.Breakpoint but provided for PAL compatibility.
     /// </summary>
     public static void DebugBreak()
     {
-        Cpu.Breakpoint();
+        CPU.Breakpoint();
     }
 }
 

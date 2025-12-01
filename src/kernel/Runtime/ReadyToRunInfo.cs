@@ -115,13 +115,13 @@ public static unsafe class ReadyToRunInfo
 
     /// <summary>
     /// Initialize RTR info from the kernel's PE image.
-    /// Must be called after UefiBoot.Init() sets the image base.
+    /// Must be called after UEFIBoot.Init() sets the image base.
     /// </summary>
     public static void Init()
     {
         if (_initialized) return;
 
-        _imageBase = UefiBoot.ImageBase;
+        _imageBase = UEFIBoot.ImageBase;
         if (_imageBase == 0)
         {
             DebugConsole.WriteLine("[RTR] Error: Image base not set");

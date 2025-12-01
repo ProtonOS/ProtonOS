@@ -14,7 +14,7 @@ namespace Kernel.X64;
 /// Registers are at specific offsets, with reserved space between them.
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct HpetRegisters
+public unsafe struct HPETRegisters
 {
     public ulong Capabilities;           // 0x000: General Capabilities and ID (RO)
     private ulong _reserved0;            // 0x008
@@ -28,7 +28,7 @@ public unsafe struct HpetRegisters
 /// <summary>
 /// HPET (High Precision Event Timer) driver
 /// </summary>
-public static unsafe class Hpet
+public static unsafe class HPET
 {
     // HPET Capability Register bits
     private const int CapCounterClockPeriodShift = 32;  // Bits 63:32 = period in femtoseconds
@@ -37,7 +37,7 @@ public static unsafe class Hpet
     private const ulong ConfigEnable = 1 << 0;          // Enable main counter
     private const ulong ConfigLegacyRoute = 1 << 1;     // Legacy replacement route
 
-    private static HpetRegisters* _regs;
+    private static HPETRegisters* _regs;
     private static ulong _frequencyHz;      // HPET frequency in Hz
     private static ulong _periodFs;         // Counter period in femtoseconds
     private static bool _initialized;
@@ -59,21 +59,21 @@ public static unsafe class Hpet
 
     /// <summary>
     /// Initialize HPET using ACPI HPET table.
-    /// Must be called after Acpi.Init().
+    /// Must be called after ACPI.Init().
     /// </summary>
     public static bool Init()
     {
         if (_initialized)
             return true;
 
-        if (!Acpi.IsInitialized)
+        if (!ACPI.IsInitialized)
         {
             DebugConsole.WriteLine("[HPET] ACPI not initialized!");
             return false;
         }
 
         // Find HPET table
-        var hpetTable = Acpi.FindHpet();
+        var hpetTable = ACPI.FindHpet();
         if (hpetTable == null)
         {
             DebugConsole.WriteLine("[HPET] No HPET table found in ACPI");
@@ -87,7 +87,7 @@ public static unsafe class Hpet
             return false;
         }
 
-        _regs = (HpetRegisters*)hpetTable->BaseAddress.Address;
+        _regs = (HPETRegisters*)hpetTable->BaseAddress.Address;
 
         DebugConsole.Write("[HPET] Base: 0x");
         DebugConsole.WriteHex((ulong)_regs);
@@ -186,7 +186,7 @@ public static unsafe class Hpet
         // Handle counter wrap-around (mainly for 32-bit counters)
         while (ReadCounter() < endTicks)
         {
-            Cpu.Pause();  // Hint to CPU we're spinning
+            CPU.Pause();  // Hint to CPU we're spinning
         }
     }
 

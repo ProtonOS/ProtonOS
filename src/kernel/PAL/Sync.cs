@@ -409,7 +409,7 @@ public static unsafe class Sync
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + timeoutMs;  // 1ms per tick
+            current->WakeTime = APIC.TickCount + timeoutMs;  // 1ms per tick
         }
         else
         {
@@ -751,7 +751,7 @@ public static unsafe class Sync
         // Calculate wake time for timeout
         if (timeoutMs != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + timeoutMs;  // 1ms per tick
+            current->WakeTime = APIC.TickCount + timeoutMs;  // 1ms per tick
         }
         else
         {
@@ -789,7 +789,7 @@ public static unsafe class Sync
 
             // Check timeout
             bool timedOut = false;
-            if (current->WakeTime != 0 && Apic.TickCount >= current->WakeTime)
+            if (current->WakeTime != 0 && APIC.TickCount >= current->WakeTime)
             {
                 timedOut = true;
             }
@@ -914,7 +914,7 @@ public static unsafe class Sync
         // Calculate wake time for timeout
         if (dwMilliseconds != 0xFFFFFFFF)
         {
-            current->WakeTime = Apic.TickCount + dwMilliseconds;  // 1ms per tick
+            current->WakeTime = APIC.TickCount + dwMilliseconds;  // 1ms per tick
         }
         else
         {

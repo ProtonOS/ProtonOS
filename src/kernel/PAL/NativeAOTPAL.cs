@@ -14,7 +14,7 @@ namespace Kernel.PAL;
 /// NativeAOT-specific PAL functions.
 /// These are internal runtime functions that NativeAOT expects from the platform.
 /// </summary>
-public static unsafe class NativeAotPal
+public static unsafe class NativeAOTPAL
 {
     // Module bounds - set during kernel initialization
     private static ulong _moduleBase;
@@ -47,13 +47,13 @@ public static unsafe class NativeAotPal
     /// <param name="pLowerBound">Receives the lower bound (base address)</param>
     /// <param name="pUpperBound">Receives the upper bound (end address)</param>
     /// <returns>True on success</returns>
-    public static bool PalGetModuleBounds(ulong* pLowerBound, ulong* pUpperBound)
+    public static bool GetModuleBounds(ulong* pLowerBound, ulong* pUpperBound)
     {
         if (!_moduleBoundsInitialized)
         {
             // Try to get from UEFI image info (must be called before ExitBootServices)
-            var imageBase = UefiBoot.ImageBase;
-            var imageSize = UefiBoot.ImageSize;
+            var imageBase = UEFIBoot.ImageBase;
+            var imageSize = UEFIBoot.ImageSize;
 
             if (imageBase != 0 && imageSize != 0)
             {
@@ -84,7 +84,7 @@ public static unsafe class NativeAotPal
     /// <param name="pLowLimit">Receives the low limit (stack bottom / highest address for descending stacks)</param>
     /// <param name="pHighLimit">Receives the high limit (stack top / lowest address for descending stacks)</param>
     /// <returns>True on success</returns>
-    public static bool PalGetMaximumStackBounds(ulong* pLowLimit, ulong* pHighLimit)
+    public static bool GetMaximumStackBounds(ulong* pLowLimit, ulong* pHighLimit)
     {
         var thread = Scheduler.CurrentThread;
 
@@ -102,7 +102,7 @@ public static unsafe class NativeAotPal
         }
 
         // Fallback: try to use VirtualQuery on current RSP
-        ulong rsp = Cpu.GetRsp();
+        ulong rsp = CPU.GetRsp();
         MemoryBasicInformation memInfo;
 
         ulong result = Memory.VirtualQuery((void*)rsp, &memInfo, (ulong)sizeof(MemoryBasicInformation));
@@ -133,7 +133,7 @@ public static unsafe class NativeAotPal
     /// <param name="pFileName">Buffer to receive the filename</param>
     /// <param name="cchFileName">Size of buffer in characters</param>
     /// <returns>Number of characters written, or 0 on failure</returns>
-    public static uint PalGetModuleFileName(void* address, char* pFileName, uint cchFileName)
+    public static uint GetModuleFileName(void* address, char* pFileName, uint cchFileName)
     {
         // We only have one module - the kernel
         // Return a fixed path
@@ -156,7 +156,7 @@ public static unsafe class NativeAotPal
     /// Get PDB debug information for a module.
     /// Not supported in netos - we don't have PDBs.
     /// </summary>
-    public static bool PalGetPDBInfo(
+    public static bool GetPDBInfo(
         void* moduleBase,
         void* pdbSignature,
         uint* pAge,
@@ -175,7 +175,7 @@ public static unsafe class NativeAotPal
     /// <summary>
     /// Get the number of processors available to the process.
     /// </summary>
-    public static uint PalGetProcessCpuCount()
+    public static uint GetProcessCPUCount()
     {
         SystemInfo sysInfo;
         SystemApi.GetSystemInfo(out sysInfo);
@@ -185,7 +185,7 @@ public static unsafe class NativeAotPal
     /// <summary>
     /// Get the current system time in 100-nanosecond intervals since FILETIME epoch.
     /// </summary>
-    public static ulong PalGetSystemTime()
+    public static ulong GetSystemTime()
     {
         FileTime ft;
         SystemApi.GetSystemTimeAsFileTime(&ft);
@@ -195,7 +195,7 @@ public static unsafe class NativeAotPal
     /// <summary>
     /// Get high-resolution performance counter value.
     /// </summary>
-    public static ulong PalGetPerformanceCounter()
+    public static ulong GetPerformanceCounter()
     {
         long value;
         SystemApi.QueryPerformanceCounter(out value);
@@ -205,7 +205,7 @@ public static unsafe class NativeAotPal
     /// <summary>
     /// Get high-resolution performance counter frequency.
     /// </summary>
-    public static ulong PalGetPerformanceFrequency()
+    public static ulong GetPerformanceFrequency()
     {
         long freq;
         SystemApi.QueryPerformanceFrequency(out freq);

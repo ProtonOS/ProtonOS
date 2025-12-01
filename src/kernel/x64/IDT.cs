@@ -13,7 +13,7 @@ namespace Kernel.X64;
 /// 16-byte IDT entry for 64-bit mode
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct IdtEntry
+public struct IDTEntry
 {
     public ushort OffsetLow;     // Offset bits 0-15
     public ushort Selector;      // Code segment selector
@@ -26,9 +26,9 @@ public struct IdtEntry
     /// <summary>
     /// Create an interrupt gate entry
     /// </summary>
-    public static IdtEntry InterruptGate(ulong handler, ushort selector, byte ist = 0)
+    public static IDTEntry InterruptGate(ulong handler, ushort selector, byte ist = 0)
     {
-        return new IdtEntry
+        return new IDTEntry
         {
             OffsetLow = (ushort)(handler & 0xFFFF),
             Selector = selector,
@@ -45,9 +45,9 @@ public struct IdtEntry
     /// <summary>
     /// Create a trap gate entry (doesn't disable interrupts)
     /// </summary>
-    public static IdtEntry TrapGate(ulong handler, ushort selector, byte ist = 0)
+    public static IDTEntry TrapGate(ulong handler, ushort selector, byte ist = 0)
     {
-        return new IdtEntry
+        return new IDTEntry
         {
             OffsetLow = (ushort)(handler & 0xFFFF),
             Selector = selector,
@@ -66,7 +66,7 @@ public struct IdtEntry
 /// IDT pointer structure for lidt instruction
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct IdtPointer
+public struct IDTPointer
 {
     public ushort Limit;  // Size of IDT - 1
     public ulong Base;    // Linear address of IDT
@@ -116,7 +116,7 @@ public struct InterruptFrame
 /// Static storage for IDT entries (fixed buffer wrapper)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct IdtStorage
+internal unsafe struct IDTStorage
 {
     // 256 IDT entries × 16 bytes = 4096 bytes
     public fixed byte Data[256 * 16];
@@ -125,13 +125,13 @@ internal unsafe struct IdtStorage
 /// <summary>
 /// Interrupt Descriptor Table management
 /// </summary>
-public static unsafe class Idt
+public static unsafe class IDT
 {
-    private const int IdtEntryCount = 256;
+    private const int IDTEntryCount = 256;
 
     // Static storage for IDT (fixed buffer, no heap allocation)
-    private static IdtStorage _idtStorage;
-    private static IdtPointer _idtPointer;
+    private static IDTStorage _idtStorage;
+    private static IDTPointer _idtPointer;
 
     /// <summary>
     /// Initialize and load the IDT
@@ -140,24 +140,24 @@ public static unsafe class Idt
     {
         fixed (byte* idtPtr = _idtStorage.Data)
         {
-            IdtEntry* idt = (IdtEntry*)idtPtr;
+            IDTEntry* idt = (IDTEntry*)idtPtr;
 
             // Set up IDT entries pointing to ISR stubs
-            ulong* isrTable = Cpu.GetIsrTable();
-            for (int i = 0; i < IdtEntryCount; i++)
+            ulong* isrTable = CPU.GetIsrTable();
+            for (int i = 0; i < IDTEntryCount; i++)
             {
                 ulong handler = isrTable[i];
-                idt[i] = IdtEntry.InterruptGate(handler, GdtSelectors.KernelCode);
+                idt[i] = IDTEntry.InterruptGate(handler, GDTSelectors.KernelCode);
             }
 
             // Set up IDT pointer
-            _idtPointer.Limit = (ushort)(IdtEntryCount * sizeof(IdtEntry) - 1);
+            _idtPointer.Limit = (ushort)(IDTEntryCount * sizeof(IDTEntry) - 1);
             _idtPointer.Base = (ulong)idt;
 
             // Load the IDT
-            fixed (IdtPointer* ptr = &_idtPointer)
+            fixed (IDTPointer* ptr = &_idtPointer)
             {
-                Cpu.LoadIdt(ptr);
+                CPU.LoadIdt(ptr);
             }
 
             DebugConsole.Write("[IDT] Loaded at 0x");

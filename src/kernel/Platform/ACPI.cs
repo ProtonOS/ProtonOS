@@ -14,7 +14,7 @@ namespace Kernel.Platform;
 /// UEFI Configuration Table entry
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct EfiConfigurationTable
+public unsafe struct EFIConfigurationTable
 {
     public Guid VendorGuid;
     public void* VendorTable;
@@ -45,7 +45,7 @@ public struct Guid
 /// ACPI Root System Description Pointer (RSDP) - v1
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiRsdp
+public unsafe struct ACPIRSDP
 {
     public fixed byte Signature[8];    // "RSD PTR "
     public byte Checksum;
@@ -58,9 +58,9 @@ public unsafe struct AcpiRsdp
 /// ACPI RSDP v2 extended fields
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiRsdp2
+public unsafe struct ACPIRSDP2
 {
-    public AcpiRsdp V1;
+    public ACPIRSDP V1;
     public uint Length;                // Total length of RSDP
     public ulong XsdtAddress;          // 64-bit physical address of XSDT
     public byte ExtendedChecksum;
@@ -71,7 +71,7 @@ public unsafe struct AcpiRsdp2
 /// Common ACPI table header
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiTableHeader
+public unsafe struct ACPITableHeader
 {
     public fixed byte Signature[4];    // Table signature (e.g., "XSDT", "HPET")
     public uint Length;                // Total table length including header
@@ -88,9 +88,9 @@ public unsafe struct AcpiTableHeader
 /// ACPI XSDT (Extended System Description Table)
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiXsdt
+public unsafe struct ACPIXSDT
 {
-    public AcpiTableHeader Header;
+    public ACPITableHeader Header;
     // Followed by array of 64-bit pointers to other ACPI tables
 }
 
@@ -98,9 +98,9 @@ public unsafe struct AcpiXsdt
 /// ACPI RSDT (Root System Description Table) - 32-bit version
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiRsdt
+public unsafe struct ACPIRSDT
 {
-    public AcpiTableHeader Header;
+    public ACPITableHeader Header;
     // Followed by array of 32-bit pointers to other ACPI tables
 }
 
@@ -108,7 +108,7 @@ public unsafe struct AcpiRsdt
 /// ACPI Generic Address Structure
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct AcpiGenericAddress
+public struct ACPIGenericAddress
 {
     public byte AddressSpaceId;        // 0 = System Memory, 1 = System I/O
     public byte RegisterBitWidth;
@@ -121,11 +121,11 @@ public struct AcpiGenericAddress
 /// ACPI HPET table
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct AcpiHpet
+public unsafe struct ACPIHPET
 {
-    public AcpiTableHeader Header;
+    public ACPITableHeader Header;
     public uint EventTimerBlockId;
-    public AcpiGenericAddress BaseAddress;
+    public ACPIGenericAddress BaseAddress;
     public byte HpetNumber;
     public ushort MinimumClockTick;
     public byte PageProtection;
@@ -138,7 +138,7 @@ public unsafe struct AcpiHpet
 /// <summary>
 /// ACPI table parser - finds tables from UEFI configuration table
 /// </summary>
-public static unsafe class Acpi
+public static unsafe class ACPI
 {
     // ACPI 2.0 RSDP GUID: 8868E871-E4F1-11D3-BC22-0080C73C8881
     private const uint AcpiGuid1 = 0x8868E871;
@@ -152,9 +152,9 @@ public static unsafe class Acpi
     private const ushort Acpi1Guid3 = 0x11D3;
     private const ulong Acpi1Guid4 = 0x4DC13F279000169A;  // Byte-swapped for little-endian
 
-    private static AcpiRsdp2* _rsdp;
-    private static AcpiXsdt* _xsdt;
-    private static AcpiRsdt* _rsdt;
+    private static ACPIRSDP2* _rsdp;
+    private static ACPIXSDT* _xsdt;
+    private static ACPIRSDT* _rsdt;
     private static bool _initialized;
     private static bool _useXsdt;  // true = 64-bit XSDT, false = 32-bit RSDT
 
@@ -169,7 +169,7 @@ public static unsafe class Acpi
         if (_initialized)
             return true;
 
-        var systemTable = UefiBoot.SystemTable;
+        var systemTable = UEFIBoot.SystemTable;
         if (systemTable == null)
         {
             DebugConsole.WriteLine("[ACPI] No UEFI system table!");
@@ -180,7 +180,7 @@ public static unsafe class Acpi
 
         // Search configuration table for ACPI RSDP
         ulong tableCount = systemTable->NumberOfTableEntries;
-        var configTable = (EfiConfigurationTable*)systemTable->ConfigurationTable;
+        var configTable = (EFIConfigurationTable*)systemTable->ConfigurationTable;
 
         DebugConsole.Write("[ACPI] ConfigurationTable at 0x");
         DebugConsole.WriteHex((ulong)configTable);
@@ -221,7 +221,7 @@ public static unsafe class Acpi
         }
 
         // Validate RSDP signature
-        var rsdp = (AcpiRsdp*)rsdpPtr;
+        var rsdp = (ACPIRSDP*)rsdpPtr;
         if (rsdp->Signature[0] != 'R' || rsdp->Signature[1] != 'S' ||
             rsdp->Signature[2] != 'D' || rsdp->Signature[3] != ' ' ||
             rsdp->Signature[4] != 'P' || rsdp->Signature[5] != 'T' ||
@@ -231,7 +231,7 @@ public static unsafe class Acpi
             return false;
         }
 
-        _rsdp = (AcpiRsdp2*)rsdpPtr;
+        _rsdp = (ACPIRSDP2*)rsdpPtr;
 
         DebugConsole.Write("[ACPI] RSDP at 0x");
         DebugConsole.WriteHex((ulong)rsdpPtr);
@@ -242,7 +242,7 @@ public static unsafe class Acpi
         // Use XSDT if ACPI 2.0+ and XSDT address is valid
         if (isAcpi2 && rsdp->Revision >= 2 && _rsdp->XsdtAddress != 0)
         {
-            _xsdt = (AcpiXsdt*)_rsdp->XsdtAddress;
+            _xsdt = (ACPIXSDT*)_rsdp->XsdtAddress;
             _useXsdt = true;
             DebugConsole.Write("[ACPI] XSDT at 0x");
             DebugConsole.WriteHex(_rsdp->XsdtAddress);
@@ -250,7 +250,7 @@ public static unsafe class Acpi
         }
         else
         {
-            _rsdt = (AcpiRsdt*)rsdp->RsdtAddress;
+            _rsdt = (ACPIRSDT*)rsdp->RsdtAddress;
             _useXsdt = false;
             DebugConsole.Write("[ACPI] RSDT at 0x");
             DebugConsole.WriteHex(rsdp->RsdtAddress);
@@ -264,7 +264,7 @@ public static unsafe class Acpi
     /// <summary>
     /// Find an ACPI table by its 4-character signature
     /// </summary>
-    public static AcpiTableHeader* FindTable(byte sig0, byte sig1, byte sig2, byte sig3)
+    public static ACPITableHeader* FindTable(byte sig0, byte sig1, byte sig2, byte sig3)
     {
         if (!_initialized)
             return null;
@@ -272,12 +272,12 @@ public static unsafe class Acpi
         if (_useXsdt && _xsdt != null)
         {
             // XSDT uses 64-bit pointers
-            int entryCount = (int)((_xsdt->Header.Length - (uint)sizeof(AcpiTableHeader)) / 8);
-            ulong* entries = (ulong*)((byte*)_xsdt + sizeof(AcpiTableHeader));
+            int entryCount = (int)((_xsdt->Header.Length - (uint)sizeof(ACPITableHeader)) / 8);
+            ulong* entries = (ulong*)((byte*)_xsdt + sizeof(ACPITableHeader));
 
             for (int i = 0; i < entryCount; i++)
             {
-                var table = (AcpiTableHeader*)entries[i];
+                var table = (ACPITableHeader*)entries[i];
                 if (table != null &&
                     table->Signature[0] == sig0 && table->Signature[1] == sig1 &&
                     table->Signature[2] == sig2 && table->Signature[3] == sig3)
@@ -289,12 +289,12 @@ public static unsafe class Acpi
         else if (_rsdt != null)
         {
             // RSDT uses 32-bit pointers
-            int entryCount = (int)((_rsdt->Header.Length - (uint)sizeof(AcpiTableHeader)) / 4);
-            uint* entries = (uint*)((byte*)_rsdt + sizeof(AcpiTableHeader));
+            int entryCount = (int)((_rsdt->Header.Length - (uint)sizeof(ACPITableHeader)) / 4);
+            uint* entries = (uint*)((byte*)_rsdt + sizeof(ACPITableHeader));
 
             for (int i = 0; i < entryCount; i++)
             {
-                var table = (AcpiTableHeader*)(ulong)entries[i];
+                var table = (ACPITableHeader*)(ulong)entries[i];
                 if (table != null &&
                     table->Signature[0] == sig0 && table->Signature[1] == sig1 &&
                     table->Signature[2] == sig2 && table->Signature[3] == sig3)
@@ -310,8 +310,8 @@ public static unsafe class Acpi
     /// <summary>
     /// Find the HPET table
     /// </summary>
-    public static AcpiHpet* FindHpet()
+    public static ACPIHPET* FindHpet()
     {
-        return (AcpiHpet*)FindTable((byte)'H', (byte)'P', (byte)'E', (byte)'T');
+        return (ACPIHPET*)FindTable((byte)'H', (byte)'P', (byte)'E', (byte)'T');
     }
 }

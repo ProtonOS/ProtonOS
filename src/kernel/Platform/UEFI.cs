@@ -10,7 +10,7 @@ namespace Kernel.Platform;
 // UEFI Status Codes
 // ============================================================================
 
-public enum EfiStatus : ulong
+public enum EFIStatus : ulong
 {
     Success = 0,
     BufferTooSmall = 0x8000000000000005,
@@ -21,7 +21,7 @@ public enum EfiStatus : ulong
 // UEFI Memory Types
 // ============================================================================
 
-public enum EfiMemoryType : uint
+public enum EFIMemoryType : uint
 {
     ReservedMemoryType = 0,
     LoaderCode = 1,
@@ -42,7 +42,7 @@ public enum EfiMemoryType : uint
 }
 
 // Memory attribute bits
-public static class EfiMemoryAttribute
+public static class EFIMemoryAttribute
 {
     public const ulong UC = 0x0000000000000001;  // Uncacheable
     public const ulong WC = 0x0000000000000002;  // Write-combining
@@ -66,7 +66,7 @@ public static class EfiMemoryAttribute
 /// UEFI GUID structure (128-bit identifier)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct EfiGuid
+public struct EFIGUID
 {
     public uint Data1;
     public ushort Data2;
@@ -77,14 +77,14 @@ public struct EfiGuid
     /// EFI_LOADED_IMAGE_PROTOCOL_GUID
     /// {5B1B31A1-9562-11D2-8E3F-00A0C969723B}
     /// </summary>
-    public static EfiGuid LoadedImageProtocol => new EfiGuid
+    public static EFIGUID LoadedImageProtocol => new EFIGUID
     {
         Data1 = 0x5B1B31A1,
         Data2 = 0x9562,
         Data3 = 0x11D2,
     };
 
-    public static unsafe void InitLoadedImageGuid(EfiGuid* guid)
+    public static unsafe void InitLoadedImageGuid(EFIGUID* guid)
     {
         guid->Data1 = 0x5B1B31A1;
         guid->Data2 = 0x9562;
@@ -105,7 +105,7 @@ public struct EfiGuid
 // ============================================================================
 
 [StructLayout(LayoutKind.Sequential)]
-public struct EfiTableHeader
+public struct EFITableHeader
 {
     public ulong Signature;
     public uint Revision;
@@ -120,9 +120,9 @@ public struct EfiTableHeader
 /// Always use DescriptorSize from GetMemoryMap.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct EfiMemoryDescriptor
+public struct EFIMemoryDescriptor
 {
-    public EfiMemoryType Type;           // Type of memory region
+    public EFIMemoryType Type;           // Type of memory region
     public ulong PhysicalStart;          // Physical address of region start
     public ulong VirtualStart;           // Virtual address (if mapped)
     public ulong NumberOfPages;          // Size in 4KB pages
@@ -133,11 +133,11 @@ public struct EfiMemoryDescriptor
 /// EFI_LOADED_IMAGE_PROTOCOL - Information about a loaded image
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct EfiLoadedImageProtocol
+public unsafe struct EFILoadedImageProtocol
 {
     public uint Revision;
     public void* ParentHandle;
-    public EfiSystemTable* SystemTable;
+    public EFISystemTable* SystemTable;
 
     // Source location of the image
     public void* DeviceHandle;
@@ -151,34 +151,34 @@ public unsafe struct EfiLoadedImageProtocol
     // Location where the image was loaded
     public void* ImageBase;         // Start of image in memory
     public ulong ImageSize;         // Size of image in bytes
-    public EfiMemoryType ImageCodeType;
-    public EfiMemoryType ImageDataType;
+    public EFIMemoryType ImageCodeType;
+    public EFIMemoryType ImageDataType;
     public void* Unload;            // Unload function pointer
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct EfiSystemTable
+public unsafe struct EFISystemTable
 {
-    public EfiTableHeader Hdr;
+    public EFITableHeader Hdr;
     public char* FirmwareVendor;
     public uint FirmwareRevision;
     public void* ConsoleInHandle;
     public void* ConIn;
     public void* ConsoleOutHandle;
-    public EfiSimpleTextOutputProtocol* ConOut;
+    public EFISimpleTextOutputProtocol* ConOut;
     public void* StandardErrorHandle;
     public void* StdErr;
     public void* RuntimeServices;
-    public EfiBootServices* BootServices;
+    public EFIBootServices* BootServices;
     public ulong NumberOfTableEntries;
     public void* ConfigurationTable;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct EfiSimpleTextOutputProtocol
+public unsafe struct EFISimpleTextOutputProtocol
 {
     public void* Reset;
-    public delegate* unmanaged<EfiSimpleTextOutputProtocol*, char*, EfiStatus> OutputString;
+    public delegate* unmanaged<EFISimpleTextOutputProtocol*, char*, EFIStatus> OutputString;
     public void* TestString;
     public void* QueryMode;
     public void* SetMode;
@@ -202,9 +202,9 @@ public unsafe struct EfiSimpleTextOutputProtocol
 /// - ExitBootServices: offset 232
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct EfiBootServices
+public unsafe struct EFIBootServices
 {
-    public EfiTableHeader Hdr;
+    public EFITableHeader Hdr;
 
     // Task Priority Services (2 functions)
     private void* _raiseTPL;
@@ -219,21 +219,21 @@ public unsafe struct EfiBootServices
     /// </summary>
     public delegate* unmanaged<
         ulong*,              // MemoryMapSize (in/out)
-        EfiMemoryDescriptor*, // MemoryMap (out)
+        EFIMemoryDescriptor*, // MemoryMap (out)
         ulong*,              // MapKey (out)
         ulong*,              // DescriptorSize (out)
         uint*,               // DescriptorVersion (out)
-        EfiStatus> GetMemoryMap;
+        EFIStatus> GetMemoryMap;
 
     public delegate* unmanaged<
-        EfiMemoryType,       // PoolType
+        EFIMemoryType,       // PoolType
         ulong,               // Size
         void**,              // Buffer (out)
-        EfiStatus> AllocatePool;
+        EFIStatus> AllocatePool;
 
     public delegate* unmanaged<
         void*,               // Buffer
-        EfiStatus> FreePool;
+        EFIStatus> FreePool;
 
     // We need more padding to get to ExitBootServices (at offset 232)
     // Event Services: CreateEvent, SetTimer, WaitForEvent, SignalEvent, CloseEvent, CheckEvent (6)
@@ -250,9 +250,9 @@ public unsafe struct EfiBootServices
     /// </summary>
     public delegate* unmanaged<
         void*,               // Handle
-        EfiGuid*,            // Protocol GUID
+        EFIGUID*,            // Protocol GUID
         void**,              // Interface (out)
-        EfiStatus> HandleProtocol;
+        EFIStatus> HandleProtocol;
 
     private void* _reserved;
     private void* _registerProtoNotify, _locateHandle, _locateDevicePath, _installConfigTable;
@@ -267,7 +267,7 @@ public unsafe struct EfiBootServices
     public delegate* unmanaged<
         void*,               // ImageHandle
         ulong,               // MapKey
-        EfiStatus> ExitBootServices;
+        EFIStatus> ExitBootServices;
 }
 
 // ============================================================================
@@ -278,13 +278,13 @@ public unsafe struct EfiBootServices
 /// Provides access to UEFI boot information.
 /// EfiEntry in native.asm saves the UEFI parameters before calling zerolib's EfiMain.
 /// </summary>
-public static unsafe class UefiBoot
+public static unsafe class UEFIBoot
 {
     private static bool _bootServicesExited;
 
     // Native functions to retrieve UEFI parameters saved by EfiEntry
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern EfiSystemTable* get_uefi_system_table();
+    private static extern EFISystemTable* get_uefi_system_table();
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void* get_uefi_image_handle();
@@ -292,7 +292,7 @@ public static unsafe class UefiBoot
     /// <summary>
     /// Get the UEFI System Table (saved by EfiEntry)
     /// </summary>
-    public static EfiSystemTable* SystemTable => get_uefi_system_table();
+    public static EFISystemTable* SystemTable => get_uefi_system_table();
 
     /// <summary>
     /// Get the UEFI Image Handle (saved by EfiEntry)
@@ -302,7 +302,7 @@ public static unsafe class UefiBoot
     /// <summary>
     /// Get the Boot Services table (only valid before ExitBootServices)
     /// </summary>
-    public static EfiBootServices* BootServices
+    public static EFIBootServices* BootServices
     {
         get
         {
@@ -379,14 +379,14 @@ public static unsafe class UefiBoot
         }
 
         // Set up the GUID for EFI_LOADED_IMAGE_PROTOCOL
-        EfiGuid guid;
-        EfiGuid.InitLoadedImageGuid(&guid);
+        EFIGUID guid;
+        EFIGUID.InitLoadedImageGuid(&guid);
 
         // Call HandleProtocol to get the loaded image protocol
-        EfiLoadedImageProtocol* loadedImage = null;
+        EFILoadedImageProtocol* loadedImage = null;
         var status = bs->HandleProtocol(handle, &guid, (void**)&loadedImage);
 
-        if (status != EfiStatus.Success || loadedImage == null)
+        if (status != EFIStatus.Success || loadedImage == null)
         {
             DebugConsole.Write("[UEFI] HandleProtocol failed: 0x");
             DebugConsole.WriteHex((ulong)status);
@@ -451,12 +451,12 @@ public static unsafe class UefiBoot
 
                 var status = st->BootServices->GetMemoryMap(
                     &mapSize,
-                    (EfiMemoryDescriptor*)buffer,
+                    (EFIMemoryDescriptor*)buffer,
                     &mapKey,
                     &descSize,
                     &descVersion);
 
-                if (status != EfiStatus.Success)
+                if (status != EFIStatus.Success)
                 {
                     DebugConsole.Write("[UEFI] GetMemoryMap failed: 0x");
                     DebugConsole.WriteHex((ulong)status);
@@ -465,7 +465,7 @@ public static unsafe class UefiBoot
                 }
 
                 status = st->BootServices->ExitBootServices(ImageHandle, mapKey);
-                if (status == EfiStatus.Success)
+                if (status == EFIStatus.Success)
                 {
                     _bootServicesExited = true;
                     DebugConsole.WriteLine("[UEFI] Boot services exited");
@@ -494,7 +494,7 @@ public static unsafe class UefiBoot
     /// <param name="descriptorSize">Receives the actual size of each descriptor</param>
     /// <param name="entryCount">Receives the number of entries in the map</param>
     /// <returns>EFI status code</returns>
-    public static EfiStatus GetMemoryMap(
+    public static EFIStatus GetMemoryMap(
         byte* buffer,
         ulong bufferSize,
         out ulong mapKey,
@@ -507,7 +507,7 @@ public static unsafe class UefiBoot
 
         var bs = BootServices;
         if (bs == null)
-            return EfiStatus.InvalidParameter;
+            return EFIStatus.InvalidParameter;
 
         ulong mapSize = bufferSize;
         ulong localMapKey = 0;
@@ -516,7 +516,7 @@ public static unsafe class UefiBoot
 
         var status = bs->GetMemoryMap(
             &mapSize,
-            (EfiMemoryDescriptor*)buffer,
+            (EFIMemoryDescriptor*)buffer,
             &localMapKey,
             &localDescSize,
             &descriptorVersion);
@@ -524,7 +524,7 @@ public static unsafe class UefiBoot
         mapKey = localMapKey;
         descriptorSize = localDescSize;
 
-        if (status == EfiStatus.Success)
+        if (status == EFIStatus.Success)
         {
             entryCount = (int)(mapSize / localDescSize);
         }
@@ -535,8 +535,8 @@ public static unsafe class UefiBoot
     /// <summary>
     /// Get a memory descriptor from a raw buffer
     /// </summary>
-    public static EfiMemoryDescriptor* GetDescriptor(byte* buffer, ulong descriptorSize, int index)
+    public static EFIMemoryDescriptor* GetDescriptor(byte* buffer, ulong descriptorSize, int index)
     {
-        return (EfiMemoryDescriptor*)(buffer + (ulong)index * descriptorSize);
+        return (EFIMemoryDescriptor*)(buffer + (ulong)index * descriptorSize);
     }
 }

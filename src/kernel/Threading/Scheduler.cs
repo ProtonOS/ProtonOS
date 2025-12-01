@@ -185,8 +185,8 @@ public static unsafe class Scheduler
         thread->Context.Rip = (ulong)(delegate* unmanaged<void>)&ThreadEntryWrapper;
         thread->Context.Rsp = stackTop;
         thread->Context.Rflags = 0x202;  // IF=1 (interrupts enabled), reserved bit 1
-        thread->Context.Cs = GdtSelectors.KernelCode;
-        thread->Context.Ss = GdtSelectors.KernelData;
+        thread->Context.Cs = GDTSelectors.KernelCode;
+        thread->Context.Ss = GDTSelectors.KernelData;
 
         // Align stack to 16 bytes (required by ABI)
         thread->Context.Rsp &= ~0xFUL;
@@ -227,7 +227,7 @@ public static unsafe class Scheduler
         var thread = _currentThread;
         if (thread == null)
         {
-            Cpu.HaltForever();
+            CPU.HaltForever();
             return;
         }
 
@@ -253,7 +253,7 @@ public static unsafe class Scheduler
         if (thread == null)
         {
             _lock.Release();
-            Cpu.HaltForever();
+            CPU.HaltForever();
             return;
         }
 
@@ -277,7 +277,7 @@ public static unsafe class Scheduler
         Schedule();
 
         // Should never reach here
-        Cpu.HaltForever();
+        CPU.HaltForever();
     }
 
     /// <summary>
@@ -332,7 +332,7 @@ public static unsafe class Scheduler
         _lock.Acquire();
 
         // Calculate wake time
-        thread->WakeTime = Apic.TickCount + milliseconds;  // 1ms per tick
+        thread->WakeTime = APIC.TickCount + milliseconds;  // 1ms per tick
         thread->State = ThreadState.Blocked;
         thread->Alertable = alertable;
         thread->WaitResult = 0;  // Will be set to IoCompletion if woken by APC
@@ -411,7 +411,7 @@ public static unsafe class Scheduler
         var current = _currentThread;
 
         // Wake up any sleeping threads whose time has come
-        ulong now = Apic.TickCount;
+        ulong now = APIC.TickCount;
         for (var t = _allThreadsHead; t != null; t = t->NextAll)
         {
             if (t->State == ThreadState.Blocked &&
@@ -463,12 +463,12 @@ public static unsafe class Scheduler
             // Perform context switch
             if (oldThread != null)
             {
-                Cpu.SwitchContext(&oldThread->Context, &next->Context);
+                CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
             else
             {
                 // First switch - just load new context
-                Cpu.LoadContext(&next->Context);
+                CPU.LoadContext(&next->Context);
             }
         }
         else
@@ -487,7 +487,7 @@ public static unsafe class Scheduler
 
         // Only reschedule every N ticks to avoid too much overhead
         // With 1ms timer, this gives 10ms time slices
-        if (Apic.TickCount % 10 == 0)
+        if (APIC.TickCount % 10 == 0)
         {
             Schedule();
         }
@@ -545,7 +545,7 @@ public static unsafe class Scheduler
             return false;
 
         // Allocate APC entry
-        var apc = (Apc*)HeapAllocator.AllocZeroed((ulong)sizeof(Apc));
+        var apc = (APC*)HeapAllocator.AllocZeroed((ulong)sizeof(APC));
         if (apc == null)
             return false;
 
@@ -564,15 +564,15 @@ public static unsafe class Scheduler
         }
 
         // Add to tail of APC queue (FIFO order)
-        if (thread->ApcQueueTail != null)
+        if (thread->APCQueueTail != null)
         {
-            thread->ApcQueueTail->Next = apc;
+            thread->APCQueueTail->Next = apc;
         }
         else
         {
-            thread->ApcQueueHead = apc;
+            thread->APCQueueHead = apc;
         }
-        thread->ApcQueueTail = apc;
+        thread->APCQueueTail = apc;
 
         // If thread is in alertable wait, wake it up
         if (thread->Alertable && thread->State == ThreadState.Blocked)
@@ -594,7 +594,7 @@ public static unsafe class Scheduler
     {
         if (thread == null)
             return false;
-        return thread->ApcQueueHead != null;
+        return thread->APCQueueHead != null;
     }
 
     /// <summary>
@@ -615,7 +615,7 @@ public static unsafe class Scheduler
         {
             _lock.Acquire();
 
-            var apc = thread->ApcQueueHead;
+            var apc = thread->APCQueueHead;
             if (apc == null)
             {
                 _lock.Release();
@@ -623,10 +623,10 @@ public static unsafe class Scheduler
             }
 
             // Dequeue this APC
-            thread->ApcQueueHead = apc->Next;
-            if (thread->ApcQueueHead == null)
+            thread->APCQueueHead = apc->Next;
+            if (thread->APCQueueHead == null)
             {
-                thread->ApcQueueTail = null;
+                thread->APCQueueTail = null;
             }
 
             // Get function and parameter before releasing lock

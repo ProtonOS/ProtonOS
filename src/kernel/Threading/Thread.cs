@@ -27,7 +27,7 @@ public enum ThreadState
 /// Layout matches what we save/restore in assembly.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct CpuContext
+public struct CPUContext
 {
     // General purpose registers
     public ulong Rax;
@@ -70,7 +70,7 @@ public unsafe struct Thread
     public ThreadState State;    // Current state
 
     // CPU context (saved during context switch)
-    public CpuContext Context;
+    public CPUContext Context;
 
     // Stack information
     public ulong StackBase;            // Bottom of stack (highest address)
@@ -110,8 +110,8 @@ public unsafe struct Thread
     public uint TlsSlotCount;          // Number of allocated TLS slots
 
     // Asynchronous Procedure Calls (APC) queue
-    public Apc* ApcQueueHead;          // Head of APC queue (FIFO)
-    public Apc* ApcQueueTail;          // Tail of APC queue
+    public APC* APCQueueHead;          // Head of APC queue (FIFO)
+    public APC* APCQueueTail;          // Tail of APC queue
     public bool Alertable;             // Whether thread is in alertable wait state
 }
 
@@ -155,7 +155,7 @@ public static class WaitResult
 /// Queued to threads for deferred execution during alertable waits.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct Apc
+public unsafe struct APC
 {
     /// <summary>
     /// APC function to call: void ApcProc(nuint dwParam)
@@ -170,7 +170,7 @@ public unsafe struct Apc
     /// <summary>
     /// Next APC in the queue
     /// </summary>
-    public Apc* Next;
+    public APC* Next;
 }
 
 /// <summary>
@@ -186,19 +186,19 @@ public struct SpinLock
 
     public void Acquire()
     {
-        while (Cpu.AtomicCompareExchange(ref _locked, 1, 0) != 0)
+        while (CPU.AtomicCompareExchange(ref _locked, 1, 0) != 0)
         {
-            Cpu.Pause();
+            CPU.Pause();
         }
     }
 
     public bool TryAcquire()
     {
-        return Cpu.AtomicCompareExchange(ref _locked, 1, 0) == 0;
+        return CPU.AtomicCompareExchange(ref _locked, 1, 0) == 0;
     }
 
     public void Release()
     {
-        Cpu.AtomicExchange(ref _locked, 0);
+        CPU.AtomicExchange(ref _locked, 0);
     }
 }

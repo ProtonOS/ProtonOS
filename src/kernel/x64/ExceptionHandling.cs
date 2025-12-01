@@ -383,7 +383,7 @@ public static unsafe class ExceptionHandling
             PrintStackTrace(context);
 
             // Halt - can't continue without a handler
-            Cpu.Halt();
+            CPU.Halt();
         }
 
         // If handled, the context has been modified to point to the handler.
@@ -421,7 +421,7 @@ public static unsafe class ExceptionHandling
             DebugConsole.WriteHex(context->Rip);
             DebugConsole.WriteLine();
             PrintStackTrace(context);
-            Cpu.Halt();
+            CPU.Halt();
         }
     }
 
@@ -460,11 +460,11 @@ public static unsafe class ExceptionHandling
     /// </summary>
     public static void InitCurrentExceptionTracking()
     {
-        _currentExceptionTlsSlot = PAL.Tls.TlsAlloc();
-        _currentExceptionRipTlsSlot = PAL.Tls.TlsAlloc();
-        _currentExceptionRspTlsSlot = PAL.Tls.TlsAlloc();
-        _currentExceptionRbpTlsSlot = PAL.Tls.TlsAlloc();
-        _currentHandlerClauseTlsSlot = PAL.Tls.TlsAlloc();
+        _currentExceptionTlsSlot = PAL.TLS.TlsAlloc();
+        _currentExceptionRipTlsSlot = PAL.TLS.TlsAlloc();
+        _currentExceptionRspTlsSlot = PAL.TLS.TlsAlloc();
+        _currentExceptionRbpTlsSlot = PAL.TLS.TlsAlloc();
+        _currentHandlerClauseTlsSlot = PAL.TLS.TlsAlloc();
         if (_currentExceptionTlsSlot == InvalidTlsSlot)
         {
             DebugConsole.WriteLine("[EH] WARNING: Failed to allocate TLS slot for current exception");
@@ -478,7 +478,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionTlsSlot, exceptionObject);
+            PAL.TLS.TlsSetValue(_currentExceptionTlsSlot, exceptionObject);
         }
     }
 
@@ -490,7 +490,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionRipTlsSlot, (void*)rip);
+            PAL.TLS.TlsSetValue(_currentExceptionRipTlsSlot, (void*)rip);
         }
     }
 
@@ -501,7 +501,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRspTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionRspTlsSlot, (void*)rsp);
+            PAL.TLS.TlsSetValue(_currentExceptionRspTlsSlot, (void*)rsp);
         }
     }
 
@@ -512,7 +512,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRbpTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionRbpTlsSlot, (void*)rbp);
+            PAL.TLS.TlsSetValue(_currentExceptionRbpTlsSlot, (void*)rbp);
         }
     }
 
@@ -524,7 +524,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentHandlerClauseTlsSlot, (void*)(ulong)(clauseIndex + 1));  // +1 so 0 means none
+            PAL.TLS.TlsSetValue(_currentHandlerClauseTlsSlot, (void*)(ulong)(clauseIndex + 1));  // +1 so 0 means none
         }
     }
 
@@ -535,7 +535,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionTlsSlot != InvalidTlsSlot)
         {
-            return PAL.Tls.TlsGetValue(_currentExceptionTlsSlot);
+            return PAL.TLS.TlsGetValue(_currentExceptionTlsSlot);
         }
         return null;
     }
@@ -547,7 +547,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
         {
-            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRipTlsSlot);
+            return (ulong)PAL.TLS.TlsGetValue(_currentExceptionRipTlsSlot);
         }
         return 0;
     }
@@ -559,7 +559,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRspTlsSlot != InvalidTlsSlot)
         {
-            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRspTlsSlot);
+            return (ulong)PAL.TLS.TlsGetValue(_currentExceptionRspTlsSlot);
         }
         return 0;
     }
@@ -571,7 +571,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionRbpTlsSlot != InvalidTlsSlot)
         {
-            return (ulong)PAL.Tls.TlsGetValue(_currentExceptionRbpTlsSlot);
+            return (ulong)PAL.TLS.TlsGetValue(_currentExceptionRbpTlsSlot);
         }
         return 0;
     }
@@ -584,7 +584,7 @@ public static unsafe class ExceptionHandling
     {
         if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
         {
-            return (uint)(ulong)PAL.Tls.TlsGetValue(_currentHandlerClauseTlsSlot);
+            return (uint)(ulong)PAL.TLS.TlsGetValue(_currentHandlerClauseTlsSlot);
         }
         return 0;
     }
@@ -596,15 +596,15 @@ public static unsafe class ExceptionHandling
     {
         if (_currentExceptionTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionTlsSlot, null);
+            PAL.TLS.TlsSetValue(_currentExceptionTlsSlot, null);
         }
         if (_currentExceptionRipTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentExceptionRipTlsSlot, null);
+            PAL.TLS.TlsSetValue(_currentExceptionRipTlsSlot, null);
         }
         if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
         {
-            PAL.Tls.TlsSetValue(_currentHandlerClauseTlsSlot, null);
+            PAL.TLS.TlsSetValue(_currentHandlerClauseTlsSlot, null);
         }
     }
 
@@ -633,7 +633,7 @@ public static unsafe class ExceptionHandling
         if (currentException == null)
         {
             DebugConsole.WriteLine("[EH] FATAL: RhpRethrow called with no current exception!");
-            Cpu.Halt();
+            CPU.Halt();
         }
 
         if (originalRip == 0)
@@ -658,7 +658,7 @@ public static unsafe class ExceptionHandling
         {
             DebugConsole.WriteLine("[EH] FATAL: Unhandled rethrown exception!");
             PrintStackTrace(context);
-            Cpu.Halt();
+            CPU.Halt();
         }
     }
 
@@ -737,7 +737,7 @@ public static unsafe class ExceptionHandling
     private static void RegisterKernelFunctionTable()
     {
         // Get kernel image base from UEFI
-        ulong imageBase = UefiBoot.ImageBase;
+        ulong imageBase = UEFIBoot.ImageBase;
         if (imageBase == 0)
         {
             DebugConsole.WriteLine("[SEH] Warning: Could not get kernel image base");
@@ -1040,7 +1040,7 @@ public static unsafe class ExceptionHandling
             // Error code bit 0: 0=not present, 1=protection violation
             // Error code bit 1: 0=read, 1=write
             exceptionRecord.ExceptionInformation[0] = (frame->ErrorCode & 2) != 0 ? 1UL : 0UL; // Write access
-            exceptionRecord.ExceptionInformation[1] = Cpu.ReadCr2(); // Fault address
+            exceptionRecord.ExceptionInformation[1] = CPU.ReadCr2(); // Fault address
         }
 
         // Build context

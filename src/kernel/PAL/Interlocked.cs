@@ -13,20 +13,20 @@ public static unsafe class Interlocked
 {
     /// <summary>
     /// Atomically increments a 32-bit value.
-    /// Returns the incremented value (unlike Cpu.AtomicIncrement which returns original).
+    /// Returns the incremented value (unlike CPU.AtomicIncrement which returns original).
     /// </summary>
     public static int InterlockedIncrement(ref int target)
     {
-        return Cpu.AtomicIncrement(ref target) + 1;
+        return CPU.AtomicIncrement(ref target) + 1;
     }
 
     /// <summary>
     /// Atomically decrements a 32-bit value.
-    /// Returns the decremented value (unlike Cpu.AtomicDecrement which returns original).
+    /// Returns the decremented value (unlike CPU.AtomicDecrement which returns original).
     /// </summary>
     public static int InterlockedDecrement(ref int target)
     {
-        return Cpu.AtomicDecrement(ref target) - 1;
+        return CPU.AtomicDecrement(ref target) - 1;
     }
 
     /// <summary>
@@ -35,7 +35,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static int InterlockedExchange(ref int target, int value)
     {
-        return Cpu.AtomicExchange(ref target, value);
+        return CPU.AtomicExchange(ref target, value);
     }
 
     /// <summary>
@@ -45,7 +45,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static int InterlockedCompareExchange(ref int target, int value, int comparand)
     {
-        return Cpu.AtomicCompareExchange(ref target, value, comparand);
+        return CPU.AtomicCompareExchange(ref target, value, comparand);
     }
 
     /// <summary>
@@ -54,7 +54,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static int InterlockedExchangeAdd(ref int target, int value)
     {
-        return Cpu.AtomicAdd(ref target, value);
+        return CPU.AtomicAdd(ref target, value);
     }
 
     /// <summary>
@@ -63,7 +63,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static long InterlockedIncrement64(ref long target)
     {
-        return Cpu.AtomicIncrement64(ref target) + 1;
+        return CPU.AtomicIncrement64(ref target) + 1;
     }
 
     /// <summary>
@@ -72,7 +72,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static long InterlockedDecrement64(ref long target)
     {
-        return Cpu.AtomicDecrement64(ref target) - 1;
+        return CPU.AtomicDecrement64(ref target) - 1;
     }
 
     /// <summary>
@@ -81,7 +81,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static long InterlockedExchange64(ref long target, long value)
     {
-        return Cpu.AtomicExchange64(ref target, value);
+        return CPU.AtomicExchange64(ref target, value);
     }
 
     /// <summary>
@@ -91,7 +91,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static long InterlockedCompareExchange64(ref long target, long value, long comparand)
     {
-        return Cpu.AtomicCompareExchange64(ref target, value, comparand);
+        return CPU.AtomicCompareExchange64(ref target, value, comparand);
     }
 
     /// <summary>
@@ -100,7 +100,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static long InterlockedExchangeAdd64(ref long target, long value)
     {
-        return Cpu.AtomicAdd64(ref target, value);
+        return CPU.AtomicAdd64(ref target, value);
     }
 
     /// <summary>
@@ -109,7 +109,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static void* InterlockedExchangePointer(ref void* target, void* value)
     {
-        return Cpu.AtomicExchangePointer(ref target, value);
+        return CPU.AtomicExchangePointer(ref target, value);
     }
 
     /// <summary>
@@ -119,7 +119,7 @@ public static unsafe class Interlocked
     /// </summary>
     public static void* InterlockedCompareExchangePointer(ref void* target, void* value, void* comparand)
     {
-        return Cpu.AtomicCompareExchangePointer(ref target, value, comparand);
+        return CPU.AtomicCompareExchangePointer(ref target, value, comparand);
     }
 
     /// <summary>
@@ -127,6 +127,6 @@ public static unsafe class Interlocked
     /// </summary>
     public static void MemoryBarrier()
     {
-        Cpu.MemoryBarrier();
+        CPU.MemoryBarrier();
     }
 }

@@ -451,9 +451,9 @@ before enumerating each frame's roots. CallerSP = RSP value after unwinding the 
 [GC] Current thread: 1 stack roots
 ```
 
-#### 3.6 Mark Phase GarbageCollector ✓ COMPLETE
+#### 3.6 Mark Phase GC ✓ COMPLETE
 
-Implemented full mark phase with stop-the-world collection in `src/kernel/Memory/GarbageCollector.cs`.
+Implemented full mark phase with stop-the-world collection in `src/kernel/Memory/GC.cs`.
 
 **Features:**
 - Stop-the-world thread suspension using Scheduler
@@ -487,7 +487,7 @@ Implemented full mark phase with stop-the-world collection in `src/kernel/Memory
 
 #### 3.7 Sweep Phase ✓ COMPLETE
 
-Implemented sweep phase with free list allocator in `src/kernel/Memory/GarbageCollector.cs`.
+Implemented sweep phase with free list allocator in `src/kernel/Memory/GC.cs`.
 
 **Features:**
 - Walks heap using block size header for precise object boundaries

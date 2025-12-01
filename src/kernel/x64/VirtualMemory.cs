@@ -178,7 +178,7 @@ public static unsafe class VirtualMemory
         DebugConsole.WriteHex(_pml4PhysAddr);
         DebugConsole.WriteLine();
 
-        Cpu.WriteCr3(_pml4PhysAddr);
+        CPU.WriteCr3(_pml4PhysAddr);
 
         _initialized = true;
         DebugConsole.WriteLine("[VMem] Initialized (kernel 0-4GB, physmap in higher half)");
@@ -379,7 +379,7 @@ public static unsafe class VirtualMemory
         pd[0] = ptPhys | PageFlags.Present | PageFlags.Writable;
 
         // Flush TLB for the affected range
-        Cpu.WriteCr3(_pml4PhysAddr);
+        CPU.WriteCr3(_pml4PhysAddr);
     }
 
     /// <summary>
@@ -387,7 +387,7 @@ public static unsafe class VirtualMemory
     /// </summary>
     public static void InvalidatePage(ulong virtAddr)
     {
-        Cpu.Invlpg(virtAddr);
+        CPU.Invlpg(virtAddr);
     }
 
     /// <summary>

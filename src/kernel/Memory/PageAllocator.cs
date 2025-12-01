@@ -90,25 +90,25 @@ public static unsafe class PageAllocator
         if (_initialized)
             return true;
 
-        if (!UefiBoot.BootServicesAvailable)
+        if (!UEFIBoot.BootServicesAvailable)
         {
             DebugConsole.WriteLine("[PageAlloc] Boot services not available!");
             return false;
         }
 
-        var bs = UefiBoot.BootServices;
+        var bs = UEFIBoot.BootServices;
 
         fixed (byte* memoryMap = _memMapBuffer.Data)
         {
             // Get UEFI memory map
-            var status = UefiBoot.GetMemoryMap(
+            var status = UEFIBoot.GetMemoryMap(
                 memoryMap,
                 8192,
                 out ulong mapKey,
                 out ulong descriptorSize,
                 out int entryCount);
 
-            if (status != EfiStatus.Success)
+            if (status != EFIStatus.Success)
             {
                 DebugConsole.Write("[PageAlloc] GetMemoryMap failed: 0x");
                 DebugConsole.WriteHex((ulong)status);
@@ -128,9 +128,9 @@ public static unsafe class PageAllocator
 
             for (int i = 0; i < entryCount; i++)
             {
-                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
-                if (desc->Type == EfiMemoryType.LoaderCode ||
-                    desc->Type == EfiMemoryType.LoaderData)
+                var desc = UEFIBoot.GetDescriptor(memoryMap, descriptorSize, i);
+                if (desc->Type == EFIMemoryType.LoaderCode ||
+                    desc->Type == EFIMemoryType.LoaderData)
                 {
                     ulong start = desc->PhysicalStart;
                     ulong end = start + desc->NumberOfPages * PageSize;
@@ -154,7 +154,7 @@ public static unsafe class PageAllocator
             _topAddress = 0;
             for (int i = 0; i < entryCount; i++)
             {
-                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
+                var desc = UEFIBoot.GetDescriptor(memoryMap, descriptorSize, i);
                 ulong regionEnd = desc->PhysicalStart + desc->NumberOfPages * PageSize;
                 if (regionEnd > _topAddress)
                     _topAddress = regionEnd;
@@ -186,11 +186,11 @@ public static unsafe class PageAllocator
             // Allocate bitmap from UEFI
             void* bitmapPtr = null;
             status = bs->AllocatePool(
-                EfiMemoryType.LoaderData,  // Will become available after ExitBootServices
+                EFIMemoryType.LoaderData,  // Will become available after ExitBootServices
                 _bitmapPages * PageSize,   // Allocate full pages
                 &bitmapPtr);
 
-            if (status != EfiStatus.Success || bitmapPtr == null)
+            if (status != EFIStatus.Success || bitmapPtr == null)
             {
                 DebugConsole.Write("[PageAlloc] Failed to allocate bitmap: 0x");
                 DebugConsole.WriteHex((ulong)status);
@@ -212,10 +212,10 @@ public static unsafe class PageAllocator
             // Mark usable memory regions as FREE
             for (int i = 0; i < entryCount; i++)
             {
-                var desc = UefiBoot.GetDescriptor(memoryMap, descriptorSize, i);
+                var desc = UEFIBoot.GetDescriptor(memoryMap, descriptorSize, i);
 
                 // Only ConventionalMemory is safe to use
-                if (desc->Type == EfiMemoryType.ConventionalMemory)
+                if (desc->Type == EFIMemoryType.ConventionalMemory)
                 {
                     ulong startPage = desc->PhysicalStart / PageSize;
                     ulong pageCount = desc->NumberOfPages;

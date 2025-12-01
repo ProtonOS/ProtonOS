@@ -14,7 +14,7 @@ namespace Kernel.PAL;
 /// PAL Thread Local Storage management.
 /// Provides Win32-compatible TLS APIs needed by CoreCLR PAL.
 /// </summary>
-public static unsafe class Tls
+public static unsafe class TLS
 {
     private const uint MaxTlsSlots = 1088;  // Win32 has 64 static + 1024 dynamic = 1088 total
     private const uint InvalidTlsIndex = 0xFFFFFFFF;
@@ -204,7 +204,7 @@ public static unsafe class Tls
         // Zero the new portion (Realloc doesn't zero new memory)
         if (newSize > oldSize)
         {
-            Cpu.MemZero((byte*)newSlots + oldSize, newSize - oldSize);
+            CPU.MemZero((byte*)newSlots + oldSize, newSize - oldSize);
         }
 
         thread->TlsSlots = newSlots;

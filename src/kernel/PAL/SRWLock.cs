@@ -84,7 +84,7 @@ public static unsafe class SRWLockOps
                     continue;
                 }
 
-                if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+                if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
                     return; // Got the lock
 
                 continue; // CAS failed, retry
@@ -145,7 +145,7 @@ public static unsafe class SRWLockOps
         if ((newState & ReaderMask) == 0)
             return false; // Overflow
 
-        return Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state;
+        return CPU.AtomicCompareExchange(ref srw->State, newState, state) == state;
     }
 
     /// <summary>
@@ -166,7 +166,7 @@ public static unsafe class SRWLockOps
 
             int newState = state - 1;
 
-            if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+            if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
             {
                 // Successfully decremented reader count
                 // If we were the last reader and a writer is waiting, wake it
@@ -200,7 +200,7 @@ public static unsafe class SRWLockOps
                 // Clear writer waiting if we set it
                 newState &= ~WriterWaiting;
 
-                if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+                if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
                     return; // Got the lock
 
                 continue; // CAS failed, retry
@@ -221,7 +221,7 @@ public static unsafe class SRWLockOps
                     break; // Already set
 
                 int newState = state | WriterWaiting;
-                if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+                if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
                     break;
             }
 
@@ -231,7 +231,7 @@ public static unsafe class SRWLockOps
             {
                 // Lock is free now
                 int newState = (state | WriterActive) & ~WriterWaiting;
-                if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+                if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
                 {
                     srw->QueueLock.Release();
                     return; // Got the lock
@@ -274,7 +274,7 @@ public static unsafe class SRWLockOps
             return false;
 
         int newState = state | WriterActive;
-        return Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state;
+        return CPU.AtomicCompareExchange(ref srw->State, newState, state) == state;
     }
 
     /// <summary>
@@ -302,7 +302,7 @@ public static unsafe class SRWLockOps
                 newState &= ~WriterWaiting;
             srw->QueueLock.Release();
 
-            if (Cpu.AtomicCompareExchange(ref srw->State, newState, state) == state)
+            if (CPU.AtomicCompareExchange(ref srw->State, newState, state) == state)
             {
                 // Successfully released
                 // Wake waiters: prefer writers (writer-preferring lock)
@@ -389,7 +389,7 @@ public static unsafe class SRWLockOps
         // Read with memory barrier - prevents reordering
         int* ptr = &srw->State;
         int value = *ptr;
-        Cpu.MemoryBarrier();
+        CPU.MemoryBarrier();
         return value;
     }
 }

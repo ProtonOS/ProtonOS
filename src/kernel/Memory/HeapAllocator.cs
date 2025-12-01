@@ -402,7 +402,7 @@ public static unsafe class HeapAllocator
 
         // Copy old data using fast memcpy (only up to old size)
         ulong copySize = oldSize < newSize ? oldSize : newSize;
-        Cpu.MemCopy(newPtr, ptr, copySize);
+        CPU.MemCopy(newPtr, ptr, copySize);
 
         Free(ptr);
         return newPtr;

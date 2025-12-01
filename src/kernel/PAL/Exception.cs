@@ -117,12 +117,12 @@ public static unsafe class Exception
         if ((exceptionFlags & ExceptionFlags.EXCEPTION_NONCONTINUABLE) != 0)
         {
             DebugConsole.WriteLine("[SEH] FATAL: Noncontinuable exception raised");
-            Cpu.HaltForever();
+            CPU.HaltForever();
         }
 
         // For continuable exceptions that weren't handled, halt the thread
         DebugConsole.WriteLine("[SEH] Unhandled exception - halting");
-        Cpu.HaltForever();
+        CPU.HaltForever();
     }
 
     /// <summary>
@@ -138,7 +138,7 @@ public static unsafe class Exception
             return;
         }
 
-        ref CpuContext ctx = ref thread->Context;
+        ref CPUContext ctx = ref thread->Context;
 
         context->Rip = ctx.Rip;
         context->Rsp = ctx.Rsp;

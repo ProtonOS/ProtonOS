@@ -337,7 +337,7 @@ public static unsafe class Memory
         if ((dwFlags & HeapFlags.HEAP_ZERO_MEMORY) != 0 && dwBytes > oldUsableSize)
         {
             // Zero the portion beyond the old usable size
-            Cpu.MemZero((byte*)result + oldUsableSize, dwBytes - oldUsableSize);
+            CPU.MemZero((byte*)result + oldUsableSize, dwBytes - oldUsableSize);
         }
 
         return result;
@@ -569,7 +569,7 @@ public static unsafe class Memory
     /// Uses GCHeap when available (proper object header), falls back to HeapAllocator during early boot.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "PalAllocObject")]
-    public static void* PalAllocObject(uint size)
+    public static void* AllocObject(uint size)
     {
         // Use GC heap if initialized (has proper object header for GC)
         if (GCHeap.IsInitialized)

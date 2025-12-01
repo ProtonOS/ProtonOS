@@ -42,7 +42,7 @@ public static unsafe class Arch
         DebugConsole.WriteLine("[x64] Initializing architecture...");
 
         // Initialize GDT
-        Gdt.Init();
+        GDT.Init();
 
         // Clear handler storage (static storage, no heap allocation needed)
         fixed (byte* ptr = _handlerStorage.Data)
@@ -52,7 +52,7 @@ public static unsafe class Arch
         }
 
         // Initialize IDT
-        Idt.Init();
+        IDT.Init();
 
         // Initialize virtual memory (our own page tables)
         VirtualMemory.Init();
@@ -97,7 +97,7 @@ public static unsafe class Arch
     public static void EnableInterrupts()
     {
         _interruptsEnabled = true;
-        Cpu.EnableInterrupts();
+        CPU.EnableInterrupts();
     }
 
     /// <summary>
@@ -105,7 +105,7 @@ public static unsafe class Arch
     /// </summary>
     public static void DisableInterrupts()
     {
-        Cpu.DisableInterrupts();
+        CPU.DisableInterrupts();
         _interruptsEnabled = false;
     }
 
@@ -127,7 +127,7 @@ public static unsafe class Arch
     /// </summary>
     public static void Halt()
     {
-        Cpu.Halt();
+        CPU.Halt();
     }
 
     /// <summary>
@@ -135,7 +135,7 @@ public static unsafe class Arch
     /// </summary>
     public static void Breakpoint()
     {
-        Cpu.Breakpoint();
+        CPU.Breakpoint();
     }
 
     /// <summary>
@@ -150,25 +150,25 @@ public static unsafe class Arch
         ExceptionHandling.Init();
 
         // Initialize HPET (for calibration)
-        if (!Hpet.Init())
+        if (!HPET.Init())
         {
             DebugConsole.WriteLine("[x64] WARNING: HPET not available, timer calibration will be inaccurate");
         }
 
         // Initialize RTC (for wall-clock time) - depends on HPET for elapsed time tracking
-        Rtc.Init();
+        RTC.Init();
 
         // Initialize Local APIC
-        if (Apic.Init())
+        if (APIC.Init())
         {
             // Calibrate timer using HPET if available
-            if (Hpet.IsInitialized)
+            if (HPET.IsInitialized)
             {
-                Apic.CalibrateTimer();
+                APIC.CalibrateTimer();
             }
 
             // Start periodic timer (1ms period = 1000Hz)
-            Apic.StartTimer(1);
+            APIC.StartTimer(1);
         }
 
         // Enable interrupts
@@ -242,13 +242,13 @@ public static unsafe class Arch
             if (vector == 14) // Page fault
             {
                 DebugConsole.Write("    CR2: 0x");
-                DebugConsole.WriteHex(Cpu.ReadCr2());
+                DebugConsole.WriteHex(CPU.ReadCr2());
                 DebugConsole.WriteLine();
             }
 
             // Halt - can't continue from unhandled exception
             DebugConsole.WriteLine("!!! SYSTEM HALTED");
-            Cpu.HaltForever();
+            CPU.HaltForever();
         }
 
         // IRQs (32-47) - acknowledge and ignore if no handler

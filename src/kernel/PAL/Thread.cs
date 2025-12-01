@@ -346,7 +346,7 @@ public static unsafe class ThreadApi
         // On x64, the CPU ensures cache coherency between instruction and data caches
         // for self-modifying code. However, we still need a memory barrier to ensure
         // all writes are visible before we start executing the code.
-        Cpu.MemoryBarrier();
+        CPU.MemoryBarrier();
 
         // On some x64 implementations, we might need to serialize execution.
         // A full serialization can be done with cpuid, but mfence is usually sufficient
@@ -378,8 +378,8 @@ public static unsafe class ThreadApi
             // Return what we can from saved context, but it may be stale
         }
 
-        // Copy from thread's saved CpuContext based on requested flags
-        ref CpuContext ctx = ref thread->Context;
+        // Copy from thread's saved CPUContext based on requested flags
+        ref CPUContext ctx = ref thread->Context;
 
         if ((flags & ContextFlags.CONTEXT_CONTROL) != 0)
         {
@@ -441,8 +441,8 @@ public static unsafe class ThreadApi
         if (thread == Scheduler.CurrentThread && thread->State == ThreadState.Running)
             return false;
 
-        // Copy to thread's saved CpuContext based on requested flags
-        ref CpuContext ctx = ref thread->Context;
+        // Copy to thread's saved CPUContext based on requested flags
+        ref CPUContext ctx = ref thread->Context;
 
         if ((flags & ContextFlags.CONTEXT_CONTROL) != 0)
         {
@@ -495,7 +495,7 @@ public static unsafe class ThreadApi
         // For the current thread, we get the saved context from the last context switch
         // This won't be perfectly accurate for the current running thread, but it's
         // what we have available without inline assembly
-        ref CpuContext ctx = ref thread->Context;
+        ref CPUContext ctx = ref thread->Context;
 
         lpContext->Rip = ctx.Rip;
         lpContext->Rsp = ctx.Rsp;
@@ -539,7 +539,7 @@ public static unsafe class ThreadApi
 
         // The restore_pal_context function in assembly does not return
         // It loads all registers from the Context and jumps to Rip
-        Cpu.RestorePalContext(lpContext);
+        CPU.RestorePALContext(lpContext);
 
         // This code is never reached
     }
