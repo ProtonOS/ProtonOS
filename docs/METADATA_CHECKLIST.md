@@ -450,17 +450,29 @@ Signature types:
 - [ ] LocalVarSig
 - [ ] TypeSpec signatures
 
-#### 5.8 IL Method Body Reading
+#### 5.8 IL Method Body Reading ✅
 
-**Files**: `src/kernel/Runtime/Metadata/MethodBody.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs` (MethodBody struct, MethodBodyConstants, ExceptionClause)
 
-- [ ] Tiny header detection (size < 64, no locals, no EH)
-- [ ] Fat header parsing (flags, size, max stack, code size, local var token)
-- [ ] IL bytes access
-- [ ] Exception handling section detection
-- [ ] Small EH clause format
-- [ ] Fat EH clause format
-- [ ] EH clause types (exception, filter, finally, fault)
+- [x] Tiny header detection (size < 64, no locals, no EH)
+- [x] Fat header parsing (flags, size, max stack, code size, local var token)
+- [x] IL bytes access (pointer to IL code after header)
+- [x] Exception handling section detection (4-byte aligned after IL)
+- [x] Small EH clause format (12 bytes per clause)
+- [x] Fat EH clause format (24 bytes per clause)
+- [x] EH clause types (Catch, Filter, Finally, Fault)
+
+**Implementation includes:**
+- `MethodBody` struct with header info and IL code pointer
+- `MethodBodyConstants` class with format flags and section types
+- `ExceptionClause` struct and `ExceptionClauseKind` enum
+- `ReadMethodBody()` - parses tiny or fat header
+- `ReadExceptionClauses()` - parses EH sections after IL code
+- `DumpMethodBody()` - debug output for method bodies
+
+**Tested:** MetadataTest.dll parses correctly:
+- `Main`: Tiny format, 1 byte (ret)
+- `.ctor`: Tiny format, 7 bytes (ldarg.0, call, ret)
 
 #### 5.9 Type Resolution
 

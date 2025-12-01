@@ -211,6 +211,9 @@ public static unsafe class Kernel
                 // Test new table accessors with TypeRef and MethodDef
                 MetadataReader.DumpTypeRefTable(ref mdRoot, ref tablesHeader);
                 MetadataReader.DumpMethodDefTable(ref mdRoot, ref tablesHeader);
+
+                // Test IL method body parsing
+                DumpMethodBodies(ref mdRoot, ref tablesHeader);
             }
             else
             {
@@ -220,6 +223,59 @@ public static unsafe class Kernel
         else
         {
             DebugConsole.WriteLine("[Kernel] Failed to parse metadata");
+        }
+    }
+
+    /// <summary>
+    /// Parse and dump IL method bodies for all methods in the assembly
+    /// </summary>
+    private static void DumpMethodBodies(ref MetadataRoot mdRoot, ref TablesHeader tablesHeader)
+    {
+        uint methodCount = tablesHeader.RowCounts[(int)MetadataTableId.MethodDef];
+        if (methodCount == 0)
+            return;
+
+        var sizes = TableSizes.Calculate(ref tablesHeader);
+
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[Kernel] Parsing method bodies:");
+
+        for (uint i = 1; i <= methodCount; i++)
+        {
+            uint rva = MetadataReader.GetMethodDefRva(ref tablesHeader, ref sizes, i);
+            uint nameIdx = MetadataReader.GetMethodDefName(ref tablesHeader, ref sizes, i);
+
+            DebugConsole.Write("[Kernel]   Method ");
+            MetadataReader.PrintString(ref mdRoot, nameIdx);
+            DebugConsole.Write(" (RVA=0x");
+            DebugConsole.WriteHex(rva);
+            DebugConsole.Write("): ");
+
+            if (rva == 0)
+            {
+                // Abstract, extern, or runtime-implemented method (no IL body)
+                DebugConsole.WriteLine("no IL body");
+                continue;
+            }
+
+            // Convert RVA to file pointer
+            byte* methodBodyPtr = (byte*)PEHelper.RvaToFilePointer(_testAssembly, rva);
+            if (methodBodyPtr == null)
+            {
+                DebugConsole.WriteLine("failed to resolve RVA");
+                continue;
+            }
+
+            // Parse the method body
+            if (MetadataReader.ReadMethodBody(methodBodyPtr, out var body))
+            {
+                DebugConsole.WriteLine();
+                MetadataReader.DumpMethodBody(ref body);
+            }
+            else
+            {
+                DebugConsole.WriteLine("failed to parse body");
+            }
         }
     }
 }

@@ -1528,4 +1528,274 @@ public static unsafe class MetadataReader
             DebugConsole.WriteLine(")");
         }
     }
+
+    // ============================================================================
+    // IL Method Body Reader (ECMA-335 II.25.4)
+    // ============================================================================
+
+    /// <summary>
+    /// Read an IL method body from a pointer (typically resolved from MethodDef RVA)
+    /// </summary>
+    /// <param name="ptr">Pointer to the start of the method body</param>
+    /// <param name="body">Output: parsed method body info</param>
+    /// <returns>True if successfully parsed</returns>
+    public static bool ReadMethodBody(byte* ptr, out MethodBody body)
+    {
+        body = default;
+        if (ptr == null)
+            return false;
+
+        byte headerByte = *ptr;
+
+        // Check format: low 2 bits
+        if ((headerByte & MethodBodyConstants.FormatMask) == MethodBodyConstants.TinyFormat)
+        {
+            // Tiny format: single byte header
+            // Bits 2-7 = code size (max 63 bytes)
+            body.IsTiny = true;
+            body.CodeSize = (uint)(headerByte >> MethodBodyConstants.TinyFormatSizeShift);
+            body.MaxStack = 8;  // Tiny format default
+            body.LocalVarSigToken = 0;
+            body.InitLocals = false;
+            body.HasMoreSections = false;
+            body.ILCode = ptr + 1;  // IL starts right after 1-byte header
+            body.HeaderSize = 1;
+            return true;
+        }
+
+        if ((headerByte & MethodBodyConstants.FormatMask) != MethodBodyConstants.FatFormat)
+        {
+            // Invalid format
+            return false;
+        }
+
+        // Fat format: 12 bytes header
+        // Byte 0: flags (low 4 bits) + header size in dwords (high 4 bits)
+        // Byte 1: more flags
+        byte headerByte2 = ptr[1];
+        int headerSizeDwords = headerByte2 >> MethodBodyConstants.FatFormatHeaderSizeShift;
+        if (headerSizeDwords != MethodBodyConstants.FatFormatHeaderSizeDwords)
+        {
+            // Header size should be 3 dwords (12 bytes)
+            return false;
+        }
+
+        body.IsTiny = false;
+        body.InitLocals = (headerByte & MethodBodyConstants.InitLocals) != 0;
+        body.HasMoreSections = (headerByte & MethodBodyConstants.MoreSects) != 0;
+
+        // Read MaxStack (2 bytes at offset 2)
+        body.MaxStack = *(ushort*)(ptr + 2);
+
+        // Read CodeSize (4 bytes at offset 4)
+        body.CodeSize = *(uint*)(ptr + 4);
+
+        // Read LocalVarSig token (4 bytes at offset 8)
+        body.LocalVarSigToken = *(uint*)(ptr + 8);
+
+        body.HeaderSize = 12;
+        body.ILCode = ptr + 12;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Parse exception handling sections following a fat method body
+    /// </summary>
+    /// <param name="body">Method body (must have HasMoreSections = true)</param>
+    /// <param name="exceptionClauses">Output array for clauses (must be pre-allocated)</param>
+    /// <param name="maxClauses">Maximum clauses to read</param>
+    /// <returns>Number of clauses read</returns>
+    public static int ReadExceptionClauses(ref MethodBody body, ExceptionClause* exceptionClauses, int maxClauses)
+    {
+        if (!body.HasMoreSections || body.IsTiny)
+            return 0;
+
+        // Exception sections are 4-byte aligned after the IL code
+        byte* ptr = body.ILCode + body.CodeSize;
+
+        // Align to 4-byte boundary
+        ulong addr = (ulong)ptr;
+        ulong aligned = (addr + 3) & ~3UL;
+        ptr = (byte*)aligned;
+
+        // Read section header
+        byte sectionHeader = *ptr++;
+
+        if ((sectionHeader & MethodBodyConstants.SectEHTable) == 0)
+        {
+            // Not an EH section (could be other data)
+            return 0;
+        }
+
+        bool isFat = (sectionHeader & MethodBodyConstants.SectFatFormat) != 0;
+        int clauseCount;
+        int clauseSize;
+
+        if (isFat)
+        {
+            // Fat format: 3 more bytes for data size (24-bit)
+            uint dataSize = (uint)(ptr[0] | (ptr[1] << 8) | (ptr[2] << 16));
+            ptr += 3;
+            clauseSize = 24;  // Fat clause is 24 bytes
+            clauseCount = (int)(dataSize / clauseSize);
+        }
+        else
+        {
+            // Small format: 1 byte for data size, then 2 reserved bytes
+            byte dataSize = *ptr++;
+            ptr += 2;  // Skip reserved
+            clauseSize = 12;  // Small clause is 12 bytes
+            clauseCount = dataSize / clauseSize;
+        }
+
+        if (clauseCount > maxClauses)
+            clauseCount = maxClauses;
+
+        for (int i = 0; i < clauseCount; i++)
+        {
+            if (isFat)
+            {
+                // Fat clause (24 bytes)
+                exceptionClauses[i].Kind = (ExceptionClauseKind)(*(uint*)ptr);
+                ptr += 4;
+                exceptionClauses[i].TryOffset = *(int*)ptr;
+                ptr += 4;
+                exceptionClauses[i].TryLength = *(int*)ptr;
+                ptr += 4;
+                exceptionClauses[i].HandlerOffset = *(int*)ptr;
+                ptr += 4;
+                exceptionClauses[i].HandlerLength = *(int*)ptr;
+                ptr += 4;
+                exceptionClauses[i].ClassTokenOrFilterOffset = *(int*)ptr;
+                ptr += 4;
+            }
+            else
+            {
+                // Small clause (12 bytes)
+                exceptionClauses[i].Kind = (ExceptionClauseKind)(*(ushort*)ptr);
+                ptr += 2;
+                exceptionClauses[i].TryOffset = *(ushort*)ptr;
+                ptr += 2;
+                exceptionClauses[i].TryLength = *ptr++;
+                exceptionClauses[i].HandlerOffset = *(ushort*)ptr;
+                ptr += 2;
+                exceptionClauses[i].HandlerLength = *ptr++;
+                exceptionClauses[i].ClassTokenOrFilterOffset = *(int*)ptr;
+                ptr += 4;
+            }
+        }
+
+        return clauseCount;
+    }
+
+    /// <summary>
+    /// Dump method body info for debugging
+    /// </summary>
+    public static void DumpMethodBody(ref MethodBody body)
+    {
+        if (body.IsTiny)
+        {
+            DebugConsole.Write("[IL] Tiny format, ");
+        }
+        else
+        {
+            DebugConsole.Write("[IL] Fat format, ");
+            if (body.InitLocals)
+                DebugConsole.Write("initlocals, ");
+            if (body.HasMoreSections)
+                DebugConsole.Write("moresects, ");
+        }
+
+        DebugConsole.Write("maxstack=");
+        DebugConsole.WriteDecimal((int)body.MaxStack);
+        DebugConsole.Write(", codesize=");
+        DebugConsole.WriteDecimal((int)body.CodeSize);
+
+        if (body.LocalVarSigToken != 0)
+        {
+            DebugConsole.Write(", locals=0x");
+            DebugConsole.WriteHex(body.LocalVarSigToken);
+        }
+        DebugConsole.WriteLine();
+
+        // Dump first few bytes of IL
+        DebugConsole.Write("[IL] Code: ");
+        int bytesToShow = body.CodeSize > 16 ? 16 : (int)body.CodeSize;
+        for (int i = 0; i < bytesToShow; i++)
+        {
+            DebugConsole.WriteHex(body.ILCode[i]);
+            DebugConsole.Write(" ");
+        }
+        if (body.CodeSize > 16)
+            DebugConsole.Write("...");
+        DebugConsole.WriteLine();
+    }
+}
+
+/// <summary>
+/// IL method body constants (ECMA-335 II.25.4)
+/// </summary>
+public static class MethodBodyConstants
+{
+    // Format detection (bits 0-1)
+    public const byte TinyFormat = 0x02;
+    public const byte FatFormat = 0x03;
+    public const byte FormatMask = 0x03;
+
+    // Tiny format
+    public const int TinyFormatSizeShift = 2;  // Code size in bits 2-7
+
+    // Fat format flags (byte 0)
+    public const byte MoreSects = 0x08;     // More sections follow
+    public const byte InitLocals = 0x10;    // Initialize locals to zero
+
+    // Fat format header size (byte 1, bits 4-7)
+    public const int FatFormatHeaderSizeShift = 4;
+    public const int FatFormatHeaderSizeDwords = 3;  // 12 bytes = 3 dwords
+
+    // Section types
+    public const byte SectEHTable = 0x01;    // Exception handling table
+    public const byte SectOptILTable = 0x02; // Reserved
+    public const byte SectFatFormat = 0x40;  // Fat format section
+    public const byte SectMoreSects = 0x80;  // More sections follow
+}
+
+/// <summary>
+/// Parsed IL method body
+/// </summary>
+public unsafe struct MethodBody
+{
+    public bool IsTiny;           // True if tiny format, false if fat
+    public bool InitLocals;       // Initialize locals to zero (fat only)
+    public bool HasMoreSections;  // More sections follow (fat only)
+    public ushort MaxStack;       // Maximum stack depth
+    public uint CodeSize;         // Size of IL code in bytes
+    public uint LocalVarSigToken; // Metadata token for local variables signature (fat only)
+    public byte* ILCode;          // Pointer to IL code bytes
+    public int HeaderSize;        // Size of header in bytes (1 or 12)
+}
+
+/// <summary>
+/// Exception handling clause kinds (ECMA-335 II.25.4.6)
+/// </summary>
+public enum ExceptionClauseKind : uint
+{
+    Catch = 0x0000,   // Catch clause with type filter
+    Filter = 0x0001,  // Filter clause with user-supplied filter code
+    Finally = 0x0002, // Finally clause (always executes)
+    Fault = 0x0004,   // Fault clause (executes on exception only)
+}
+
+/// <summary>
+/// Exception handling clause
+/// </summary>
+public struct ExceptionClause
+{
+    public ExceptionClauseKind Kind;
+    public int TryOffset;          // IL offset of try block start
+    public int TryLength;          // Length of try block in bytes
+    public int HandlerOffset;      // IL offset of handler start
+    public int HandlerLength;      // Length of handler in bytes
+    public int ClassTokenOrFilterOffset;  // Type token (Catch) or filter IL offset (Filter)
 }
