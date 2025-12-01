@@ -46,7 +46,7 @@ echo "=============================================="
 
 qemu-system-x86_64 \
     -machine q35 \
-    -cpu Haswell \
+    -cpu max \
     -m 256M \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF" \
     -drive format=raw,file="$IMG_FILE" \
