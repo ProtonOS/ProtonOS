@@ -7,6 +7,7 @@ ARCH ?= x64
 BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
+TEST_DIR := src/MetadataTest
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -57,8 +58,11 @@ KERNEL_SRC := $(call rwildcard,$(KERNEL_DIR),*.cs)
 NATIVE_OBJ := $(BUILD_DIR)/native.obj
 KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 
+# Test assembly output
+TEST_DLL := $(BUILD_DIR)/MetadataTest.dll
+
 # Targets
-.PHONY: all clean native kernel image run
+.PHONY: all clean native kernel test image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -80,6 +84,13 @@ $(KERNEL_OBJ): $(KORLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
 
 kernel: $(KERNEL_OBJ)
 
+# Build test assembly (standard .NET DLL for metadata testing)
+$(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/MetadataTest.csproj | $(BUILD_DIR)
+	@echo "DOTNET build MetadataTest"
+	dotnet build $(TEST_DIR)/MetadataTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+test: $(TEST_DLL)
+
 # Link UEFI executable
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
@@ -87,14 +98,17 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
+	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/MetadataTest.dll
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
+	@echo "Contents:"
+	@mdir -i $(BUILD_DIR)/boot.img ::/
 
 clean:
 	rm -rf build/
