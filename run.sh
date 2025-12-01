@@ -38,12 +38,18 @@ if [ -z "$OVMF" ]; then
     exit 1
 fi
 
+LOG_FILE="qemu.log"
+
+# Remove old log to ensure clean output for each run
+rm -f "$LOG_FILE"
+
 echo "OVMF: $OVMF"
 echo "Image: $IMG_FILE"
 echo ""
 echo "Serial output below (Ctrl+A, X to exit QEMU):"
 echo "=============================================="
 
+# Use tee to write serial output to both stdout and log file
 qemu-system-x86_64 \
     -machine q35 \
     -cpu max \
@@ -53,4 +59,4 @@ qemu-system-x86_64 \
     -serial mon:stdio \
     -display none \
     -no-reboot \
-    -no-shutdown
+    -no-shutdown 2>&1 | tee "$LOG_FILE"

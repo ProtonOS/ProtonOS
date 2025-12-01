@@ -3,6 +3,9 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Kill any existing protonos-dev containers first
+docker ps -q --filter ancestor=protonos-dev | xargs -r docker kill >/dev/null 2>&1
+
 # Use -it only if we have a TTY
 if [ -t 0 ]; then
     DOCKER_FLAGS="-it"
