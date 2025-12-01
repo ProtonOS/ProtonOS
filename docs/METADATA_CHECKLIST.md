@@ -119,11 +119,14 @@ These items need investigation before implementation begins.
 - [x] Review existing `PEFormat.cs` - what's already implemented?
 - [x] CLI header structure (IMAGE_COR20_HEADER)
 - [x] Data directories relevant to CLI (COM descriptor, etc.)
-- [ ] RVA to file offset translation for sections
+- [x] RVA to file offset translation for sections
 
-**PEFormat.cs Status:** Already has DOS header, COFF header, PE32+ optional header, section headers,
-data directory structures, and helpers (`GetNtHeaders`, `GetFirstSectionHeader`, `RvaToPointer`,
-`GetDataDirectory`). Index 14 is `CLRRuntimeHeader`. Missing: CLI header struct, RVA-to-file-offset.
+**PEFormat.cs Status:** Now has complete PE32 and PE32+ support:
+- `ImageOptionalHeader32`, `ImageOptionalHeader64`, `ImageNtHeaders32`, `ImageNtHeaders64`
+- `ImageCor20Header` for CLI header, `CorFlags` constants
+- `IsPE64()` for format detection
+- `RvaToFilePointer()` for raw file loading (translates RVA through section headers)
+- `GetCorHeaderFromFile()`, `GetMetadataRootFromFile()` for assembly parsing
 
 **IMAGE_COR20_HEADER** (from `dotnet/src/coreclr/inc/corhdr.h`):
 ```c
@@ -258,19 +261,22 @@ Document key files in `dotnet/` for reference:
 
 ### Implementation Checklist
 
-#### 5.1 PE Reader Enhancement
+#### 5.1 PE Reader Enhancement ✅
 
-**Files**: `src/kernel/Runtime/PEFormat.cs`, `src/kernel/Runtime/Metadata/PEReader.cs`
+**File**: `src/kernel/Runtime/PEFormat.cs`
 
-- [ ] DOS header validation
-- [ ] PE signature check
-- [ ] COFF header parsing
-- [ ] Optional header (PE32+) parsing
-- [ ] Data directories array
-- [ ] Section headers enumeration
-- [ ] RVA to file offset helper
-- [ ] CLI header (COR20) location and parsing
-- [ ] Metadata root location
+- [x] DOS header validation
+- [x] PE signature check
+- [x] COFF header parsing
+- [x] Optional header (PE32 and PE32+) parsing
+- [x] Data directories array
+- [x] Section headers enumeration
+- [x] RVA to file offset helper (`RvaToFilePointer`)
+- [x] CLI header (COR20) location and parsing
+- [x] Metadata root location and BSJB signature verification
+
+**Tested:** MetadataTest.dll parses successfully - CLI header shows runtime 2.5, flags ILOnly (0x1),
+metadata at RVA 0x205C with valid BSJB signature, version 1.1.
 
 #### 5.2 Metadata Root and Streams
 
@@ -465,9 +471,9 @@ Signature types:
 
 ### Implementation Order Recommendation
 
-1. **Phase 4 first** - Get UEFI file loading working before ExitBootServices
-2. **Add IMAGE_COR20_HEADER** to PEFormat.cs
-3. **Parse metadata root** - verify signature, find streams
+1. ~~**Phase 4 first** - Get UEFI file loading working before ExitBootServices~~ ✅
+2. ~~**Add IMAGE_COR20_HEADER** to PEFormat.cs~~ ✅
+3. **Parse metadata root** - verify signature, find streams ← **NEXT**
 4. **Implement heap readers** - #Strings first (simplest), then #Blob
 5. **Parse #~ header** - extract row counts and heap size flags
 6. **Implement core tables** - Module, TypeDef, TypeRef, MethodDef
