@@ -371,50 +371,50 @@ Core tables:
 - [x] Field (0x04) - `GetFieldFlags/Name/Signature()`
 - [x] MethodDef (0x06) - `GetMethodDefRVA/Name/Flags()`, `DumpMethodDefTable()`
 - [x] Param (0x08) - `GetParamFlags/Sequence/Name()`
-- [ ] InterfaceImpl (0x09)
+- [x] InterfaceImpl (0x09) - `GetInterfaceImplClass/Interface()`
 - [x] MemberRef (0x0A) - `GetMemberRefClass/Name/Signature()`, `DumpMemberRefTable()`
-- [ ] Constant (0x0B)
-- [ ] CustomAttribute (0x0C)
+- [x] Constant (0x0B) - `GetConstantType/Parent/Value()`
+- [x] CustomAttribute (0x0C) - `GetCustomAttributeParent/Type/Value()`
 
 Layout tables:
-- [ ] ClassLayout (0x0F)
-- [ ] FieldLayout (0x10)
+- [x] ClassLayout (0x0F) - `GetClassLayoutPackingSize/ClassSize/Parent()`
+- [x] FieldLayout (0x10) - `GetFieldLayoutOffset/Field()`
 
 Signature tables:
-- [ ] StandAloneSig (0x11)
+- [x] StandAloneSig (0x11) - `GetStandAloneSigSignature()`
 
 Event/Property tables:
-- [ ] EventMap (0x12)
-- [ ] Event (0x14)
-- [ ] PropertyMap (0x15)
-- [ ] Property (0x17)
-- [ ] MethodSemantics (0x18)
+- [ ] EventMap (0x12) - (row size calculated)
+- [x] Event (0x14) - `GetEventFlags/Name/Type()`
+- [ ] PropertyMap (0x15) - (row size calculated)
+- [x] Property (0x17) - `GetPropertyFlags/Name/Type()`
+- [x] MethodSemantics (0x18) - `GetMethodSemanticsSemantics/Method/Association()`
 
 Method implementation:
-- [ ] MethodImpl (0x19)
-- [ ] ModuleRef (0x1A)
-- [ ] TypeSpec (0x1B)
+- [ ] MethodImpl (0x19) - (row size calculated)
+- [x] ModuleRef (0x1A) - `GetModuleRefName()`
+- [x] TypeSpec (0x1B) - `GetTypeSpecSignature()`
 
 P/Invoke:
-- [ ] ImplMap (0x1C)
-- [ ] FieldRVA (0x1D)
+- [x] ImplMap (0x1C) - `GetImplMapMappingFlags/MemberForwarded/ImportName/ImportScope()`
+- [ ] FieldRVA (0x1D) - (row size calculated)
 
 Assembly:
-- [ ] Assembly (0x20)
+- [x] Assembly (0x20) - `GetAssemblyHashAlgId/MajorVersion/MinorVersion/BuildNumber/RevisionNumber/Flags/Name/Culture()`
 - [x] AssemblyRef (0x23) - `GetAssemblyRefMajorVersion/MinorVersion/BuildNumber/RevisionNumber/Flags/Name()`, `DumpAssemblyRefTable()`
 
 Manifest:
-- [ ] File (0x26)
-- [ ] ExportedType (0x27)
-- [ ] ManifestResource (0x28)
+- [ ] File (0x26) - (row size calculated)
+- [ ] ExportedType (0x27) - (row size calculated)
+- [ ] ManifestResource (0x28) - (row size calculated)
 
 Nested types:
-- [ ] NestedClass (0x29)
+- [x] NestedClass (0x29) - `GetNestedClassNestedClass/EnclosingClass()`
 
 Generics:
-- [ ] GenericParam (0x2A)
-- [ ] MethodSpec (0x2B)
-- [ ] GenericParamConstraint (0x2C)
+- [x] GenericParam (0x2A) - `GetGenericParamNumber/Flags/Owner/Name()`
+- [x] MethodSpec (0x2B) - `GetMethodSpecMethod/Instantiation()`
+- [x] GenericParamConstraint (0x2C) - `GetGenericParamConstraintOwner/Constraint()`
 
 #### 5.6 Heap Access ✅
 

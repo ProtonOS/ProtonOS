@@ -1926,6 +1926,675 @@ public static unsafe class MetadataReader
     }
 
     // ============================================================================
+    // InterfaceImpl Table (0x09)
+    // Layout: Class (TypeDef index) + Interface (TypeDefOrRef coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Class (TypeDef row ID) for an InterfaceImpl row
+    /// </summary>
+    public static uint GetInterfaceImplClass(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.InterfaceImpl, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.TypeDefIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Interface (TypeDefOrRef coded index) for an InterfaceImpl row
+    /// </summary>
+    public static uint GetInterfaceImplInterface(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.InterfaceImpl, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.TypeDefIndexSize, sizes.TypeDefOrRefSize);
+    }
+
+    // ============================================================================
+    // Constant Table (0x0B)
+    // Layout: Type (2) + Parent (HasConstant coded) + Value (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the element type for a Constant row
+    /// </summary>
+    public static byte GetConstantType(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Constant, rowId);
+        if (row == null)
+            return 0;
+
+        return *row; // Type is first byte (second byte is padding)
+    }
+
+    /// <summary>
+    /// Get the Parent (HasConstant coded index) for a Constant row
+    /// </summary>
+    public static uint GetConstantParent(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Constant, rowId);
+        if (row == null)
+            return 0;
+
+        int hasConstantSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasConstant, ref header);
+        return ReadIndex(row + 2, hasConstantSize);
+    }
+
+    /// <summary>
+    /// Get the Value blob index for a Constant row
+    /// </summary>
+    public static uint GetConstantValue(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Constant, rowId);
+        if (row == null)
+            return 0;
+
+        int hasConstantSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasConstant, ref header);
+        return ReadIndex(row + 2 + hasConstantSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // CustomAttribute Table (0x0C)
+    // Layout: Parent (HasCustomAttribute coded) + Type (CustomAttributeType coded) + Value (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Parent (HasCustomAttribute coded index) for a CustomAttribute row
+    /// </summary>
+    public static uint GetCustomAttributeParent(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.CustomAttribute, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.HasCustomAttributeSize);
+    }
+
+    /// <summary>
+    /// Get the Type (CustomAttributeType coded index) for a CustomAttribute row
+    /// </summary>
+    public static uint GetCustomAttributeType(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.CustomAttribute, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.HasCustomAttributeSize, sizes.CustomAttributeTypeSize);
+    }
+
+    /// <summary>
+    /// Get the Value blob index for a CustomAttribute row
+    /// </summary>
+    public static uint GetCustomAttributeValue(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.CustomAttribute, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.HasCustomAttributeSize + sizes.CustomAttributeTypeSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // StandAloneSig Table (0x11)
+    // Layout: Signature (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Signature blob index for a StandAloneSig row
+    /// </summary>
+    public static uint GetStandAloneSigSignature(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.StandAloneSig, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // TypeSpec Table (0x1B)
+    // Layout: Signature (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Signature blob index for a TypeSpec row
+    /// </summary>
+    public static uint GetTypeSpecSignature(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeSpec, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // GenericParam Table (0x2A)
+    // Layout: Number (2) + Flags (2) + Owner (TypeOrMethodDef coded) + Name (str)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the generic parameter number for a GenericParam row
+    /// </summary>
+    public static ushort GetGenericParamNumber(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParam, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Flags for a GenericParam row
+    /// </summary>
+    public static ushort GetGenericParamFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParam, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 2);
+    }
+
+    /// <summary>
+    /// Get the Owner (TypeOrMethodDef coded index) for a GenericParam row
+    /// </summary>
+    public static uint GetGenericParamOwner(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParam, rowId);
+        if (row == null)
+            return 0;
+
+        int typeOrMethodDefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.TypeOrMethodDef, ref header);
+        return ReadIndex(row + 4, typeOrMethodDefSize);
+    }
+
+    /// <summary>
+    /// Get the Name string index for a GenericParam row
+    /// </summary>
+    public static uint GetGenericParamName(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParam, rowId);
+        if (row == null)
+            return 0;
+
+        int typeOrMethodDefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.TypeOrMethodDef, ref header);
+        return ReadIndex(row + 4 + typeOrMethodDefSize, sizes.StringIndexSize);
+    }
+
+    // ============================================================================
+    // MethodSpec Table (0x2B)
+    // Layout: Method (MethodDefOrRef coded) + Instantiation (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Method (MethodDefOrRef coded index) for a MethodSpec row
+    /// </summary>
+    public static uint GetMethodSpecMethod(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodSpec, rowId);
+        if (row == null)
+            return 0;
+
+        int methodDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MethodDefOrRef, ref header);
+        return ReadIndex(row, methodDefOrRefSize);
+    }
+
+    /// <summary>
+    /// Get the Instantiation blob index for a MethodSpec row
+    /// </summary>
+    public static uint GetMethodSpecInstantiation(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodSpec, rowId);
+        if (row == null)
+            return 0;
+
+        int methodDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MethodDefOrRef, ref header);
+        return ReadIndex(row + methodDefOrRefSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // GenericParamConstraint Table (0x2C)
+    // Layout: Owner (GenericParam index) + Constraint (TypeDefOrRef coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Owner (GenericParam row ID) for a GenericParamConstraint row
+    /// </summary>
+    public static uint GetGenericParamConstraintOwner(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParamConstraint, rowId);
+        if (row == null)
+            return 0;
+
+        int genericParamIndexSize = header.RowCounts[(int)MetadataTableId.GenericParam] > 0xFFFF ? 4 : 2;
+        return ReadIndex(row, genericParamIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Constraint (TypeDefOrRef coded index) for a GenericParamConstraint row
+    /// </summary>
+    public static uint GetGenericParamConstraintConstraint(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.GenericParamConstraint, rowId);
+        if (row == null)
+            return 0;
+
+        int genericParamIndexSize = header.RowCounts[(int)MetadataTableId.GenericParam] > 0xFFFF ? 4 : 2;
+        return ReadIndex(row + genericParamIndexSize, sizes.TypeDefOrRefSize);
+    }
+
+    // ============================================================================
+    // NestedClass Table (0x29)
+    // Layout: NestedClass (TypeDef index) + EnclosingClass (TypeDef index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the NestedClass TypeDef row ID for a NestedClass row
+    /// </summary>
+    public static uint GetNestedClassNestedClass(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.NestedClass, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.TypeDefIndexSize);
+    }
+
+    /// <summary>
+    /// Get the EnclosingClass TypeDef row ID for a NestedClass row
+    /// </summary>
+    public static uint GetNestedClassEnclosingClass(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.NestedClass, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.TypeDefIndexSize, sizes.TypeDefIndexSize);
+    }
+
+    // ============================================================================
+    // Property Table (0x17)
+    // Layout: Flags (2) + Name (str) + Type (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for a Property row
+    /// </summary>
+    public static ushort GetPropertyFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Property, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Name string index for a Property row
+    /// </summary>
+    public static uint GetPropertyName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Property, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Type blob index for a Property row
+    /// </summary>
+    public static uint GetPropertyType(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Property, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2 + sizes.StringIndexSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // Event Table (0x14)
+    // Layout: EventFlags (2) + Name (str) + EventType (TypeDefOrRef coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the EventFlags for an Event row
+    /// </summary>
+    public static ushort GetEventFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Event, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Name string index for an Event row
+    /// </summary>
+    public static uint GetEventName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Event, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the EventType (TypeDefOrRef coded index) for an Event row
+    /// </summary>
+    public static uint GetEventType(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Event, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2 + sizes.StringIndexSize, sizes.TypeDefOrRefSize);
+    }
+
+    // ============================================================================
+    // MethodSemantics Table (0x18)
+    // Layout: Semantics (2) + Method (MethodDef index) + Association (HasSemantics coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Semantics flags for a MethodSemantics row
+    /// </summary>
+    public static ushort GetMethodSemanticsSemantics(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodSemantics, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Method (MethodDef row ID) for a MethodSemantics row
+    /// </summary>
+    public static uint GetMethodSemanticsMethod(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodSemantics, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2, sizes.MethodIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Association (HasSemantics coded index) for a MethodSemantics row
+    /// </summary>
+    public static uint GetMethodSemanticsAssociation(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodSemantics, rowId);
+        if (row == null)
+            return 0;
+
+        int hasSemanticsSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasSemantics, ref header);
+        return ReadIndex(row + 2 + sizes.MethodIndexSize, hasSemanticsSize);
+    }
+
+    // ============================================================================
+    // ImplMap Table (0x1C)
+    // Layout: MappingFlags (2) + MemberForwarded (MemberForwarded coded) + ImportName (str) + ImportScope (ModuleRef index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the MappingFlags for an ImplMap row
+    /// </summary>
+    public static ushort GetImplMapMappingFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ImplMap, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the MemberForwarded (MemberForwarded coded index) for an ImplMap row
+    /// </summary>
+    public static uint GetImplMapMemberForwarded(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ImplMap, rowId);
+        if (row == null)
+            return 0;
+
+        int memberForwardedSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MemberForwarded, ref header);
+        return ReadIndex(row + 2, memberForwardedSize);
+    }
+
+    /// <summary>
+    /// Get the ImportName string index for an ImplMap row
+    /// </summary>
+    public static uint GetImplMapImportName(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ImplMap, rowId);
+        if (row == null)
+            return 0;
+
+        int memberForwardedSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MemberForwarded, ref header);
+        return ReadIndex(row + 2 + memberForwardedSize, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the ImportScope (ModuleRef row ID) for an ImplMap row
+    /// </summary>
+    public static uint GetImplMapImportScope(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ImplMap, rowId);
+        if (row == null)
+            return 0;
+
+        int memberForwardedSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MemberForwarded, ref header);
+        int moduleRefIndexSize = header.RowCounts[(int)MetadataTableId.ModuleRef] > 0xFFFF ? 4 : 2;
+        return ReadIndex(row + 2 + memberForwardedSize + sizes.StringIndexSize, moduleRefIndexSize);
+    }
+
+    // ============================================================================
+    // ModuleRef Table (0x1A)
+    // Layout: Name (str)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Name string index for a ModuleRef row
+    /// </summary>
+    public static uint GetModuleRefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ModuleRef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.StringIndexSize);
+    }
+
+    // ============================================================================
+    // ClassLayout Table (0x0F)
+    // Layout: PackingSize (2) + ClassSize (4) + Parent (TypeDef index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the PackingSize for a ClassLayout row
+    /// </summary>
+    public static ushort GetClassLayoutPackingSize(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ClassLayout, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the ClassSize for a ClassLayout row
+    /// </summary>
+    public static uint GetClassLayoutClassSize(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ClassLayout, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)(row + 2);
+    }
+
+    /// <summary>
+    /// Get the Parent (TypeDef row ID) for a ClassLayout row
+    /// </summary>
+    public static uint GetClassLayoutParent(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ClassLayout, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 6, sizes.TypeDefIndexSize);
+    }
+
+    // ============================================================================
+    // FieldLayout Table (0x10)
+    // Layout: Offset (4) + Field (Field index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Offset for a FieldLayout row
+    /// </summary>
+    public static uint GetFieldLayoutOffset(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.FieldLayout, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the Field (Field row ID) for a FieldLayout row
+    /// </summary>
+    public static uint GetFieldLayoutField(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.FieldLayout, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4, sizes.FieldIndexSize);
+    }
+
+    // ============================================================================
+    // Assembly Table (0x20)
+    // Layout: HashAlgId (4) + MajorVersion (2) + MinorVersion (2) + BuildNumber (2) + RevisionNumber (2) +
+    //         Flags (4) + PublicKey (blob) + Name (str) + Culture (str)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the HashAlgId for an Assembly row
+    /// </summary>
+    public static uint GetAssemblyHashAlgId(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the MajorVersion for an Assembly row
+    /// </summary>
+    public static ushort GetAssemblyMajorVersion(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 4);
+    }
+
+    /// <summary>
+    /// Get the MinorVersion for an Assembly row
+    /// </summary>
+    public static ushort GetAssemblyMinorVersion(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 6);
+    }
+
+    /// <summary>
+    /// Get the BuildNumber for an Assembly row
+    /// </summary>
+    public static ushort GetAssemblyBuildNumber(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 8);
+    }
+
+    /// <summary>
+    /// Get the RevisionNumber for an Assembly row
+    /// </summary>
+    public static ushort GetAssemblyRevisionNumber(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 10);
+    }
+
+    /// <summary>
+    /// Get the Flags for an Assembly row
+    /// </summary>
+    public static uint GetAssemblyFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)(row + 12);
+    }
+
+    /// <summary>
+    /// Get the Name string index for an Assembly row
+    /// </summary>
+    public static uint GetAssemblyName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: HashAlgId(4) + MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) +
+        //         Flags(4) + PublicKey(blob) + Name(str) + Culture(str)
+        int offset = 16 + sizes.BlobIndexSize;
+        return ReadIndex(row + offset, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Culture string index for an Assembly row
+    /// </summary>
+    public static uint GetAssemblyCulture(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: HashAlgId(4) + MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) +
+        //         Flags(4) + PublicKey(blob) + Name(str) + Culture(str)
+        int offset = 16 + sizes.BlobIndexSize + sizes.StringIndexSize;
+        return ReadIndex(row + offset, sizes.StringIndexSize);
+    }
+
+    // ============================================================================
     // IL Method Body Reader (ECMA-335 II.25.4)
     // ============================================================================
 
