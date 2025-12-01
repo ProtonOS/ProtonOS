@@ -76,6 +76,9 @@ public static unsafe class Kernel
         // Initialize garbage collector (must be after GCHeap and PageAllocator)
         GC.Init();
 
+        // Initialize code heap for JIT (must be after VirtualMemory)
+        CodeHeap.Init();
+
         // Test GCDesc with heap-allocated object that has references
         // GCDescHelper.TestWithHeapObject();
 
@@ -97,6 +100,9 @@ public static unsafe class Kernel
         // Test CPU features and dynamic code execution (JIT prerequisites)
         Tests.TestCPUFeatures();
         Tests.TestDynamicCodeExecution();
+
+        // Test IL JIT compiler
+        Tests.TestILCompiler();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();

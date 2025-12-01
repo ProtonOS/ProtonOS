@@ -8,6 +8,7 @@ using ProtonOS.Memory;
 using ProtonOS.Threading;
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
+using ProtonOS.Runtime.JIT;
 
 namespace ProtonOS;
 
@@ -3998,5 +3999,4167 @@ public static unsafe class Tests
             DebugConsole.WriteDecimal((uint)r3);
             DebugConsole.WriteLine();
         }
+    }
+
+    // ==================== IL JIT Compiler Tests ====================
+
+    /// <summary>
+    /// Test the IL JIT compiler by compiling and running IL bytecode.
+    /// </summary>
+    public static void TestILCompiler()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("========== IL JIT Compiler Test ==========");
+
+        // Test 1: Compile a simple "return 42" method
+        TestILReturnConstant();
+
+        // Test 2: Compile an add function
+        TestILAdd();
+
+        // Test 3: Compile with locals
+        TestILWithLocals();
+
+        // Test 4: Division and remainder
+        TestILDivRem();
+
+        // Test 5: Bitwise operations
+        TestILBitwise();
+
+        // Test 6: Shift operations
+        TestILShift();
+
+        // Test 7: Negation
+        TestILNeg();
+
+        // Test 8: Subtraction
+        TestILSub();
+
+        // Test 9: Comparisons
+        TestILCompare();
+
+        // Test 10: Branches
+        TestILBranch();
+
+        // Test 11: ldc.i8 (64-bit constant)
+        TestILLdcI8();
+
+        // Test 12: conv.* (integer conversions)
+        TestILConv();
+
+        // Test 13: bgt.s (two-operand comparison branch)
+        TestILBranchCmp();
+
+        // Test 14: mul opcode (standalone)
+        TestILMul();
+
+        // Test 15: dup opcode
+        TestILDup();
+
+        // Test 16: cgt/clt opcodes (signed comparisons)
+        TestILCgtClt();
+
+        // Test 17: brtrue opcode
+        TestILBrtrue();
+
+        // Test 18: div.un (unsigned division)
+        TestILDivUn();
+
+        // Test 19: shr.un (unsigned shift right)
+        TestILShrUn();
+
+        // Test 20: cgt.un (unsigned comparison)
+        TestILCgtUn();
+
+        // Additional coverage tests (21-26)
+        TestILNot();
+        TestILRemUn();
+        TestILPop();
+        TestILBrfalse();
+        TestILCltUn();
+        TestILLdnull();
+
+        // Tests 27-30: More opcode coverage
+        TestILStarg();
+        TestILLdloca();
+        TestILLdarga();
+        TestILNop();
+
+        // Test 31: Long branches
+        TestILLongBranch();
+
+        // Test 32: Simple loop
+        TestILLoop();
+
+        // Test 33: conv.i / conv.u (native int)
+        TestILConvNative();
+
+        // Test 34: Unsigned branch comparison (blt.un.s)
+        TestILBltUn();
+
+        // Test 35: ldarg.s/ldloc.s/stloc.s with index > 3
+        TestILShortForms();
+
+        // Test 36: ldc.i4.s with negative value
+        TestILLdcI4S();
+
+        // Test 37: Long unsigned branches (bge.un, bgt.un, ble.un)
+        TestILLongUnsignedBranches();
+
+        // Test 38: ldc.r4 (load float constant)
+        TestILLdcR4();
+
+        // Test 39: ldc.r8 (load double constant)
+        TestILLdcR8();
+
+        // Test 40: conv.r4 (convert int to float)
+        TestILConvR4();
+
+        // Test 41: conv.r8 (convert int to double)
+        TestILConvR8();
+
+        // Test 42: switch (jump table)
+        TestILSwitch();
+
+        // Test 43: ldind/stind (indirect load/store)
+        TestILIndirect();
+
+        // Test 44-53: Method call tests
+        TestILCallSimple();
+        TestILCallWithArgs();
+        TestILCallJitToJit();
+        TestILCallManyArgs();
+        TestILCallVoid();
+        TestILCallNested();
+        TestILCall0Args();
+        TestILCall4Args();
+        TestILCall5Args();
+        TestILCallReturnLong();
+
+        // Test 54: Indirect call via function pointer (calli)
+        TestILCalli();
+
+        // Test 55-56: Block memory operations
+        TestILInitblk();
+        TestILCpblk();
+
+        // Test 57-60: Value type operations
+        TestILInitobj();
+        TestILLdobj();
+        TestILStobj();
+        TestILCpobj();
+
+        // Test 61: sizeof
+        TestILSizeof();
+
+        // Test 62-63: 7 and 8 argument calls
+        TestILCall7Args();
+        TestILCall8Args();
+
+        // Test 64-65: calli with 6+ arguments
+        TestILCalli6Args();
+        TestILCalli7Args();
+
+        // Test 66: conv.ovf.* (overflow-checking conversions)
+        TestILConvOvf();
+
+        // Test 67: add.ovf/sub.ovf/mul.ovf (overflow-checking arithmetic)
+        TestILArithOvf();
+
+        DebugConsole.WriteLine("========== IL JIT Tests Complete ==========");
+    }
+
+    /// <summary>
+    /// Test 1: IL method that returns a constant
+    /// IL equivalent of: static int ReturnFortyTwo() => 42;
+    /// IL: ldc.i4.s 42; ret
+    /// </summary>
+    private static void TestILReturnConstant()
+    {
+        DebugConsole.Write("[IL JIT 1] Return constant: ");
+
+        // IL bytecode for: return 42
+        // ldc.i4.s 42  (0x1F 0x2A)
+        // ret          (0x2A)
+        byte* il = stackalloc byte[3];
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 42;    // 42
+        il[2] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 3, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        // Cast to function pointer and call
+        var fn = (delegate*<int>)code;
+        int result = fn();
+
+        if (result == 42)
+        {
+            DebugConsole.Write("result=");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 42, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 2: IL method that adds two arguments
+    /// IL equivalent of: static int Add(int a, int b) => a + b;
+    /// IL: ldarg.0; ldarg.1; add; ret
+    /// </summary>
+    private static void TestILAdd()
+    {
+        DebugConsole.Write("[IL JIT 2] Add two args: ");
+
+        // IL bytecode for: return a + b
+        // ldarg.0  (0x02)
+        // ldarg.1  (0x03)
+        // add      (0x58)
+        // ret      (0x2A)
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x58;  // add
+        il[3] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 4, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        // Cast to function pointer and call
+        var fn = (delegate*<int, int, int>)code;
+        int result = fn(100, 42);
+
+        if (result == 142)
+        {
+            DebugConsole.Write("100 + 42 = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 142, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 3: IL method using local variables
+    /// IL equivalent of: static int WithLocal(int x) { int y = x + 10; return y * 2; }
+    /// IL: ldarg.0; ldc.i4.s 10; add; stloc.0; ldloc.0; ldc.i4.2; mul; ret
+    /// </summary>
+    private static void TestILWithLocals()
+    {
+        DebugConsole.Write("[IL JIT 3] With locals: ");
+
+        // IL bytecode for: int y = x + 10; return y * 2;
+        // ldarg.0      (0x02)
+        // ldc.i4.s 10  (0x1F 0x0A)
+        // add          (0x58)
+        // stloc.0      (0x0A)
+        // ldloc.0      (0x06)
+        // ldc.i4.2     (0x18)
+        // mul          (0x5A)
+        // ret          (0x2A)
+        byte* il = stackalloc byte[9];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x1F;  // ldc.i4.s
+        il[2] = 10;    // 10
+        il[3] = 0x58;  // add
+        il[4] = 0x0A;  // stloc.0
+        il[5] = 0x06;  // ldloc.0
+        il[6] = 0x18;  // ldc.i4.2
+        il[7] = 0x5A;  // mul
+        il[8] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 9, 1, 1);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        // Cast to function pointer and call
+        // fn(5) should be: y = 5 + 10 = 15; return 15 * 2 = 30
+        var fn = (delegate*<int, int>)code;
+        int result = fn(5);
+
+        if (result == 30)
+        {
+            DebugConsole.Write("fn(5) = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 30, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 4: Division and remainder
+    /// IL equivalent of: static int DivRem(int a, int b) => (a / b) + (a % b);
+    /// e.g., 17 / 5 = 3, 17 % 5 = 2, result = 5
+    /// </summary>
+    private static void TestILDivRem()
+    {
+        DebugConsole.Write("[IL JIT 4] Div/Rem: ");
+
+        // IL: ldarg.0; ldarg.1; div; ldarg.0; ldarg.1; rem; add; ret
+        // 17 / 5 = 3, 17 % 5 = 2, 3 + 2 = 5
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x5B;  // div
+        il[3] = 0x02;  // ldarg.0
+        il[4] = 0x03;  // ldarg.1
+        il[5] = 0x5D;  // rem
+        il[6] = 0x58;  // add
+        il[7] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int, int>)code;
+        int result = fn(17, 5);  // 17/5 + 17%5 = 3 + 2 = 5
+
+        if (result == 5)
+        {
+            DebugConsole.Write("17/5 + 17%5 = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 5, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 5: Bitwise operations (and, or, xor, not)
+    /// IL equivalent of: static int Bitwise(int a, int b) => (a & b) | (a ^ b);
+    /// </summary>
+    private static void TestILBitwise()
+    {
+        DebugConsole.Write("[IL JIT 5] Bitwise: ");
+
+        // IL: ldarg.0; ldarg.1; and; ldarg.0; ldarg.1; xor; or; ret
+        // a=0xFF, b=0x0F: (0xFF & 0x0F) | (0xFF ^ 0x0F) = 0x0F | 0xF0 = 0xFF
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x5F;  // and
+        il[3] = 0x02;  // ldarg.0
+        il[4] = 0x03;  // ldarg.1
+        il[5] = 0x61;  // xor
+        il[6] = 0x60;  // or
+        il[7] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int, int>)code;
+        int result = fn(0xFF, 0x0F);  // (0xFF & 0x0F) | (0xFF ^ 0x0F) = 0x0F | 0xF0 = 0xFF
+
+        if (result == 0xFF)
+        {
+            DebugConsole.Write("(0xFF & 0x0F) | (0xFF ^ 0x0F) = 0x");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 0xFF, got 0x");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 6: Shift operations (shl, shr)
+    /// IL equivalent of: static int Shift(int a) => (a << 4) >> 2;
+    /// </summary>
+    private static void TestILShift()
+    {
+        DebugConsole.Write("[IL JIT 6] Shift: ");
+
+        // IL: ldarg.0; ldc.i4.4; shl; ldc.i4.2; shr; ret
+        // a=5: (5 << 4) >> 2 = 80 >> 2 = 20
+        byte* il = stackalloc byte[6];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x1A;  // ldc.i4.4
+        il[2] = 0x62;  // shl
+        il[3] = 0x18;  // ldc.i4.2
+        il[4] = 0x63;  // shr
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int>)code;
+        int result = fn(5);  // (5 << 4) >> 2 = 80 >> 2 = 20
+
+        if (result == 20)
+        {
+            DebugConsole.Write("(5 << 4) >> 2 = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 20, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 7: Negation
+    /// IL equivalent of: static int Neg(int a) => -a;
+    /// </summary>
+    private static void TestILNeg()
+    {
+        DebugConsole.Write("[IL JIT 7] Neg: ");
+
+        // IL: ldarg.0; neg; ret
+        byte* il = stackalloc byte[3];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x65;  // neg
+        il[2] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 3, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int>)code;
+        int result = fn(42);  // -42
+
+        if (result == -42)
+        {
+            DebugConsole.Write("-42 = ");
+            DebugConsole.WriteDecimal(result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected -42, got ");
+            DebugConsole.WriteDecimal(result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 8: Subtraction
+    /// IL equivalent of: static int Sub(int a, int b) => a - b;
+    /// </summary>
+    private static void TestILSub()
+    {
+        DebugConsole.Write("[IL JIT 8] Sub: ");
+
+        // IL: ldarg.0; ldarg.1; sub; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x59;  // sub
+        il[3] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 4, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int, int>)code;
+        int result = fn(100, 42);  // 100 - 42 = 58
+
+        if (result == 58)
+        {
+            DebugConsole.Write("100 - 42 = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 58, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 9: Comparisons (ceq, cgt, clt)
+    /// IL equivalent of: static int Compare(int a, int b) => (a == b ? 1 : 0) + (a > b ? 2 : 0) + (a < b ? 4 : 0);
+    /// </summary>
+    private static void TestILCompare()
+    {
+        DebugConsole.Write("[IL JIT 9] Compare: ");
+
+        // IL: ldarg.0; ldarg.1; ceq; ldarg.0; ldarg.1; cgt; ldc.i4.2; mul; add; ldarg.0; ldarg.1; clt; ldc.i4.4; mul; add; ret
+        // a=10, b=5: eq=0, gt=1, lt=0 -> 0 + 2 + 0 = 2
+        byte* il = stackalloc byte[16];
+        il[0] = 0x02;   // ldarg.0
+        il[1] = 0x03;   // ldarg.1
+        il[2] = 0xFE;   // prefix
+        il[3] = 0x01;   // ceq
+        il[4] = 0x02;   // ldarg.0
+        il[5] = 0x03;   // ldarg.1
+        il[6] = 0xFE;   // prefix
+        il[7] = 0x02;   // cgt
+        il[8] = 0x18;   // ldc.i4.2
+        il[9] = 0x5A;   // mul
+        il[10] = 0x58;  // add
+        il[11] = 0x02;  // ldarg.0
+        il[12] = 0x03;  // ldarg.1
+        il[13] = 0xFE;  // prefix
+        il[14] = 0x04;  // clt
+        il[15] = 0x1A;  // ldc.i4.4
+        // Need more bytes for full test, simplify
+        // Let's just test ceq: return a == b ? 1 : 0
+
+        // Simplified: ldarg.0; ldarg.1; ceq; ret
+        byte* il2 = stackalloc byte[5];
+        il2[0] = 0x02;  // ldarg.0
+        il2[1] = 0x03;  // ldarg.1
+        il2[2] = 0xFE;  // prefix
+        il2[3] = 0x01;  // ceq
+        il2[4] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il2, 5, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int, int>)code;
+        int r1 = fn(5, 5);    // 5 == 5 -> 1
+        int r2 = fn(10, 5);   // 10 == 5 -> 0
+
+        if (r1 == 1 && r2 == 0)
+        {
+            DebugConsole.Write("(5==5)=");
+            DebugConsole.WriteDecimal((uint)r1);
+            DebugConsole.Write(", (10==5)=");
+            DebugConsole.WriteDecimal((uint)r2);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - (5==5)=");
+            DebugConsole.WriteDecimal((uint)r1);
+            DebugConsole.Write(", (10==5)=");
+            DebugConsole.WriteDecimal((uint)r2);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 10: Conditional branches using brfalse.s
+    /// IL equivalent of: static int Branch(int x) => x != 0 ? 1 : -1;
+    /// Test with simpler brfalse instead of bgt to isolate issue
+    /// </summary>
+    private static void TestILBranch()
+    {
+        DebugConsole.Write("[IL JIT 10] Branch: ");
+
+        // IL: ldarg.0; brfalse.s +2; ldc.i4.1; ret; ldc.i4.m1; ret
+        // Logic: if arg0 == 0, branch to ldc.i4.m1; else fall through to ldc.i4.1
+        // So fn(0) -> -1, fn(nonzero) -> 1
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x2C;  // brfalse.s
+        il[2] = 0x02;  // +2 (after reading offset, _ilOffset=3, target=3+2=5)
+        il[3] = 0x17;  // ldc.i4.1 (fall through - nonzero case)
+        il[4] = 0x2A;  // ret
+        il[5] = 0x15;  // ldc.i4.m1 (branch target - zero case)
+        il[6] = 0x2A;  // ret
+        il[7] = 0x00;  // padding (unused)
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int>)code;
+        int r1 = fn(5);   // 5 != 0 -> 1 (fall through)
+        int r2 = fn(0);   // 0 == 0 -> -1 (branch taken)
+
+        if (r1 == 1 && r2 == -1)
+        {
+            DebugConsole.Write("fn(5)=");
+            DebugConsole.WriteDecimal(r1);
+            DebugConsole.Write(", fn(0)=");
+            DebugConsole.WriteDecimal(r2);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - fn(5)=");
+            DebugConsole.WriteDecimal(r1);
+            DebugConsole.Write(", fn(0)=");
+            DebugConsole.WriteDecimal(r2);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 11: 64-bit constant loading
+    /// IL equivalent of: static long LdcI8() => 0x123456789ABCDEF0;
+    /// </summary>
+    private static void TestILLdcI8()
+    {
+        DebugConsole.Write("[IL JIT 11] ldc.i8: ");
+
+        // IL: ldc.i8 0x123456789ABCDEF0; ret
+        byte* il = stackalloc byte[10];
+        il[0] = 0x21;  // ldc.i8
+        // Little-endian 64-bit value: 0x123456789ABCDEF0
+        il[1] = 0xF0;
+        il[2] = 0xDE;
+        il[3] = 0xBC;
+        il[4] = 0x9A;
+        il[5] = 0x78;
+        il[6] = 0x56;
+        il[7] = 0x34;
+        il[8] = 0x12;
+        il[9] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<long>)code;
+        long result = fn();
+        long expected = 0x123456789ABCDEF0;
+
+        if (result == expected)
+        {
+            DebugConsole.Write("0x");
+            DebugConsole.WriteHex((ulong)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 0x");
+            DebugConsole.WriteHex((ulong)expected);
+            DebugConsole.Write(", got 0x");
+            DebugConsole.WriteHex((ulong)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 12: Type conversions (conv.i1, conv.u1)
+    /// IL equivalent of: static int Conv(int x) => (sbyte)(byte)x;
+    /// Tests both signed and unsigned byte conversions
+    /// </summary>
+    private static void TestILConv()
+    {
+        DebugConsole.Write("[IL JIT 12] conv: ");
+
+        // IL: ldarg.0; conv.u1; conv.i4; ret
+        // Tests unsigned byte truncation: 0x12345678 & 0xFF = 0x78 = 120
+        byte* il = stackalloc byte[5];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0xD2;  // conv.u1 (truncate to byte)
+        il[2] = 0x69;  // conv.i4 (sign-extend to int - but u1 zero-extends)
+        il[3] = 0x2A;  // ret
+        il[4] = 0x00;  // padding
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 4, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int>)code;
+        int result = fn(0x12345678);  // Should truncate to 0x78 = 120
+
+        if (result == 0x78)
+        {
+            DebugConsole.Write("conv.u1(0x12345678) = 0x");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 0x78, got 0x");
+            DebugConsole.WriteHex((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 13: Two-operand comparison branch (bgt.s)
+    /// IL equivalent of: static int BranchCmp(int x) => x > 0 ? 1 : -1;
+    /// Tests the CompileBranchCmp path with bgt.s
+    /// </summary>
+    private static void TestILBranchCmp()
+    {
+        DebugConsole.Write("[IL JIT 13] bgt.s: ");
+
+        // IL: ldarg.0; ldc.i4.0; bgt.s +2; ldc.i4.m1; ret; ldc.i4.1; ret
+        // Logic: if arg0 > 0, branch to ldc.i4.1; else fall through to ldc.i4.m1
+        // So fn(5) -> 1, fn(-5) -> -1, fn(0) -> -1
+        byte* il = stackalloc byte[10];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x16;  // ldc.i4.0
+        il[2] = 0x30;  // bgt.s
+        il[3] = 0x02;  // +2 (after reading offset, _ilOffset=4, target=4+2=6)
+        il[4] = 0x15;  // ldc.i4.m1 (fall through - not greater)
+        il[5] = 0x2A;  // ret
+        il[6] = 0x17;  // ldc.i4.1 (branch target - greater)
+        il[7] = 0x2A;  // ret
+        il[8] = 0x00;  // padding
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var fn = (delegate*<int, int>)code;
+        int r1 = fn(5);    // 5 > 0 -> 1 (branch taken)
+        int r2 = fn(-5);   // -5 > 0 is FALSE -> -1 (fall through)
+        int r3 = fn(0);    // 0 > 0 is FALSE -> -1 (fall through)
+
+        if (r1 == 1 && r2 == -1 && r3 == -1)
+        {
+            DebugConsole.Write("fn(5)=");
+            DebugConsole.WriteDecimal(r1);
+            DebugConsole.Write(", fn(-5)=");
+            DebugConsole.WriteDecimal(r2);
+            DebugConsole.Write(", fn(0)=");
+            DebugConsole.WriteDecimal(r3);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - fn(5)=");
+            DebugConsole.WriteDecimal(r1);
+            DebugConsole.Write(", fn(-5)=");
+            DebugConsole.WriteDecimal(r2);
+            DebugConsole.Write(", fn(0)=");
+            DebugConsole.WriteDecimal(r3);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 14: mul opcode (standalone multiplication)
+    /// IL equivalent of: static int Mul(int a, int b) => a * b;
+    /// IL: ldarg.0; ldarg.1; mul; ret
+    /// </summary>
+    private static void TestILMul()
+    {
+        DebugConsole.Write("[IL JIT 14] mul: ");
+
+        // IL: ldarg.0; ldarg.1; mul; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x5A;  // mul
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(7, 6);  // 42
+            int r2 = fn(-5, 3); // -15
+            int r3 = fn(0, 100); // 0
+
+            if (r1 == 42 && r2 == -15 && r3 == 0)
+            {
+                DebugConsole.Write("7*6=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", -5*3=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", 0*100=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 7*6=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", -5*3=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", 0*100=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 15: dup opcode (duplicate stack top)
+    /// IL equivalent of: static int DupTest(int x) => x + x; (but using dup)
+    /// IL: ldarg.0; dup; add; ret
+    /// </summary>
+    private static void TestILDup()
+    {
+        DebugConsole.Write("[IL JIT 15] dup: ");
+
+        // IL: ldarg.0; dup; add; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x25;  // dup
+        il[2] = 0x58;  // add
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 1, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+            int r1 = fn(21);  // 21 + 21 = 42
+            int r2 = fn(-5);  // -5 + -5 = -10
+            int r3 = fn(0);   // 0 + 0 = 0
+
+            if (r1 == 42 && r2 == -10 && r3 == 0)
+            {
+                DebugConsole.Write("dup(21)+add=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - dup(21)+add=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 16: cgt/clt opcodes (signed greater-than and less-than)
+    /// IL equivalent of: static int CgtTest(int a, int b) => a > b ? 1 : 0;
+    /// IL: ldarg.0; ldarg.1; cgt; ret
+    /// </summary>
+    private static void TestILCgtClt()
+    {
+        DebugConsole.Write("[IL JIT 16] cgt/clt: ");
+
+        // IL: ldarg.0; ldarg.1; cgt; ret
+        byte* il = stackalloc byte[5];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0xFE;  // prefix
+        il[3] = 0x02;  // cgt
+        il[4] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 5, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(5, 3);   // 5 > 3 = 1
+            int r2 = fn(3, 5);   // 3 > 5 = 0
+            int r3 = fn(-5, -10); // -5 > -10 = 1 (signed!)
+            int r4 = fn(-10, -5); // -10 > -5 = 0
+
+            if (r1 == 1 && r2 == 0 && r3 == 1 && r4 == 0)
+            {
+                DebugConsole.Write("cgt(5,3)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", cgt(-5,-10)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - cgt(5,3)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", cgt(3,5)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", cgt(-5,-10)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.Write(", cgt(-10,-5)=");
+                DebugConsole.WriteDecimal(r4);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 17: brtrue opcode
+    /// IL equivalent of: static int BrtrueTest(int x) => x != 0 ? 1 : -1;
+    /// IL: ldarg.0; brtrue.s +2; ldc.i4.m1; ret; ldc.i4.1; ret
+    /// </summary>
+    private static void TestILBrtrue()
+    {
+        DebugConsole.Write("[IL JIT 17] brtrue: ");
+
+        // IL: ldarg.0; brtrue.s +2; ldc.i4.m1; ret; ldc.i4.1; ret
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x2D;  // brtrue.s
+        il[2] = 0x02;  // +2 (skip to ldc.i4.1)
+        il[3] = 0x15;  // ldc.i4.m1 (-1)
+        il[4] = 0x2A;  // ret
+        il[5] = 0x17;  // ldc.i4.1
+        il[6] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 7, argCount: 1, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+            int r1 = fn(5);   // 5 != 0, branch taken, return 1
+            int r2 = fn(0);   // 0 == 0, fall through, return -1
+            int r3 = fn(-1);  // -1 != 0, branch taken, return 1
+
+            if (r1 == 1 && r2 == -1 && r3 == 1)
+            {
+                DebugConsole.Write("fn(5)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", fn(0)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", fn(-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - fn(5)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", fn(0)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", fn(-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 18: div.un/rem.un (unsigned division/remainder)
+    /// Uses large positive numbers that would be negative if signed
+    /// IL: ldarg.0; ldarg.1; div.un; ret
+    /// </summary>
+    private static void TestILDivUn()
+    {
+        DebugConsole.Write("[IL JIT 18] div.un: ");
+
+        // IL: ldarg.0; ldarg.1; div.un; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x5C;  // div.un (0x5C, not 0x5B which is signed div)
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(100, 7);  // 100 / 7 = 14 (unsigned, same as signed for positive)
+            // 0xFFFFFFF0 = -16 signed, but 4294967280 unsigned
+            // 0xFFFFFFF0 / 2 = 2147483640 unsigned
+            // Let's use a simpler test: -1 (0xFFFFFFFF) / 2 = 0x7FFFFFFF = 2147483647 unsigned
+            int r2 = fn(-1, 2);  // 0xFFFFFFFF / 2 = 0x7FFFFFFF = 2147483647
+
+            // For signed: -1 / 2 = 0
+            // For unsigned: 0xFFFFFFFF / 2 = 0x7FFFFFFF
+            // If we get 0, it's using signed division (wrong)
+            // If we get 0x7FFFFFFF (2147483647), it's using unsigned division (correct)
+
+            if (r1 == 14 && r2 == 0x7FFFFFFF)
+            {
+                DebugConsole.Write("100/7=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", (-1)/2=0x");
+                DebugConsole.WriteHex((uint)r2);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 100/7=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", (-1)/2=0x");
+                DebugConsole.WriteHex((uint)r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 19: shr.un (unsigned shift right)
+    /// For signed shr: -8 >> 2 = -2 (arithmetic shift, preserves sign)
+    /// For unsigned shr.un: -8 >> 2 = 0x3FFFFFFE (logical shift, fills with 0)
+    /// IL: ldarg.0; ldarg.1; shr.un; ret
+    /// </summary>
+    private static void TestILShrUn()
+    {
+        DebugConsole.Write("[IL JIT 19] shr.un: ");
+
+        // IL: ldarg.0; ldarg.1; shr.un; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x64;  // shr.un
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(80, 2);  // 80 >>> 2 = 20 (same for signed/unsigned)
+            // -8 = 0xFFFFFFF8
+            // -8 >> 2 (signed) = -2 (0xFFFFFFFE)
+            // -8 >>> 2 (unsigned) = 0x3FFFFFFE = 1073741822
+            int r2 = fn(-8, 2);
+
+            if (r1 == 20 && r2 == 0x3FFFFFFE)
+            {
+                DebugConsole.Write("80>>>2=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", -8>>>2=0x");
+                DebugConsole.WriteHex((uint)r2);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 80>>>2=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", -8>>>2=0x");
+                DebugConsole.WriteHex((uint)r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 20: cgt.un (unsigned greater-than)
+    /// For signed: -1 > 1 = false (0)
+    /// For unsigned: 0xFFFFFFFF > 1 = true (1)
+    /// IL: ldarg.0; ldarg.1; cgt.un; ret
+    /// </summary>
+    private static void TestILCgtUn()
+    {
+        DebugConsole.Write("[IL JIT 20] cgt.un: ");
+
+        // IL: ldarg.0; ldarg.1; cgt.un; ret
+        byte* il = stackalloc byte[5];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0xFE;  // prefix
+        il[3] = 0x03;  // cgt.un
+        il[4] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 5, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(5, 3);   // 5 > 3 = 1 (same signed/unsigned)
+            int r2 = fn(-1, 1);  // Signed: -1 > 1 = 0. Unsigned: 0xFFFFFFFF > 1 = 1
+            int r3 = fn(1, -1);  // Signed: 1 > -1 = 1. Unsigned: 1 > 0xFFFFFFFF = 0
+
+            if (r1 == 1 && r2 == 1 && r3 == 0)
+            {
+                DebugConsole.Write("cgt.un(5,3)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", cgt.un(-1,1)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", cgt.un(1,-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - cgt.un(5,3)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", cgt.un(-1,1)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", cgt.un(1,-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 21: not (bitwise NOT)
+    /// IL: ldarg.0; not; ret
+    /// </summary>
+    private static void TestILNot()
+    {
+        DebugConsole.Write("[IL JIT 21] not: ");
+
+        // IL: ldarg.0; not; ret
+        byte* il = stackalloc byte[3];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x66;  // not
+        il[2] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 3, argCount: 1, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+            int r1 = fn(0);           // ~0 = -1 (0xFFFFFFFF)
+            int r2 = fn(-1);          // ~(-1) = 0
+            int r3 = fn(0x0F0F0F0F);  // ~0x0F0F0F0F = 0xF0F0F0F0
+
+            if (r1 == -1 && r2 == 0 && r3 == unchecked((int)0xF0F0F0F0))
+            {
+                DebugConsole.Write("~0=-1, ~(-1)=0, ~0x0F0F0F0F=0x");
+                DebugConsole.WriteHex((uint)r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - ~0=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", ~(-1)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 22: rem.un (unsigned remainder)
+    /// IL: ldarg.0; ldarg.1; rem.un; ret
+    /// </summary>
+    private static void TestILRemUn()
+    {
+        DebugConsole.Write("[IL JIT 22] rem.un: ");
+
+        // IL: ldarg.0; ldarg.1; rem.un; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x5E;  // rem.un
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(17, 5);       // 17 % 5 = 2
+            int r2 = fn(-1, 3);       // Unsigned: 0xFFFFFFFF % 3 = ?
+            // 0xFFFFFFFF = 4294967295, 4294967295 % 3 = 0 (since 4294967295 = 3*1431655765)
+
+            uint unsignedResult = 0xFFFFFFFF % 3;  // Should be 0
+
+            if (r1 == 2 && (uint)r2 == unsignedResult)
+            {
+                DebugConsole.Write("17%5=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", 0xFFFFFFFF%3=");
+                DebugConsole.WriteDecimal((uint)r2);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 17%5=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", (-1)%3=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 23: pop (discard top of stack)
+    /// IL: ldc.i4.1; ldc.i4.2; pop; ret (should return 1, not 2)
+    /// </summary>
+    private static void TestILPop()
+    {
+        DebugConsole.Write("[IL JIT 23] pop: ");
+
+        // IL: ldc.i4.1; ldc.i4.2; pop; ret
+        byte* il = stackalloc byte[4];
+        il[0] = 0x17;  // ldc.i4.1
+        il[1] = 0x18;  // ldc.i4.2
+        il[2] = 0x26;  // pop
+        il[3] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 4, argCount: 0, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int>)code;
+            int result = fn();
+
+            if (result == 1)
+            {
+                DebugConsole.Write("push(1); push(2); pop; ret = ");
+                DebugConsole.WriteDecimal(result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 1, got ");
+                DebugConsole.WriteDecimal(result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 24: brfalse.s (branch if false/zero)
+    /// IL: ldarg.0; brfalse.s +2; ldc.i4.1; ret; ldc.i4.m1; ret
+    /// </summary>
+    private static void TestILBrfalse()
+    {
+        DebugConsole.Write("[IL JIT 24] brfalse.s: ");
+
+        // IL: ldarg.0; brfalse.s +2; ldc.i4.1; ret; ldc.i4.m1; ret
+        // If arg==0, jump to ldc.i4.m1, return -1
+        // If arg!=0, fall through to ldc.i4.1, return 1
+        byte* il = stackalloc byte[7];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x2C;  // brfalse.s
+        il[2] = 0x02;  // offset +2 (skip ldc.i4.1 and ret)
+        il[3] = 0x17;  // ldc.i4.1
+        il[4] = 0x2A;  // ret
+        il[5] = 0x15;  // ldc.i4.m1
+        il[6] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 7, argCount: 1, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+            int r1 = fn(0);   // Should return -1 (branch taken)
+            int r2 = fn(5);   // Should return 1 (branch not taken)
+            int r3 = fn(-1);  // Should return 1 (branch not taken)
+
+            if (r1 == -1 && r2 == 1 && r3 == 1)
+            {
+                DebugConsole.Write("fn(0)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", fn(5)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", fn(-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - fn(0)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", fn(5)=");
+                DebugConsole.WriteDecimal(r2);
+                DebugConsole.Write(", fn(-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 25: clt.un (unsigned less than comparison)
+    /// IL: ldarg.0; ldarg.1; clt.un; ret
+    /// </summary>
+    private static void TestILCltUn()
+    {
+        DebugConsole.Write("[IL JIT 25] clt.un: ");
+
+        // IL: ldarg.0; ldarg.1; clt.un; ret
+        byte* il = stackalloc byte[5];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0xFE;  // prefix
+        il[3] = 0x05;  // clt.un
+        il[4] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 5, argCount: 2, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int>)code;
+            int r1 = fn(3, 5);   // 3 < 5 = 1
+            int r2 = fn(5, 3);   // 5 < 3 = 0
+            int r3 = fn(1, -1);  // Unsigned: 1 < 0xFFFFFFFF = 1
+            int r4 = fn(-1, 1);  // Unsigned: 0xFFFFFFFF < 1 = 0
+
+            if (r1 == 1 && r2 == 0 && r3 == 1 && r4 == 0)
+            {
+                DebugConsole.Write("clt.un(3,5)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", clt.un(1,-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.Write(", clt.un(-1,1)=");
+                DebugConsole.WriteDecimal(r4);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - clt.un(3,5)=");
+                DebugConsole.WriteDecimal(r1);
+                DebugConsole.Write(", clt.un(1,-1)=");
+                DebugConsole.WriteDecimal(r3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 26: ldnull (load null reference)
+    /// IL: ldnull; ret
+    /// </summary>
+    private static void TestILLdnull()
+    {
+        DebugConsole.Write("[IL JIT 26] ldnull: ");
+
+        // IL: ldnull; ret
+        byte* il = stackalloc byte[2];
+        il[0] = 0x14;  // ldnull
+        il[1] = 0x2A;  // ret
+
+        var compiler = ILCompiler.Create(il, 2, argCount: 0, localCount: 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<nint>)code;
+            nint result = fn();
+
+            if (result == 0)
+            {
+                DebugConsole.Write("ldnull = 0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 0, got 0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 27: starg.s opcode (store to argument)
+    /// IL equivalent of: static int StoreArg(int x) { x = 100; return x; }
+    /// IL: ldc.i4.s 100; starg.s 0; ldarg.0; ret
+    /// </summary>
+    private static void TestILStarg()
+    {
+        DebugConsole.Write("[IL JIT 27] starg.s: ");
+
+        // IL bytecode for: x = 100; return x
+        // ldc.i4.s 100  (0x1F 0x64)
+        // starg.s 0     (0x10 0x00)
+        // ldarg.0       (0x02)
+        // ret           (0x2A)
+        byte* il = stackalloc byte[6];
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 100;   // 100
+        il[2] = 0x10;  // starg.s
+        il[3] = 0x00;  // arg 0
+        il[4] = 0x02;  // ldarg.0
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int, int>)code;
+            int result = fn(42);  // Pass 42, but it should be overwritten with 100
+
+            if (result == 100)
+            {
+                DebugConsole.Write("starg(42)->100 = ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 100, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 28: ldloca.s opcode (load local address)
+    /// This test uses pointer arithmetic to verify address loading works.
+    /// IL equivalent of: static long LdlocaTest() { int x = 42; int* p = &x; return (long)p; }
+    /// The return value should be non-zero (a valid stack address)
+    /// </summary>
+    private static void TestILLdloca()
+    {
+        DebugConsole.Write("[IL JIT 28] ldloca.s: ");
+
+        // IL bytecode for: int x = 42; return (long)&x
+        // ldc.i4.s 42   (0x1F 0x2A)
+        // stloc.0       (0x0A)
+        // ldloca.s 0    (0x12 0x00)
+        // conv.i8       (0x6A)
+        // ret           (0x2A)
+        byte* il = stackalloc byte[7];
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 42;    // 42
+        il[2] = 0x0A;  // stloc.0
+        il[3] = 0x12;  // ldloca.s
+        il[4] = 0x00;  // local 0
+        il[5] = 0x6A;  // conv.i8
+        il[6] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 0, 1);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<long>)code;
+            long result = fn();
+
+            // Address should be non-zero (valid stack address)
+            if (result != 0)
+            {
+                DebugConsole.Write("&local != 0: 0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.WriteLine("FAILED - got null address");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 29: ldarga.s opcode (load argument address)
+    /// IL equivalent of: static long LdargaTest(int x) { return (long)&x; }
+    /// </summary>
+    private static void TestILLdarga()
+    {
+        DebugConsole.Write("[IL JIT 29] ldarga.s: ");
+
+        // IL bytecode for: return (long)&x
+        // ldarga.s 0    (0x0F 0x00)
+        // conv.i8       (0x6A)
+        // ret           (0x2A)
+        byte* il = stackalloc byte[4];
+        il[0] = 0x0F;  // ldarga.s
+        il[1] = 0x00;  // arg 0
+        il[2] = 0x6A;  // conv.i8
+        il[3] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 4, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int, long>)code;
+            long result = fn(42);
+
+            // Address should be non-zero (valid stack address)
+            if (result != 0)
+            {
+                DebugConsole.Write("&arg != 0: 0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.WriteLine("FAILED - got null address");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 30: nop opcode (no operation)
+    /// IL equivalent of: static int NopTest() { /* nop */ return 42; }
+    /// </summary>
+    private static void TestILNop()
+    {
+        DebugConsole.Write("[IL JIT 30] nop: ");
+
+        // IL bytecode with nop: nop; ldc.i4.s 42; ret
+        // nop           (0x00)
+        // nop           (0x00)
+        // ldc.i4.s 42   (0x1F 0x2A)
+        // nop           (0x00)
+        // ret           (0x2A)
+        byte* il = stackalloc byte[6];
+        il[0] = 0x00;  // nop
+        il[1] = 0x00;  // nop
+        il[2] = 0x1F;  // ldc.i4.s
+        il[3] = 42;    // 42
+        il[4] = 0x00;  // nop
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int>)code;
+            int result = fn();
+
+            if (result == 42)
+            {
+                DebugConsole.Write("nop;nop;42;nop;ret = ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 42, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 31: Long branches (4-byte offset)
+    /// Tests br (0x38), brfalse (0x39), and beq (0x3B) with 32-bit offsets
+    /// </summary>
+    private static unsafe void TestILLongBranch()
+    {
+        DebugConsole.Write("[IL JIT 31] long branch: ");
+
+        // Test: if (arg0 == 5) return 100; else return 200;
+        // Uses beq (0x3B) with 4-byte offset
+        // IL layout:
+        //   0: ldarg.0       (0x02)
+        //   1: ldc.i4.5      (0x1B)
+        //   2: beq           (0x3B) offset to 12 (skip next 5 bytes: +5)
+        //   3-6: <offset bytes: 05 00 00 00>
+        //   7: ldc.i4 200    (0x20 C8 00 00 00)
+        //  12: ret           (0x2A)
+        //  13: ldc.i4 100    (0x20 64 00 00 00)
+        //  18: ret           (0x2A)
+        //
+        // Actually, beq jumps PAST the instruction following it.
+        // At offset 7 we have ldc.i4 200 (5 bytes), then ret at 12
+        // beq target should skip ldc.i4+ret (6 bytes) to land at 13
+        // From end of beq instruction (offset 7), target is at 13, so offset = 13-7 = 6
+
+        byte* il = stackalloc byte[19];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x1B;  // ldc.i4.5
+        il[2] = 0x3B;  // beq (long form)
+        // 4-byte little-endian offset: 6 (jump over ldc.i4+ret to get to ldc.i4 100)
+        il[3] = 0x06;
+        il[4] = 0x00;
+        il[5] = 0x00;
+        il[6] = 0x00;
+        // Fall-through path: return 200
+        il[7] = 0x20;  // ldc.i4
+        il[8] = 0xC8;  // 200 (low byte)
+        il[9] = 0x00;
+        il[10] = 0x00;
+        il[11] = 0x00;
+        il[12] = 0x2A; // ret
+        // Equal path: return 100
+        il[13] = 0x20; // ldc.i4
+        il[14] = 0x64; // 100 (low byte)
+        il[15] = 0x00;
+        il[16] = 0x00;
+        il[17] = 0x00;
+        il[18] = 0x2A; // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 19, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+            int result1 = fn(5);   // Should return 100 (equal)
+            int result2 = fn(3);   // Should return 200 (not equal)
+
+            if (result1 == 100 && result2 == 200)
+            {
+                DebugConsole.Write("beq(5)==100, beq(3)==200 PASSED");
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)result1);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)result2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 32: Simple loop (backward branch)
+    /// Tests: ldc.i4.0, stloc.0, stloc.1, ldloc, add, ldc.i4.1, clt, brtrue.s (backward jump)
+    /// Implements: int sum = 0; for (int i = 0; i < n; i++) sum += i; return sum;
+    /// Uses 2 locals: local0 = sum, local1 = i
+    /// </summary>
+    private static unsafe void TestILLoop()
+    {
+        DebugConsole.Write("[IL JIT 32] loop: ");
+
+        // Implement: for (int i = 0; i < n; i++) sum += i; return sum;
+        // where n is arg0, sum is local0, i is local1
+        //
+        // IL layout:
+        //  0: ldc.i4.0       (0x16) - push 0
+        //  1: stloc.0        (0x0A) - sum = 0
+        //  2: ldc.i4.0       (0x16) - push 0
+        //  3: stloc.1        (0x0B) - i = 0
+        //  4: br.s +11       (0x2B 0B) - jump to condition check at offset 17
+        // Loop body starts at offset 6:
+        //  6: ldloc.0        (0x06) - push sum
+        //  7: ldloc.1        (0x07) - push i
+        //  8: add            (0x58) - sum + i
+        //  9: stloc.0        (0x0A) - sum = sum + i
+        // 10: ldloc.1        (0x07) - push i
+        // 11: ldc.i4.1       (0x17) - push 1
+        // 12: add            (0x58) - i + 1
+        // 13: stloc.1        (0x0B) - i = i + 1
+        // Condition at offset 14:
+        // 14: ldloc.1        (0x07) - push i
+        // 15: ldarg.0        (0x02) - push n
+        // 16: clt            (0xFE 04) - i < n
+        // 18: brtrue.s -14   (0x2D F2) - if true, jump back to offset 6 (18+2-14=6)
+        // 20: ldloc.0        (0x06) - push sum
+        // 21: ret            (0x2A) - return sum
+
+        byte* il = stackalloc byte[22];
+        il[0] = 0x16;   // ldc.i4.0
+        il[1] = 0x0A;   // stloc.0 (sum = 0)
+        il[2] = 0x16;   // ldc.i4.0
+        il[3] = 0x0B;   // stloc.1 (i = 0)
+        il[4] = 0x2B;   // br.s
+        il[5] = 0x08;   // offset +8 (jump to offset 14)
+        // Loop body (offset 6):
+        il[6] = 0x06;   // ldloc.0 (sum)
+        il[7] = 0x07;   // ldloc.1 (i)
+        il[8] = 0x58;   // add
+        il[9] = 0x0A;   // stloc.0 (sum = sum + i)
+        il[10] = 0x07;  // ldloc.1 (i)
+        il[11] = 0x17;  // ldc.i4.1
+        il[12] = 0x58;  // add
+        il[13] = 0x0B;  // stloc.1 (i = i + 1)
+        // Condition (offset 14):
+        il[14] = 0x07;  // ldloc.1 (i)
+        il[15] = 0x02;  // ldarg.0 (n)
+        il[16] = 0xFE;  // clt prefix
+        il[17] = 0x04;  // clt
+        il[18] = 0x2D;  // brtrue.s
+        il[19] = 0xF4;  // offset -12 (jump to offset 6: 20-12=8... need 6, so -14=0xF2)
+        il[20] = 0x06;  // ldloc.0 (sum)
+        il[21] = 0x2A;  // ret
+
+        // Fix the backward branch offset:
+        // brtrue.s at offset 18, next instruction at 20
+        // Target is offset 6, so offset = 6 - 20 = -14 = 0xF2
+        il[19] = 0xF2;
+
+        // And fix the forward branch:
+        // br.s at offset 4, next instruction at 6
+        // Target is offset 14, so offset = 14 - 6 = 8
+        il[5] = 0x08;
+
+        // 1 argument, 2 locals
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 22, 1, 2);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int>)code;
+
+            // Test: sum of 0..4 = 0+1+2+3+4 = 10
+            int result1 = fn(5);
+            // Test: sum of 0..9 = 45
+            int result2 = fn(10);
+            // Test: sum of 0 = 0 (n=0, no iterations)
+            int result3 = fn(0);
+
+            if (result1 == 10 && result2 == 45 && result3 == 0)
+            {
+                DebugConsole.Write("sum(5)=10, sum(10)=45, sum(0)=0 PASSED");
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)result1);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)result2);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)result3);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 33: conv.i / conv.u (native int/uint conversion)
+    /// On x64, native int is 64-bit. Tests conversion to native size.
+    /// conv.i = 0xD3, conv.u = 0xE0
+    /// </summary>
+    private static unsafe void TestILConvNative()
+    {
+        DebugConsole.Write("[IL JIT 33] conv.i/u: ");
+
+        // Test conv.i: sign-extend to native int
+        // IL: ldc.i4 -1; conv.i; ret  (should return 0xFFFFFFFFFFFFFFFF on x64)
+        byte* il1 = stackalloc byte[7];
+        il1[0] = 0x20;  // ldc.i4
+        il1[1] = 0xFF;  // -1 (little endian)
+        il1[2] = 0xFF;
+        il1[3] = 0xFF;
+        il1[4] = 0xFF;
+        il1[5] = 0xD3;  // conv.i
+        il1[6] = 0x2A;  // ret
+
+        var compiler1 = Runtime.JIT.ILCompiler.Create(il1, 7, 0, 0);
+        void* code1 = compiler1.Compile();
+
+        // Test conv.u: zero-extend to native uint
+        // IL: ldc.i4 -1; conv.u; ret  (should return 0x00000000FFFFFFFF on x64)
+        byte* il2 = stackalloc byte[7];
+        il2[0] = 0x20;  // ldc.i4
+        il2[1] = 0xFF;  // -1 as i32 = 0xFFFFFFFF
+        il2[2] = 0xFF;
+        il2[3] = 0xFF;
+        il2[4] = 0xFF;
+        il2[5] = 0xE0;  // conv.u
+        il2[6] = 0x2A;  // ret
+
+        var compiler2 = Runtime.JIT.ILCompiler.Create(il2, 7, 0, 0);
+        void* code2 = compiler2.Compile();
+
+        if (code1 != null && code2 != null)
+        {
+            var fn1 = (delegate* unmanaged<long>)code1;
+            var fn2 = (delegate* unmanaged<ulong>)code2;
+
+            long r1 = fn1();      // conv.i(-1) should be -1 (sign-extended to 64-bit)
+            ulong r2 = fn2();     // conv.u(-1 as i32) should be 0xFFFFFFFF (zero-extended)
+
+            if (r1 == -1 && r2 == 0xFFFFFFFF)
+            {
+                DebugConsole.Write("conv.i(-1)=-1, conv.u(0xFFFFFFFF)=0xFFFFFFFF PASSED");
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteHex((ulong)r1);
+                DebugConsole.Write(",");
+                DebugConsole.WriteHex(r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 34: blt.un.s (branch if less than, unsigned)
+    /// Tests unsigned comparison branches
+    /// blt.un.s = 0x37
+    /// </summary>
+    private static unsafe void TestILBltUn()
+    {
+        DebugConsole.Write("[IL JIT 34] blt.un.s: ");
+
+        // Test: if (arg0 < arg1) return 1; else return 0; (unsigned comparison)
+        // IL:
+        //   0: ldarg.0       (0x02)
+        //   1: ldarg.1       (0x03)
+        //   2: blt.un.s +3   (0x37 03) - if arg0 <u arg1, jump to offset 7
+        //   4: ldc.i4.0      (0x16)
+        //   5: ret           (0x2A)
+        //   6: (unreachable)
+        //   7: ldc.i4.1      (0x17)
+        //   8: ret           (0x2A)
+
+        byte* il = stackalloc byte[9];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x37;  // blt.un.s
+        il[3] = 0x03;  // offset +3 (from end of branch at 4, target is 7)
+        il[4] = 0x16;  // ldc.i4.0
+        il[5] = 0x2A;  // ret
+        il[6] = 0x00;  // nop (padding, unreachable)
+        il[7] = 0x17;  // ldc.i4.1
+        il[8] = 0x2A;  // ret
+
+        // 2 arguments, 0 locals
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 9, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<uint, uint, int>)code;
+
+            // Test cases for unsigned comparison:
+            // 3 <u 5 = true (1)
+            int r1 = fn(3, 5);
+            // 5 <u 3 = false (0)
+            int r2 = fn(5, 3);
+            // 0xFFFFFFFF <u 1 = false (0) - 0xFFFFFFFF is max unsigned
+            int r3 = fn(0xFFFFFFFF, 1);
+            // 1 <u 0xFFFFFFFF = true (1)
+            int r4 = fn(1, 0xFFFFFFFF);
+
+            if (r1 == 1 && r2 == 0 && r3 == 0 && r4 == 1)
+            {
+                DebugConsole.Write("3<5=1, 5<3=0, MAX<1=0, 1<MAX=1 PASSED");
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)r1);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r2);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r3);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r4);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 35: ldarg.s/ldloc.s/stloc.s with index > 3
+    /// Tests the short form opcodes with explicit index byte
+    /// Uses 5 arguments and 5 locals to test indices 4 and beyond
+    /// </summary>
+    private static unsafe void TestILShortForms()
+    {
+        DebugConsole.Write("[IL JIT 35] short forms: ");
+
+        // IL: Use ldarg.s to load arg4, ldloc.s to load local4, stloc.s to store
+        // Method: int Test(int a0, int a1, int a2, int a3, int a4)
+        //   local4 = a4 + 100
+        //   return local4
+        //
+        //  0: ldarg.s 4     (0x0E 04) - load 5th argument
+        //  2: ldc.i4.s 100  (0x1F 64) - load 100
+        //  4: add           (0x58)
+        //  5: stloc.s 4     (0x13 04) - store to local4
+        //  7: ldloc.s 4     (0x11 04) - load from local4
+        //  9: ret           (0x2A)
+
+        byte* il = stackalloc byte[10];
+        il[0] = 0x0E;  // ldarg.s
+        il[1] = 0x04;  // index 4
+        il[2] = 0x1F;  // ldc.i4.s
+        il[3] = 0x64;  // 100
+        il[4] = 0x58;  // add
+        il[5] = 0x13;  // stloc.s
+        il[6] = 0x04;  // index 4
+        il[7] = 0x11;  // ldloc.s
+        il[8] = 0x04;  // index 4
+        il[9] = 0x2A;  // ret
+
+        // 5 arguments, 5 locals
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 5, 5);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, int, int, int, int, int>)code;
+            // Pass args 0-4, only arg4 is used
+            int result = fn(1, 2, 3, 4, 42);  // Should return 42 + 100 = 142
+
+            if (result == 142)
+            {
+                DebugConsole.Write("ldarg.s(4)+100=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 36: ldc.i4.s with negative value
+    /// ldc.i4.s takes a signed byte (-128 to 127)
+    /// </summary>
+    private static unsafe void TestILLdcI4S()
+    {
+        DebugConsole.Write("[IL JIT 36] ldc.i4.s neg: ");
+
+        // IL: ldc.i4.s -50; ret  (should return -50)
+        byte* il = stackalloc byte[3];
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 0xCE;  // -50 (0xCE = -50 as signed byte)
+        il[2] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 3, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int>)code;
+            int result = fn();
+
+            if (result == -50)
+            {
+                DebugConsole.Write("ldc.i4.s(-50)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 37: Long unsigned branches (bge.un, bgt.un, ble.un)
+    /// Tests 4-byte offset unsigned comparison branches
+    /// </summary>
+    private static unsafe void TestILLongUnsignedBranches()
+    {
+        DebugConsole.Write("[IL JIT 37] long uns br: ");
+
+        // Test bge.un (0x41): if (arg0 >=u arg1) return 1; else return 0;
+        // IL:
+        //   0: ldarg.0       (0x02)
+        //   1: ldarg.1       (0x03)
+        //   2: bge.un        (0x41) offset +6 to reach ldc.i4.1
+        //   3-6: offset (06 00 00 00)
+        //   7: ldc.i4.0      (0x16)
+        //   8: ret           (0x2A)
+        //   9: ldc.i4.1      (0x17)
+        //  10: ret           (0x2A)
+
+        byte* il = stackalloc byte[11];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x41;  // bge.un (long)
+        // 4-byte offset: from end of instruction (7) to target (9) = 2
+        il[3] = 0x02;
+        il[4] = 0x00;
+        il[5] = 0x00;
+        il[6] = 0x00;
+        il[7] = 0x16;  // ldc.i4.0
+        il[8] = 0x2A;  // ret
+        il[9] = 0x17;  // ldc.i4.1
+        il[10] = 0x2A; // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 11, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<uint, uint, int>)code;
+
+            // Unsigned comparisons:
+            // 5 >=u 3 = true (1)
+            int r1 = fn(5, 3);
+            // 3 >=u 5 = false (0)
+            int r2 = fn(3, 5);
+            // 0xFFFFFFFF >=u 1 = true (1) - max uint >= 1
+            int r3 = fn(0xFFFFFFFF, 1);
+            // 5 >=u 5 = true (1) - equal case
+            int r4 = fn(5, 5);
+
+            if (r1 == 1 && r2 == 0 && r3 == 1 && r4 == 1)
+            {
+                DebugConsole.Write("bge.un: 5>=3=1, 3>=5=0, MAX>=1=1, 5>=5=1 PASSED");
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got ");
+                DebugConsole.WriteDecimal((uint)r1);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r2);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r3);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)r4);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 38: ldc.r4 (load float constant)
+    /// IL: ldc.r4 3.14159; ret
+    /// Returns the bit pattern of the float as uint for comparison
+    /// </summary>
+    private static unsafe void TestILLdcR4()
+    {
+        DebugConsole.Write("[IL JIT 38] ldc.r4: ");
+
+        // IL: ldc.r4 3.14159f; ret
+        // ldc.r4 = 0x22, followed by 4 bytes of IEEE 754 float
+        // 3.14159f = 0x40490FD0 in IEEE 754
+        byte* il = stackalloc byte[6];
+        il[0] = 0x22;  // ldc.r4
+        // Float bit pattern for 3.14159f
+        uint floatBits = 0x40490FD0;  // 3.14159f
+        *(uint*)(il + 1) = floatBits;
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            // The result is the bit pattern (returned in lower 32 bits of RAX)
+            var fn = (delegate* unmanaged<uint>)code;
+            uint result = fn();
+
+            if (result == floatBits)
+            {
+                DebugConsole.Write("float bits=0x");
+                DebugConsole.WriteHex(result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 0x");
+                DebugConsole.WriteHex(floatBits);
+                DebugConsole.Write(" got 0x");
+                DebugConsole.WriteHex(result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 39: ldc.r8 (load double constant)
+    /// IL: ldc.r8 3.14159265358979; ret
+    /// Returns the bit pattern of the double as ulong for comparison
+    /// </summary>
+    private static unsafe void TestILLdcR8()
+    {
+        DebugConsole.Write("[IL JIT 39] ldc.r8: ");
+
+        // IL: ldc.r8 3.14159265358979; ret
+        // ldc.r8 = 0x23, followed by 8 bytes of IEEE 754 double
+        // 3.14159265358979 = 0x400921FB54442D18 in IEEE 754
+        byte* il = stackalloc byte[10];
+        il[0] = 0x23;  // ldc.r8
+        // Double bit pattern for pi
+        ulong doubleBits = 0x400921FB54442D18;  // ~3.14159265358979
+        *(ulong*)(il + 1) = doubleBits;
+        il[9] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<ulong>)code;
+            ulong result = fn();
+
+            if (result == doubleBits)
+            {
+                DebugConsole.Write("double bits=0x");
+                DebugConsole.WriteHex(result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 0x");
+                DebugConsole.WriteHex(doubleBits);
+                DebugConsole.Write(" got 0x");
+                DebugConsole.WriteHex(result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 40: conv.r4 (convert int to float)
+    /// IL: ldarg.0; conv.r4; ret
+    /// Takes an int, converts to float, returns bit pattern
+    /// </summary>
+    private static unsafe void TestILConvR4()
+    {
+        DebugConsole.Write("[IL JIT 40] conv.r4: ");
+
+        // IL: ldarg.0; conv.r4; ret
+        byte* il = stackalloc byte[3];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x6B;  // conv.r4
+        il[2] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 3, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, uint>)code;
+
+            // Test: convert 42 to float (42.0f = 0x42280000)
+            uint r1 = fn(42);
+            uint expected1 = 0x42280000;  // 42.0f
+
+            // Test: convert -10 to float (-10.0f = 0xC1200000)
+            uint r2 = fn(-10);
+            uint expected2 = 0xC1200000;  // -10.0f
+
+            if (r1 == expected1 && r2 == expected2)
+            {
+                DebugConsole.Write("42->0x");
+                DebugConsole.WriteHex(r1);
+                DebugConsole.Write(", -10->0x");
+                DebugConsole.WriteHex(r2);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 42->0x");
+                DebugConsole.WriteHex(r1);
+                DebugConsole.Write("(exp 0x");
+                DebugConsole.WriteHex(expected1);
+                DebugConsole.Write("), -10->0x");
+                DebugConsole.WriteHex(r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 41: conv.r8 (convert int to double)
+    /// IL: ldarg.0; conv.r8; ret
+    /// Takes an int, converts to double, returns bit pattern
+    /// </summary>
+    private static unsafe void TestILConvR8()
+    {
+        DebugConsole.Write("[IL JIT 41] conv.r8: ");
+
+        // IL: ldarg.0; conv.r8; ret
+        byte* il = stackalloc byte[3];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x6C;  // conv.r8
+        il[2] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 3, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int, ulong>)code;
+
+            // Test: convert 42 to double (42.0 = 0x4045000000000000)
+            ulong r1 = fn(42);
+            ulong expected1 = 0x4045000000000000;  // 42.0
+
+            // Test: convert -10 to double (-10.0 = 0xC024000000000000)
+            ulong r2 = fn(-10);
+            ulong expected2 = 0xC024000000000000;  // -10.0
+
+            if (r1 == expected1 && r2 == expected2)
+            {
+                DebugConsole.Write("42->0x");
+                DebugConsole.WriteHex(r1);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - 42->0x");
+                DebugConsole.WriteHex(r1);
+                DebugConsole.Write("(exp 0x");
+                DebugConsole.WriteHex(expected1);
+                DebugConsole.Write("), -10->0x");
+                DebugConsole.WriteHex(r2);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 42: switch (jump table)
+    /// IL: ldarg.0; switch; ldc.i4 -1; ret; ldc.i4 100; ret; ldc.i4 200; ret; ldc.i4 300; ret
+    /// Input 0 returns 100, 1 returns 200, 2 returns 300, anything else returns -1
+    /// </summary>
+    private static unsafe void TestILSwitch()
+    {
+        DebugConsole.Write("[IL JIT 42] switch: ");
+
+        // IL bytecode for switch with 3 cases:
+        // ldarg.0           (0x02)
+        // switch 3, offset0, offset1, offset2  (0x45, 0x03 0x00 0x00 0x00, then 3 int32 offsets)
+        // ldc.i4.m1         (0x15)    - default case (returns -1)
+        // ret               (0x2A)
+        // label0: ldc.i4.s 100 (0x1F 0x64) - case 0 (returns 100)
+        // ret               (0x2A)
+        // label1: ldc.i4 200   (0x20, then 0xC8 0x00 0x00 0x00) - case 1 (returns 200)
+        // ret               (0x2A)
+        // label2: ldc.i4 300   (0x20, then 0x2C 0x01 0x00 0x00) - case 2 (returns 300)
+        // ret               (0x2A)
+        //
+        // Layout:
+        // 0: ldarg.0
+        // 1: switch (1 byte opcode + 4 byte count + 3*4 byte offsets = 17 bytes total)
+        //    count = 3 at offset 2-5
+        //    offset0 at offset 6-9 (relative to offset 18)
+        //    offset1 at offset 10-13
+        //    offset2 at offset 14-17
+        // 18: default: ldc.i4.m1, ret (2 bytes)
+        // 20: case 0: ldc.i4.s 100, ret (3 bytes)
+        // 23: case 1: ldc.i4 200, ret (6 bytes)
+        // 29: case 2: ldc.i4 300, ret (6 bytes)
+        //
+        // Offsets from position 18:
+        // case 0: 20 - 18 = 2
+        // case 1: 23 - 18 = 5
+        // case 2: 29 - 18 = 11
+
+        byte* il = stackalloc byte[35];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x45;  // switch
+        il[2] = 0x03;  // count = 3
+        il[3] = 0x00;
+        il[4] = 0x00;
+        il[5] = 0x00;
+        // offset for case 0 (jump to position 20, which is offset 18 + 2)
+        il[6] = 0x02; il[7] = 0x00; il[8] = 0x00; il[9] = 0x00;
+        // offset for case 1 (jump to position 23, which is offset 18 + 5)
+        il[10] = 0x05; il[11] = 0x00; il[12] = 0x00; il[13] = 0x00;
+        // offset for case 2 (jump to position 29, which is offset 18 + 11)
+        il[14] = 0x0B; il[15] = 0x00; il[16] = 0x00; il[17] = 0x00;
+        // default case (position 18)
+        il[18] = 0x15;  // ldc.i4.m1
+        il[19] = 0x2A;  // ret
+        // case 0 (position 20)
+        il[20] = 0x1F;  // ldc.i4.s
+        il[21] = 100;   // 100
+        il[22] = 0x2A;  // ret
+        // case 1 (position 23)
+        il[23] = 0x20;  // ldc.i4
+        il[24] = 0xC8;  // 200 (little-endian)
+        il[25] = 0x00;
+        il[26] = 0x00;
+        il[27] = 0x00;
+        il[28] = 0x2A;  // ret
+        // case 2 (position 29)
+        il[29] = 0x20;  // ldc.i4
+        il[30] = 0x2C;  // 300 (little-endian: 0x12C)
+        il[31] = 0x01;
+        il[32] = 0x00;
+        il[33] = 0x00;
+        il[34] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 35, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<long, long>)code;
+
+            long r0 = fn(0);   // Should be 100
+            long r1 = fn(1);   // Should be 200
+            long r2 = fn(2);   // Should be 300
+            long rDefault = fn(5);  // Should be -1 (fall-through)
+            long rNeg = fn(-1);     // Should be -1 (negative = fall-through)
+
+            if (r0 == 100 && r1 == 200 && r2 == 300 && rDefault == -1 && rNeg == -1)
+            {
+                DebugConsole.Write("sw(0)=");
+                DebugConsole.WriteDecimal((ulong)r0);
+                DebugConsole.Write(", sw(1)=");
+                DebugConsole.WriteDecimal((ulong)r1);
+                DebugConsole.Write(", sw(2)=");
+                DebugConsole.WriteDecimal((ulong)r2);
+                DebugConsole.Write(", sw(5)=");
+                DebugConsole.WriteDecimal((ulong)rDefault);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - sw(0)=");
+                DebugConsole.WriteDecimal((ulong)r0);
+                DebugConsole.Write(" (exp 100), sw(1)=");
+                DebugConsole.WriteDecimal((ulong)r1);
+                DebugConsole.Write(" (exp 200), sw(2)=");
+                DebugConsole.WriteDecimal((ulong)r2);
+                DebugConsole.Write(" (exp 300), sw(5)=");
+                DebugConsole.WriteDecimal((ulong)rDefault);
+                DebugConsole.WriteLine(" (exp -1)");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 43: ldind/stind (indirect load/store)
+    /// IL: ldarg.0; ldarg.1; stind.i4; ldarg.0; ldind.i4; ret
+    /// Takes pointer and value, stores value at pointer, then loads it back
+    /// </summary>
+    private static unsafe void TestILIndirect()
+    {
+        DebugConsole.Write("[IL JIT 43] ldind/stind: ");
+
+        // IL bytecode:
+        // ldarg.0           (0x02)    - load pointer arg
+        // ldarg.1           (0x03)    - load value arg
+        // stind.i4          (0x54)    - store int32 to address
+        // ldarg.0           (0x02)    - load pointer again
+        // ldind.i4          (0x4A)    - load int32 from address
+        // ret               (0x2A)
+        byte* il = stackalloc byte[6];
+        il[0] = 0x02;  // ldarg.0 (pointer)
+        il[1] = 0x03;  // ldarg.1 (value)
+        il[2] = 0x54;  // stind.i4
+        il[3] = 0x02;  // ldarg.0 (pointer)
+        il[4] = 0x4A;  // ldind.i4
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate* unmanaged<int*, int, int>)code;
+
+            int storage = 0;
+            int result = fn(&storage, 42);
+
+            if (result == 42 && storage == 42)
+            {
+                DebugConsole.Write("stind.i4/ldind.i4(42)=");
+                DebugConsole.WriteDecimal((ulong)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - result=");
+                DebugConsole.WriteDecimal((ulong)result);
+                DebugConsole.Write(" (exp 42), storage=");
+                DebugConsole.WriteDecimal((ulong)storage);
+                DebugConsole.WriteLine(" (exp 42)");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    // ==================== Method Call Tests (Test 44-48) ====================
+
+    // We use synthetic tokens for testing since we're not loading real assemblies.
+    // Token format: 0x06XXXXXX for MethodDef tokens
+    private const uint TestToken_Add = 0x06000001;
+    private const uint TestToken_Return42 = 0x06000002;
+    private const uint TestToken_Sum6Args = 0x06000003;
+    private const uint TestToken_VoidIncrement = 0x06000004;
+    private const uint TestToken_Sum4Args = 0x06000008;
+    private const uint TestToken_Sum5Args = 0x06000009;
+    private const uint TestToken_GetConstant = 0x0600000A;
+    private const uint TestToken_ReturnLong = 0x0600000B;
+    private const uint TestToken_Sum7Args = 0x0600000C;
+    private const uint TestToken_Sum8Args = 0x0600000D;
+
+    /// <summary>
+    /// Native helper function that adds two integers.
+    /// Used to test JIT code calling a native function.
+    /// </summary>
+    private static int NativeAdd(int a, int b) => a + b;
+
+    /// <summary>
+    /// Native helper that increments a value via pointer.
+    /// Used to test calling void-returning functions.
+    /// </summary>
+    private static unsafe void NativeIncrement(int* ptr) => (*ptr)++;
+
+    /// <summary>
+    /// Native helper that sums 6 arguments (tests stack-passed args).
+    /// </summary>
+    private static int NativeSum6(int a, int b, int c, int d, int e, int f)
+        => a + b + c + d + e + f;
+
+    /// <summary>
+    /// Native helper that sums 4 arguments (tests all register args boundary).
+    /// </summary>
+    private static int NativeSum4(int a, int b, int c, int d)
+        => a + b + c + d;
+
+    /// <summary>
+    /// Native helper that sums 5 arguments (tests first stack arg).
+    /// </summary>
+    private static int NativeSum5(int a, int b, int c, int d, int e)
+        => a + b + c + d + e;
+
+    /// <summary>
+    /// Native helper that sums 7 arguments (tests 3 stack args).
+    /// </summary>
+    private static int NativeSum7(int a, int b, int c, int d, int e, int f, int g)
+        => a + b + c + d + e + f + g;
+
+    /// <summary>
+    /// Native helper that sums 8 arguments (tests 4 stack args).
+    /// </summary>
+    private static int NativeSum8(int a, int b, int c, int d, int e, int f, int g, int h)
+        => a + b + c + d + e + f + g + h;
+
+    /// <summary>
+    /// Native helper with no arguments.
+    /// </summary>
+    private static int NativeGetConstant() => 42;
+
+    /// <summary>
+    /// Native helper returning Int64.
+    /// </summary>
+    private static long NativeReturnLong(int a, int b)
+        => (long)a * 1000000000L + (long)b;
+
+    /// <summary>
+    /// Test 44: Simple call to a native function with 2 args.
+    /// IL equivalent: static int Test() => NativeAdd(10, 32);  // returns 42
+    /// </summary>
+    private static unsafe void TestILCallSimple()
+    {
+        DebugConsole.Write("[IL JIT 44] call (simple): ");
+
+        // Register the native Add function in the registry
+        Runtime.JIT.CompiledMethodRegistry.Initialize();
+
+        // Get function pointer to our native helper
+        delegate*<int, int, int> addFn = &NativeAdd;
+
+        // Register it with a test token
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Add,
+            (void*)addFn,
+            2,  // 2 args
+            Runtime.JIT.ReturnKind.Int32,
+            false  // static method
+        );
+
+        // IL bytecode:
+        // ldc.i4.s 10    (0x1F 0x0A)   - push 10
+        // ldc.i4.s 32    (0x1F 0x20)   - push 32
+        // call token     (0x28 + 4-byte token) - call NativeAdd
+        // ret            (0x2A)
+        byte* il = stackalloc byte[10];
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 10;    // 10
+        il[2] = 0x1F;  // ldc.i4.s
+        il[3] = 32;    // 32
+        il[4] = 0x28;  // call
+        *(uint*)(il + 5) = TestToken_Add;  // method token
+        il[9] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int>)code;
+            int result = fn();
+
+            if (result == 42)
+            {
+                DebugConsole.Write("NativeAdd(10,32)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 42, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 45: Call with arguments passed through from caller.
+    /// IL equivalent: static int Test(int x, int y) => NativeAdd(x, y);
+    /// </summary>
+    private static unsafe void TestILCallWithArgs()
+    {
+        DebugConsole.Write("[IL JIT 45] call (with args): ");
+
+        // NativeAdd already registered from previous test
+
+        // IL bytecode:
+        // ldarg.0        (0x02)        - push first arg
+        // ldarg.1        (0x03)        - push second arg
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x03;  // ldarg.1
+        il[2] = 0x28;  // call
+        *(uint*)(il + 3) = TestToken_Add;
+        il[7] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int, int, int>)code;
+            int result = fn(100, 23);
+
+            if (result == 123)
+            {
+                DebugConsole.Write("fn(100,23)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 123, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 46: JIT-compiled code calling another JIT-compiled function.
+    /// Compiles two IL methods, registers them, then has one call the other.
+    /// </summary>
+    private static unsafe void TestILCallJitToJit()
+    {
+        DebugConsole.Write("[IL JIT 46] call (JIT-to-JIT): ");
+
+        // First, compile a simple "return 42" method
+        byte* il1 = stackalloc byte[3];
+        il1[0] = 0x1F;  // ldc.i4.s
+        il1[1] = 42;    // 42
+        il1[2] = 0x2A;  // ret
+
+        var compiler1 = Runtime.JIT.ILCompiler.Create(il1, 3, 0, 0);
+        void* return42Code = compiler1.Compile();
+
+        if (return42Code == null)
+        {
+            DebugConsole.WriteLine("FAILED - first method compilation failed");
+            return;
+        }
+
+        // Register the first JIT'd method
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Return42,
+            return42Code,
+            0,  // no args
+            Runtime.JIT.ReturnKind.Int32,
+            false
+        );
+
+        // Now compile a second method that calls the first and adds 8
+        // IL: call Return42; ldc.i4.8; add; ret
+        byte* il2 = stackalloc byte[8];
+        il2[0] = 0x28;  // call
+        *(uint*)(il2 + 1) = TestToken_Return42;  // token
+        il2[5] = 0x1E;  // ldc.i4.8
+        il2[6] = 0x58;  // add
+        il2[7] = 0x2A;  // ret
+
+        var compiler2 = Runtime.JIT.ILCompiler.Create(il2, 8, 0, 0);
+        void* code = compiler2.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int>)code;
+            int result = fn();
+
+            if (result == 50)  // 42 + 8 = 50
+            {
+                DebugConsole.Write("Return42()+8=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 50, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - second method compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 47: Call with 6 arguments (4 in registers, 2 on stack).
+    /// IL equivalent: static int Test() => NativeSum6(1,2,3,4,5,6);  // returns 21
+    /// </summary>
+    private static unsafe void TestILCallManyArgs()
+    {
+        DebugConsole.Write("[IL JIT 47] call (6 args): ");
+
+        // Register the native Sum6 function
+        delegate*<int, int, int, int, int, int, int> sumFn = &NativeSum6;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Sum6Args,
+            (void*)sumFn,
+            6,  // 6 args
+            Runtime.JIT.ReturnKind.Int32,
+            false
+        );
+
+        // IL bytecode:
+        // ldc.i4.1  (0x17)
+        // ldc.i4.2  (0x18)
+        // ldc.i4.3  (0x19)
+        // ldc.i4.4  (0x1A)
+        // ldc.i4.5  (0x1B)
+        // ldc.i4.6  (0x1C)
+        // call token
+        // ret
+        byte* il = stackalloc byte[13];
+        il[0] = 0x17;  // ldc.i4.1
+        il[1] = 0x18;  // ldc.i4.2
+        il[2] = 0x19;  // ldc.i4.3
+        il[3] = 0x1A;  // ldc.i4.4
+        il[4] = 0x1B;  // ldc.i4.5
+        il[5] = 0x1C;  // ldc.i4.6
+        il[6] = 0x28;  // call
+        *(uint*)(il + 7) = TestToken_Sum6Args;
+        il[11] = 0x2A;  // ret
+        // il[12] unused
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 12, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int>)code;
+            int result = fn();
+
+            if (result == 21)  // 1+2+3+4+5+6 = 21
+            {
+                DebugConsole.Write("Sum6(1,2,3,4,5,6)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 21, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 48: Call to a void-returning function.
+    /// IL equivalent: static void Test(int* p) { NativeIncrement(p); }
+    /// We verify it works by checking the value was incremented.
+    /// </summary>
+    private static unsafe void TestILCallVoid()
+    {
+        DebugConsole.Write("[IL JIT 48] call (void return): ");
+
+        // Register the native increment function
+        delegate*<int*, void> incFn = &NativeIncrement;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_VoidIncrement,
+            (void*)incFn,
+            1,  // 1 arg (pointer)
+            Runtime.JIT.ReturnKind.Void,
+            false
+        );
+
+        // IL bytecode:
+        // ldarg.0        (0x02)    - push pointer arg
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[7];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x28;  // call
+        *(uint*)(il + 2) = TestToken_VoidIncrement;
+        il[6] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var fn = (delegate*<int*, void>)code;
+
+            int value = 41;
+            fn(&value);
+
+            if (value == 42)  // 41 + 1 = 42
+            {
+                DebugConsole.Write("Increment(&41) -> ");
+                DebugConsole.WriteDecimal((uint)value);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 42, got ");
+                DebugConsole.WriteDecimal((uint)value);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 49: Nested calls - JIT method A calls JIT method B.
+    /// IL equivalent:
+    ///   static int Double(int x) { return x + x; }
+    ///   static int Triple(int x) { return Double(x) + x; }
+    /// We compile Double first, then Triple which calls Double.
+    /// This tests proper call stack handling across multiple JIT frames.
+    /// </summary>
+    private static unsafe void TestILCallNested()
+    {
+        DebugConsole.Write("[IL JIT 49] call (nested): ");
+
+        // Token for Double method
+        const uint TestToken_Double = 0x06000006;
+        const uint TestToken_Triple = 0x06000007;
+
+        // First compile Double(x) = x + x
+        // ldarg.0  (0x02)
+        // ldarg.0  (0x02)
+        // add      (0x58)
+        // ret      (0x2A)
+        byte* ilDouble = stackalloc byte[4];
+        ilDouble[0] = 0x02;  // ldarg.0
+        ilDouble[1] = 0x02;  // ldarg.0
+        ilDouble[2] = 0x58;  // add
+        ilDouble[3] = 0x2A;  // ret
+
+        var compilerDouble = Runtime.JIT.ILCompiler.Create(ilDouble, 4, 1, 0);
+        void* codeDouble = compilerDouble.Compile();
+
+        if (codeDouble == null)
+        {
+            DebugConsole.WriteLine("FAILED - Double compilation failed");
+            return;
+        }
+
+        // Register Double so Triple can find it
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Double,
+            codeDouble,
+            1,  // 1 arg
+            Runtime.JIT.ReturnKind.Int32,
+            false  // static method, no 'this'
+        );
+
+        // Now compile Triple(x) = Double(x) + x
+        // ldarg.0           (0x02)       - push x
+        // call Double       (0x28 + 4b)  - Double(x) -> result on stack
+        // ldarg.0           (0x02)       - push x again
+        // add               (0x58)       - Double(x) + x
+        // ret               (0x2A)
+        byte* ilTriple = stackalloc byte[10];
+        ilTriple[0] = 0x02;   // ldarg.0
+        ilTriple[1] = 0x28;   // call
+        *(uint*)(ilTriple + 2) = TestToken_Double;
+        ilTriple[6] = 0x02;   // ldarg.0
+        ilTriple[7] = 0x58;   // add
+        ilTriple[8] = 0x2A;   // ret
+
+        var compilerTriple = Runtime.JIT.ILCompiler.Create(ilTriple, 9, 1, 0);
+        void* codeTriple = compilerTriple.Compile();
+
+        if (codeTriple != null)
+        {
+            var fnTriple = (delegate*<int, int>)codeTriple;
+            var fnDouble = (delegate*<int, int>)codeDouble;
+
+            // Test: Double(5) = 10, Triple(5) = 10 + 5 = 15
+            int double5 = fnDouble(5);
+            int triple5 = fnTriple(5);
+            int triple10 = fnTriple(10);
+
+            if (double5 == 10 && triple5 == 15 && triple10 == 30)
+            {
+                DebugConsole.Write("Double(5)=");
+                DebugConsole.WriteDecimal((uint)double5);
+                DebugConsole.Write(", Triple(5)=");
+                DebugConsole.WriteDecimal((uint)triple5);
+                DebugConsole.Write(", Triple(10)=");
+                DebugConsole.WriteDecimal((uint)triple10);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 10,15,30 got ");
+                DebugConsole.WriteDecimal((uint)double5);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)triple5);
+                DebugConsole.Write(",");
+                DebugConsole.WriteDecimal((uint)triple10);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - Triple compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 50: Call with 0 arguments.
+    /// IL equivalent: static int Test() => NativeGetConstant();  // returns 42
+    /// </summary>
+    private static unsafe void TestILCall0Args()
+    {
+        DebugConsole.Write("[IL JIT 50] call (0 args): ");
+
+        // Register the native function
+        delegate*<int> fn = &NativeGetConstant;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_GetConstant,
+            (void*)fn,
+            0,  // 0 args
+            Runtime.JIT.ReturnKind.Int32,
+            false
+        );
+
+        // IL bytecode:
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[6];
+        il[0] = 0x28;  // call
+        *(uint*)(il + 1) = TestToken_GetConstant;
+        il[5] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 42)
+            {
+                DebugConsole.Write("GetConstant()=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 42, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 51: Call with 4 arguments (all register args, boundary case).
+    /// IL equivalent: static int Test() => NativeSum4(1, 2, 3, 4);  // returns 10
+    /// </summary>
+    private static unsafe void TestILCall4Args()
+    {
+        DebugConsole.Write("[IL JIT 51] call (4 args): ");
+
+        // Register the native function
+        delegate*<int, int, int, int, int> fn = &NativeSum4;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Sum4Args,
+            (void*)fn,
+            4,  // 4 args
+            Runtime.JIT.ReturnKind.Int32,
+            false
+        );
+
+        // IL bytecode:
+        // ldc.i4.1       (0x17)
+        // ldc.i4.2       (0x18)
+        // ldc.i4.3       (0x19)
+        // ldc.i4.4       (0x1A)
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[10];
+        il[0] = 0x17;  // ldc.i4.1
+        il[1] = 0x18;  // ldc.i4.2
+        il[2] = 0x19;  // ldc.i4.3
+        il[3] = 0x1A;  // ldc.i4.4
+        il[4] = 0x28;  // call
+        *(uint*)(il + 5) = TestToken_Sum4Args;
+        il[9] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 10)  // 1+2+3+4 = 10
+            {
+                DebugConsole.Write("Sum4(1,2,3,4)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 10, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 52: Call with 5 arguments (first stack arg).
+    /// IL equivalent: static int Test() => NativeSum5(1, 2, 3, 4, 5);  // returns 15
+    /// </summary>
+    private static unsafe void TestILCall5Args()
+    {
+        DebugConsole.Write("[IL JIT 52] call (5 args): ");
+
+        // Register the native function
+        delegate*<int, int, int, int, int, int> fn = &NativeSum5;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Sum5Args,
+            (void*)fn,
+            5,  // 5 args
+            Runtime.JIT.ReturnKind.Int32,
+            false
+        );
+
+        // IL bytecode:
+        // ldc.i4.1       (0x17)
+        // ldc.i4.2       (0x18)
+        // ldc.i4.3       (0x19)
+        // ldc.i4.4       (0x1A)
+        // ldc.i4.5       (0x1B)
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[11];
+        il[0] = 0x17;   // ldc.i4.1
+        il[1] = 0x18;   // ldc.i4.2
+        il[2] = 0x19;   // ldc.i4.3
+        il[3] = 0x1A;   // ldc.i4.4
+        il[4] = 0x1B;   // ldc.i4.5
+        il[5] = 0x28;   // call
+        *(uint*)(il + 6) = TestToken_Sum5Args;
+        il[10] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 11, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 15)  // 1+2+3+4+5 = 15
+            {
+                DebugConsole.Write("Sum5(1,2,3,4,5)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 15, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 53: Call with Int64 return type.
+    /// IL equivalent: static long Test() => NativeReturnLong(5, 123456789);
+    /// Expected: 5 * 1000000000 + 123456789 = 5123456789
+    /// </summary>
+    private static unsafe void TestILCallReturnLong()
+    {
+        DebugConsole.Write("[IL JIT 53] call (long ret): ");
+
+        // Register the native function
+        delegate*<int, int, long> fn = &NativeReturnLong;
+
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_ReturnLong,
+            (void*)fn,
+            2,
+            Runtime.JIT.ReturnKind.Int64,
+            false
+        );
+
+        // IL bytecode:
+        // ldc.i4.5       (0x1B)
+        // ldc.i4 123456789 (0x20 + 4-byte int)
+        // call token     (0x28 + 4-byte token)
+        // ret            (0x2A)
+        byte* il = stackalloc byte[12];
+        il[0] = 0x1B;   // ldc.i4.5
+        il[1] = 0x20;   // ldc.i4
+        *(int*)(il + 2) = 123456789;
+        il[6] = 0x28;   // call
+        *(uint*)(il + 7) = TestToken_ReturnLong;
+        il[11] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 12, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<long>)code;
+            long result = testFn();
+
+            // Expected: 5 * 1000000000 + 123456789 = 5123456789
+            long expected = 5123456789L;
+
+            if (result == expected)
+            {
+                DebugConsole.Write("ReturnLong(5,123456789)=0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 0x");
+                DebugConsole.WriteHex((ulong)expected);
+                DebugConsole.Write(", got 0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 54: Indirect call via function pointer (calli).
+    /// IL equivalent: static int Test() { return ((delegate*<int,int,int>)&NativeAdd)(10, 32); }
+    /// Uses the calli opcode to call through a function pointer on the stack.
+    /// Expected: 10 + 32 = 42
+    /// </summary>
+    private static unsafe void TestILCalli()
+    {
+        DebugConsole.Write("[IL JIT 54] calli (indirect): ");
+
+        // Get a function pointer to our native add function
+        delegate*<int, int, int> fn = &NativeAdd;
+
+        // IL bytecode:
+        // ldc.i4.s 10     (0x1F 0x0A) - push first arg
+        // ldc.i4.s 32     (0x1F 0x20) - push second arg
+        // ldc.i8 <ftnPtr> (0x21 + 8-byte pointer) - push function pointer
+        // calli <sigToken> (0x29 + 4-byte token) - indirect call
+        // ret             (0x2A)
+        //
+        // Signature token encodes: (ReturnKind << 8) | ArgCount
+        // For int Add(int, int): (1 << 8) | 2 = 0x0102 (ReturnKind.Int32 = 1, ArgCount = 2)
+
+        byte* il = stackalloc byte[19];
+        il[0] = 0x1F;   // ldc.i4.s
+        il[1] = 10;     // 10
+        il[2] = 0x1F;   // ldc.i4.s
+        il[3] = 32;     // 32
+        il[4] = 0x21;   // ldc.i8
+        *(ulong*)(il + 5) = (ulong)fn;  // function pointer
+        il[13] = 0x29;  // calli
+        *(uint*)(il + 14) = ((uint)Runtime.JIT.ReturnKind.Int32 << 8) | 2;  // sigToken: Int32 return, 2 args
+        il[18] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 19, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 42)
+            {
+                DebugConsole.Write("calli(&NativeAdd)(10,32)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 42, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 55: initblk - Initialize block of memory.
+    /// IL equivalent: initblk(buffer, 0xAA, 8) - fills 8 bytes with 0xAA
+    /// </summary>
+    private static unsafe void TestILInitblk()
+    {
+        DebugConsole.Write("[IL JIT 55] initblk: ");
+
+        // Allocate a buffer on the stack and pass its address as argument
+        // The JIT method will: load arg0 (buffer ptr), load value (0xAA), load size (8), initblk
+        // IL bytecode:
+        // ldarg.0         (0x02) - load buffer address
+        // ldc.i4 0xAA     (0x20 + 4 bytes) - value to fill
+        // ldc.i4.8        (0x1E) - size
+        // initblk         (0xFE 0x18)
+        // ret             (0x2A)
+
+        byte* il = stackalloc byte[11];
+        il[0] = 0x02;   // ldarg.0
+        il[1] = 0x20;   // ldc.i4
+        *(int*)(il + 2) = 0xAA;
+        il[6] = 0x1E;   // ldc.i4.8
+        il[7] = 0xFE;   // prefix
+        il[8] = 0x18;   // initblk
+        il[9] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 10, 1, 0);  // 1 arg (buffer ptr)
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            // Allocate test buffer and initialize to zeros
+            byte* buffer = stackalloc byte[8];
+            for (int i = 0; i < 8; i++) buffer[i] = 0;
+
+            // Call the JIT'd function
+            var testFn = (delegate*<byte*, void>)code;
+            testFn(buffer);
+
+            // Verify all bytes are 0xAA
+            bool passed = true;
+            for (int i = 0; i < 8; i++)
+            {
+                if (buffer[i] != 0xAA)
+                {
+                    passed = false;
+                    break;
+                }
+            }
+
+            if (passed)
+            {
+                DebugConsole.WriteLine("buffer filled with 0xAA PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - buffer[0]=0x");
+                DebugConsole.WriteHex(buffer[0]);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 56: cpblk - Copy block of memory.
+    /// IL equivalent: cpblk(dest, src, 8) - copies 8 bytes from src to dest
+    /// </summary>
+    private static unsafe void TestILCpblk()
+    {
+        DebugConsole.Write("[IL JIT 56] cpblk: ");
+
+        // JIT method takes 2 args: dest (arg0), src (arg1)
+        // IL bytecode:
+        // ldarg.0         (0x02) - dest
+        // ldarg.1         (0x03) - src
+        // ldc.i4.8        (0x1E) - size
+        // cpblk           (0xFE 0x17)
+        // ret             (0x2A)
+
+        byte* il = stackalloc byte[7];
+        il[0] = 0x02;   // ldarg.0 (dest)
+        il[1] = 0x03;   // ldarg.1 (src)
+        il[2] = 0x1E;   // ldc.i4.8
+        il[3] = 0xFE;   // prefix
+        il[4] = 0x17;   // cpblk
+        il[5] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 6, 2, 0);  // 2 args (dest, src)
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            // Set up source buffer with known pattern
+            byte* src = stackalloc byte[8];
+            src[0] = 0x01; src[1] = 0x02; src[2] = 0x03; src[3] = 0x04;
+            src[4] = 0x05; src[5] = 0x06; src[6] = 0x07; src[7] = 0x08;
+
+            // Set up dest buffer (zeros)
+            byte* dest = stackalloc byte[8];
+            for (int i = 0; i < 8; i++) dest[i] = 0;
+
+            // Call the JIT'd function
+            var testFn = (delegate*<byte*, byte*, void>)code;
+            testFn(dest, src);
+
+            // Verify copy
+            bool passed = true;
+            for (int i = 0; i < 8; i++)
+            {
+                if (dest[i] != src[i])
+                {
+                    passed = false;
+                    break;
+                }
+            }
+
+            if (passed)
+            {
+                DebugConsole.WriteLine("8 bytes copied correctly PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - dest[0]=0x");
+                DebugConsole.WriteHex(dest[0]);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 57: initobj - Initialize value type to zero.
+    /// IL: ldarg.0; initobj <size=8>; ret
+    /// </summary>
+    private static unsafe void TestILInitobj()
+    {
+        DebugConsole.Write("[IL JIT 57] initobj: ");
+
+        // IL bytecode:
+        // ldarg.0         (0x02) - load address
+        // initobj token   (0xFE 0x15 + 4-byte token) - token encodes size=8
+        // ret             (0x2A)
+
+        byte* il = stackalloc byte[9];
+        il[0] = 0x02;   // ldarg.0
+        il[1] = 0xFE;   // prefix
+        il[2] = 0x15;   // initobj
+        *(uint*)(il + 3) = 8;  // token = size 8
+        il[7] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            // Set up buffer with non-zero values
+            long* buffer = stackalloc long[1];
+            *buffer = 0x123456789ABCDEF0L;
+
+            // Call the JIT'd function to zero it
+            var testFn = (delegate*<long*, void>)code;
+            testFn(buffer);
+
+            if (*buffer == 0)
+            {
+                DebugConsole.WriteLine("8-byte struct zeroed PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - value=0x");
+                DebugConsole.WriteHex((ulong)*buffer);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 58: ldobj - Load value type from address.
+    /// IL: ldarg.0; ldobj <size=4>; ret
+    /// </summary>
+    private static unsafe void TestILLdobj()
+    {
+        DebugConsole.Write("[IL JIT 58] ldobj: ");
+
+        // IL bytecode:
+        // ldarg.0         (0x02) - load address
+        // ldobj token     (0x71 + 4-byte token) - token encodes size=4
+        // ret             (0x2A)
+
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;   // ldarg.0
+        il[1] = 0x71;   // ldobj
+        *(uint*)(il + 2) = 4;  // token = size 4
+        il[6] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            int* value = stackalloc int[1];
+            *value = 0x12345678;
+
+            var testFn = (delegate*<int*, int>)code;
+            int result = testFn(value);
+
+            if (result == 0x12345678)
+            {
+                DebugConsole.Write("loaded 0x");
+                DebugConsole.WriteHex((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got 0x");
+                DebugConsole.WriteHex((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 59: stobj - Store value type to address.
+    /// IL: ldarg.0; ldc.i4 0xDEADBEEF; stobj <size=4>; ret
+    /// </summary>
+    private static unsafe void TestILStobj()
+    {
+        DebugConsole.Write("[IL JIT 59] stobj: ");
+
+        // IL bytecode:
+        // ldarg.0             (0x02) - load address
+        // ldc.i4 0xDEADBEEF   (0x20 + 4 bytes)
+        // stobj token         (0x81 + 4-byte token)
+        // ret                 (0x2A)
+
+        byte* il = stackalloc byte[13];
+        il[0] = 0x02;   // ldarg.0
+        il[1] = 0x20;   // ldc.i4
+        *(int*)(il + 2) = unchecked((int)0xDEADBEEF);
+        il[6] = 0x81;   // stobj
+        *(uint*)(il + 7) = 4;  // token = size 4
+        il[11] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 12, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            int* dest = stackalloc int[1];
+            *dest = 0;
+
+            var testFn = (delegate*<int*, void>)code;
+            testFn(dest);
+
+            if (*dest == unchecked((int)0xDEADBEEF))
+            {
+                DebugConsole.Write("stored 0x");
+                DebugConsole.WriteHex((uint)*dest);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got 0x");
+                DebugConsole.WriteHex((uint)*dest);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 60: cpobj - Copy value type.
+    /// IL: ldarg.0; ldarg.1; cpobj <size=8>; ret
+    /// </summary>
+    private static unsafe void TestILCpobj()
+    {
+        DebugConsole.Write("[IL JIT 60] cpobj: ");
+
+        // IL bytecode:
+        // ldarg.0         (0x02) - dest address
+        // ldarg.1         (0x03) - src address
+        // cpobj token     (0x70 + 4-byte token)
+        // ret             (0x2A)
+
+        byte* il = stackalloc byte[9];
+        il[0] = 0x02;   // ldarg.0 (dest)
+        il[1] = 0x03;   // ldarg.1 (src)
+        il[2] = 0x70;   // cpobj
+        *(uint*)(il + 3) = 8;  // token = size 8
+        il[7] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 8, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            long* src = stackalloc long[1];
+            long* dest = stackalloc long[1];
+            *src = unchecked((long)0xFEDCBA9876543210UL);
+            *dest = 0;
+
+            var testFn = (delegate*<long*, long*, void>)code;
+            testFn(dest, src);
+
+            if (*dest == *src)
+            {
+                DebugConsole.Write("copied 0x");
+                DebugConsole.WriteHex((ulong)*dest);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - got 0x");
+                DebugConsole.WriteHex((ulong)*dest);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 61: sizeof opcode
+    /// Returns the size of a type (using our simplified token=size encoding).
+    /// Tests sizeof returning 4 and 8.
+    /// </summary>
+    private static unsafe void TestILSizeof()
+    {
+        DebugConsole.Write("[IL JIT 61] sizeof: ");
+
+        // IL bytecode: sizeof<int> (returns 4)
+        // sizeof token     (0xFE 0x1C + 4-byte token)
+        // ret              (0x2A)
+
+        byte* il = stackalloc byte[7];
+        il[0] = 0xFE;   // two-byte prefix
+        il[1] = 0x1C;   // sizeof
+        *(uint*)(il + 2) = 4;  // token = size 4 (int)
+        il[6] = 0x2A;   // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        var testFn = (delegate*<int>)code;
+        int size4 = testFn();
+
+        // Now test sizeof returning 8 (long)
+        *(uint*)(il + 2) = 8;  // token = size 8 (long)
+        compiler = Runtime.JIT.ILCompiler.Create(il, 7, 0, 0);
+        code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - second compilation failed");
+            return;
+        }
+
+        testFn = (delegate*<int>)code;
+        int size8 = testFn();
+
+        if (size4 == 4 && size8 == 8)
+        {
+            DebugConsole.Write("sizeof(int)=");
+            DebugConsole.WriteHex((uint)size4);
+            DebugConsole.Write(", sizeof(long)=");
+            DebugConsole.WriteHex((uint)size8);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - got ");
+            DebugConsole.WriteHex((uint)size4);
+            DebugConsole.Write(" and ");
+            DebugConsole.WriteHex((uint)size8);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 62: call with 7 arguments (3 stack args)
+    /// IL: ldc.i4.1; ldc.i4.2; ldc.i4.3; ldc.i4.4; ldc.i4.5; ldc.i4.6; ldc.i4.7; call Sum7; ret
+    /// Expected: 1+2+3+4+5+6+7 = 28
+    /// </summary>
+    private static unsafe void TestILCall7Args()
+    {
+        DebugConsole.Write("[IL JIT 62] call (7 args): ");
+
+        // Register the native Sum7 function
+        delegate*<int, int, int, int, int, int, int, int> sumFn = &NativeSum7;
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Sum7Args,
+            (void*)sumFn,
+            7,
+            Runtime.JIT.ReturnKind.Int32,
+            false);
+
+        // IL bytecode:
+        // ldc.i4.1-7 (0x17-0x1D)
+        // call token (0x28 + 4-byte token)
+        // ret        (0x2A)
+        byte* il = stackalloc byte[13];
+        il[0] = 0x17;   // ldc.i4.1
+        il[1] = 0x18;   // ldc.i4.2
+        il[2] = 0x19;   // ldc.i4.3
+        il[3] = 0x1A;   // ldc.i4.4
+        il[4] = 0x1B;   // ldc.i4.5
+        il[5] = 0x1C;   // ldc.i4.6
+        il[6] = 0x1D;   // ldc.i4.7
+        il[7] = 0x28;   // call
+        *(uint*)(il + 8) = TestToken_Sum7Args;
+        il[12] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 13, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+            if (result == 28)
+            {
+                DebugConsole.Write("Sum7(1,2,3,4,5,6,7)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 28, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 63: call with 8 arguments (4 stack args)
+    /// IL: ldc.i4.1; ldc.i4.2; ldc.i4.3; ldc.i4.4; ldc.i4.5; ldc.i4.6; ldc.i4.7; ldc.i4.8; call Sum8; ret
+    /// Expected: 1+2+3+4+5+6+7+8 = 36
+    /// </summary>
+    private static unsafe void TestILCall8Args()
+    {
+        DebugConsole.Write("[IL JIT 63] call (8 args): ");
+
+        // Register the native Sum8 function
+        delegate*<int, int, int, int, int, int, int, int, int> sumFn = &NativeSum8;
+        Runtime.JIT.CompiledMethodRegistry.Register(
+            TestToken_Sum8Args,
+            (void*)sumFn,
+            8,
+            Runtime.JIT.ReturnKind.Int32,
+            false);
+
+        // IL bytecode:
+        // ldc.i4.1-8 (0x17-0x1E)
+        // call token (0x28 + 4-byte token)
+        // ret        (0x2A)
+        byte* il = stackalloc byte[14];
+        il[0] = 0x17;   // ldc.i4.1
+        il[1] = 0x18;   // ldc.i4.2
+        il[2] = 0x19;   // ldc.i4.3
+        il[3] = 0x1A;   // ldc.i4.4
+        il[4] = 0x1B;   // ldc.i4.5
+        il[5] = 0x1C;   // ldc.i4.6
+        il[6] = 0x1D;   // ldc.i4.7
+        il[7] = 0x1E;   // ldc.i4.8
+        il[8] = 0x28;   // call
+        *(uint*)(il + 9) = TestToken_Sum8Args;
+        il[13] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 14, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+            if (result == 36)
+            {
+                DebugConsole.Write("Sum8(1,2,3,4,5,6,7,8)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 36, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 64: calli with 6 arguments (2 stack args)
+    /// IL: push 1-6; ldc.i8 ftnPtr; calli; ret
+    /// Expected: 1+2+3+4+5+6 = 21
+    /// </summary>
+    private static unsafe void TestILCalli6Args()
+    {
+        DebugConsole.Write("[IL JIT 64] calli (6 args): ");
+
+        // Get function pointer to NativeSum6
+        delegate*<int, int, int, int, int, int, int> fn = &NativeSum6;
+
+        // IL bytecode:
+        // ldc.i4.1-6      (0x17-0x1C) - push args
+        // ldc.i8 <ftnPtr> (0x21 + 8-byte pointer) - push function pointer
+        // calli <sigToken> (0x29 + 4-byte token) - indirect call
+        // ret             (0x2A)
+        //
+        // Signature token: (ReturnKind << 8) | ArgCount = (1 << 8) | 6 = 0x0106
+
+        byte* il = stackalloc byte[21];
+        il[0] = 0x17;   // ldc.i4.1
+        il[1] = 0x18;   // ldc.i4.2
+        il[2] = 0x19;   // ldc.i4.3
+        il[3] = 0x1A;   // ldc.i4.4
+        il[4] = 0x1B;   // ldc.i4.5
+        il[5] = 0x1C;   // ldc.i4.6
+        il[6] = 0x21;   // ldc.i8
+        *(ulong*)(il + 7) = (ulong)fn;  // function pointer
+        il[15] = 0x29;  // calli
+        *(uint*)(il + 16) = ((uint)Runtime.JIT.ReturnKind.Int32 << 8) | 6;  // sigToken: Int32 return, 6 args
+        il[20] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 21, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 21)
+            {
+                DebugConsole.Write("calli(&Sum6)(1..6)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 21, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 65: calli with 7 arguments (3 stack args)
+    /// IL: push 1-7; ldc.i8 ftnPtr; calli; ret
+    /// Expected: 1+2+3+4+5+6+7 = 28
+    /// </summary>
+    private static unsafe void TestILCalli7Args()
+    {
+        DebugConsole.Write("[IL JIT 65] calli (7 args): ");
+
+        // Get function pointer to NativeSum7
+        delegate*<int, int, int, int, int, int, int, int> fn = &NativeSum7;
+
+        // IL bytecode:
+        // ldc.i4.1-7      (0x17-0x1D) - push args
+        // ldc.i8 <ftnPtr> (0x21 + 8-byte pointer) - push function pointer
+        // calli <sigToken> (0x29 + 4-byte token) - indirect call
+        // ret             (0x2A)
+        //
+        // Signature token: (ReturnKind << 8) | ArgCount = (1 << 8) | 7 = 0x0107
+
+        byte* il = stackalloc byte[22];
+        il[0] = 0x17;   // ldc.i4.1
+        il[1] = 0x18;   // ldc.i4.2
+        il[2] = 0x19;   // ldc.i4.3
+        il[3] = 0x1A;   // ldc.i4.4
+        il[4] = 0x1B;   // ldc.i4.5
+        il[5] = 0x1C;   // ldc.i4.6
+        il[6] = 0x1D;   // ldc.i4.7
+        il[7] = 0x21;   // ldc.i8
+        *(ulong*)(il + 8) = (ulong)fn;  // function pointer
+        il[16] = 0x29;  // calli
+        *(uint*)(il + 17) = ((uint)Runtime.JIT.ReturnKind.Int32 << 8) | 7;  // sigToken: Int32 return, 7 args
+        il[21] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 22, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code != null)
+        {
+            var testFn = (delegate*<int>)code;
+            int result = testFn();
+
+            if (result == 28)
+            {
+                DebugConsole.Write("calli(&Sum7)(1..7)=");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine(" PASSED");
+            }
+            else
+            {
+                DebugConsole.Write("FAILED - expected 28, got ");
+                DebugConsole.WriteDecimal((uint)result);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Test 66: conv.ovf.* - Overflow-checking conversions.
+    /// Tests: conv.ovf.i1 (100 -> 100 OK), conv.ovf.u1 (200 -> 200 OK)
+    /// Verifies valid conversions succeed. (Overflow cases would trigger INT3.)
+    /// </summary>
+    private static unsafe void TestILConvOvf()
+    {
+        DebugConsole.Write("[IL JIT 66] conv.ovf: ");
+
+        // Use a single shared IL buffer to avoid stack probe requirement
+        byte* il = stackalloc byte[8];
+
+        // Test conv.ovf.i1: 100 should fit in sbyte (-128..127)
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 100;   // 100
+        il[2] = 0xB3;  // conv.ovf.i1
+        il[3] = 0x2A;  // ret
+
+        int result1 = RunConvOvfTest(il, 4, "conv.ovf.i1", 100);
+        if (result1 < 0) return;
+
+        // Test conv.ovf.u1: 200 should fit in byte (0..255)
+        il[0] = 0x20;  // ldc.i4
+        *(int*)(il + 1) = 200;
+        il[5] = 0xB4;  // conv.ovf.u1
+        il[6] = 0x2A;  // ret
+
+        int result2 = RunConvOvfTest(il, 7, "conv.ovf.u1", 200);
+        if (result2 < 0) return;
+
+        // Test conv.ovf.i2: 1000 should fit in short (-32768..32767)
+        il[0] = 0x20;  // ldc.i4
+        *(int*)(il + 1) = 1000;
+        il[5] = 0xB5;  // conv.ovf.i2
+        il[6] = 0x2A;  // ret
+
+        int result3 = RunConvOvfTest(il, 7, "conv.ovf.i2", 1000);
+        if (result3 < 0) return;
+
+        // Test conv.ovf.u4: 42 should fit in uint (non-negative)
+        il[0] = 0x1F;  // ldc.i4.s
+        il[1] = 42;    // 42
+        il[2] = 0xB8;  // conv.ovf.u4
+        il[3] = 0x2A;  // ret
+
+        int result4 = RunConvOvfTest(il, 4, "conv.ovf.u4", 42);
+        if (result4 < 0) return;
+
+        DebugConsole.Write("i1(100)=");
+        DebugConsole.WriteDecimal((uint)result1);
+        DebugConsole.Write(", u1(200)=");
+        DebugConsole.WriteDecimal((uint)result2);
+        DebugConsole.Write(", i2(1000)=");
+        DebugConsole.WriteDecimal((uint)result3);
+        DebugConsole.Write(", u4(42)=");
+        DebugConsole.WriteDecimal((uint)result4);
+        DebugConsole.WriteLine(" PASSED");
+    }
+
+    // Helper to run a single conv.ovf test to avoid large stack frame
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static unsafe int RunConvOvfTest(byte* il, int ilLen, string name, int expected)
+    {
+        var compiler = Runtime.JIT.ILCompiler.Create(il, ilLen, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.Write("FAILED - compilation failed for ");
+            DebugConsole.WriteLine(name);
+            return -1;
+        }
+
+        var fn = (delegate*<int>)code;
+        int result = fn();
+        if (result != expected)
+        {
+            DebugConsole.Write("FAILED - ");
+            DebugConsole.Write(name);
+            DebugConsole.Write(" = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.Write(" (expected ");
+            DebugConsole.WriteDecimal((uint)expected);
+            DebugConsole.WriteLine(")");
+            return -1;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Test 67: Arithmetic with overflow checking (add.ovf, sub.ovf, mul.ovf)
+    /// Tests signed and unsigned variants on non-overflowing cases.
+    /// </summary>
+    private static unsafe void TestILArithOvf()
+    {
+        DebugConsole.Write("[IL JIT 67] arith.ovf: ");
+
+        byte* il = stackalloc byte[16];
+
+        // Test add.ovf: 10 + 20 = 30 (no overflow)
+        // ldc.i4.s 10, ldc.i4.s 20, add.ovf, ret
+        il[0] = 0x1F; il[1] = 10;   // ldc.i4.s 10
+        il[2] = 0x1F; il[3] = 20;   // ldc.i4.s 20
+        il[4] = 0xD6;              // add.ovf
+        il[5] = 0x2A;              // ret
+        int result1 = RunArithOvfTest(il, 6, "add.ovf(10,20)", 30);
+        if (result1 < 0) return;
+
+        // Test sub.ovf: 50 - 30 = 20 (no overflow)
+        il[0] = 0x1F; il[1] = 50;   // ldc.i4.s 50
+        il[2] = 0x1F; il[3] = 30;   // ldc.i4.s 30
+        il[4] = 0xDA;              // sub.ovf
+        il[5] = 0x2A;              // ret
+        int result2 = RunArithOvfTest(il, 6, "sub.ovf(50,30)", 20);
+        if (result2 < 0) return;
+
+        // Test mul.ovf: 6 * 7 = 42 (no overflow)
+        il[0] = 0x1F; il[1] = 6;    // ldc.i4.s 6
+        il[2] = 0x1F; il[3] = 7;    // ldc.i4.s 7
+        il[4] = 0xD8;              // mul.ovf
+        il[5] = 0x2A;              // ret
+        int result3 = RunArithOvfTest(il, 6, "mul.ovf(6,7)", 42);
+        if (result3 < 0) return;
+
+        // Test add.ovf.un: 100 + 200 = 300 (no overflow)
+        // ldc.i4 100, ldc.i4 200, add.ovf.un, ret
+        il[0] = 0x1F; il[1] = 100;  // ldc.i4.s 100
+        il[2] = 0x20;              // ldc.i4
+        *(int*)(il + 3) = 200;
+        il[7] = 0xD7;              // add.ovf.un
+        il[8] = 0x2A;              // ret
+        int result4 = RunArithOvfTest(il, 9, "add.ovf.un(100,200)", 300);
+        if (result4 < 0) return;
+
+        // Test sub.ovf.un: 500 - 300 = 200 (no borrow)
+        il[0] = 0x20;              // ldc.i4
+        *(int*)(il + 1) = 500;
+        il[5] = 0x20;              // ldc.i4
+        *(int*)(il + 6) = 300;
+        il[10] = 0xDB;             // sub.ovf.un
+        il[11] = 0x2A;             // ret
+        int result5 = RunArithOvfTest(il, 12, "sub.ovf.un(500,300)", 200);
+        if (result5 < 0) return;
+
+        // Test mul.ovf.un: 15 * 10 = 150 (no overflow)
+        il[0] = 0x1F; il[1] = 15;   // ldc.i4.s 15
+        il[2] = 0x1F; il[3] = 10;   // ldc.i4.s 10
+        il[4] = 0xD9;              // mul.ovf.un
+        il[5] = 0x2A;              // ret
+        int result6 = RunArithOvfTest(il, 6, "mul.ovf.un(15,10)", 150);
+        if (result6 < 0) return;
+
+        DebugConsole.Write("add.ovf=");
+        DebugConsole.WriteDecimal((uint)result1);
+        DebugConsole.Write(", sub.ovf=");
+        DebugConsole.WriteDecimal((uint)result2);
+        DebugConsole.Write(", mul.ovf=");
+        DebugConsole.WriteDecimal((uint)result3);
+        DebugConsole.Write(", add.ovf.un=");
+        DebugConsole.WriteDecimal((uint)result4);
+        DebugConsole.Write(", sub.ovf.un=");
+        DebugConsole.WriteDecimal((uint)result5);
+        DebugConsole.Write(", mul.ovf.un=");
+        DebugConsole.WriteDecimal((uint)result6);
+        DebugConsole.WriteLine(" PASSED");
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static unsafe int RunArithOvfTest(byte* il, int ilLen, string name, int expected)
+    {
+        var compiler = Runtime.JIT.ILCompiler.Create(il, ilLen, 0, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.Write("FAILED - compilation failed for ");
+            DebugConsole.WriteLine(name);
+            return -1;
+        }
+
+        var fn = (delegate*<int>)code;
+        int result = fn();
+        if (result != expected)
+        {
+            DebugConsole.Write("FAILED - ");
+            DebugConsole.Write(name);
+            DebugConsole.Write(" = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.Write(" (expected ");
+            DebugConsole.WriteDecimal((uint)expected);
+            DebugConsole.WriteLine(")");
+            return -1;
+        }
+        return result;
     }
 }

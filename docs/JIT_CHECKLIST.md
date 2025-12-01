@@ -74,94 +74,98 @@ This is a kernel-level prerequisite.
 
 Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translation.
 
+**Files**: `src/kernel/Runtime/JIT/CodeBuffer.cs`, `X64Emitter.cs`, `ILCompiler.cs`
+
 ### Research
 
-- [ ] IL opcode reference (ECMA-335 Partition III)
-- [ ] x64 calling conventions (Microsoft x64 ABI)
-- [ ] RyuJIT importer (`dotnet/src/coreclr/jit/importer.cpp`)
-- [ ] RyuJIT emitter (`dotnet/src/coreclr/jit/emit*.cpp`)
-
-**Key RyuJIT Files:**
-| File | Purpose |
-|------|---------|
-| `importer.cpp` | IL import to GenTree IR |
-| `codegenxarch.cpp` | x64 code generation |
-| `emitxarch.cpp` | x64 instruction encoding |
-| `compiler.h` | Main compiler data structures |
-| `gentree.h` | GenTree IR node definitions |
+- [x] IL opcode reference (ECMA-335 Partition III)
+- [x] x64 calling conventions (Microsoft x64 ABI)
+- [ ] RyuJIT importer (`dotnet/src/coreclr/jit/importer.cpp`) - for reference
+- [ ] RyuJIT emitter (`dotnet/src/coreclr/jit/emit*.cpp`) - for reference
 
 ### Infrastructure
 
-**File**: `src/kernel/Runtime/JIT/`
-
 #### 6.1.1 Code Buffer
-- [ ] Executable memory allocation from kernel heap
-- [ ] Write pointer with bounds checking
-- [ ] Emit helper methods: `EmitByte`, `EmitInt32`, `EmitInt64`
-- [ ] Relocation tracking for fixups
+- [x] Executable memory allocation - CodeHeap with W^X separation
+- [x] Write pointer with bounds checking - CodeBuffer struct
+- [x] Emit helper methods: `EmitByte`, `EmitDword`, `EmitQword`, `EmitInt32`
+- [x] Patch support: `ReserveInt32`, `PatchInt32`, `PatchRelative32`
 
-#### 6.1.2 x64 Instruction Encoding
-- [ ] REX prefix generation
-- [ ] ModR/M and SIB byte encoding
-- [ ] Displacement encoding (8/32 bit)
-- [ ] Immediate encoding
-- [ ] Common instructions: MOV, ADD, SUB, CMP, JMP, JCC, CALL, RET, PUSH, POP
+#### 6.1.2 x64 Instruction Encoding (X64Emitter.cs)
+- [x] REX prefix generation (W, R, X, B bits)
+- [x] ModR/M and SIB byte encoding
+- [x] Displacement encoding (8/32 bit)
+- [x] Immediate encoding
+- [x] MOV (reg-reg, reg-imm32, reg-imm64, reg-mem, mem-reg)
+- [x] ADD, SUB, IMUL, NEG
+- [x] AND, OR, XOR
+- [x] CMP, TEST
+- [x] PUSH, POP
+- [x] JMP, Jcc (all condition codes), CALL
+- [x] RET, NOP, INT3, LEA
 
 #### 6.1.3 Method Prologue/Epilogue
-- [ ] Stack frame setup (push rbp, mov rbp rsp, sub rsp N)
-- [ ] Callee-saved register preservation
-- [ ] Local variable space allocation
-- [ ] Argument handling (rcx, rdx, r8, r9, stack)
-- [ ] Return value handling (rax)
-- [ ] Stack frame teardown
+- [x] Stack frame setup (push rbp, mov rbp rsp, sub rsp N)
+- [x] Callee-saved register preservation (optional)
+- [x] Local variable space allocation
+- [x] Shadow space (32 bytes) for outgoing calls
+- [x] Argument homing to shadow space
+- [x] Return value handling (rax)
+- [x] Stack frame teardown
+- [x] Leaf function variants (no frame pointer)
 
 ### IL Opcodes (Basic)
 
-Implement opcodes needed for simple methods first:
-
 #### 6.1.4 Constants and Locals
-- [ ] `ldc.i4.*` - Load int32 constant
-- [ ] `ldc.i8` - Load int64 constant
-- [ ] `ldc.r4` - Load float32 constant
-- [ ] `ldc.r8` - Load float64 constant
-- [ ] `ldnull` - Load null reference
-- [ ] `ldloc.*` - Load local variable
-- [ ] `stloc.*` - Store local variable
-- [ ] `ldloca.*` - Load local variable address
+- [x] `ldc.i4.*` - Load int32 constant (all variants: -1, 0-8, .s, full)
+- [x] `ldc.i8` - Load int64 constant
+- [x] `ldc.r4` - Load float32 constant
+- [x] `ldc.r8` - Load float64 constant
+- [x] `ldnull` - Load null reference
+- [x] `ldloc.*` - Load local variable (0-3, .s)
+- [x] `stloc.*` - Store local variable (0-3, .s)
+- [x] `ldloca.*` - Load local variable address
 
 #### 6.1.5 Arguments
-- [ ] `ldarg.*` - Load argument
-- [ ] `starg.*` - Store argument
-- [ ] `ldarga.*` - Load argument address
+- [x] `ldarg.*` - Load argument (0-3, .s)
+- [x] `starg.*` - Store argument
+- [x] `ldarga.*` - Load argument address
 
 #### 6.1.6 Arithmetic
-- [ ] `add`, `sub`, `mul`, `div`, `rem`
-- [ ] `neg` - Negate
-- [ ] `and`, `or`, `xor`, `not`
-- [ ] `shl`, `shr`, `shr.un`
-- [ ] Overflow variants (`.ovf`)
+- [x] `add`, `sub`, `mul` - Basic arithmetic
+- [x] `div`, `div.un` - Division (signed/unsigned)
+- [x] `rem`, `rem.un` - Remainder (signed/unsigned)
+- [x] `neg` - Negate
+- [x] `and`, `or`, `xor` - Bitwise operations
+- [x] `not` - Bitwise NOT
+- [x] `shl`, `shr`, `shr.un` - Shift operations
+- [x] Overflow variants (`.ovf`) - add.ovf, sub.ovf, mul.ovf (signed/unsigned)
 
 #### 6.1.7 Comparison and Branch
-- [ ] `ceq`, `cgt`, `clt` (and unsigned variants)
-- [ ] `br.*` - Unconditional branch
-- [ ] `beq`, `bne`, `blt`, `bgt`, `ble`, `bge` (and unsigned)
-- [ ] `brfalse`, `brtrue`
-- [ ] `switch` - Jump table
+- [x] `ceq`, `cgt`, `cgt.un`, `clt`, `clt.un` - Comparison
+- [x] `br`, `br.s` - Unconditional branch
+- [x] `beq.s`, `bne.un.s`, `blt.s`, `ble.s`, `bgt.s`, `bge.s` - Conditional branches (short)
+- [x] `beq`, `bne.un`, `blt`, `ble`, `bgt`, `bge` - Conditional branches (long)
+- [x] `brfalse`, `brfalse.s`, `brtrue`, `brtrue.s` - Boolean branches (short and long)
+- [x] `switch` - Jump table
 
 #### 6.1.8 Conversion
-- [ ] `conv.i1`, `conv.i2`, `conv.i4`, `conv.i8`
-- [ ] `conv.u1`, `conv.u2`, `conv.u4`, `conv.u8`
-- [ ] `conv.r4`, `conv.r8`
-- [ ] `conv.ovf.*` variants
+- [x] `conv.i1`, `conv.i2`, `conv.i4`, `conv.i8` - Signed integer conversion
+- [x] `conv.u1`, `conv.u2`, `conv.u4`, `conv.u8` - Unsigned integer conversion
+- [x] `conv.r4`, `conv.r8` - Float conversion (requires SSE)
+- [x] `conv.ovf.*` variants - all signed/unsigned source variants implemented
 
 #### 6.1.9 Method Calls
-- [ ] `call` - Direct call
+- [x] `call` - Direct call (static methods, 0-8+ args)
+- [ ] `call` - Instance methods (hasThis) - deferred until object support
 - [ ] `callvirt` - Virtual call (requires vtable lookup)
-- [ ] `ret` - Return
-- [ ] Argument marshaling per x64 ABI
-- [ ] Return value handling
+- [x] `calli` - Indirect call via function pointer (0-7+ args)
+- [x] `ret` - Return
+- [x] Argument marshaling per x64 ABI (RCX, RDX, R8, R9, stack)
+- [x] Return value handling (Int32, Int64, Void)
+- [x] CompiledMethodRegistry for method token resolution
 
-#### 6.1.10 Object Operations
+#### 6.1.10 Object Operations (requires GC/type system)
 - [ ] `newobj` - Allocate and call constructor
 - [ ] `ldfld`, `stfld` - Instance field access
 - [ ] `ldsfld`, `stsfld` - Static field access
@@ -170,27 +174,44 @@ Implement opcodes needed for simple methods first:
 - [ ] `ldelem.*`, `stelem.*` - Array element access
 - [ ] `ldelema` - Array element address
 
-#### 6.1.11 Type Operations
+#### 6.1.11 Type Operations (requires type system)
 - [ ] `castclass` - Cast with exception on failure
 - [ ] `isinst` - Cast returning null on failure
 - [ ] `box`, `unbox`, `unbox.any`
 - [ ] `ldtoken` - Load metadata token
-- [ ] `sizeof` - Type size
+- [x] `sizeof` - Type size
 
 #### 6.1.12 Indirect Operations
-- [ ] `ldind.*` - Load indirect
-- [ ] `stind.*` - Store indirect
-- [ ] `ldobj`, `stobj` - Load/store value type
-- [ ] `cpobj`, `initobj` - Copy/initialize value type
-- [ ] `cpblk`, `initblk` - Block copy/initialize
+- [x] `ldind.*` - Load indirect (ldind.i1/u1/i2/u2/i4/u4/i8/i/ref)
+- [x] `stind.*` - Store indirect (stind.i1/i2/i4/i8/i/ref)
+- [x] `ldobj`, `stobj` - Load/store value type (1/2/4/8 byte sizes)
+- [x] `cpobj`, `initobj` - Copy/initialize value type (via CPU.MemCopy/MemSet)
+- [x] `cpblk`, `initblk` - Block copy/initialize (via CPU.MemCopy/MemSet)
+
+#### 6.1.13 Stack Operations
+- [x] `dup` - Duplicate top of stack
+- [x] `pop` - Discard top of stack
+- [x] `nop` - No operation
 
 ### Test
 
-- [ ] Compile simple `int Add(int a, int b)` method
-- [ ] Verify correct result when called
-- [ ] Test all basic arithmetic opcodes
-- [ ] Test branches and loops
-- [ ] Test method calls between JIT'd methods
+- [x] Compile simple `int Add(int a, int b)` method - PASSED
+- [x] Verify correct result when called
+- [x] Test basic arithmetic opcodes (add, sub, mul)
+- [x] Test local variables (stloc, ldloc)
+- [x] Test branches and loops (Test 31: long branch, Test 32: loop with backward jump)
+- [x] Test indirect load/store (Test 43: ldind.i4/stind.i4)
+- [x] Test method calls (Tests 44-53): 0/2/4/5/6 args, void/int32/int64 returns, JIT-to-native, JIT-to-JIT, nested calls
+- [x] Test indirect calls (Test 54): calli with function pointer
+- [x] Test block operations (Tests 55-56): initblk, cpblk
+- [x] Test value type operations (Tests 57-60): initobj, ldobj, stobj, cpobj
+- [x] Test sizeof opcode (Test 61): sizeof(int)=4, sizeof(long)=8
+- [x] Test 7+ argument calls (Tests 62-63): Sum7(1..7)=28, Sum8(1..8)=36
+- [x] Test calli with 6+ args (Tests 64-65): calli 6 args, calli 7 args
+- [x] Test conv.ovf.* opcodes (Test 66): conv.ovf.i1, u1, i2, u4
+- [x] Test arith.ovf opcodes (Test 67): add.ovf, sub.ovf, mul.ovf (signed/unsigned)
+
+**Current Status: 67 tests passing**
 
 ---
 
