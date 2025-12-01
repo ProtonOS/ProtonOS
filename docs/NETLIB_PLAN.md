@@ -1235,227 +1235,323 @@ When region exhausted, trigger collection or allocate new region.
 
 ---
 
-## Phase 4: Assembly Loader (Bootstrap)
+## Phase 4: UEFI File System
 
 ### Goal
-Implement minimal PE/metadata reader **in netlib itself** (AOT compiled) to bootstrap
-loading of other assemblies.
+Implement UEFI Simple File System Protocol to load files from the boot device.
 
-### Key Insight
-We need to read PE files to load System.Reflection.Metadata... but we can't use
-System.Reflection.Metadata until we load it. So netlib needs a minimal, hand-written
-PE/metadata reader just sufficient to:
-1. Parse PE headers
-2. Read metadata tables
-3. Resolve type/method references
-4. Load IL for JIT/interpreter
+### Why This Phase?
+To iteratively test the metadata reader (Phase 5), we need a source of test data.
+By implementing UEFI file loading first, we can:
+- Load a simple test .NET DLL from the boot image
+- Validate each parsing step against real data
+- Evolve the test DLL to exercise specific features as we implement them
+- Catch bit-level parsing bugs early (learned from GCInfo debugging)
 
-This bootstrap loader doesn't need to be complete - just enough to load the real
-S.R.Metadata library, which then handles complex cases.
+### Location
+`src/kernel/Platform/UefiFileSystem.cs`
 
 ### Tasks
 
-#### 4.1 PE Header parsing
-```csharp
-// Minimal PE reader - structs, no allocations
-public readonly ref struct PEFile
-{
-    public PEFile(ReadOnlySpan<byte> data);
-    public PEHeader Header { get; }
-    public ReadOnlySpan<SectionHeader> Sections { get; }
-    public ReadOnlySpan<byte> GetSection(string name);
-}
-```
+#### 4.1 UEFI Protocol Integration
+- Locate EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on boot device
+- Open volume root directory
+- Handle protocol GUIDs and interface pointers
 
-#### 4.2 Metadata tables
-```csharp
-public readonly ref struct MetadataReader
-{
-    public MetadataReader(ReadOnlySpan<byte> metadata);
-    public TypeDefEnumerator TypeDefinitions { get; }
-    public MethodDefEnumerator MethodDefinitions { get; }
-    // Minimal - just what we need to resolve and load
-}
-```
+#### 4.2 File Operations
+- Open file by path (UTF-16 path handling)
+- Get file size via EFI_FILE_INFO
+- Read file contents into memory
+- Close file handles
+- Error handling for missing files
 
-#### 4.3 Assembly loading
-```csharp
-public static class AssemblyLoader
-{
-    // Load assembly from byte array
-    public static Assembly Load(ReadOnlySpan<byte> assemblyData);
-
-    // Resolve type from loaded assemblies
-    public static Type GetType(string assemblyQualifiedName);
-}
-```
-
-### Deliverables
-- [ ] Minimal PE parser (structs, Span-based)
-- [ ] Minimal metadata reader
-- [ ] Can load a simple assembly
-
----
-
-## Phase 5: JIT/Interpreter Bridge
-
-### Goal
-Execute IL code from loaded assemblies.
-
-### Options
-
-#### Option A: IL Interpreter (simpler, slower)
-Interpret IL bytecode directly. Good for bootstrapping.
-
-```csharp
-public static class ILInterpreter
-{
-    public static object Execute(MethodInfo method, object[] args);
-}
-```
-
-#### Option B: RyuJIT Integration (complex, fast)
-Use RyuJIT to compile IL to native code. Requires more infrastructure.
-
-### Recommendation
-Start with interpreter for Phase 5, add RyuJIT in later phase.
-
-### Tasks
-
-#### 5.1 IL Interpreter core
-- Operand stack
-- Local variables
-- Basic opcodes (ldarg, stloc, add, call, ret, etc.)
-
-#### 5.2 Method dispatch
-- Resolve method references
-- Handle virtual calls
-- P/Invoke to native code
-
-#### 5.3 Type instantiation
-- Create objects of loaded types
-- Initialize fields
-
-### Deliverables
-- [ ] IL interpreter executes basic methods
-- [ ] Can call methods from loaded assemblies
-- [ ] Object instantiation works
-
----
-
-## Phase 6: Load BCL Assemblies
-
-### Goal
-Load standard .NET assemblies from NuGet to provide collections, I/O, etc.
-
-### Tasks
-
-#### 6.1 Identify minimal BCL set
-For System.Reflection.Metadata, we need:
-- System.Collections.dll (List, Dictionary)
-- System.Collections.Immutable.dll (ImmutableArray)
-- System.Memory.dll (Memory<T> extensions)
-- System.IO.dll (Stream, BinaryReader)
-
-#### 6.2 Load from embedded resources or UEFI FS
-```csharp
-// Embed assemblies in kernel image or load from filesystem
-var collectionsData = LoadAssemblyBytes("System.Collections.dll");
-AssemblyLoader.Load(collectionsData);
-```
-
-#### 6.3 Verify type resolution
-Ensure loaded assemblies can reference netlib types and vice versa.
-
-### Deliverables
-- [ ] System.Collections.dll loads and works
-- [ ] System.Collections.Immutable.dll loads and works
-- [ ] System.IO.dll loads and works
-- [ ] Can use List<T>, Dictionary<K,V> from loaded assemblies
-
----
-
-## Phase 7: Load System.Reflection.Metadata
-
-### Goal
-Load the real System.Reflection.Metadata from NuGet - validates entire stack.
-
-### Why This Matters
-If we can load an unmodified S.R.Metadata.dll from NuGet:
-- Proves netlib provides correct API surface
-- Proves assembly loader works
-- Proves JIT/interpreter works
-- Proves we can use ANY pure-managed NuGet package
-
-### Tasks
-
-#### 7.1 Download from NuGet
-```bash
-# No source code needed - just the compiled DLL
-nuget install System.Reflection.Metadata
-```
-
-#### 7.2 Load and verify
-```csharp
-var srmData = LoadAssemblyBytes("System.Reflection.Metadata.dll");
-var srm = AssemblyLoader.Load(srmData);
-
-// Get PEReader type
-var peReaderType = srm.GetType("System.Reflection.PortableExecutable.PEReader");
-
-// Create instance and use it
-var peReader = Activator.CreateInstance(peReaderType, testDllStream);
-```
-
-#### 7.3 Test with real PE file
-1. Load a test .NET DLL
-2. Create PEReader from loaded S.R.Metadata
-3. Read headers
-4. Enumerate types/methods
-5. Print to debug console
-
-### Deliverables
-- [ ] System.Reflection.Metadata.dll loads
-- [ ] PEReader instantiates and works
-- [ ] MetadataReader works
-- [ ] Can enumerate types from a PE file
-
----
-
-## Phase 8: UEFI File System Integration
-
-### Goal
-Load assemblies from UEFI filesystem instead of embedded resources.
-
-### Tasks
-
-#### 8.1 UEFI Simple File System Protocol
+#### 4.3 Public API
 ```csharp
 public static class UefiFileSystem
 {
-    public static byte[] ReadFile(string path);
-    public static bool FileExists(string path);
-    public static string[] ListDirectory(string path);
+    public static byte* ReadFile(char* path, out int length);
+    public static bool FileExists(char* path);
+    public static void FreeFile(byte* data);
 }
 ```
 
-#### 8.2 Assembly resolution from filesystem
-```csharp
-// Configure loader to find assemblies on disk
-AssemblyLoader.AddSearchPath("\\EFI\\assemblies\\");
-```
-
-#### 8.3 End-to-end test
-1. Place test DLLs on boot image
-2. Boot kernel
-3. Load assemblies from filesystem
-4. Parse PE, enumerate metadata
-5. Print results
+#### 4.4 Test Assembly Setup
+- Create minimal test project (`test/TestAssembly/`)
+- Build TestAssembly.dll with standard `dotnet build`
+- Add to boot image FAT32 filesystem (update Makefile)
+- Verify loading works: print file size and first bytes
 
 ### Deliverables
-- [ ] UEFI file reading
-- [ ] Assembly loading from filesystem
-- [ ] End-to-end test passes
+- [ ] UEFI file system protocol working
+- [ ] Can read files from boot image
+- [ ] TestAssembly.dll loads into memory
+- [ ] Foundation ready for metadata reader testing
+
+---
+
+## Phase 5: Metadata Reader
+
+### Goal
+Implement a complete, AOT-compiled PE/metadata reader for assembly loading.
+
+### Key Insight
+Rather than building a minimal bootstrap loader to load S.R.Metadata.dll (which would require
+an interpreter), we implement the full metadata reader ourselves. This is:
+- **Faster**: Direct pointer access, zero GC pressure, arena allocation
+- **Simpler**: No interpreter/JIT needed just to read metadata
+- **Complete**: Full coverage of what we need for assembly loading
+
+### Design Principles
+1. **Direct memory access**: Lay structs directly over PE data, use pointers to iterate
+2. **Zero GC pressure**: Avoid heap allocations during parsing; use arenas when needed
+3. **Unsafe/unchecked**: Performance over safety - we control the input
+4. **Loading, not analysis**: Skip features only needed for metadata analysis tools
+5. **Incremental validation**: Test each component against TestAssembly.dll as we build
+
+### Location
+`src/kernel/Runtime/Metadata/` - builds on existing PE infrastructure in Runtime/
+
+### Scope
+
+**In scope** (required for assembly loading):
+- PE header parsing (DOS, COFF, Optional, Section headers)
+- CLI header and metadata root
+- All metadata tables for type/method resolution:
+  - Module, TypeRef, TypeDef, Field, MethodDef, Param
+  - MemberRef, Constant, CustomAttribute (basic), FieldMarshal
+  - ClassLayout, FieldLayout, StandAloneSig, EventMap, Event
+  - PropertyMap, Property, MethodSemantics, MethodImpl
+  - TypeSpec, ImplMap, FieldRVA, Assembly, AssemblyRef
+  - File, ExportedType, ManifestResource, NestedClass
+  - GenericParam, MethodSpec, GenericParamConstraint
+- Heap access: String, GUID, Blob, UserString
+- IL method body parsing
+- Assembly identity and binding
+- Signature decoding (method, field, local variable signatures)
+
+**Out of scope** (analysis-only features):
+- PDB/debugging information
+- Custom attribute value parsing beyond loading requirements
+- Metadata diffing/comparison
+- Edit-and-continue support
+
+### Reference
+The .NET 10 runtime source is available at `dotnet/` submodule for format reference.
+We implement our own clean version optimized for our use case.
+
+### Tasks
+
+See `docs/METADATA_CHECKLIST.md` for detailed implementation tracking.
+
+#### 5.1 PE Reader Enhancement
+Build on existing `src/kernel/Runtime/PEFormat.cs`:
+- Complete PE32+ header support
+- Section lookup and RVA-to-file-offset translation
+- CLI header location and parsing
+
+#### 5.2 Metadata Root and Heaps
+- Metadata root header parsing
+- Stream directory (#~, #Strings, #US, #GUID, #Blob)
+- Heap accessors with direct pointer access
+
+#### 5.3 Metadata Tables
+- Table stream header (heap sizes, valid/sorted bits)
+- Row count decoding
+- All 45 metadata tables with proper index sizes
+- Coded index decoding
+
+#### 5.4 Type System
+- TypeDef/TypeRef resolution
+- Generic instantiation
+- Base type and interface resolution
+- Field and method enumeration
+
+#### 5.5 Signatures
+- Calling convention parsing
+- Type signature decoding
+- Method/field/local signature parsing
+- Generic parameter handling
+
+#### 5.6 IL Reading
+- Method body header (tiny/fat)
+- IL byte stream access
+- Exception handling clauses
+- Local variable signatures
+
+#### 5.7 Assembly Loading
+- Assembly identity (name, version, culture, public key)
+- AssemblyRef resolution
+- Type forwarding
+- Module loading
+
+### Deliverables
+- [ ] Complete PE reader with CLI support
+- [ ] All metadata tables accessible
+- [ ] Heap access (strings, blobs, GUIDs)
+- [ ] Type resolution working
+- [ ] Method IL readable
+- [ ] Assembly binding functional
+
+---
+
+## Phase 6: RyuJIT Integration
+
+### Goal
+Integrate RyuJIT to compile IL from loaded assemblies to native code.
+
+### Overview
+With our metadata reader providing IL and type information, we integrate RyuJIT
+(the .NET JIT compiler) to generate native code at runtime. This skips the interpreter
+entirely - we go straight from IL to optimized machine code.
+
+### Key Components
+
+#### 6.1 JIT Interface Implementation
+RyuJIT communicates with the runtime through `ICorJitCompiler` and callbacks.
+We implement the required interfaces:
+- `ICorJitInfo` - Provides type/method information to JIT
+- `ICorJitCompiler::compileMethod` - Entry point for compilation
+
+#### 6.2 Code Manager
+- Allocate executable memory for JIT output
+- Track compiled methods for GC stack walking
+- Handle code relocation and fixups
+
+#### 6.3 Type System Bridge
+Connect our metadata reader to JIT's type system queries:
+- Method signatures and IL
+- Type layouts and field offsets
+- Virtual method tables
+- Interface dispatch
+
+### Tasks
+- [ ] Build RyuJIT from source (or extract from runtime)
+- [ ] Implement ICorJitInfo callbacks
+- [ ] Executable memory allocation
+- [ ] Code manager for compiled methods
+- [ ] GC info integration for JIT'd code
+- [ ] Test with simple methods
+
+### Deliverables
+- [ ] RyuJIT compiles IL to native code
+- [ ] Generated code executes correctly
+- [ ] GC can walk JIT'd stack frames
+
+---
+
+## Phase 7: Managed Assembly Execution
+
+### Goal
+Load and execute complete .NET assemblies.
+
+### Tasks
+
+#### 7.1 Assembly Loader
+```csharp
+public static class AssemblyLoader
+{
+    public static LoadedAssembly Load(byte* peData, int length);
+    public static LoadedAssembly Load(string path); // From UEFI FS
+}
+```
+
+#### 7.2 Type Instantiation
+- Allocate objects of loaded types
+- Initialize MethodTables for JIT'd types
+- Virtual method dispatch
+
+#### 7.3 Static Initialization
+- Static constructors (.cctor)
+- Static field allocation
+- Module initializers
+
+#### 7.4 P/Invoke and Internal Calls
+- Route DllImport calls to kernel implementations
+- Internal call table for runtime methods
+
+### Deliverables
+- [ ] Load assemblies from memory or filesystem
+- [ ] Instantiate objects of loaded types
+- [ ] Call methods (static, instance, virtual)
+- [ ] P/Invoke to kernel functions
+
+---
+
+## Phase 8: BCL Support
+
+### Goal
+Enable loaded assemblies to use standard .NET libraries.
+
+### Approach
+Rather than loading BCL assemblies initially, we can:
+1. Provide kernel implementations of common patterns
+2. Load minimal BCL assemblies as needed
+3. Implement internal calls that BCL depends on
+
+### Tasks
+
+#### 8.1 Core Type Support
+Ensure loaded code can use:
+- Primitive types (already in netlib)
+- Arrays, strings, spans
+- Basic exceptions
+
+#### 8.2 Internal Call Implementation
+Implement runtime methods that BCL calls:
+```csharp
+// Memory operations
+System.Buffer::Memmove
+System.Array::Copy
+
+// Threading
+System.Threading.Monitor::Enter/Exit
+System.Threading.Interlocked::*
+
+// Environment
+System.Environment::FailFast
+System.Environment::ProcessorCount
+```
+
+#### 8.3 Selective BCL Loading
+Load BCL assemblies as needed:
+- System.Runtime.dll (core types)
+- System.Collections.dll (if collections needed)
+- Others as required
+
+### Deliverables
+- [ ] Loaded code can use core types
+- [ ] Essential internal calls implemented
+- [ ] BCL assemblies loadable when needed
+
+---
+
+## Phase 9: End-to-End Validation
+
+### Goal
+Full integration testing of the managed code execution pipeline.
+
+### Tasks
+
+#### 9.1 Complex Assembly Tests
+- Multi-assembly applications with dependencies
+- Generic type instantiation across assemblies
+- Interface dispatch and virtual calls
+- Exception handling in JIT'd code
+
+#### 9.2 Performance Validation
+- JIT compilation time benchmarks
+- Generated code quality assessment
+- GC performance with JIT'd code
+
+#### 9.3 Real-World Assembly Loading
+- Load actual BCL assemblies
+- Handle assembly binding and versioning
+- Type forwarding resolution
+
+### Deliverables
+- [ ] Complex multi-assembly scenarios work
+- [ ] Performance meets expectations
+- [ ] BCL assemblies load and function
 
 ---
 
@@ -1466,11 +1562,12 @@ AssemblyLoader.AddSearchPath("\\EFI\\assemblies\\");
 | 1 ✓ | Fork zerolib → netlib | Low | Build system works |
 | 2 ✓ | Exception support | Low-Medium | Error handling |
 | 3 ✓ | Mark-Sweep GC | High | Managed heap works, memory reclaimed |
-| 4 | Bootstrap assembly loader | High | Can read PE/metadata |
-| 5 | IL Interpreter | High | Can execute loaded code |
-| 6 | Load BCL assemblies | Medium | Runtime compatibility |
-| 7 | Load S.R.Metadata | Low | Full stack validation |
-| 8 | UEFI FS integration | Low | Real-world usage |
+| 4 | UEFI File System | Medium | Can load files from boot device |
+| 5 | Metadata Reader | High | Can parse PE/metadata natively |
+| 6 | RyuJIT Integration | Very High | IL compiles to native code |
+| 7 | Assembly Execution | High | Full managed code execution |
+| 8 | BCL Support | Medium | Standard library compatibility |
+| 9 | End-to-End Validation | Medium | Production readiness |
 
 ## Dependencies Graph
 
@@ -1479,46 +1576,47 @@ Phase 1 (netlib base)
     ↓
 Phase 2 (Exceptions)
     ↓
-Phase 3 (GC) ─────────────────────┐
+Phase 3 (GC)
+    ↓
+Phase 4 (UEFI FS) ────────────────┐
     ↓                              │
-Phase 4 (Bootstrap loader) ───────┤ Core runtime
+Phase 5 (Metadata Reader) ────────┤ Core runtime
     ↓                              │
-Phase 5 (IL Interpreter) ─────────┘
+Phase 6 (RyuJIT Integration) ─────┘
     ↓
-Phase 6 (Load BCL) ← Load System.Collections, System.IO, etc.
+Phase 7 (Assembly Execution) ← Full managed code support
     ↓
-Phase 7 (Load S.R.Metadata) ← Validates everything
+Phase 8 (BCL Support) ← Standard library compatibility
     ↓
-Phase 8 (UEFI FS)
+Phase 9 (End-to-End Validation)
 ```
 
 ## Key Differences from Original Plan
 
 | Original Plan | New Plan |
 |--------------|----------|
-| Implement List<T> in netlib | Load System.Collections.dll |
-| Implement Dictionary<K,V> | Load System.Collections.dll |
-| Implement ImmutableArray<T> | Load System.Collections.Immutable.dll |
-| Implement Stream | Load System.IO.dll |
-| Implement BinaryReader | Load System.IO.dll |
-| Port S.R.Metadata source | Load S.R.Metadata.dll |
+| Minimal bootstrap PE reader | Full metadata reader (AOT) |
+| IL Interpreter first | Direct to RyuJIT |
+| Load S.R.Metadata from NuGet | Implement our own S.R.Metadata |
+| Load BCL for collections | Implement internally or load as needed |
+| Safe managed code | Unsafe/unchecked for performance |
 
-**Result**: netlib stays minimal (~30 types), everything else is loaded at runtime.
+**Result**: No interpreter phase, faster path to JIT, complete control over metadata reading.
 
 ## Success Criteria
 
 At the end of Phase 8:
 1. Boot kernel with netlib
 2. GC works for managed heap
-3. Load assemblies from UEFI filesystem
-4. Execute code from loaded assemblies (interpreter)
-5. Use System.Reflection.Metadata to parse PE files
-6. Print assembly contents to debug console
+3. Metadata reader parses any .NET assembly
+4. RyuJIT compiles IL to native code
+5. Load and execute assemblies from UEFI filesystem
+6. GC properly tracks JIT'd code stack frames
 
 This proves foundation for:
-- Loading RyuJIT as an assembly
 - Hot-loadable managed drivers
-- Reusing entire NuGet ecosystem
+- Full .NET assembly compatibility
+- Managed kernel modules
 
 ## Internal Calls and P/Invoke Handling
 
