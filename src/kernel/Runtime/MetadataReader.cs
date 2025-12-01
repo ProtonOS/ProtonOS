@@ -1530,6 +1530,160 @@ public static unsafe class MetadataReader
     }
 
     // ============================================================================
+    // MemberRef Table (0x0A) Accessors
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Class (MemberRefParent coded index) for a MemberRef row
+    /// </summary>
+    public static CodedIndex GetMemberRefClass(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MemberRef, rowId);
+        if (row == null)
+            return default;
+
+        uint value = ReadIndex(row, sizes.MemberRefParentSize);
+        return CodedIndexHelper.Decode(CodedIndexType.MemberRefParent, value);
+    }
+
+    /// <summary>
+    /// Get the Name string index for a MemberRef row
+    /// </summary>
+    public static uint GetMemberRefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MemberRef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.MemberRefParentSize, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Signature blob index for a MemberRef row
+    /// </summary>
+    public static uint GetMemberRefSignature(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MemberRef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.MemberRefParentSize + sizes.StringIndexSize, sizes.BlobIndexSize);
+    }
+
+    /// <summary>
+    /// Dump MemberRef table with full details
+    /// </summary>
+    public static void DumpMemberRefTable(ref MetadataRoot root, ref TablesHeader tables)
+    {
+        uint rowCount = tables.RowCounts[(int)MetadataTableId.MemberRef];
+        if (rowCount == 0)
+        {
+            DebugConsole.WriteLine("[Meta] No MemberRef table");
+            return;
+        }
+
+        var sizes = TableSizes.Calculate(ref tables);
+
+        DebugConsole.Write("[Meta] MemberRef table (");
+        DebugConsole.WriteDecimal(rowCount);
+        DebugConsole.WriteLine(" rows):");
+
+        for (uint i = 1; i <= rowCount; i++)
+        {
+            var classRef = GetMemberRefClass(ref tables, ref sizes, i);
+            uint nameIdx = GetMemberRefName(ref tables, ref sizes, i);
+
+            DebugConsole.Write("[Meta]   ");
+            PrintString(ref root, nameIdx);
+            DebugConsole.Write(" -> ");
+            PrintTableName((int)classRef.Table);
+            DebugConsole.Write("[");
+            DebugConsole.WriteDecimal(classRef.RowId);
+            DebugConsole.WriteLine("]");
+        }
+    }
+
+    // ============================================================================
+    // Field Table (0x04) Accessors
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for a Field row
+    /// </summary>
+    public static ushort GetFieldFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Field, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Name string index for a Field row
+    /// </summary>
+    public static uint GetFieldName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Field, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Signature blob index for a Field row
+    /// </summary>
+    public static uint GetFieldSignature(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Field, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 2 + sizes.StringIndexSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // Param Table (0x08) Accessors
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for a Param row
+    /// </summary>
+    public static ushort GetParamFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Param, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the Sequence number for a Param row
+    /// </summary>
+    public static ushort GetParamSequence(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Param, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 2);
+    }
+
+    /// <summary>
+    /// Get the Name string index for a Param row
+    /// </summary>
+    public static uint GetParamName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Param, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4, sizes.StringIndexSize);
+    }
+
+    // ============================================================================
     // IL Method Body Reader (ECMA-335 II.25.4)
     // ============================================================================
 

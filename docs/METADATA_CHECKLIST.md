@@ -368,11 +368,11 @@ Core tables:
 - [x] Module (0x00) - `DumpModuleTable()` with name/MVID access
 - [x] TypeRef (0x01) - `GetTypeRefResolutionScope/Name/Namespace()`, `DumpTypeRefTable()`
 - [x] TypeDef (0x02) - `DumpTypeDefTable()` with flags/name/namespace/extends/field/method
-- [ ] Field (0x04)
+- [x] Field (0x04) - `GetFieldFlags/Name/Signature()`
 - [x] MethodDef (0x06) - `GetMethodDefRVA/Name/Flags()`, `DumpMethodDefTable()`
-- [ ] Param (0x08)
+- [x] Param (0x08) - `GetParamFlags/Sequence/Name()`
 - [ ] InterfaceImpl (0x09)
-- [ ] MemberRef (0x0A)
+- [x] MemberRef (0x0A) - `GetMemberRefClass/Name/Signature()`, `DumpMemberRefTable()`
 - [ ] Constant (0x0B)
 - [ ] CustomAttribute (0x0C)
 
