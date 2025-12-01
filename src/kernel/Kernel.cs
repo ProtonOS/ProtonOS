@@ -208,10 +208,11 @@ public static unsafe class Kernel
                 MetadataReader.DumpModuleTable(ref mdRoot, ref tablesHeader);
                 MetadataReader.DumpTypeDefTable(ref mdRoot, ref tablesHeader);
 
-                // Test new table accessors with TypeRef, MethodDef, MemberRef
+                // Test new table accessors with TypeRef, MethodDef, MemberRef, AssemblyRef
                 MetadataReader.DumpTypeRefTable(ref mdRoot, ref tablesHeader);
                 MetadataReader.DumpMethodDefTable(ref mdRoot, ref tablesHeader);
                 MetadataReader.DumpMemberRefTable(ref mdRoot, ref tablesHeader);
+                MetadataReader.DumpAssemblyRefTable(ref mdRoot, ref tablesHeader);
 
                 // Test IL method body parsing
                 DumpMethodBodies(ref mdRoot, ref tablesHeader);

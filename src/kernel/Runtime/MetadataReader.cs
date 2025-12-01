@@ -1684,6 +1684,124 @@ public static unsafe class MetadataReader
     }
 
     // ============================================================================
+    // AssemblyRef Table (0x23) Accessors
+    // ============================================================================
+
+    /// <summary>
+    /// Get the major version for an AssemblyRef row
+    /// </summary>
+    public static ushort GetAssemblyRefMajorVersion(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)row;
+    }
+
+    /// <summary>
+    /// Get the minor version for an AssemblyRef row
+    /// </summary>
+    public static ushort GetAssemblyRefMinorVersion(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 2);
+    }
+
+    /// <summary>
+    /// Get the build number for an AssemblyRef row
+    /// </summary>
+    public static ushort GetAssemblyRefBuildNumber(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 4);
+    }
+
+    /// <summary>
+    /// Get the revision number for an AssemblyRef row
+    /// </summary>
+    public static ushort GetAssemblyRefRevisionNumber(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 6);
+    }
+
+    /// <summary>
+    /// Get the flags for an AssemblyRef row
+    /// </summary>
+    public static uint GetAssemblyRefFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)(row + 8);
+    }
+
+    /// <summary>
+    /// Get the Name string index for an AssemblyRef row
+    /// </summary>
+    public static uint GetAssemblyRefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) + Flags(4) + PublicKeyOrToken(blob) + Name(str)
+        int offset = 12 + sizes.BlobIndexSize;
+        return ReadIndex(row + offset, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Dump AssemblyRef table with full details
+    /// </summary>
+    public static void DumpAssemblyRefTable(ref MetadataRoot root, ref TablesHeader tables)
+    {
+        uint rowCount = tables.RowCounts[(int)MetadataTableId.AssemblyRef];
+        if (rowCount == 0)
+        {
+            DebugConsole.WriteLine("[Meta] No AssemblyRef table");
+            return;
+        }
+
+        var sizes = TableSizes.Calculate(ref tables);
+
+        DebugConsole.Write("[Meta] AssemblyRef table (");
+        DebugConsole.WriteDecimal(rowCount);
+        DebugConsole.WriteLine(" rows):");
+
+        for (uint i = 1; i <= rowCount; i++)
+        {
+            ushort major = GetAssemblyRefMajorVersion(ref tables, ref sizes, i);
+            ushort minor = GetAssemblyRefMinorVersion(ref tables, ref sizes, i);
+            ushort build = GetAssemblyRefBuildNumber(ref tables, ref sizes, i);
+            ushort rev = GetAssemblyRefRevisionNumber(ref tables, ref sizes, i);
+            uint nameIdx = GetAssemblyRefName(ref tables, ref sizes, i);
+
+            DebugConsole.Write("[Meta]   ");
+            PrintString(ref root, nameIdx);
+            DebugConsole.Write(" v");
+            DebugConsole.WriteDecimal(major);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(minor);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(build);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(rev);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    // ============================================================================
     // IL Method Body Reader (ECMA-335 II.25.4)
     // ============================================================================
 
@@ -2405,5 +2523,88 @@ public static unsafe class SignatureReader
 
         DebugConsole.WriteDecimal(sig.ParamCount);
         DebugConsole.Write(" params)");
+    }
+
+    /// <summary>
+    /// Parse a field signature from blob data (ECMA-335 II.23.2.4)
+    /// FieldSig: FIELD Type
+    /// </summary>
+    public static bool ReadFieldSignature(byte* blob, uint blobLength, out TypeSig fieldType)
+    {
+        fieldType = default;
+
+        if (blob == null || blobLength == 0)
+            return false;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLength;
+
+        // Read header byte - must be FIELD (0x06)
+        byte header = *ptr++;
+        if (header != SignatureHeader.Field)
+            return false;
+
+        // Read the field type
+        if (ptr >= end)
+            return false;
+
+        fieldType = ReadTypeSig(ref ptr, end);
+        return fieldType.IsValid;
+    }
+
+    /// <summary>
+    /// Parse a local variable signature from blob data (ECMA-335 II.23.2.6)
+    /// LocalVarSig: LOCAL_SIG Count Type+
+    /// </summary>
+    public static bool ReadLocalVarSignature(byte* blob, uint blobLength, out uint localCount, TypeSig* locals, uint maxLocals)
+    {
+        localCount = 0;
+
+        if (blob == null || blobLength == 0)
+            return false;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLength;
+
+        // Read header byte - must be LOCAL_SIG (0x07)
+        byte header = *ptr++;
+        if (header != SignatureHeader.LocalSig)
+            return false;
+
+        // Read local count
+        if (ptr >= end)
+            return false;
+        localCount = MetadataReader.ReadCompressedUInt(ref ptr);
+
+        // Read each local type
+        uint count = localCount < maxLocals ? localCount : maxLocals;
+        for (uint i = 0; i < count && ptr < end; i++)
+        {
+            locals[i] = ReadTypeSig(ref ptr, end);
+            if (!locals[i].IsValid)
+                return false;
+        }
+
+        // Skip remaining locals if we hit maxLocals
+        for (uint i = count; i < localCount && ptr < end; i++)
+        {
+            SkipType(ref ptr, end);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Print a field signature for debugging
+    /// </summary>
+    public static void PrintFieldSignature(ref TypeSig fieldType)
+    {
+        PrintElementType(fieldType.ElementType);
+        if (fieldType.Token != 0)
+        {
+            DebugConsole.Write("[0x");
+            DebugConsole.WriteHex(fieldType.Token);
+            DebugConsole.Write("]");
+        }
     }
 }

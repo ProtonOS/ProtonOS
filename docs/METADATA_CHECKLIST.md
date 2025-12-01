@@ -401,7 +401,7 @@ P/Invoke:
 
 Assembly:
 - [ ] Assembly (0x20)
-- [ ] AssemblyRef (0x23)
+- [x] AssemblyRef (0x23) - `GetAssemblyRefMajorVersion/MinorVersion/BuildNumber/RevisionNumber/Flags/Name()`, `DumpAssemblyRefTable()`
 
 Manifest:
 - [ ] File (0x26)
@@ -455,9 +455,9 @@ Element types:
 Signature types:
 - [x] MethodDefSig (ReadMethodSignature)
 - [ ] MethodRefSig
-- [ ] FieldSig
+- [x] FieldSig (ReadFieldSignature)
 - [ ] PropertySig
-- [ ] LocalVarSig
+- [x] LocalVarSig (ReadLocalVarSignature)
 - [ ] TypeSpec signatures
 
 **Implementation includes:**
