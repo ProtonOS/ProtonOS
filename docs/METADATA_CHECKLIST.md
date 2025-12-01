@@ -278,31 +278,42 @@ Document key files in `dotnet/` for reference:
 **Tested:** MetadataTest.dll parses successfully - CLI header shows runtime 2.5, flags ILOnly (0x1),
 metadata at RVA 0x205C with valid BSJB signature, version 1.1.
 
-#### 5.2 Metadata Root and Streams
+#### 5.2 Metadata Root and Streams ✅
 
-**Files**: `src/kernel/Runtime/Metadata/MetadataRoot.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs`
 
-- [ ] Metadata signature validation (0x424A5342)
-- [ ] Version string reading
-- [ ] Stream count and headers
-- [ ] Stream lookup by name
-- [ ] #~ stream location
-- [ ] #Strings heap accessor
-- [ ] #US (user strings) heap accessor
-- [ ] #GUID heap accessor
-- [ ] #Blob heap accessor
+- [x] Metadata signature validation (0x424A5342)
+- [x] Version string reading
+- [x] Stream count and headers
+- [x] Stream lookup by name (#~, #Strings, #US, #GUID, #Blob)
+- [x] #~ stream location
+- [x] #Strings heap accessor
+- [x] #US (user strings) heap accessor
+- [x] #GUID heap accessor
+- [x] #Blob heap accessor
 
-#### 5.3 Tables Stream (#~)
+**Tested:** MetadataTest.dll shows 5 streams parsed correctly:
+- #~ (tables): offset 0x6C, size 0x180
+- #Strings: offset 0x1EC, size 0x1F4
+- #US: offset 0x3E0, size 0x04
+- #GUID: offset 0x3E4, size 0x10
+- #Blob: offset 0x3F4, size 0xFC
 
-**Files**: `src/kernel/Runtime/Metadata/TablesStream.cs`
+#### 5.3 Tables Stream (#~) ✅
 
-- [ ] Tables stream header parsing
-- [ ] HeapSizes flags interpretation
-- [ ] Valid tables bitmask
-- [ ] Sorted tables bitmask
-- [ ] Row counts for all present tables
-- [ ] Index size calculation (2 vs 4 bytes)
-- [ ] Table data start offset calculation
+**File**: `src/kernel/Runtime/MetadataReader.cs` (TablesHeader struct + ParseTablesHeader method)
+
+- [x] Tables stream header parsing
+- [x] HeapSizes flags interpretation
+- [x] Valid tables bitmask
+- [x] Sorted tables bitmask
+- [x] Row counts for all present tables
+- [x] Index size calculation (2 vs 4 bytes based on heap flags)
+- [x] Table data start offset calculation
+
+**Tested:** MetadataTest.dll #~ header parsed correctly:
+- Schema version 2.0, all heaps use 2-byte indexes
+- 8 tables present: Module(1), TypeRef(13), TypeDef(2), MethodDef(2), MemberRef(12), CustomAttribute(11), Assembly(1), AssemblyRef(1)
 
 #### 5.4 Coded Indexes
 
@@ -378,16 +389,21 @@ Generics:
 - [ ] MethodSpec (0x2B)
 - [ ] GenericParamConstraint (0x2C)
 
-#### 5.6 Heap Access
+#### 5.6 Heap Access ✅
 
-**Files**: `src/kernel/Runtime/Metadata/Heaps.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs`
 
-- [ ] String heap: null-terminated UTF-8
-- [ ] Blob heap: length-prefixed bytes
-- [ ] GUID heap: 16-byte GUIDs by index
-- [ ] UserString heap: length-prefixed UTF-16 with terminal byte
-- [ ] Compressed integer decoding (1/2/4 byte)
-- [ ] Signed compressed integer decoding
+- [x] String heap: null-terminated UTF-8 (`GetString`, `PrintString`)
+- [x] Blob heap: length-prefixed bytes (`GetBlob`)
+- [x] GUID heap: 16-byte GUIDs by 1-based index (`GetGuid`, `PrintGuid`)
+- [x] UserString heap: length-prefixed UTF-16 with terminal byte (`GetUserString`)
+- [x] Compressed integer decoding (1/2/4 byte) (`ReadCompressedUInt`)
+- [x] Signed compressed integer decoding (`ReadCompressedInt`)
+
+**Tested:** Full end-to-end heap access working:
+- Module name: "MetadataTest.dll" from #Strings
+- MVID: {7262FC15-F77D-464D-80A5-515853BEFAE1} from #GUID
+- TypeDef names: "<Module>", "Program" from #Strings
 
 #### 5.7 Signature Decoding
 
@@ -473,10 +489,10 @@ Signature types:
 
 1. ~~**Phase 4 first** - Get UEFI file loading working before ExitBootServices~~ ✅
 2. ~~**Add IMAGE_COR20_HEADER** to PEFormat.cs~~ ✅
-3. **Parse metadata root** - verify signature, find streams ← **NEXT**
-4. **Implement heap readers** - #Strings first (simplest), then #Blob
-5. **Parse #~ header** - extract row counts and heap size flags
-6. **Implement core tables** - Module, TypeDef, TypeRef, MethodDef
+3. ~~**Parse metadata root** - verify signature, find streams~~ ✅
+4. ~~**Implement heap readers** - #Strings first (simplest), then #Blob~~ ✅
+5. ~~**Parse #~ header** - extract row counts and heap size flags~~ ✅
+6. **Implement core tables** - Module, TypeDef, TypeRef, MethodDef ← **NEXT**
 7. **Add coded index support** as needed for table columns
 8. **Iterate** - add tables/features as needed for JIT integration
 

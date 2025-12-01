@@ -64,6 +64,14 @@ public static unsafe class DebugConsole
     }
 
     /// <summary>
+    /// Write a single character
+    /// </summary>
+    public static void WriteChar(char c)
+    {
+        WriteByte((byte)c);
+    }
+
+    /// <summary>
     /// Write a string
     /// </summary>
     public static void Write(string s)
@@ -130,6 +138,17 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
+    }
+
+    /// <summary>
+    /// Write a single byte as 2-digit hexadecimal
+    /// </summary>
+    public static void WriteHex(byte value)
+    {
+        int hi = (value >> 4) & 0xF;
+        int lo = value & 0xF;
+        WriteByte((byte)(hi < 10 ? '0' + hi : 'A' + hi - 10));
+        WriteByte((byte)(lo < 10 ? '0' + lo : 'A' + lo - 10));
     }
 
     /// <summary>

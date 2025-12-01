@@ -194,17 +194,28 @@ public static unsafe class Kernel
             return;
         }
 
-        // Read version info from metadata header
-        ushort majorVer = *(ushort*)(metadataRoot + 4);
-        ushort minorVer = *(ushort*)(metadataRoot + 6);
-        uint versionLen = *(uint*)(metadataRoot + 12);
+        // Parse metadata streams
+        if (MetadataReader.Init(metadataRoot, corHeader->MetaData.Size, out var mdRoot))
+        {
+            MetadataReader.Dump(ref mdRoot);
 
-        DebugConsole.Write("[Kernel] Metadata version ");
-        DebugConsole.WriteDecimal(majorVer);
-        DebugConsole.Write(".");
-        DebugConsole.WriteDecimal(minorVer);
-        DebugConsole.Write(", version string len ");
-        DebugConsole.WriteDecimal(versionLen);
-        DebugConsole.WriteLine();
+            // Parse #~ (tables) stream header
+            if (MetadataReader.ParseTablesHeader(ref mdRoot, out var tablesHeader))
+            {
+                MetadataReader.DumpTablesHeader(ref tablesHeader);
+
+                // Test heap access by reading Module and TypeDef tables
+                MetadataReader.DumpModuleTable(ref mdRoot, ref tablesHeader);
+                MetadataReader.DumpTypeDefTable(ref mdRoot, ref tablesHeader);
+            }
+            else
+            {
+                DebugConsole.WriteLine("[Kernel] Failed to parse #~ header");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Kernel] Failed to parse metadata");
+        }
     }
 }
