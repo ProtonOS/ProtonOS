@@ -1,12 +1,18 @@
 // netos kernel - GC Heap Allocator
 // Manages the managed object heap with proper object headers for garbage collection.
 //
-// Object Layout:
+// Block Layout (16 bytes header + object data):
+//  -16: Block Size Header (8 bytes)
+//        Bits 0-31:  Block size (total allocation including headers)
+//        Bits 32-63: Reserved
 //   -8: Object Header (8 bytes)
-//        Bits 0:     Mark bit (1 = reachable during GC)
-//        Bits 1:     Pinned (cannot be relocated)
-//        Bits 2-3:   Reserved (future: generation)
-//        Bits 4-31:  Sync Block Index (28 bits)
+//        Bit 0:      Mark bit (1 = reachable during GC)
+//        Bit 1:      Pinned (cannot be relocated)
+//        Bit 2:      Free block flag (1 = in free list)
+//        Bit 3:      Reserved
+//        Bits 4-5:   Generation (0=Gen0, 1=Gen1, 2=Gen2, 3=reserved)
+//        Bits 6-7:   Reserved
+//        Bits 8-31:  Sync Block Index (24 bits = 16M entries)
 //        Bits 32-63: Identity Hash Code
 //    0: MethodTable* (8 bytes) - object reference points here
 //   +8: Fields...
@@ -22,27 +28,77 @@ using Kernel.X64;
 namespace Kernel.Memory;
 
 /// <summary>
-/// Object header flags stored in the 8 bytes before the MethodTable pointer.
+/// Object header layout (16 bytes total, stored before the MethodTable pointer):
+///
+///   Offset -16: Block size header (8 bytes)
+///     Bits 0-31:  Block size (total allocation size including both headers)
+///     Bits 32-63: Reserved (unused)
+///
+///   Offset -8: Object header (8 bytes)
+///     Bit 0:      Mark bit (1 = reachable during GC)
+///     Bit 1:      Pinned (cannot be relocated by GC)
+///     Bit 2:      Free block flag (1 = this is a free block in the free list)
+///     Bit 3:      Reserved
+///     Bits 4-5:   Generation (0=Gen0, 1=Gen1, 2=Gen2, 3=reserved)
+///     Bits 6-7:   Reserved
+///     Bits 8-31:  Sync Block Index (24 bits = 16M entries)
+///     Bits 32-63: Identity Hash Code
+///
+///   Offset 0: MethodTable* (object reference points here)
+///   Offset 8+: Object fields...
 /// </summary>
 public static class ObjectHeaderFlags
 {
+    // === Object Header (at offset -8 from object reference) ===
+    //
+    // Layout (64 bits):
+    //   Bits 0-7:   Flags (Mark, Pinned, FreeBlock, Reserved, Gen0, Gen1, Reserved, Reserved)
+    //   Bits 8-31:  Sync Block Index (24 bits = 16M entries)
+    //   Bits 32-63: Identity Hash Code (32 bits)
+
     /// <summary>Mark bit - set during GC mark phase, cleared during sweep.</summary>
     public const ulong Mark = 1UL << 0;
 
     /// <summary>Pinned - object cannot be relocated by GC.</summary>
     public const ulong Pinned = 1UL << 1;
 
-    /// <summary>Reserved for future generation tracking.</summary>
-    public const ulong GenerationMask = 0b1100UL; // bits 2-3
+    /// <summary>Free block flag - block is in the free list, not a live object.</summary>
+    public const ulong FreeBlock = 1UL << 2;
 
-    /// <summary>Sync block index mask (bits 4-31, 28 bits = 256M entries).</summary>
-    public const ulong SyncBlockMask = 0x0FFFFFFF0UL;
+    /// <summary>Reserved for future use (bit 3).</summary>
+    public const ulong Reserved3 = 1UL << 3;
+
+    /// <summary>Generation bit 0 - low bit of 2-bit generation field (bits 4-5).</summary>
+    public const ulong Generation0 = 1UL << 4;
+
+    /// <summary>Generation bit 1 - high bit of 2-bit generation field (bits 4-5).</summary>
+    public const ulong Generation1 = 1UL << 5;
+
+    /// <summary>Generation mask (bits 4-5) - covers Gen0=0, Gen1=1, Gen2=2, (3=reserved).</summary>
+    public const ulong GenerationMask = 0x30UL;
+
+    /// <summary>Shift to get/set generation value.</summary>
+    public const int GenerationShift = 4;
+
+    /// <summary>Reserved for future use (bit 6).</summary>
+    public const ulong Reserved6 = 1UL << 6;
+
+    /// <summary>Reserved for future use (bit 7).</summary>
+    public const ulong Reserved7 = 1UL << 7;
+
+    /// <summary>Sync block index mask (bits 8-31, 24 bits = 16M entries).</summary>
+    public const ulong SyncBlockMask = 0xFFFFFF00UL;
 
     /// <summary>Shift to get/set sync block index.</summary>
-    public const int SyncBlockShift = 4;
+    public const int SyncBlockShift = 8;
 
     /// <summary>Hash code is stored in upper 32 bits.</summary>
     public const int HashCodeShift = 32;
+
+    // === Block Size Header (at offset -16 from object reference) ===
+
+    /// <summary>Block size mask (lower 32 bits of block size header).</summary>
+    public const ulong BlockSizeMask = 0xFFFFFFFFUL;
 }
 
 /// <summary>
@@ -54,11 +110,13 @@ public static unsafe class GCHeap
     private const ulong InitialRegionPages = 256;
     private const ulong InitialRegionSize = InitialRegionPages * PageAllocator.PageSize;
 
-    // Minimum object size (header + MT pointer + at least 8 bytes for free list linking)
-    private const uint MinObjectSize = 24;
+    // Minimum object data size (MT pointer slot, which is reused for free list next pointer)
+    // Actual minimum allocation = ObjectHeaderSize (16) + MinObjectSize (8) = 24 bytes
+    private const uint MinObjectSize = 8;
 
-    // Object header size (stored before the MethodTable pointer)
-    public const uint ObjectHeaderSize = 8;
+    // Total header size (block size header + object header, stored before the MethodTable pointer)
+    // Layout: [-16: block size (8)] [-8: obj header (8)] [0: MT*] [8+: fields]
+    public const uint ObjectHeaderSize = 16;
 
     // Current allocation region
     private static byte* _regionStart;
@@ -71,6 +129,15 @@ public static unsafe class GCHeap
 
     // Track all regions for sweep phase (simple linked list using first 8 bytes of each region)
     private static byte* _firstRegion;
+
+    // Free list for reclaimed objects
+    // Free block layout:
+    //   -8: Header [Flags (32 bits) | Size (32 bits)] - size stored where hash code was
+    //    0: Next pointer (8 bytes) - stored where MethodTable* was
+    // Minimum free block size = ObjectHeaderSize + 8 = 16 bytes
+    private static void* _freeList;
+    private static ulong _freeListBytes;
+    private static ulong _freeListCount;
 
     private static bool _initialized;
 
@@ -143,6 +210,20 @@ public static unsafe class GCHeap
         // Total allocation includes the object header
         uint totalSize = size + ObjectHeaderSize;
 
+        // Try free list first
+        void* fromFreeList = AllocFromFreeList(totalSize);
+        if (fromFreeList != null)
+        {
+            if (_traceAllocs)
+            {
+                DebugConsole.Write("[GCHeap] Alloc from free list: ");
+                DebugConsole.WriteHex((ulong)fromFreeList);
+                DebugConsole.WriteLine();
+            }
+            _totalAllocated += totalSize;
+            return fromFreeList;
+        }
+
         // Check if we have space in current region
         if (_allocPtr + totalSize > _regionEnd)
         {
@@ -155,14 +236,26 @@ public static unsafe class GCHeap
         }
 
         // Bump allocate
-        byte* headerPtr = _allocPtr;
+        byte* blockStart = _allocPtr;
         _allocPtr += totalSize;
 
-        // Initialize object header to zero (mark=0, hash=0, sync=0)
-        *(ulong*)headerPtr = 0;
+        if (_traceAllocs)
+        {
+            DebugConsole.Write("[GCHeap] Bump alloc at ");
+            DebugConsole.WriteHex((ulong)(blockStart + ObjectHeaderSize));
+            DebugConsole.Write(" AllocPtr now ");
+            DebugConsole.WriteHex((ulong)_allocPtr);
+            DebugConsole.WriteLine();
+        }
 
-        // Object reference points past the header to the MethodTable* slot
-        void* objPtr = headerPtr + ObjectHeaderSize;
+        // Initialize block size header (at offset 0 from block start)
+        *(ulong*)blockStart = totalSize; // Block size in lower 32 bits, free flag = 0
+
+        // Initialize object header (at offset 8 from block start)
+        *(ulong*)(blockStart + 8) = 0; // mark=0, hash=0, sync=0
+
+        // Object reference points past both headers to the MethodTable* slot
+        void* objPtr = blockStart + ObjectHeaderSize;
 
         // Update statistics
         _totalAllocated += totalSize;
@@ -219,13 +312,64 @@ public static unsafe class GCHeap
     }
 
     /// <summary>
-    /// Get the object header for an object reference.
+    /// Get the object header (flags/sync/hash) for an object reference.
     /// </summary>
     /// <param name="obj">Pointer to MethodTable* slot.</param>
-    /// <returns>Pointer to 8-byte header before the object.</returns>
+    /// <returns>Pointer to 8-byte object header at offset -8.</returns>
     public static ulong* GetHeader(void* obj)
     {
-        return (ulong*)((byte*)obj - ObjectHeaderSize);
+        return (ulong*)((byte*)obj - 8);
+    }
+
+    /// <summary>
+    /// Get the block size header for an object reference.
+    /// </summary>
+    /// <param name="obj">Pointer to MethodTable* slot.</param>
+    /// <returns>Pointer to 8-byte block size header at offset -16.</returns>
+    public static ulong* GetBlockSizeHeader(void* obj)
+    {
+        return (ulong*)((byte*)obj - 16);
+    }
+
+    /// <summary>
+    /// Get the block size for an object (total allocation including headers).
+    /// </summary>
+    public static uint GetBlockSize(void* obj)
+    {
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+        return (uint)(*blockHeader & ObjectHeaderFlags.BlockSizeMask);
+    }
+
+    /// <summary>
+    /// Set the block size for an object.
+    /// </summary>
+    public static void SetBlockSize(void* obj, uint size)
+    {
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+        *blockHeader = (*blockHeader & ~ObjectHeaderFlags.BlockSizeMask) | size;
+    }
+
+    /// <summary>
+    /// Check if a block is marked as free (in the free list).
+    /// Uses bit 2 of the object header at offset -8.
+    /// </summary>
+    public static bool IsFreeBlock(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+        return (*header & ObjectHeaderFlags.FreeBlock) != 0;
+    }
+
+    /// <summary>
+    /// Set or clear the free block flag.
+    /// Uses bit 2 of the object header at offset -8.
+    /// </summary>
+    public static void SetFreeBlockFlag(void* obj, bool isFree)
+    {
+        ulong* header = GetHeader(obj);
+        if (isFree)
+            *header |= ObjectHeaderFlags.FreeBlock;
+        else
+            *header &= ~ObjectHeaderFlags.FreeBlock;
     }
 
     /// <summary>
@@ -333,4 +477,149 @@ public static unsafe class GCHeap
     /// Get the current allocation pointer (for heap walking).
     /// </summary>
     public static byte* AllocPtr => _allocPtr;
+
+    /// <summary>
+    /// Get the region size constant (for heap walking).
+    /// </summary>
+    public static ulong RegionSize => InitialRegionSize;
+
+    /// <summary>
+    /// Add a block to the free list.
+    /// Called by GC sweep phase when an unmarked object is found.
+    /// </summary>
+    /// <param name="obj">Pointer to the object (MethodTable* slot).</param>
+    public static void AddToFreeList(void* obj)
+    {
+        // Get block size from block size header (at offset -16)
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+        uint blockSize = (uint)(*blockHeader & ObjectHeaderFlags.BlockSizeMask);
+
+        // Set free flag in object header (bit 2 at offset -8)
+        ulong* objHeader = GetHeader(obj);
+        *objHeader = ObjectHeaderFlags.FreeBlock; // Clear other bits, set free flag
+
+        // Store next pointer where MethodTable* was
+        *(void**)obj = _freeList;
+        _freeList = obj;
+
+        _freeListBytes += blockSize;
+        _freeListCount++;
+    }
+
+    // Debug flag for tracing allocations
+    private static bool _traceAllocs = false;
+    public static void SetTraceAllocs(bool trace) { _traceAllocs = trace; }
+
+    /// <summary>
+    /// Try to allocate from the free list.
+    /// Uses first-fit strategy for simplicity.
+    /// </summary>
+    /// <param name="totalNeeded">Total size needed including headers (already aligned).</param>
+    /// <returns>Pointer to allocated object, or null if no suitable block found.</returns>
+    public static void* AllocFromFreeList(uint totalNeeded)
+    {
+        if (_freeList == null)
+            return null;
+
+        void* prev = null;
+        void* current = _freeList;
+
+        while (current != null)
+        {
+            ulong* blockSizeHeader = GetBlockSizeHeader(current);
+            uint blockSize = (uint)(*blockSizeHeader & ObjectHeaderFlags.BlockSizeMask);
+            void* next = *(void**)current;
+
+            if (_traceAllocs)
+            {
+                DebugConsole.Write("[GCHeap] FreeList check: need=");
+                DebugConsole.WriteDecimal(totalNeeded);
+                DebugConsole.Write(" block=");
+                DebugConsole.WriteDecimal(blockSize);
+                DebugConsole.WriteLine();
+            }
+
+            if (blockSize >= totalNeeded)
+            {
+                // Found a suitable block
+
+                // Check if we should split the block
+                // Minimum useful remainder = 16 (headers) + 8 (MT/next ptr) = 24 bytes
+                uint remainder = blockSize - totalNeeded;
+                if (remainder >= 24) // Worth splitting
+                {
+                    // Create a new free block from the remainder
+                    // The remainder starts at current block start + totalNeeded
+                    byte* currentBlockStart = (byte*)current - ObjectHeaderSize;
+                    byte* remainderBlockStart = currentBlockStart + totalNeeded;
+                    void* remainderObj = remainderBlockStart + ObjectHeaderSize;
+
+                    // Set up remainder's block size header (just the size, no flags here)
+                    ulong* remainderBlockSizeHeader = (ulong*)remainderBlockStart;
+                    *remainderBlockSizeHeader = remainder;
+
+                    // Set up remainder's object header with free flag (bit 2)
+                    ulong* remainderObjHeader = (ulong*)(remainderBlockStart + 8);
+                    *remainderObjHeader = ObjectHeaderFlags.FreeBlock;
+
+                    // Link remainder into free list (in place of current)
+                    *(void**)remainderObj = next;
+                    if (prev == null)
+                        _freeList = remainderObj;
+                    else
+                        *(void**)prev = remainderObj;
+
+                    // Update current block's size to the actual allocation
+                    *blockSizeHeader = totalNeeded;
+
+                    // Update stats
+                    _freeListBytes -= totalNeeded;
+                    // _freeListCount stays same (replaced one block with another)
+                }
+                else
+                {
+                    // Use entire block, remove from free list
+                    if (prev == null)
+                        _freeList = next;
+                    else
+                        *(void**)prev = next;
+
+                    // Block size stays the same (we use the whole block)
+                    _freeListBytes -= blockSize;
+                    _freeListCount--;
+                }
+
+                // Clear object header (removes free flag, ready for new object)
+                ulong* objHeader = GetHeader(current);
+                *objHeader = 0;
+
+                _objectCount++;
+                return current;
+            }
+
+            prev = current;
+            current = next;
+        }
+
+        return null; // No suitable block found
+    }
+
+    /// <summary>
+    /// Get free list statistics.
+    /// </summary>
+    public static void GetFreeListStats(out ulong freeBytes, out ulong freeCount)
+    {
+        freeBytes = _freeListBytes;
+        freeCount = _freeListCount;
+    }
+
+    /// <summary>
+    /// Clear the free list (called at start of GC before sweep rebuilds it).
+    /// </summary>
+    public static void ClearFreeList()
+    {
+        _freeList = null;
+        _freeListBytes = 0;
+        _freeListCount = 0;
+    }
 }

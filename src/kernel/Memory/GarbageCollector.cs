@@ -133,12 +133,13 @@ public static unsafe class GarbageCollector
         DebugConsole.WriteDecimal((uint)_objectsMarked);
         DebugConsole.WriteLine(" objects marked");
 
-        // Phase 4: Resume the world
+        // Phase 4: Sweep phase - free unmarked objects
+        int freedCount = Sweep();
+
+        // Phase 5: Resume the world
         ResumeTheWorld();
 
         _gcInProgress = false;
-
-        // TODO: Sweep phase - free unmarked objects
 
         return (int)_objectsMarked;
     }
@@ -212,18 +213,22 @@ public static unsafe class GarbageCollector
         Scheduler.EnableScheduling();
     }
 
+    // Debug flag for verbose GC tracing
+    private static bool _traceGC = false;
+    public static void SetTraceGC(bool trace) { _traceGC = trace; }
+
     /// <summary>
     /// Clear all mark bits in preparation for a new GC cycle.
-    /// Walks all heap regions and clears mark bits on all objects.
+    /// Walks all heap regions and clears mark bits on all live objects.
+    /// Uses block size from header to step through blocks (handles free blocks correctly).
     /// </summary>
     private static void ClearAllMarks()
     {
-        // Region size from GCHeap
-        const ulong RegionSize = 256 * 4096; // 1MB
-
+        ulong regionSize = GCHeap.RegionSize;
         byte* region = GCHeap.FirstRegion;
         int regionCount = 0;
         int objectCount = 0;
+        int freeCount = 0;
 
         while (region != null)
         {
@@ -234,56 +239,67 @@ public static unsafe class GarbageCollector
             byte* regionEnd;
             if (region == GCHeap.FirstRegion)
             {
-                // This is the most recently allocated region
                 regionEnd = GCHeap.AllocPtr;
             }
             else
             {
-                // Fully used region
-                regionEnd = region + RegionSize;
+                regionEnd = region + regionSize;
             }
 
-            // Walk objects in this region
+            if (_traceGC)
+            {
+                DebugConsole.Write("[GC] Walk region ");
+                DebugConsole.WriteHex((ulong)current);
+                DebugConsole.Write(" to ");
+                DebugConsole.WriteHex((ulong)regionEnd);
+                DebugConsole.WriteLine();
+            }
+
+            // Walk blocks in this region using block size header
             while (current + GCHeap.ObjectHeaderSize < regionEnd)
             {
-                // Object reference is after the header
+                // Object reference is after the headers
                 void* obj = current + GCHeap.ObjectHeaderSize;
 
-                // Get the MethodTable pointer to determine object size
-                MethodTable* mt = *(MethodTable**) obj;
-                if (mt == null)
-                    break; // End of allocated objects
-
-                // Validate MT pointer looks reasonable
-                if ((ulong)mt < 0x1000)
-                    break;
-
-                // Clear the mark bit
-                GCHeap.ClearMark(obj);
-                objectCount++;
-
-                // Calculate object size to move to next object
-                uint baseSize = mt->_uBaseSize;
-                uint objSize = baseSize;
-
-                // Handle arrays
-                if (mt->HasComponentSize && mt->ComponentSize > 0)
+                // Get block size from block size header
+                uint blockSize = GCHeap.GetBlockSize(obj);
+                if (blockSize == 0)
                 {
-                    int length = *(int*)((byte*)obj + sizeof(void*)); // Length after MT*
-                    if (length >= 0 && length < 0x1000000) // Sanity check
+                    if (_traceGC)
                     {
-                        objSize = baseSize + (uint)(length * mt->ComponentSize);
+                        DebugConsole.Write("[GC]   Block at ");
+                        DebugConsole.WriteHex((ulong)current);
+                        DebugConsole.WriteLine(" has size=0, stopping");
                     }
+                    break; // End of allocated blocks
                 }
 
-                // Align to 8 bytes
-                objSize = (objSize + 7) & ~7u;
+                bool isFree = GCHeap.IsFreeBlock(obj);
 
-                // Total size including header
-                uint totalSize = objSize + GCHeap.ObjectHeaderSize;
+                if (_traceGC)
+                {
+                    DebugConsole.Write("[GC]   Block ");
+                    DebugConsole.WriteHex((ulong)current);
+                    DebugConsole.Write(" size=");
+                    DebugConsole.WriteDecimal(blockSize);
+                    DebugConsole.Write(isFree ? " FREE" : " LIVE");
+                    DebugConsole.WriteLine();
+                }
 
-                // Move to next object
-                current += totalSize;
+                // Check if this is a free block (skip it, don't clear marks)
+                if (!isFree)
+                {
+                    // Live object - clear the mark bit
+                    GCHeap.ClearMark(obj);
+                    objectCount++;
+                }
+                else
+                {
+                    freeCount++;
+                }
+
+                // Move to next block using block size
+                current += blockSize;
             }
 
             // Move to next region
@@ -292,9 +308,90 @@ public static unsafe class GarbageCollector
 
         DebugConsole.Write("[GC] Cleared marks on ");
         DebugConsole.WriteDecimal((uint)objectCount);
-        DebugConsole.Write(" objects in ");
+        DebugConsole.Write(" objects (");
+        DebugConsole.WriteDecimal((uint)freeCount);
+        DebugConsole.Write(" free) in ");
         DebugConsole.WriteDecimal((uint)regionCount);
         DebugConsole.WriteLine(" region(s)");
+    }
+
+    /// <summary>
+    /// Sweep phase: walk the heap and free unmarked objects.
+    /// Builds a new free list from all garbage objects.
+    /// Uses block size from header to step through blocks.
+    /// </summary>
+    /// <returns>Number of objects freed.</returns>
+    private static int Sweep()
+    {
+        // Clear existing free list - we'll rebuild it
+        GCHeap.ClearFreeList();
+
+        ulong regionSize = GCHeap.RegionSize;
+        byte* region = GCHeap.FirstRegion;
+        int freedCount = 0;
+        ulong freedBytes = 0;
+
+        while (region != null)
+        {
+            byte* current = region + 8; // Skip region header (next pointer)
+
+            // For the current (active) region, only scan up to AllocPtr
+            byte* regionEnd;
+            if (region == GCHeap.FirstRegion)
+            {
+                regionEnd = GCHeap.AllocPtr;
+            }
+            else
+            {
+                regionEnd = region + regionSize;
+            }
+
+            // Walk blocks in this region using block size header
+            while (current + GCHeap.ObjectHeaderSize < regionEnd)
+            {
+                void* obj = current + GCHeap.ObjectHeaderSize;
+
+                // Get block size from block size header
+                uint blockSize = GCHeap.GetBlockSize(obj);
+                if (blockSize == 0)
+                    break; // End of allocated blocks
+
+                // Skip blocks that are already free (from previous cycle or never used)
+                if (GCHeap.IsFreeBlock(obj))
+                {
+                    // Already free - just add back to free list
+                    GCHeap.AddToFreeList(obj);
+                    freedBytes += blockSize;
+                    // Don't increment freedCount - this was already free
+                }
+                else if (GCHeap.IsMarked(obj))
+                {
+                    // Live object - clear mark for next cycle
+                    GCHeap.ClearMark(obj);
+                }
+                else
+                {
+                    // Garbage - add to free list
+                    GCHeap.AddToFreeList(obj);
+                    freedCount++;
+                    freedBytes += blockSize;
+                }
+
+                // Move to next block using block size
+                current += blockSize;
+            }
+
+            // Move to next region
+            region = *(byte**)region;
+        }
+
+        DebugConsole.Write("[GC] Sweep complete: freed ");
+        DebugConsole.WriteDecimal((uint)freedCount);
+        DebugConsole.Write(" objects (");
+        DebugConsole.WriteDecimal((uint)(freedBytes / 1024));
+        DebugConsole.WriteLine(" KB)");
+
+        return freedCount;
     }
 
     /// <summary>

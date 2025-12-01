@@ -178,14 +178,14 @@ Implemented full NativeAOT-compatible exception handling:
 
 ---
 
-## Phase 3: Garbage Collector ✓ COMPLETE (Mark Phase)
+## Phase 3: Garbage Collector ✓ COMPLETE
 
 ### Goal
 Implement mark-sweep GC for managed heap, designed to evolve into generational GC.
 
 ### Status
-Mark phase is fully operational with stop-the-world collection, static roots, and stack roots.
-Sweep phase is deferred (TODO marker in code).
+Mark-sweep GC is fully operational with stop-the-world collection, static roots, stack roots,
+and free list allocator for memory reuse.
 
 ### Progress
 
@@ -329,36 +329,49 @@ Example:
 
 ### Object Layout
 
-Every managed object has an 8-byte header before the MethodTable pointer:
+Every managed object has a 16-byte header before the MethodTable pointer:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Object Header (64 bits)                     │
+│              Block Size Header (64 bits) @ offset -16            │
 ├─────────────────────────────┬───────────────────────────────────┤
 │ Bits 0-31                   │ Bits 32-63                        │
-│ Flags (3) + Sync Index (29) │ Identity Hash Code (32)           │
+│ Block Size (total alloc)    │ Reserved                          │
 └─────────────────────────────┴───────────────────────────────────┘
-│                      MethodTable* (64 bits)                      │
+┌─────────────────────────────────────────────────────────────────┐
+│                 Object Header (64 bits) @ offset -8              │
+├─────────────────────────────┬───────────────────────────────────┤
+│ Bits 0-31                   │ Bits 32-63                        │
+│ Flags (8) + Sync Index (24) │ Identity Hash Code (32)           │
+└─────────────────────────────┴───────────────────────────────────┘
+│                      MethodTable* (64 bits) @ offset 0           │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Fields...                                   │
 └─────────────────────────────────────────────────────────────────┘
 
-Low 32 bits:
+Block Size Header (offset -16):
+  Bits 0-31:  Block size (total allocation including both headers)
+  Bits 32-63: Reserved
+
+Object Header (offset -8):
   Bit 0:      GC Mark bit (1 = reachable)
   Bit 1:      Pinned (cannot be relocated)
-  Bits 2-3:   Generation (0, 1, or 2)
-  Bits 4-31:  Sync Block Index (28 bits = 256M entries)
-
-High 32 bits:
+  Bit 2:      Free block flag (1 = in free list)
+  Bit 3:      Reserved
+  Bits 4-5:   Generation (0=Gen0, 1=Gen1, 2=Gen2, 3=reserved)
+  Bits 6-7:   Reserved
+  Bits 8-31:  Sync Block Index (24 bits = 16M entries)
   Bits 32-63: Identity Hash Code (matches int GetHashCode())
               Value 0 = not yet computed, actual 0 maps to 1
 ```
 
 **Key points:**
-- Object reference points at MethodTable*, header is at `obj - 8`
-- `RhpNewFast` allocates `8 + size`, returns pointer past header
+- Object reference points at MethodTable*, headers are at `obj - 8` and `obj - 16`
+- `RhpNewFast` allocates `16 + size`, returns pointer past headers
+- Block size enables heap walking over variable-sized objects
+- Free block flag marks blocks in the free list (not live objects)
 - Hash is lazily computed on first `GetHashCode()` call
-- Generation bits reserved for future generational GC
+- Generation bits (2) support generational GC (Gen0/1/2)
 
 ### Tasks
 
@@ -369,12 +382,11 @@ Static root objects now allocated from GCHeap so GC can find and mark them.
 
 **Features:**
 - Bump allocator within contiguous 1MB regions obtained from PageAllocator
-- 8-byte object header before MethodTable pointer:
-  - Bit 0: Mark bit (for GC mark phase)
-  - Bit 1: Pinned flag
-  - Bits 2-3: Reserved for generation
-  - Bits 4-31: Sync block index (28 bits)
-  - Bits 32-63: Identity hash code (computed lazily)
+- 16-byte object header before MethodTable pointer:
+  - Block size header (offset -16): Total allocation size for heap walking
+  - Object header (offset -8): GC flags, generation, sync block, hash code
+- Free list allocator for reusing swept blocks
+- Block splitting for efficient memory reuse
 - Automatic region allocation when current region fills
 - Virtual address mapping via physmap (higher-half)
 - `PalAllocObject` updated to use GCHeap (falls back to HeapAllocator during early boot)
@@ -473,7 +485,38 @@ Implemented full mark phase with stop-the-world collection in `src/kernel/Memory
 [GC Test] Total marked: 2 objects
 ```
 
-**Sweep Phase:** Deferred (TODO in code). Mark phase correctly identifies all reachable objects.
+#### 3.7 Sweep Phase ✓ COMPLETE
+
+Implemented sweep phase with free list allocator in `src/kernel/Memory/GarbageCollector.cs`.
+
+**Features:**
+- Walks heap using block size header for precise object boundaries
+- Unmarked objects added to free list for reuse
+- Free list allocation with first-fit strategy
+- Block splitting when free block is larger than needed
+- Marks cleared on surviving objects for next collection
+
+**Sweep Algorithm:**
+1. Walk each heap region from start to AllocPtr
+2. Read block size from offset -16 to find next object
+3. If object is not marked: add to free list, set free flag
+4. If object is marked: clear mark bit for next GC cycle
+5. Update free list statistics
+
+**Free List Allocator:**
+- First-fit search through free list
+- Block splitting: if free block >= needed + 24 bytes, split it
+- Minimum allocation size: 24 bytes (16 headers + 8 MT pointer)
+- Free blocks store next pointer where MethodTable* would be
+
+**Test Results:**
+```
+[GC Test] Freed blocks: 8 (expected: 7+) - PASSED
+[GC Test] Live objects still valid: YES
+[GC Test] Pre-alloc: 8 blocks, 344 bytes
+[GC Test] Post-alloc: 7 blocks, 304 bytes
+[GC Test] Allocated from free list: YES - PASSED
+```
 
 ### MethodTable and GCDesc
 
@@ -1180,13 +1223,14 @@ struct AllocationContext {
 When region exhausted, trigger collection or allocate new region.
 
 ### Deliverables
-- [x] Object header implementation (8-byte header with mark bit, sync index, hash)
+- [x] Object header implementation (16-byte header with block size, flags, sync index, hash)
 - [x] GCDesc parsing and reference enumeration (GCDescHelper.EnumerateReferences)
 - [x] Static roots enumeration (GCStaticRegion parsing + InitializeStatics)
 - [x] Stack map parsing and stack root enumeration (GCInfo decoder + StackRoots)
 - [x] GC heap allocation (GCHeap.cs - separate from kernel heap)
 - [x] Mark phase (GarbageCollector.cs - stop-the-world, multi-thread)
-- [ ] Sweep phase (TODO - free unmarked objects)
+- [x] Sweep phase (free unmarked objects, add to free list)
+- [x] Free list allocator (reuse freed blocks, block splitting)
 - [x] Runtime exports working (RhpNewFast uses GCHeap)
 
 ---
@@ -1421,7 +1465,7 @@ AssemblyLoader.AddSearchPath("\\EFI\\assemblies\\");
 |-------|-------------|------------|----------------|
 | 1 ✓ | Fork zerolib → netlib | Low | Build system works |
 | 2 ✓ | Exception support | Low-Medium | Error handling |
-| 3 ✓ | Mark-Sweep GC (mark phase) | High | Managed heap works, roots found |
+| 3 ✓ | Mark-Sweep GC | High | Managed heap works, memory reclaimed |
 | 4 | Bootstrap assembly loader | High | Can read PE/metadata |
 | 5 | IL Interpreter | High | Can execute loaded code |
 | 6 | Load BCL assemblies | Medium | Runtime compatibility |

@@ -174,7 +174,7 @@ public static unsafe class Kernel
     }
 
     /// <summary>
-    /// Test the garbage collector mark phase.
+    /// Test the garbage collector with precise allocation/collection verification.
     /// </summary>
     private static void TestGarbageCollector()
     {
@@ -187,83 +187,157 @@ public static unsafe class Kernel
             return;
         }
 
-        // Create a test object and pass it through a call chain
-        // This ensures the compiler tracks it as a GC root at call sites
-        var testObj = new object();
-        nint testAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref testObj);
+        // Step 1: Run initial GC to clear any garbage from startup
+        DebugConsole.WriteLine("[GC Test] Step 1: Initial collection to clear startup garbage...");
+        GarbageCollector.Collect();
 
-        DebugConsole.Write("[GC Test] Test object at 0x");
-        DebugConsole.WriteHex((ulong)testAddr);
+        // Get baseline free list stats
+        GCHeap.GetFreeListStats(out ulong baselineFreeBytes, out ulong baselineFreeCount);
+        DebugConsole.Write("[GC Test] Baseline free list: ");
+        DebugConsole.WriteDecimal((uint)baselineFreeCount);
+        DebugConsole.Write(" blocks, ");
+        DebugConsole.WriteDecimal((uint)baselineFreeBytes);
+        DebugConsole.WriteLine(" bytes");
+
+        // Step 2: Allocate exactly 10 objects, keep references to 3
+        DebugConsole.WriteLine("[GC Test] Step 2: Allocating 10 objects, keeping 3 alive...");
+
+        // Enable tracing to see free list behavior
+        GCHeap.SetTraceAllocs(true);
+
+        object? live1 = null;
+        object? live2 = null;
+        object? live3 = null;
+
+        AllocateTestObjects(ref live1, ref live2, ref live3);
+
+        GCHeap.SetTraceAllocs(false);
+
+        // Get pre-GC free list stats (should be near 0 since we consumed free blocks during allocation)
+        GCHeap.GetFreeListStats(out _, out ulong preGCFreeCount);
+        DebugConsole.Write("[GC Test] Pre-GC free blocks: ");
+        DebugConsole.WriteDecimal((uint)preGCFreeCount);
         DebugConsole.WriteLine();
 
-        // Call helper that triggers GC while keeping testObj alive
-        int markedCount = TestGCWithStackRoot(testObj);
+        // Step 3: Trigger GC - should free exactly 7 objects
+        DebugConsole.WriteLine("[GC Test] Step 3: Triggering collection...");
+        GarbageCollector.SetTraceGC(true);
+        int markedCount = RunGCWithLiveObjects(live1!, live2!, live3!);
+        GarbageCollector.SetTraceGC(false);
 
-        // Verify the object is marked
-        bool objMarked = GarbageCollector.IsObjectMarked((void*)testAddr);
-        DebugConsole.Write("[GC Test] Stack object marked: ");
-        DebugConsole.WriteLine(objMarked ? "YES" : "NO");
+        // Step 4: Verify results
+        GCHeap.GetFreeListStats(out ulong newFreeBytes, out ulong newFreeCount);
+        ulong freedCount = newFreeCount - preGCFreeCount;
 
-        // Also check the static test object
-        if (_gcTestObject != null)
-        {
-            nint staticAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!);
-            bool staticMarked = GarbageCollector.IsObjectMarked((void*)staticAddr);
-            DebugConsole.Write("[GC Test] Static object marked: ");
-            DebugConsole.WriteLine(staticMarked ? "YES" : "NO");
-        }
-
-        DebugConsole.Write("[GC Test] Total marked: ");
+        DebugConsole.Write("[GC Test] Objects marked: ");
         DebugConsole.WriteDecimal((uint)markedCount);
-        DebugConsole.WriteLine(" objects");
+        DebugConsole.WriteLine();
 
-        // Keep object alive
-        if (testObj != null)
+        DebugConsole.Write("[GC Test] Freed blocks: ");
+        DebugConsole.WriteDecimal((uint)freedCount);
+        DebugConsole.Write(" (expected: 7+)");
+
+        // Verify: we should have freed at least 7 objects (10 allocated - 3 kept alive)
+        // Note: there might also be other garbage from exception tests, so freedCount >= 7
+        // markedCount includes static root, so it should be 3 (live objects) + 1 (static) = 4
+        if (freedCount >= 7)
         {
-            DebugConsole.WriteLine("[GC Test] Test complete");
+            DebugConsole.WriteLine(" - PASSED");
         }
+        else
+        {
+            DebugConsole.WriteLine(" - FAILED!");
+        }
+
+        // Step 5: Verify live objects are still accessible
+        DebugConsole.Write("[GC Test] Live objects still valid: ");
+        bool allValid = (live1 != null && live2 != null && live3 != null);
+        DebugConsole.WriteLine(allValid ? "YES" : "NO");
+
+        // Step 6: Test free list reuse - allocate from freed space
+        DebugConsole.WriteLine("[GC Test] Step 6: Testing free list reuse...");
+        GCHeap.GetFreeListStats(out ulong preAllocFreeBytes, out ulong preAllocFreeCount);
+        DebugConsole.Write("[GC Test] Pre-alloc: ");
+        DebugConsole.WriteDecimal((uint)preAllocFreeCount);
+        DebugConsole.Write(" blocks, ");
+        DebugConsole.WriteDecimal((uint)preAllocFreeBytes);
+        DebugConsole.WriteLine(" bytes");
+
+        GCHeap.SetTraceAllocs(true);
+        object reusedObj = new object();
+        GCHeap.SetTraceAllocs(false);
+        nint reusedAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref reusedObj);
+
+        GCHeap.GetFreeListStats(out ulong postAllocFreeBytes, out ulong postAllocFreeCount);
+        DebugConsole.Write("[GC Test] Post-alloc: ");
+        DebugConsole.WriteDecimal((uint)postAllocFreeCount);
+        DebugConsole.Write(" blocks, ");
+        DebugConsole.WriteDecimal((uint)postAllocFreeBytes);
+        DebugConsole.WriteLine(" bytes");
+
+        bool reusedFromFreeList = (postAllocFreeBytes < preAllocFreeBytes);
+        DebugConsole.Write("[GC Test] Allocated from free list: ");
+        DebugConsole.WriteLine(reusedFromFreeList ? "YES - PASSED" : "NO (bump allocated)");
+
+        // Keep objects alive past this point
+        KeepAlive(live1);
+        KeepAlive(live2);
+        KeepAlive(live3);
+        KeepAlive(reusedObj);
+
+        DebugConsole.WriteLine("[GC Test] Test complete");
+    }
+
+    // Used to prevent compiler from optimizing away allocations
+    private static object? _gcTestSink;
+
+    /// <summary>
+    /// Allocate test objects. 7 will be garbage, 3 will be kept alive via out params.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void AllocateTestObjects(ref object? live1, ref object? live2, ref object? live3)
+    {
+        // Allocate 10 objects total
+        // Objects 1-7 become garbage (no references kept after this function)
+        // Use _gcTestSink to prevent optimization - compiler must allocate since it might be observed
+        _gcTestSink = new object(); // garbage 1
+        _gcTestSink = new object(); // garbage 2
+        _gcTestSink = new object(); // garbage 3
+        live1 = new object(); // LIVE - kept via ref param
+        _gcTestSink = new object(); // garbage 4
+        _gcTestSink = new object(); // garbage 5
+        live2 = new object(); // LIVE - kept via ref param
+        _gcTestSink = new object(); // garbage 6
+        live3 = new object(); // LIVE - kept via ref param
+        _gcTestSink = new object(); // garbage 7
+        _gcTestSink = null; // Clear reference so objects become garbage
     }
 
     /// <summary>
-    /// Helper to trigger GC while an object is live on the caller's stack.
-    /// NoInlining ensures this is a separate stack frame with a call site.
+    /// Run GC while keeping specified objects alive on the stack.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private static int TestGCWithStackRoot(object liveObject)
+    private static int RunGCWithLiveObjects(object obj1, object obj2, object obj3)
     {
-        // At this call site, liveObject should be tracked as a GC root
-        // in the caller's frame (TestGarbageCollector)
-        DebugConsole.WriteLine("[GC Test] Triggering GC with stack root...");
-
-        // Call a nested helper to add more call depth
-        int result = TriggerGCAndReturnCount(liveObject);
-
-        // Use liveObject after GC to ensure it's kept alive
-        if (liveObject != null)
-        {
-            nint addr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref liveObject);
-            DebugConsole.Write("[GC Test] Object still at 0x");
-            DebugConsole.WriteHex((ulong)addr);
-            DebugConsole.WriteLine();
-        }
-
-        return result;
-    }
-
-    /// <summary>
-    /// Actually trigger the GC. Called from TestGCWithStackRoot.
-    /// At the call to this function, liveObject in the caller is definitely live.
-    /// </summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private static int TriggerGCAndReturnCount(object liveObject)
-    {
-        // The 'liveObject' parameter should be tracked in THIS frame across the GC call
+        // These parameters are live across the GC call
         int result = GarbageCollector.Collect();
 
-        // Force usage after GC
-        System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref liveObject);
+        // Use the objects after GC to ensure they're kept alive
+        KeepAlive(obj1);
+        KeepAlive(obj2);
+        KeepAlive(obj3);
 
         return result;
+    }
+
+    /// <summary>
+    /// Prevent the compiler from optimizing away an object reference.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void KeepAlive(object? obj)
+    {
+        // NoInlining + parameter use prevents optimization
+        if (obj == null) { }
     }
 
     /// <summary>
