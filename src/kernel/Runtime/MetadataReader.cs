@@ -1886,6 +1886,49 @@ public static unsafe class MetadataReader
     }
 
     /// <summary>
+    /// Get the PublicKeyOrToken blob index for an AssemblyRef row
+    /// </summary>
+    public static uint GetAssemblyRefPublicKeyOrToken(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) + Flags(4) + PublicKeyOrToken(blob)
+        return ReadIndex(row + 12, sizes.BlobIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Culture string index for an AssemblyRef row
+    /// </summary>
+    public static uint GetAssemblyRefCulture(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) + Flags(4) +
+        //         PublicKeyOrToken(blob) + Name(str) + Culture(str)
+        int offset = 12 + sizes.BlobIndexSize + sizes.StringIndexSize;
+        return ReadIndex(row + offset, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the HashValue blob index for an AssemblyRef row
+    /// </summary>
+    public static uint GetAssemblyRefHashValue(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.AssemblyRef, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) + Flags(4) +
+        //         PublicKeyOrToken(blob) + Name(str) + Culture(str) + HashValue(blob)
+        int offset = 12 + sizes.BlobIndexSize + sizes.StringIndexSize + sizes.StringIndexSize;
+        return ReadIndex(row + offset, sizes.BlobIndexSize);
+    }
+
+    /// <summary>
     /// Dump AssemblyRef table with full details
     /// </summary>
     public static void DumpAssemblyRefTable(ref MetadataRoot root, ref TablesHeader tables)
@@ -2592,6 +2635,20 @@ public static unsafe class MetadataReader
         //         Flags(4) + PublicKey(blob) + Name(str) + Culture(str)
         int offset = 16 + sizes.BlobIndexSize + sizes.StringIndexSize;
         return ReadIndex(row + offset, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the PublicKey blob index for an Assembly row
+    /// </summary>
+    public static uint GetAssemblyPublicKey(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.Assembly, rowId);
+        if (row == null)
+            return 0;
+
+        // Layout: HashAlgId(4) + MajorVersion(2) + MinorVersion(2) + BuildNumber(2) + RevisionNumber(2) +
+        //         Flags(4) + PublicKey(blob) + Name(str) + Culture(str)
+        return ReadIndex(row + 16, sizes.BlobIndexSize);
     }
 
     // ============================================================================
@@ -3591,6 +3648,340 @@ public static unsafe class MetadataReader
             DebugConsole.Write("[Meta]     Interfaces: ");
             DebugConsole.WriteDecimal(interfaceCount);
             DebugConsole.WriteLine();
+        }
+    }
+
+    // ============================================================================
+    // Assembly Identity (Phase 5.10)
+    // ============================================================================
+
+    /// <summary>
+    /// Assembly flags from ECMA-335 II.23.1.2
+    /// </summary>
+    public static class AssemblyFlags
+    {
+        public const uint PublicKey = 0x0001;           // Full public key in PublicKey column
+        public const uint Retargetable = 0x0100;        // Assembly is retargetable
+        public const uint DisableJITCompileOptimizer = 0x4000;
+        public const uint EnableJITCompileTracking = 0x8000;
+    }
+
+    /// <summary>
+    /// Check if an AssemblyRef matches an Assembly by name (simple name comparison).
+    /// For full matching, also compare version, culture, and public key token.
+    /// </summary>
+    /// <param name="refRoot">Metadata root of the assembly containing the AssemblyRef</param>
+    /// <param name="refTables">Tables header of the assembly containing the AssemblyRef</param>
+    /// <param name="refSizes">Table sizes of the assembly containing the AssemblyRef</param>
+    /// <param name="assemblyRefRow">Row ID of the AssemblyRef (1-based)</param>
+    /// <param name="asmRoot">Metadata root of the target assembly</param>
+    /// <param name="asmTables">Tables header of the target assembly</param>
+    /// <param name="asmSizes">Table sizes of the target assembly</param>
+    /// <returns>True if the names match</returns>
+    public static bool AssemblyRefMatchesByName(
+        ref MetadataRoot refRoot, ref TablesHeader refTables, ref TableSizes refSizes, uint assemblyRefRow,
+        ref MetadataRoot asmRoot, ref TablesHeader asmTables, ref TableSizes asmSizes)
+    {
+        // Get AssemblyRef name
+        uint refNameIdx = GetAssemblyRefName(ref refTables, ref refSizes, assemblyRefRow);
+        if (refNameIdx == 0)
+            return false;
+
+        // Get Assembly name (Assembly table always has exactly one row if present)
+        if (asmTables.RowCounts[(int)MetadataTableId.Assembly] == 0)
+            return false;
+
+        uint asmNameIdx = GetAssemblyName(ref asmTables, ref asmSizes, 1);
+        if (asmNameIdx == 0)
+            return false;
+
+        // Compare names - get string pointers and compare
+        byte* refName = GetString(ref refRoot, refNameIdx);
+        byte* asmName = GetString(ref asmRoot, asmNameIdx);
+        return StringEquals(refName, asmName);
+    }
+
+    /// <summary>
+    /// Check if an AssemblyRef matches an Assembly by name and version.
+    /// </summary>
+    public static bool AssemblyRefMatchesByNameAndVersion(
+        ref MetadataRoot refRoot, ref TablesHeader refTables, ref TableSizes refSizes, uint assemblyRefRow,
+        ref MetadataRoot asmRoot, ref TablesHeader asmTables, ref TableSizes asmSizes)
+    {
+        // First check name
+        if (!AssemblyRefMatchesByName(ref refRoot, ref refTables, ref refSizes, assemblyRefRow,
+                                       ref asmRoot, ref asmTables, ref asmSizes))
+            return false;
+
+        // Compare versions
+        ushort refMajor = GetAssemblyRefMajorVersion(ref refTables, ref refSizes, assemblyRefRow);
+        ushort refMinor = GetAssemblyRefMinorVersion(ref refTables, ref refSizes, assemblyRefRow);
+        ushort refBuild = GetAssemblyRefBuildNumber(ref refTables, ref refSizes, assemblyRefRow);
+        ushort refRev = GetAssemblyRefRevisionNumber(ref refTables, ref refSizes, assemblyRefRow);
+
+        ushort asmMajor = GetAssemblyMajorVersion(ref asmTables, ref asmSizes, 1);
+        ushort asmMinor = GetAssemblyMinorVersion(ref asmTables, ref asmSizes, 1);
+        ushort asmBuild = GetAssemblyBuildNumber(ref asmTables, ref asmSizes, 1);
+        ushort asmRev = GetAssemblyRevisionNumber(ref asmTables, ref asmSizes, 1);
+
+        return refMajor == asmMajor && refMinor == asmMinor &&
+               refBuild == asmBuild && refRev == asmRev;
+    }
+
+    /// <summary>
+    /// Compare two public key tokens (8-byte arrays in blob heap).
+    /// </summary>
+    public static bool PublicKeyTokensEqual(
+        ref MetadataRoot root1, uint blobIdx1,
+        ref MetadataRoot root2, uint blobIdx2)
+    {
+        byte* blob1 = GetBlob(ref root1, blobIdx1, out uint len1);
+        byte* blob2 = GetBlob(ref root2, blobIdx2, out uint len2);
+
+        if (blob1 == null || blob2 == null)
+            return blob1 == blob2; // Both null = match, one null = no match
+
+        if (len1 != len2)
+            return false;
+
+        for (uint i = 0; i < len1; i++)
+        {
+            if (blob1[i] != blob2[i])
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if an AssemblyRef's public key token matches an Assembly's public key.
+    /// Note: AssemblyRef typically stores the 8-byte token, while Assembly stores the full key.
+    /// Full public key to token conversion requires SHA-1 which we don't implement here.
+    /// This function does a direct blob comparison (works when both are tokens).
+    /// </summary>
+    public static bool AssemblyRefPublicKeyMatches(
+        ref MetadataRoot refRoot, ref TablesHeader refTables, ref TableSizes refSizes, uint assemblyRefRow,
+        ref MetadataRoot asmRoot, ref TablesHeader asmTables, ref TableSizes asmSizes)
+    {
+        uint refKeyIdx = GetAssemblyRefPublicKeyOrToken(ref refTables, ref refSizes, assemblyRefRow);
+        uint asmKeyIdx = GetAssemblyPublicKey(ref asmTables, ref asmSizes, 1);
+
+        // If either is missing (index 0), consider it a match (no strong name requirement)
+        if (refKeyIdx == 0 || asmKeyIdx == 0)
+            return true;
+
+        // Check if the assembly has full public key flag
+        uint asmFlags = GetAssemblyFlags(ref asmTables, ref asmSizes, 1);
+        if ((asmFlags & AssemblyFlags.PublicKey) != 0)
+        {
+            // Assembly has full public key, AssemblyRef has token
+            // We can't convert without SHA-1, so assume match if both non-empty
+            // In a real runtime, we'd compute the token from the full key
+            return true;
+        }
+
+        // Both should be tokens, do direct comparison
+        return PublicKeyTokensEqual(ref refRoot, refKeyIdx, ref asmRoot, asmKeyIdx);
+    }
+
+    // ============================================================================
+    // Type Forwarding (ExportedType table)
+    // ============================================================================
+
+    /// <summary>
+    /// Find a type forwarding entry in the ExportedType table.
+    /// Type forwarding allows a type to be defined in one assembly but appear to be in another.
+    /// </summary>
+    /// <param name="root">Metadata root</param>
+    /// <param name="tables">Tables header</param>
+    /// <param name="sizes">Table sizes</param>
+    /// <param name="ns">Namespace to find</param>
+    /// <param name="name">Type name to find</param>
+    /// <returns>ExportedType row ID (1-based) or 0 if not found</returns>
+    public static uint FindExportedType(
+        ref MetadataRoot root, ref TablesHeader tables, ref TableSizes sizes,
+        string ns, string name)
+    {
+        uint rowCount = tables.RowCounts[(int)MetadataTableId.ExportedType];
+        if (rowCount == 0)
+            return 0;
+
+        for (uint i = 1; i <= rowCount; i++)
+        {
+            uint nsIdx = GetExportedTypeNamespace(ref tables, ref sizes, i);
+            uint nameIdx = GetExportedTypeName(ref tables, ref sizes, i);
+
+            byte* nsStr = GetString(ref root, nsIdx);
+            byte* nameStr = GetString(ref root, nameIdx);
+            if (StringEquals(nsStr, ns) && StringEquals(nameStr, name))
+                return i;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the target assembly for a forwarded type.
+    /// The Implementation column is a coded index (Implementation) pointing to:
+    /// - File (0): Type is in another module of the same assembly
+    /// - AssemblyRef (1): Type is forwarded to another assembly
+    /// - ExportedType (2): Nested type (parent type must also be forwarded)
+    /// </summary>
+    /// <param name="tables">Tables header</param>
+    /// <param name="sizes">Table sizes</param>
+    /// <param name="exportedTypeRow">ExportedType row ID</param>
+    /// <returns>Decoded Implementation coded index</returns>
+    public static CodedIndex GetExportedTypeTarget(ref TablesHeader tables, ref TableSizes sizes, uint exportedTypeRow)
+    {
+        uint raw = GetExportedTypeImplementation(ref tables, ref sizes, exportedTypeRow, ref tables);
+        return CodedIndexHelper.Decode(CodedIndexType.Implementation, raw);
+    }
+
+    /// <summary>
+    /// Check if an ExportedType entry is a type forwarder (forwarded to another assembly).
+    /// Type forwarders have the IsForwarder flag (0x00200000) set.
+    /// </summary>
+    public static bool IsTypeForwarder(ref TablesHeader tables, ref TableSizes sizes, uint exportedTypeRow)
+    {
+        uint flags = GetExportedTypeFlags(ref tables, ref sizes, exportedTypeRow);
+        const uint IsForwarder = 0x00200000; // CorTypeAttr.tdForwarder
+        return (flags & IsForwarder) != 0;
+    }
+
+    /// <summary>
+    /// Resolve a forwarded type to find which AssemblyRef it forwards to.
+    /// Returns 0 if not a valid forwarder or if it forwards to a File/nested type.
+    /// </summary>
+    public static uint ResolveTypeForwarder(ref TablesHeader tables, ref TableSizes sizes, uint exportedTypeRow)
+    {
+        if (!IsTypeForwarder(ref tables, ref sizes, exportedTypeRow))
+            return 0;
+
+        CodedIndex target = GetExportedTypeTarget(ref tables, ref sizes, exportedTypeRow);
+
+        // Type forwarders should point to AssemblyRef
+        if (target.Table == MetadataTableId.AssemblyRef)
+            return target.RowId;
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Test function for Assembly Identity functionality
+    /// </summary>
+    public static void TestAssemblyIdentity(ref MetadataRoot root, ref TablesHeader tables, ref TableSizes sizes)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[Meta] Assembly Identity Tests:");
+
+        // Dump this assembly's identity
+        if (tables.RowCounts[(int)MetadataTableId.Assembly] > 0)
+        {
+            uint nameIdx = GetAssemblyName(ref tables, ref sizes, 1);
+            ushort major = GetAssemblyMajorVersion(ref tables, ref sizes, 1);
+            ushort minor = GetAssemblyMinorVersion(ref tables, ref sizes, 1);
+            ushort build = GetAssemblyBuildNumber(ref tables, ref sizes, 1);
+            ushort rev = GetAssemblyRevisionNumber(ref tables, ref sizes, 1);
+            uint cultureIdx = GetAssemblyCulture(ref tables, ref sizes, 1);
+            uint pubKeyIdx = GetAssemblyPublicKey(ref tables, ref sizes, 1);
+            uint flags = GetAssemblyFlags(ref tables, ref sizes, 1);
+
+            DebugConsole.Write("[Meta]   Assembly: ");
+            PrintString(ref root, nameIdx);
+            DebugConsole.Write(" v");
+            DebugConsole.WriteDecimal(major);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(minor);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(build);
+            DebugConsole.Write(".");
+            DebugConsole.WriteDecimal(rev);
+            DebugConsole.WriteLine();
+
+            // Show culture if not empty
+            if (cultureIdx != 0)
+            {
+                byte* culture = GetString(ref root, cultureIdx);
+                if (culture != null && *culture != 0)
+                {
+                    DebugConsole.Write("[Meta]     Culture: ");
+                    PrintString(ref root, cultureIdx);
+                    DebugConsole.WriteLine();
+                }
+            }
+
+            // Show public key info
+            if (pubKeyIdx != 0)
+            {
+                byte* pubKey = GetBlob(ref root, pubKeyIdx, out uint pubKeyLen);
+                if (pubKey != null && pubKeyLen > 0)
+                {
+                    DebugConsole.Write("[Meta]     PublicKey: ");
+                    DebugConsole.WriteDecimal(pubKeyLen);
+                    DebugConsole.WriteLine(" bytes");
+                }
+            }
+
+            DebugConsole.Write("[Meta]     Flags: 0x");
+            DebugConsole.WriteHex(flags);
+            DebugConsole.WriteLine();
+        }
+
+        // Dump AssemblyRefs with more detail
+        uint asmRefCount = tables.RowCounts[(int)MetadataTableId.AssemblyRef];
+        if (asmRefCount > 0)
+        {
+            DebugConsole.Write("[Meta]   AssemblyRefs: ");
+            DebugConsole.WriteDecimal(asmRefCount);
+            DebugConsole.WriteLine();
+
+            for (uint i = 1; i <= asmRefCount && i <= 3; i++) // Show first 3
+            {
+                uint nameIdx = GetAssemblyRefName(ref tables, ref sizes, i);
+                ushort major = GetAssemblyRefMajorVersion(ref tables, ref sizes, i);
+                ushort minor = GetAssemblyRefMinorVersion(ref tables, ref sizes, i);
+                uint pktIdx = GetAssemblyRefPublicKeyOrToken(ref tables, ref sizes, i);
+
+                DebugConsole.Write("[Meta]     [");
+                DebugConsole.WriteDecimal(i);
+                DebugConsole.Write("] ");
+                PrintString(ref root, nameIdx);
+                DebugConsole.Write(" v");
+                DebugConsole.WriteDecimal(major);
+                DebugConsole.Write(".");
+                DebugConsole.WriteDecimal(minor);
+
+                if (pktIdx != 0)
+                {
+                    byte* pkt = GetBlob(ref root, pktIdx, out uint pktLen);
+                    if (pkt != null && pktLen > 0)
+                    {
+                        DebugConsole.Write(" (");
+                        DebugConsole.WriteDecimal(pktLen);
+                        DebugConsole.Write("b key)");
+                    }
+                }
+                DebugConsole.WriteLine();
+            }
+        }
+
+        // Check for type forwarders
+        uint exportedCount = tables.RowCounts[(int)MetadataTableId.ExportedType];
+        if (exportedCount > 0)
+        {
+            uint forwarderCount = 0;
+            for (uint i = 1; i <= exportedCount; i++)
+            {
+                if (IsTypeForwarder(ref tables, ref sizes, i))
+                    forwarderCount++;
+            }
+
+            if (forwarderCount > 0)
+            {
+                DebugConsole.Write("[Meta]   Type forwarders: ");
+                DebugConsole.WriteDecimal(forwarderCount);
+                DebugConsole.WriteLine();
+            }
         }
     }
 }

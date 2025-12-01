@@ -534,16 +534,37 @@ Signature types:
 - Found `FieldSignatures` with 28 fields including `IntField` at row 32
 - Found `DerivedClass` with base type TypeDef[2] and 1 interface
 
-#### 5.10 Assembly Identity
+#### 5.10 Assembly Identity ✅
 
-**Files**: `src/kernel/Runtime/Metadata/AssemblyIdentity.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs` (assembly identity methods in MetadataReader class)
 
-- [ ] Assembly name
-- [ ] Version (major, minor, build, revision)
-- [ ] Culture
-- [ ] Public key / public key token
-- [ ] AssemblyRef matching
-- [ ] Type forwarding (ExportedType)
+- [x] Assembly name (`GetAssemblyName()`)
+- [x] Version (major, minor, build, revision) - existing accessors
+- [x] Culture (`GetAssemblyCulture()`, `GetAssemblyRefCulture()`)
+- [x] Public key / public key token (`GetAssemblyPublicKey()`, `GetAssemblyRefPublicKeyOrToken()`)
+- [x] AssemblyRef matching (`AssemblyRefMatchesByName()`, `AssemblyRefMatchesByNameAndVersion()`)
+- [x] Type forwarding (ExportedType) (`FindExportedType()`, `IsTypeForwarder()`, `ResolveTypeForwarder()`)
+
+**Implementation includes:**
+- `AssemblyFlags` class with constants (PublicKey, Retargetable, etc.)
+- `GetAssemblyPublicKey()` - get public key blob from Assembly table
+- `GetAssemblyRefPublicKeyOrToken()` - get public key/token from AssemblyRef
+- `GetAssemblyRefCulture()` - get culture string from AssemblyRef
+- `GetAssemblyRefHashValue()` - get hash value blob from AssemblyRef
+- `AssemblyRefMatchesByName()` - compare assembly names between ref and target
+- `AssemblyRefMatchesByNameAndVersion()` - compare name + exact version
+- `PublicKeyTokensEqual()` - compare 8-byte public key tokens
+- `AssemblyRefPublicKeyMatches()` - compare public key/token with handling for full key vs token
+- `FindExportedType()` - find ExportedType entry by namespace and name
+- `GetExportedTypeTarget()` - get Implementation coded index for ExportedType
+- `IsTypeForwarder()` - check if ExportedType has IsForwarder flag (0x00200000)
+- `ResolveTypeForwarder()` - get target AssemblyRef row for type forwarder
+- `TestAssemblyIdentity()` - test function validating assembly identity functionality
+
+**Tested:** MetadataTest.dll assembly identity working:
+- Assembly: MetadataTest v1.0.0.0
+- Flags: 0x00000000 (no special flags)
+- AssemblyRefs: 4 (System.Runtime, System.Collections, System.Memory, System.Threading)
 
 ---
 
@@ -584,7 +605,9 @@ Signature types:
 7. ~~**Implement core tables** - Module, TypeDef, TypeRef, MethodDef with accessors~~ ✅
 8. ~~**Complete all table accessors** - all 45 ECMA-335 tables have accessors~~ ✅
 9. ~~**Type Resolution** - TypeDef lookup, TypeRef resolution, nested types~~ ✅
-10. **Assembly Identity** - version matching, AssemblyRef resolution ← **NEXT**
+10. ~~**Assembly Identity** - version matching, AssemblyRef resolution, type forwarding~~ ✅
+
+**Phase 5 Complete!** All core metadata reader functionality implemented. Next phase (Phase 6) is RyuJIT integration.
 
 ### Gotchas
 

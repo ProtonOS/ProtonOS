@@ -220,6 +220,9 @@ public static unsafe class Kernel
                 // Test type resolution (Phase 5.9)
                 var sizes = TableSizes.Calculate(ref tablesHeader);
                 MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref sizes);
+
+                // Test assembly identity (Phase 5.10)
+                MetadataReader.TestAssemblyIdentity(ref mdRoot, ref tablesHeader, ref sizes);
             }
             else
             {
