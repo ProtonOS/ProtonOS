@@ -1394,48 +1394,110 @@ Build on existing `src/kernel/Runtime/PEFormat.cs`:
 
 ---
 
-## Phase 6: RyuJIT Integration
+## Phase 6: Native JIT Compiler (ProtonJIT)
 
 ### Goal
-Integrate RyuJIT to compile IL from loaded assemblies to native code.
+Implement our own JIT compiler to compile IL from loaded assemblies to native x64 code.
 
-### Overview
-With our metadata reader providing IL and type information, we integrate RyuJIT
-(the .NET JIT compiler) to generate native code at runtime. This skips the interpreter
-entirely - we go straight from IL to optimized machine code.
+### Why Our Own JIT?
 
-### Key Components
+After completing Phase 5 (Metadata Reader) much faster than expected using RyuJIT as reference,
+we've decided to take the same approach for the JIT:
 
-#### 6.1 JIT Interface Implementation
-RyuJIT communicates with the runtime through `ICorJitCompiler` and callbacks.
-We implement the required interfaces:
-- `ICorJitInfo` - Provides type/method information to JIT
-- `ICorJitCompiler::compileMethod` - Entry point for compilation
+**Advantages of custom JIT:**
+- Complete control - only implement what we need
+- No external C++ dependencies to integrate and satisfy
+- Simpler mental model - we understand every line
+- Can target our exact runtime structure (GC, object layout)
+- Incremental development - start naive, optimize later
+- Educational value - deep understanding of IL→native
 
-#### 6.2 Code Manager
-- Allocate executable memory for JIT output
-- Track compiled methods for GC stack walking
-- Handle code relocation and fixups
+**RyuJIT as Reference:**
+We use RyuJIT's source code (`dotnet/src/coreclr/jit/`) as our reference implementation,
+studying their approach and adapting it to our needs. This is the same strategy that
+worked well for the metadata reader.
 
-#### 6.3 Type System Bridge
-Connect our metadata reader to JIT's type system queries:
-- Method signatures and IL
-- Type layouts and field offsets
-- Virtual method tables
-- Interface dispatch
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ProtonJIT Pipeline                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  IL Bytes ──► Import ──► IR ──► [Optimize] ──► Lower ──► Emit   │
+│                                                                  │
+│  Phase 1: Import IL to internal representation                  │
+│  Phase 2: Optional SSA-based optimizations                      │
+│  Phase 3: Lower to machine-specific operations                  │
+│  Phase 4: Register allocation and code emission                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation Phases
+
+#### 6.0 Prerequisites: CPU Feature Enablement
+**Must be done first** - enable CPU features needed for JIT code generation.
+
+Current kernel state may not have enabled:
+- [ ] FPU (x87) - for legacy float operations
+- [ ] SSE/SSE2 - required for x64, used for float/double
+- [ ] SSE3/SSSE3/SSE4.1/SSE4.2 - optional, for SIMD optimizations
+- [ ] AVX/AVX2 - optional, for wider SIMD
+- [ ] XSAVE - for saving extended CPU state on context switch
+
+Location: `src/kernel/x64/Arch.cs` or new `src/kernel/x64/CPUFeatures.cs`
+
+See: `docs/JIT_CHECKLIST.md` for detailed tasks.
+
+#### 6.1 Naive JIT (Correctness First)
+Goal: Generate correct code, no optimization.
+
+- Stack-based evaluation (mirror IL semantics)
+- Simple 1:1 IL opcode to x64 translation
+- All values on stack or simple register allocation
+- Function calls via standard calling convention
+
+#### 6.2 Basic Optimizations
+Goal: Low-hanging fruit for performance.
+
+- Constant folding and propagation
+- Dead code elimination
+- Simple peephole optimizations
+
+#### 6.3 SSA Transform
+Goal: Enable advanced optimizations.
+
+- Convert to Static Single Assignment form
+- Build control flow graph
+- Compute dominance frontiers
+- Insert phi nodes
+
+#### 6.4 Advanced Optimizations
+Goal: Major performance wins.
+
+- Inlining (biggest single win)
+- Common subexpression elimination
+- Loop invariant code motion
+- Copy propagation
+
+#### 6.5 Better Register Allocation
+Goal: Reduce memory traffic.
+
+- Linear scan register allocation
+- Spill code generation
+- Calling convention handling
 
 ### Tasks
-- [ ] Build RyuJIT from source (or extract from runtime)
-- [ ] Implement ICorJitInfo callbacks
-- [ ] Executable memory allocation
-- [ ] Code manager for compiled methods
-- [ ] GC info integration for JIT'd code
-- [ ] Test with simple methods
+See `docs/JIT_CHECKLIST.md` for detailed implementation checklist.
 
 ### Deliverables
-- [ ] RyuJIT compiles IL to native code
-- [ ] Generated code executes correctly
+- [ ] IL compiles to working x64 code
+- [ ] All basic IL opcodes supported
+- [ ] Method calls work (static, instance, virtual)
+- [ ] Exception handling in JIT'd code
 - [ ] GC can walk JIT'd stack frames
+- [ ] Performance adequate for OS workloads
 
 ---
 
