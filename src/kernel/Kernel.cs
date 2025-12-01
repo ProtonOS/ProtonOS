@@ -83,27 +83,17 @@ public static unsafe class Kernel
         Arch.InitStage2();
 #endif
 
-        // Create test threads to demonstrate scheduling
-        CreateTestThreads();
-
-        // Test exception handling
-        TestExceptionHandling();
-
-        // Test GC static field - store an object to ensure GCStaticRegion is generated
-        _gcTestObject = new object();
-        DebugConsole.Write("[GC] Static object stored at: ");
-        nint objAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!);
-        DebugConsole.WriteHex((ulong)objAddr);
-        DebugConsole.WriteLine();
-
-        // Test static roots enumeration
-        StaticRoots.DumpStaticRoots();
-
-        // Test stack root enumeration - pass in an object to ensure there's a root on the stack
-        TestStackRoots(_gcTestObject!);
-
-        // Initialize and test garbage collector
-        TestGarbageCollector();
+        // Tests disabled for clean logs - uncomment to re-enable
+        // CreateTestThreads();
+        // TestExceptionHandling();
+        // _gcTestObject = new object();
+        // DebugConsole.Write("[GC] Static object stored at: ");
+        // nint objAddr = System.Runtime.CompilerServices.Unsafe.As<object, nint>(ref _gcTestObject!);
+        // DebugConsole.WriteHex((ulong)objAddr);
+        // DebugConsole.WriteLine();
+        // StaticRoots.DumpStaticRoots();
+        // TestStackRoots(_gcTestObject!);
+        // TestGarbageCollector();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
