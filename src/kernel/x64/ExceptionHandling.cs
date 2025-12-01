@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using Kernel.Platform;
 using Kernel.Memory;
 using Kernel.Threading;
+using Kernel.Runtime;
 
 namespace Kernel.X64;
 
@@ -338,110 +339,6 @@ internal unsafe struct FunctionTableStorage
 {
     // Up to 64 registered code regions
     public fixed byte Data[64 * 40]; // 64 entries × sizeof(FunctionTableEntry)
-}
-
-// ======================== PE Header Structures for .pdata access ========================
-
-/// <summary>
-/// DOS header - just what we need to get to the PE header
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct ImageDosHeader
-{
-    public ushort e_magic;      // 0x5A4D = "MZ"
-    private fixed byte _padding[58];
-    public int e_lfanew;        // Offset to PE header
-}
-
-/// <summary>
-/// PE file header
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct ImageFileHeader
-{
-    public ushort Machine;
-    public ushort NumberOfSections;
-    public uint TimeDateStamp;
-    public uint PointerToSymbolTable;
-    public uint NumberOfSymbols;
-    public ushort SizeOfOptionalHeader;
-    public ushort Characteristics;
-}
-
-/// <summary>
-/// PE32+ optional header data directories
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct ImageDataDirectory
-{
-    public uint VirtualAddress;
-    public uint Size;
-}
-
-/// <summary>
-/// PE32+ optional header (64-bit)
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct ImageOptionalHeader64
-{
-    public ushort Magic;                // 0x20b = PE32+
-    public byte MajorLinkerVersion;
-    public byte MinorLinkerVersion;
-    public uint SizeOfCode;
-    public uint SizeOfInitializedData;
-    public uint SizeOfUninitializedData;
-    public uint AddressOfEntryPoint;
-    public uint BaseOfCode;
-    public ulong ImageBase;
-    public uint SectionAlignment;
-    public uint FileAlignment;
-    public ushort MajorOperatingSystemVersion;
-    public ushort MinorOperatingSystemVersion;
-    public ushort MajorImageVersion;
-    public ushort MinorImageVersion;
-    public ushort MajorSubsystemVersion;
-    public ushort MinorSubsystemVersion;
-    public uint Win32VersionValue;
-    public uint SizeOfImage;
-    public uint SizeOfHeaders;
-    public uint CheckSum;
-    public ushort Subsystem;
-    public ushort DllCharacteristics;
-    public ulong SizeOfStackReserve;
-    public ulong SizeOfStackCommit;
-    public ulong SizeOfHeapReserve;
-    public ulong SizeOfHeapCommit;
-    public uint LoaderFlags;
-    public uint NumberOfRvaAndSizes;
-
-    // Data directories inline (up to 16)
-    public ImageDataDirectory ExportTable;
-    public ImageDataDirectory ImportTable;
-    public ImageDataDirectory ResourceTable;
-    public ImageDataDirectory ExceptionTable;       // This is .pdata!
-    public ImageDataDirectory CertificateTable;
-    public ImageDataDirectory BaseRelocationTable;
-    public ImageDataDirectory Debug;
-    public ImageDataDirectory Architecture;
-    public ImageDataDirectory GlobalPtr;
-    public ImageDataDirectory TLSTable;
-    public ImageDataDirectory LoadConfigTable;
-    public ImageDataDirectory BoundImport;
-    public ImageDataDirectory IAT;
-    public ImageDataDirectory DelayImportDescriptor;
-    public ImageDataDirectory CLRRuntimeHeader;
-    public ImageDataDirectory Reserved;
-}
-
-/// <summary>
-/// PE NT headers (64-bit)
-/// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct ImageNtHeaders64
-{
-    public uint Signature;              // 0x00004550 = "PE\0\0"
-    public ImageFileHeader FileHeader;
-    public ImageOptionalHeader64 OptionalHeader;
 }
 
 /// <summary>
