@@ -516,15 +516,139 @@ public unsafe struct TableSizes
         sizes.RowSizes[(int)MetadataTableId.CustomAttribute] =
             sizes.HasCustomAttributeSize + sizes.CustomAttributeTypeSize + sizes.BlobIndexSize;
 
+        // FieldMarshal (0x0D): Parent (HasFieldMarshal coded) + NativeType (blob)
+        int hasFieldMarshalSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasFieldMarshal, ref header);
+        sizes.RowSizes[(int)MetadataTableId.FieldMarshal] =
+            hasFieldMarshalSize + sizes.BlobIndexSize;
+
+        // DeclSecurity (0x0E): Action (2) + Parent (HasDeclSecurity coded) + PermissionSet (blob)
+        int hasDeclSecuritySize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasDeclSecurity, ref header);
+        sizes.RowSizes[(int)MetadataTableId.DeclSecurity] =
+            2 + hasDeclSecuritySize + sizes.BlobIndexSize;
+
+        // ClassLayout (0x0F): PackingSize (2) + ClassSize (4) + Parent (TypeDef index)
+        sizes.RowSizes[(int)MetadataTableId.ClassLayout] =
+            2 + 4 + sizes.TypeDefIndexSize;
+
+        // FieldLayout (0x10): Offset (4) + Field (Field index)
+        sizes.RowSizes[(int)MetadataTableId.FieldLayout] =
+            4 + sizes.FieldIndexSize;
+
+        // StandAloneSig (0x11): Signature (blob)
+        sizes.RowSizes[(int)MetadataTableId.StandAloneSig] =
+            sizes.BlobIndexSize;
+
+        // EventMap (0x12): Parent (TypeDef index) + EventList (Event index)
+        int eventIndexSize = header.RowCounts[(int)MetadataTableId.Event] > 0xFFFF ? 4 : 2;
+        sizes.RowSizes[(int)MetadataTableId.EventMap] =
+            sizes.TypeDefIndexSize + eventIndexSize;
+
+        // EventPtr (0x13): Event (Event index) - rarely used
+        sizes.RowSizes[(int)MetadataTableId.EventPtr] = eventIndexSize;
+
+        // Event (0x14): EventFlags (2) + Name (str) + EventType (TypeDefOrRef coded)
+        sizes.RowSizes[(int)MetadataTableId.Event] =
+            2 + sizes.StringIndexSize + sizes.TypeDefOrRefSize;
+
+        // PropertyMap (0x15): Parent (TypeDef index) + PropertyList (Property index)
+        int propertyIndexSize = header.RowCounts[(int)MetadataTableId.Property] > 0xFFFF ? 4 : 2;
+        sizes.RowSizes[(int)MetadataTableId.PropertyMap] =
+            sizes.TypeDefIndexSize + propertyIndexSize;
+
+        // PropertyPtr (0x16): Property (Property index) - rarely used
+        sizes.RowSizes[(int)MetadataTableId.PropertyPtr] = propertyIndexSize;
+
+        // Property (0x17): Flags (2) + Name (str) + Type (blob)
+        sizes.RowSizes[(int)MetadataTableId.Property] =
+            2 + sizes.StringIndexSize + sizes.BlobIndexSize;
+
+        // MethodSemantics (0x18): Semantics (2) + Method (MethodDef index) + Association (HasSemantics coded)
+        int hasSemanticsSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasSemantics, ref header);
+        sizes.RowSizes[(int)MetadataTableId.MethodSemantics] =
+            2 + sizes.MethodIndexSize + hasSemanticsSize;
+
+        // MethodImpl (0x19): Class (TypeDef index) + MethodBody (MethodDefOrRef) + MethodDeclaration (MethodDefOrRef)
+        int methodDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MethodDefOrRef, ref header);
+        sizes.RowSizes[(int)MetadataTableId.MethodImpl] =
+            sizes.TypeDefIndexSize + methodDefOrRefSize + methodDefOrRefSize;
+
+        // ModuleRef (0x1A): Name (str)
+        sizes.RowSizes[(int)MetadataTableId.ModuleRef] =
+            sizes.StringIndexSize;
+
+        // TypeSpec (0x1B): Signature (blob)
+        sizes.RowSizes[(int)MetadataTableId.TypeSpec] =
+            sizes.BlobIndexSize;
+
+        // ImplMap (0x1C): MappingFlags (2) + MemberForwarded (MemberForwarded coded) + ImportName (str) + ImportScope (ModuleRef index)
+        int memberForwardedSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MemberForwarded, ref header);
+        int moduleRefIndexSize = header.RowCounts[(int)MetadataTableId.ModuleRef] > 0xFFFF ? 4 : 2;
+        sizes.RowSizes[(int)MetadataTableId.ImplMap] =
+            2 + memberForwardedSize + sizes.StringIndexSize + moduleRefIndexSize;
+
+        // FieldRVA (0x1D): RVA (4) + Field (Field index)
+        sizes.RowSizes[(int)MetadataTableId.FieldRVA] =
+            4 + sizes.FieldIndexSize;
+
+        // EncLog (0x1E): Token (4) + FuncCode (4) - Edit and Continue, rarely used
+        sizes.RowSizes[(int)MetadataTableId.EncLog] = 4 + 4;
+
+        // EncMap (0x1F): Token (4) - Edit and Continue, rarely used
+        sizes.RowSizes[(int)MetadataTableId.EncMap] = 4;
+
         // Assembly (0x20): HashAlgId (4) + MajorVersion (2) + MinorVersion (2) + BuildNumber (2) + RevisionNumber (2) +
         //                  Flags (4) + PublicKey (blob) + Name (str) + Culture (str)
         sizes.RowSizes[(int)MetadataTableId.Assembly] =
             4 + 2 + 2 + 2 + 2 + 4 + sizes.BlobIndexSize + sizes.StringIndexSize * 2;
 
+        // AssemblyProcessor (0x21): Processor (4) - obsolete
+        sizes.RowSizes[(int)MetadataTableId.AssemblyProcessor] = 4;
+
+        // AssemblyOS (0x22): OSPlatformId (4) + OSMajorVersion (4) + OSMinorVersion (4) - obsolete
+        sizes.RowSizes[(int)MetadataTableId.AssemblyOS] = 4 + 4 + 4;
+
         // AssemblyRef (0x23): MajorVersion (2) + MinorVersion (2) + BuildNumber (2) + RevisionNumber (2) +
         //                     Flags (4) + PublicKeyOrToken (blob) + Name (str) + Culture (str) + HashValue (blob)
         sizes.RowSizes[(int)MetadataTableId.AssemblyRef] =
             2 + 2 + 2 + 2 + 4 + sizes.BlobIndexSize + sizes.StringIndexSize * 2 + sizes.BlobIndexSize;
+
+        // AssemblyRefProcessor (0x24): Processor (4) + AssemblyRef (AssemblyRef index) - obsolete
+        int assemblyRefIndexSize = header.RowCounts[(int)MetadataTableId.AssemblyRef] > 0xFFFF ? 4 : 2;
+        sizes.RowSizes[(int)MetadataTableId.AssemblyRefProcessor] = 4 + assemblyRefIndexSize;
+
+        // AssemblyRefOS (0x25): OSPlatformId (4) + OSMajorVersion (4) + OSMinorVersion (4) + AssemblyRef (AssemblyRef index) - obsolete
+        sizes.RowSizes[(int)MetadataTableId.AssemblyRefOS] = 4 + 4 + 4 + assemblyRefIndexSize;
+
+        // File (0x26): Flags (4) + Name (str) + HashValue (blob)
+        sizes.RowSizes[(int)MetadataTableId.File] =
+            4 + sizes.StringIndexSize + sizes.BlobIndexSize;
+
+        // ExportedType (0x27): Flags (4) + TypeDefId (4) + TypeName (str) + TypeNamespace (str) + Implementation (Implementation coded)
+        int implementationSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.Implementation, ref header);
+        sizes.RowSizes[(int)MetadataTableId.ExportedType] =
+            4 + 4 + sizes.StringIndexSize * 2 + implementationSize;
+
+        // ManifestResource (0x28): Offset (4) + Flags (4) + Name (str) + Implementation (Implementation coded)
+        sizes.RowSizes[(int)MetadataTableId.ManifestResource] =
+            4 + 4 + sizes.StringIndexSize + implementationSize;
+
+        // NestedClass (0x29): NestedClass (TypeDef index) + EnclosingClass (TypeDef index)
+        sizes.RowSizes[(int)MetadataTableId.NestedClass] =
+            sizes.TypeDefIndexSize + sizes.TypeDefIndexSize;
+
+        // GenericParam (0x2A): Number (2) + Flags (2) + Owner (TypeOrMethodDef coded) + Name (str)
+        int typeOrMethodDefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.TypeOrMethodDef, ref header);
+        sizes.RowSizes[(int)MetadataTableId.GenericParam] =
+            2 + 2 + typeOrMethodDefSize + sizes.StringIndexSize;
+
+        // MethodSpec (0x2B): Method (MethodDefOrRef coded) + Instantiation (blob)
+        sizes.RowSizes[(int)MetadataTableId.MethodSpec] =
+            methodDefOrRefSize + sizes.BlobIndexSize;
+
+        // GenericParamConstraint (0x2C): Owner (GenericParam index) + Constraint (TypeDefOrRef coded)
+        int genericParamIndexSize = header.RowCounts[(int)MetadataTableId.GenericParam] > 0xFFFF ? 4 : 2;
+        sizes.RowSizes[(int)MetadataTableId.GenericParamConstraint] =
+            genericParamIndexSize + sizes.TypeDefOrRefSize;
 
         // Calculate table offsets (cumulative based on row counts and sizes)
         uint offset = 0;
