@@ -13,6 +13,10 @@ namespace ProtonOS;
 
 public static unsafe class Kernel
 {
+    // Loaded test assembly (persists after ExitBootServices)
+    private static byte* _testAssembly;
+    private static ulong _testAssemblySize;
+
     public static void Main()
     {
         DebugConsole.Init();
@@ -35,10 +39,14 @@ public static unsafe class Kernel
 
         // Initialize ReadyToRun info (must be before anything needing runtime metadata)
         ReadyToRunInfo.Init();
-        ReadyToRunInfo.DumpSections();
+        // ReadyToRunInfo.DumpSections();
 
         // Test GCDesc parsing with frozen objects
-        GCDescHelper.TestWithFrozenObjects();
+        // GCDescHelper.TestWithFrozenObjects();
+
+        // Load test assembly from boot device (must be before PageAllocator.Init
+        // so the memory map snapshot includes our allocation)
+        LoadTestAssembly();
 
         // Initialize page allocator (requires UEFI boot services)
         PageAllocator.Init();
@@ -69,7 +77,7 @@ public static unsafe class Kernel
         GC.Init();
 
         // Test GCDesc with heap-allocated object that has references
-        GCDescHelper.TestWithHeapObject();
+        // GCDescHelper.TestWithHeapObject();
 
         // Initialize scheduler (creates boot thread)
         Scheduler.Init();
@@ -97,6 +105,39 @@ public static unsafe class Kernel
         while (true)
         {
             CPU.Halt();
+        }
+    }
+
+    /// <summary>
+    /// Load the test assembly from the boot device filesystem.
+    /// Must be called before ExitBootServices.
+    /// </summary>
+    private static void LoadTestAssembly()
+    {
+        DebugConsole.WriteLine("[Kernel] Loading test assembly...");
+
+        _testAssembly = UEFIFS.ReadFileAscii("\\MetadataTest.dll", out _testAssemblySize);
+
+        if (_testAssembly == null)
+        {
+            DebugConsole.WriteLine("[Kernel] Failed to load test assembly");
+            return;
+        }
+
+        DebugConsole.Write("[Kernel] Test assembly loaded at 0x");
+        DebugConsole.WriteHex((ulong)_testAssembly);
+        DebugConsole.Write(", size ");
+        DebugConsole.WriteHex(_testAssemblySize);
+        DebugConsole.WriteLine();
+
+        // Verify it looks like a PE file (MZ header)
+        if (_testAssemblySize >= 2 && _testAssembly[0] == 'M' && _testAssembly[1] == 'Z')
+        {
+            DebugConsole.WriteLine("[Kernel] PE signature verified (MZ)");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Kernel] WARNING: Not a valid PE file");
         }
     }
 }

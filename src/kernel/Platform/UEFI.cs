@@ -98,6 +98,44 @@ public struct EFIGUID
         guid->Data4[6] = 0x72;
         guid->Data4[7] = 0x3B;
     }
+
+    /// <summary>
+    /// EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID
+    /// {964E5B22-6459-11D2-8E39-00A0C969723B}
+    /// </summary>
+    public static unsafe void InitSimpleFileSystemGuid(EFIGUID* guid)
+    {
+        guid->Data1 = 0x964E5B22;
+        guid->Data2 = 0x6459;
+        guid->Data3 = 0x11D2;
+        guid->Data4[0] = 0x8E;
+        guid->Data4[1] = 0x39;
+        guid->Data4[2] = 0x00;
+        guid->Data4[3] = 0xA0;
+        guid->Data4[4] = 0xC9;
+        guid->Data4[5] = 0x69;
+        guid->Data4[6] = 0x72;
+        guid->Data4[7] = 0x3B;
+    }
+
+    /// <summary>
+    /// EFI_FILE_INFO_ID
+    /// {09576E92-6D3F-11D2-8E39-00A0C969723B}
+    /// </summary>
+    public static unsafe void InitFileInfoGuid(EFIGUID* guid)
+    {
+        guid->Data1 = 0x09576E92;
+        guid->Data2 = 0x6D3F;
+        guid->Data3 = 0x11D2;
+        guid->Data4[0] = 0x8E;
+        guid->Data4[1] = 0x39;
+        guid->Data4[2] = 0x00;
+        guid->Data4[3] = 0xA0;
+        guid->Data4[4] = 0xC9;
+        guid->Data4[5] = 0x69;
+        guid->Data4[6] = 0x72;
+        guid->Data4[7] = 0x3B;
+    }
 }
 
 // ============================================================================
@@ -154,6 +192,181 @@ public unsafe struct EFILoadedImageProtocol
     public EFIMemoryType ImageCodeType;
     public EFIMemoryType ImageDataType;
     public void* Unload;            // Unload function pointer
+}
+
+// ============================================================================
+// UEFI File System Protocol Structures
+// ============================================================================
+
+/// <summary>
+/// EFI_SIMPLE_FILE_SYSTEM_PROTOCOL - provides access to FAT file systems
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct EFISimpleFileSystemProtocol
+{
+    public ulong Revision;
+
+    /// <summary>
+    /// Opens the root directory on a volume
+    /// </summary>
+    public delegate* unmanaged<
+        EFISimpleFileSystemProtocol*,  // This
+        EFIFileProtocol**,              // Root (out)
+        EFIStatus> OpenVolume;
+}
+
+/// <summary>
+/// EFI_FILE_PROTOCOL - interface for file operations
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct EFIFileProtocol
+{
+    public ulong Revision;
+
+    /// <summary>
+    /// Opens a new file relative to this file's location
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIFileProtocol**,   // NewHandle (out)
+        char*,               // FileName (UTF-16)
+        ulong,               // OpenMode
+        ulong,               // Attributes
+        EFIStatus> Open;
+
+    /// <summary>
+    /// Closes the file handle
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIStatus> Close;
+
+    /// <summary>
+    /// Deletes the file
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIStatus> Delete;
+
+    /// <summary>
+    /// Reads data from the file
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        ulong*,              // BufferSize (in/out)
+        void*,               // Buffer
+        EFIStatus> Read;
+
+    /// <summary>
+    /// Writes data to the file
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        ulong*,              // BufferSize (in/out)
+        void*,               // Buffer
+        EFIStatus> Write;
+
+    /// <summary>
+    /// Gets the current file position
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        ulong*,              // Position (out)
+        EFIStatus> GetPosition;
+
+    /// <summary>
+    /// Sets the current file position
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        ulong,               // Position
+        EFIStatus> SetPosition;
+
+    /// <summary>
+    /// Gets information about the file
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIGUID*,            // InformationType
+        ulong*,              // BufferSize (in/out)
+        void*,               // Buffer
+        EFIStatus> GetInfo;
+
+    /// <summary>
+    /// Sets information about the file
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIGUID*,            // InformationType
+        ulong,               // BufferSize
+        void*,               // Buffer
+        EFIStatus> SetInfo;
+
+    /// <summary>
+    /// Flushes all modified data to the device
+    /// </summary>
+    public delegate* unmanaged<
+        EFIFileProtocol*,    // This
+        EFIStatus> Flush;
+}
+
+/// <summary>
+/// File open modes
+/// </summary>
+public static class EFIFileMode
+{
+    public const ulong Read = 0x0000000000000001;
+    public const ulong Write = 0x0000000000000002;
+    public const ulong Create = 0x8000000000000000;
+}
+
+/// <summary>
+/// File attributes
+/// </summary>
+public static class EFIFileAttribute
+{
+    public const ulong ReadOnly = 0x0000000000000001;
+    public const ulong Hidden = 0x0000000000000002;
+    public const ulong System = 0x0000000000000004;
+    public const ulong Reserved = 0x0000000000000008;
+    public const ulong Directory = 0x0000000000000010;
+    public const ulong Archive = 0x0000000000000020;
+}
+
+/// <summary>
+/// EFI_TIME structure for file timestamps
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct EFITime
+{
+    public ushort Year;
+    public byte Month;
+    public byte Day;
+    public byte Hour;
+    public byte Minute;
+    public byte Second;
+    public byte Pad1;
+    public uint Nanosecond;
+    public short TimeZone;
+    public byte Daylight;
+    public byte Pad2;
+}
+
+/// <summary>
+/// EFI_FILE_INFO - file information structure
+/// Note: FileName is variable-length UTF-16 at the end
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct EFIFileInfo
+{
+    public ulong Size;              // Total structure size including filename
+    public ulong FileSize;          // File size in bytes
+    public ulong PhysicalSize;      // Physical storage used
+    public EFITime CreateTime;
+    public EFITime LastAccessTime;
+    public EFITime ModificationTime;
+    public ulong Attribute;
+    // CHAR16 FileName[] follows - variable length, null-terminated
 }
 
 [StructLayout(LayoutKind.Sequential)]
