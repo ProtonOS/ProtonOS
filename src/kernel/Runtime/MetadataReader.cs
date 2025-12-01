@@ -3089,6 +3089,510 @@ public static unsafe class MetadataReader
             DebugConsole.Write("...");
         DebugConsole.WriteLine();
     }
+
+    // =========================================================================
+    // Type Resolution (Phase 5.9)
+    // =========================================================================
+
+    /// <summary>
+    /// Compare a heap string with a literal ASCII string.
+    /// Strings in #Strings heap are null-terminated UTF-8.
+    /// </summary>
+    public static bool StringEquals(byte* heapString, string literal)
+    {
+        if (heapString == null)
+            return literal == null || literal.Length == 0;
+
+        for (int i = 0; i < literal.Length; i++)
+        {
+            if (heapString[i] != (byte)literal[i])
+                return false;
+        }
+        return heapString[literal.Length] == 0;
+    }
+
+    /// <summary>
+    /// Compare two heap strings for equality.
+    /// </summary>
+    public static bool StringEquals(byte* str1, byte* str2)
+    {
+        if (str1 == null && str2 == null)
+            return true;
+        if (str1 == null || str2 == null)
+            return false;
+
+        while (*str1 != 0 && *str2 != 0)
+        {
+            if (*str1 != *str2)
+                return false;
+            str1++;
+            str2++;
+        }
+        return *str1 == *str2;
+    }
+
+    /// <summary>
+    /// Get the length of a null-terminated heap string.
+    /// </summary>
+    public static int StringLength(byte* str)
+    {
+        if (str == null)
+            return 0;
+        int len = 0;
+        while (str[len] != 0)
+            len++;
+        return len;
+    }
+
+    /// <summary>
+    /// Find a TypeDef by namespace and name.
+    /// Returns the 1-based TypeDef row ID, or 0 if not found.
+    /// For nested types, use FindNestedTypeDef instead.
+    /// </summary>
+    public static uint FindTypeDef(
+        ref MetadataRoot root,
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        string namespaceName,
+        string typeName)
+    {
+        uint typeDefCount = tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        for (uint i = 1; i <= typeDefCount; i++)
+        {
+            uint nameIdx = GetTypeDefName(ref tables, ref sizes, i);
+            uint nsIdx = GetTypeDefNamespace(ref tables, ref sizes, i);
+
+            byte* name = GetString(ref root, nameIdx);
+            byte* ns = GetString(ref root, nsIdx);
+
+            if (StringEquals(name, typeName) && StringEquals(ns, namespaceName))
+            {
+                // Verify this is not a nested type (nested types have empty namespace in TypeDef
+                // but are accessed through their enclosing type)
+                // For a non-nested type, there should be no NestedClass entry with this as NestedClass
+                if (!IsNestedType(ref tables, ref sizes, i))
+                    return i;
+            }
+        }
+
+        return 0; // Not found
+    }
+
+    /// <summary>
+    /// Check if a TypeDef is a nested type by looking it up in the NestedClass table.
+    /// </summary>
+    public static bool IsNestedType(ref TablesHeader tables, ref TableSizes sizes, uint typeDefRowId)
+    {
+        uint nestedClassCount = tables.RowCounts[(int)MetadataTableId.NestedClass];
+
+        for (uint i = 1; i <= nestedClassCount; i++)
+        {
+            uint nestedClassTypeDefId = GetNestedClassNestedClass(ref tables, ref sizes, i);
+            if (nestedClassTypeDefId == typeDefRowId)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Get the enclosing type for a nested type.
+    /// Returns the 1-based TypeDef row ID of the enclosing type, or 0 if not a nested type.
+    /// </summary>
+    public static uint GetEnclosingType(ref TablesHeader tables, ref TableSizes sizes, uint typeDefRowId)
+    {
+        uint nestedClassCount = tables.RowCounts[(int)MetadataTableId.NestedClass];
+
+        for (uint i = 1; i <= nestedClassCount; i++)
+        {
+            uint nestedClassTypeDefId = GetNestedClassNestedClass(ref tables, ref sizes, i);
+            if (nestedClassTypeDefId == typeDefRowId)
+                return GetNestedClassEnclosingClass(ref tables, ref sizes, i);
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Find a nested type by name within an enclosing type.
+    /// Returns the 1-based TypeDef row ID, or 0 if not found.
+    /// </summary>
+    public static uint FindNestedTypeDef(
+        ref MetadataRoot root,
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint enclosingTypeDefRowId,
+        string nestedTypeName)
+    {
+        uint nestedClassCount = tables.RowCounts[(int)MetadataTableId.NestedClass];
+
+        for (uint i = 1; i <= nestedClassCount; i++)
+        {
+            uint enclosing = GetNestedClassEnclosingClass(ref tables, ref sizes, i);
+            if (enclosing == enclosingTypeDefRowId)
+            {
+                uint nested = GetNestedClassNestedClass(ref tables, ref sizes, i);
+                uint nameIdx = GetTypeDefName(ref tables, ref sizes, nested);
+                byte* name = GetString(ref root, nameIdx);
+
+                if (StringEquals(name, nestedTypeName))
+                    return nested;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the range of fields belonging to a TypeDef.
+    /// Returns the first field row ID and count.
+    /// </summary>
+    public static void GetTypeDefFields(
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId,
+        out uint firstFieldRowId,
+        out uint fieldCount)
+    {
+        uint typeDefCount = tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint totalFieldCount = tables.RowCounts[(int)MetadataTableId.Field];
+
+        firstFieldRowId = GetTypeDefFieldList(ref tables, ref sizes, typeDefRowId);
+
+        // The field range extends to the start of the next type's fields, or end of table
+        if (typeDefRowId < typeDefCount)
+        {
+            uint nextFieldStart = GetTypeDefFieldList(ref tables, ref sizes, typeDefRowId + 1);
+            fieldCount = nextFieldStart - firstFieldRowId;
+        }
+        else
+        {
+            // Last type - fields extend to end of Field table
+            fieldCount = totalFieldCount - firstFieldRowId + 1;
+        }
+
+        // Handle edge case where type has no fields
+        if (firstFieldRowId > totalFieldCount)
+        {
+            firstFieldRowId = 0;
+            fieldCount = 0;
+        }
+    }
+
+    /// <summary>
+    /// Get the range of methods belonging to a TypeDef.
+    /// Returns the first method row ID and count.
+    /// </summary>
+    public static void GetTypeDefMethods(
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId,
+        out uint firstMethodRowId,
+        out uint methodCount)
+    {
+        uint typeDefCount = tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint totalMethodCount = tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        firstMethodRowId = GetTypeDefMethodList(ref tables, ref sizes, typeDefRowId);
+
+        // The method range extends to the start of the next type's methods, or end of table
+        if (typeDefRowId < typeDefCount)
+        {
+            uint nextMethodStart = GetTypeDefMethodList(ref tables, ref sizes, typeDefRowId + 1);
+            methodCount = nextMethodStart - firstMethodRowId;
+        }
+        else
+        {
+            // Last type - methods extend to end of MethodDef table
+            methodCount = totalMethodCount - firstMethodRowId + 1;
+        }
+
+        // Handle edge case where type has no methods
+        if (firstMethodRowId > totalMethodCount)
+        {
+            firstMethodRowId = 0;
+            methodCount = 0;
+        }
+    }
+
+    /// <summary>
+    /// Find a method by name within a type.
+    /// Returns the 1-based MethodDef row ID, or 0 if not found.
+    /// Note: This returns the first match; there may be overloads with the same name.
+    /// </summary>
+    public static uint FindMethodByName(
+        ref MetadataRoot root,
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId,
+        string methodName)
+    {
+        GetTypeDefMethods(ref tables, ref sizes, typeDefRowId, out uint firstMethod, out uint methodCount);
+
+        for (uint i = 0; i < methodCount; i++)
+        {
+            uint methodRowId = firstMethod + i;
+            uint nameIdx = GetMethodDefName(ref tables, ref sizes, methodRowId);
+            byte* name = GetString(ref root, nameIdx);
+
+            if (StringEquals(name, methodName))
+                return methodRowId;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Find a field by name within a type.
+    /// Returns the 1-based Field row ID, or 0 if not found.
+    /// </summary>
+    public static uint FindFieldByName(
+        ref MetadataRoot root,
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId,
+        string fieldName)
+    {
+        GetTypeDefFields(ref tables, ref sizes, typeDefRowId, out uint firstField, out uint fieldCount);
+
+        for (uint i = 0; i < fieldCount; i++)
+        {
+            uint fieldRowId = firstField + i;
+            uint nameIdx = GetFieldName(ref tables, ref sizes, fieldRowId);
+            byte* name = GetString(ref root, nameIdx);
+
+            if (StringEquals(name, fieldName))
+                return fieldRowId;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Get interfaces implemented by a type.
+    /// Returns array of coded indexes (TypeDefOrRef) for implemented interfaces.
+    /// Caller must provide a buffer; returns actual count.
+    /// </summary>
+    public static uint GetTypeDefInterfaces(
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId,
+        CodedIndex* buffer,
+        uint bufferSize)
+    {
+        uint interfaceImplCount = tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
+        uint found = 0;
+
+        for (uint i = 1; i <= interfaceImplCount && found < bufferSize; i++)
+        {
+            uint classRowId = GetInterfaceImplClass(ref tables, ref sizes, i);
+            if (classRowId == typeDefRowId)
+            {
+                uint rawInterface = GetInterfaceImplInterface(ref tables, ref sizes, i);
+                buffer[found] = CodedIndexHelper.Decode(CodedIndexType.TypeDefOrRef, rawInterface);
+                found++;
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Get the base type (Extends column) for a TypeDef.
+    /// Returns a coded index (TypeDefOrRef) which may point to TypeDef, TypeRef, or TypeSpec.
+    /// Returns a zero-valued CodedIndex if the type has no base type (e.g., System.Object).
+    /// </summary>
+    public static CodedIndex GetTypeDefBaseType(
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeDefRowId)
+    {
+        return GetTypeDefExtends(ref tables, ref sizes, typeDefRowId);
+    }
+
+    /// <summary>
+    /// Resolve a TypeRef to a TypeDef within the same assembly.
+    /// This only works for TypeRefs that reference types in the current assembly
+    /// (which would be unusual but can happen in some edge cases).
+    /// For cross-assembly resolution, use ResolveTypeRefExternal with assembly loading.
+    /// Returns 0 if not found or if the TypeRef points to an external assembly.
+    /// </summary>
+    public static uint ResolveTypeRefLocal(
+        ref MetadataRoot root,
+        ref TablesHeader tables,
+        ref TableSizes sizes,
+        uint typeRefRowId)
+    {
+        // Get the resolution scope - tells us where to look
+        CodedIndex scope = GetTypeRefResolutionScope(ref tables, ref sizes, typeRefRowId);
+        uint nameIdx = GetTypeRefName(ref tables, ref sizes, typeRefRowId);
+        uint nsIdx = GetTypeRefNamespace(ref tables, ref sizes, typeRefRowId);
+
+        byte* name = GetString(ref root, nameIdx);
+        byte* ns = GetString(ref root, nsIdx);
+
+        // Resolution scope interpretation:
+        // - Module (0): Current module, look in TypeDef
+        // - ModuleRef (1): Another module in same assembly (not supported here)
+        // - AssemblyRef (2): External assembly (not supported here)
+        // - TypeRef (3): Nested type - the scope is the enclosing type
+
+        if (scope.Table == MetadataTableId.Module)
+        {
+            // Reference to current module - search TypeDef table
+            uint typeDefCount = tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+            for (uint i = 1; i <= typeDefCount; i++)
+            {
+                uint defNameIdx = GetTypeDefName(ref tables, ref sizes, i);
+                uint defNsIdx = GetTypeDefNamespace(ref tables, ref sizes, i);
+
+                byte* defName = GetString(ref root, defNameIdx);
+                byte* defNs = GetString(ref root, defNsIdx);
+
+                if (StringEquals(name, defName) && StringEquals(ns, defNs))
+                    return i;
+            }
+        }
+        else if (scope.Table == MetadataTableId.TypeRef)
+        {
+            // Nested type - first resolve the enclosing type
+            uint enclosingTypeDef = ResolveTypeRefLocal(ref root, ref tables, ref sizes, scope.RowId);
+            if (enclosingTypeDef != 0)
+            {
+                // Now find the nested type within the enclosing type
+                int nameLen = StringLength(name);
+                // Convert byte* to string for FindNestedTypeDef (we need a literal string match)
+                // For now, do a direct search
+                uint nestedClassCount = tables.RowCounts[(int)MetadataTableId.NestedClass];
+                for (uint i = 1; i <= nestedClassCount; i++)
+                {
+                    uint enclosing = GetNestedClassEnclosingClass(ref tables, ref sizes, i);
+                    if (enclosing == enclosingTypeDef)
+                    {
+                        uint nested = GetNestedClassNestedClass(ref tables, ref sizes, i);
+                        uint nestedNameIdx = GetTypeDefName(ref tables, ref sizes, nested);
+                        byte* nestedName = GetString(ref root, nestedNameIdx);
+
+                        if (StringEquals(name, nestedName))
+                            return nested;
+                    }
+                }
+            }
+        }
+
+        return 0; // Not found or external assembly
+    }
+
+    /// <summary>
+    /// Test type resolution with debug output
+    /// </summary>
+    public static void TestTypeResolution(ref MetadataRoot root, ref TablesHeader tables, ref TableSizes sizes)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[Meta] Type Resolution Tests:");
+
+        // Test 1: Find a top-level type
+        uint programType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "Program");
+        if (programType != 0)
+        {
+            DebugConsole.Write("[Meta]   Found MetadataTest.Program at TypeDef row ");
+            DebugConsole.WriteDecimal(programType);
+            DebugConsole.WriteLine();
+
+            // Get methods
+            GetTypeDefMethods(ref tables, ref sizes, programType, out uint firstMethod, out uint methodCount);
+            DebugConsole.Write("[Meta]     Methods: ");
+            DebugConsole.WriteDecimal(methodCount);
+            DebugConsole.Write(" starting at row ");
+            DebugConsole.WriteDecimal(firstMethod);
+            DebugConsole.WriteLine();
+
+            // Find Main method
+            uint mainMethod = FindMethodByName(ref root, ref tables, ref sizes, programType, "Main");
+            if (mainMethod != 0)
+            {
+                DebugConsole.Write("[Meta]     Found Main at MethodDef row ");
+                DebugConsole.WriteDecimal(mainMethod);
+                DebugConsole.WriteLine();
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Meta]   MetadataTest.Program not found");
+        }
+
+        // Test 2: Find a nested type
+        uint outerType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "OuterClass");
+        if (outerType != 0)
+        {
+            DebugConsole.Write("[Meta]   Found MetadataTest.OuterClass at TypeDef row ");
+            DebugConsole.WriteDecimal(outerType);
+            DebugConsole.WriteLine();
+
+            uint nestedType = FindNestedTypeDef(ref root, ref tables, ref sizes, outerType, "NestedClass");
+            if (nestedType != 0)
+            {
+                DebugConsole.Write("[Meta]     Found nested NestedClass at TypeDef row ");
+                DebugConsole.WriteDecimal(nestedType);
+                DebugConsole.WriteLine();
+            }
+        }
+
+        // Test 3: Type with fields
+        uint fieldSigType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "FieldSignatures");
+        if (fieldSigType != 0)
+        {
+            DebugConsole.Write("[Meta]   Found MetadataTest.FieldSignatures at TypeDef row ");
+            DebugConsole.WriteDecimal(fieldSigType);
+            DebugConsole.WriteLine();
+
+            GetTypeDefFields(ref tables, ref sizes, fieldSigType, out uint firstField, out uint fieldCount);
+            DebugConsole.Write("[Meta]     Fields: ");
+            DebugConsole.WriteDecimal(fieldCount);
+            DebugConsole.Write(" starting at row ");
+            DebugConsole.WriteDecimal(firstField);
+            DebugConsole.WriteLine();
+
+            // Find a specific field
+            uint intField = FindFieldByName(ref root, ref tables, ref sizes, fieldSigType, "IntField");
+            if (intField != 0)
+            {
+                DebugConsole.Write("[Meta]     Found IntField at Field row ");
+                DebugConsole.WriteDecimal(intField);
+                DebugConsole.WriteLine();
+            }
+        }
+
+        // Test 4: Type with interfaces
+        uint derivedType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "DerivedClass");
+        if (derivedType != 0)
+        {
+            DebugConsole.Write("[Meta]   Found MetadataTest.DerivedClass at TypeDef row ");
+            DebugConsole.WriteDecimal(derivedType);
+            DebugConsole.WriteLine();
+
+            // Get base type
+            CodedIndex baseType = GetTypeDefBaseType(ref tables, ref sizes, derivedType);
+            if (baseType.RowId != 0)
+            {
+                DebugConsole.Write("[Meta]     Base type: ");
+                DebugConsole.Write(baseType.Table == MetadataTableId.TypeDef ? "TypeDef" :
+                                   baseType.Table == MetadataTableId.TypeRef ? "TypeRef" : "TypeSpec");
+                DebugConsole.Write("[");
+                DebugConsole.WriteDecimal(baseType.RowId);
+                DebugConsole.WriteLine("]");
+            }
+
+            // Get interfaces
+            CodedIndex* interfaces = stackalloc CodedIndex[10];
+            uint interfaceCount = GetTypeDefInterfaces(ref tables, ref sizes, derivedType, interfaces, 10);
+            DebugConsole.Write("[Meta]     Interfaces: ");
+            DebugConsole.WriteDecimal(interfaceCount);
+            DebugConsole.WriteLine();
+        }
+    }
 }
 
 /// <summary>

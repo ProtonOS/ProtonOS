@@ -499,18 +499,40 @@ Signature types:
 - `Main`: Tiny format, 1 byte (ret)
 - `.ctor`: Tiny format, 7 bytes (ldarg.0, call, ret)
 
-#### 5.9 Type Resolution
+#### 5.9 Type Resolution ✅
 
-**Files**: `src/kernel/Runtime/Metadata/TypeResolver.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs` (type resolution methods in MetadataReader class)
 
-- [ ] TypeDef lookup by name
-- [ ] TypeRef resolution to TypeDef
-- [ ] Nested type resolution
-- [ ] Generic type instantiation
-- [ ] Base type chain walking
-- [ ] Interface implementation enumeration
-- [ ] Field enumeration for type
-- [ ] Method enumeration for type
+- [x] TypeDef lookup by name (`FindTypeDef()` - searches by namespace and name)
+- [x] TypeRef resolution to TypeDef (`ResolveTypeRefLocal()` - same-assembly resolution)
+- [x] Nested type resolution (`FindNestedTypeDef()`, `IsNestedType()`, `GetEnclosingType()`)
+- [ ] Generic type instantiation (deferred to JIT integration)
+- [x] Base type chain walking (`GetTypeDefBaseType()`)
+- [x] Interface implementation enumeration (`GetTypeDefInterfaces()`)
+- [x] Field enumeration for type (`GetTypeDefFields()`, `FindFieldByName()`)
+- [x] Method enumeration for type (`GetTypeDefMethods()`, `FindMethodByName()`)
+
+**Implementation includes:**
+- `StringEquals()` - compare heap strings with literals or other heap strings
+- `StringLength()` - get length of null-terminated heap string
+- `FindTypeDef()` - find TypeDef row by namespace and name
+- `IsNestedType()` - check if type is nested via NestedClass table
+- `GetEnclosingType()` - get enclosing type for nested type
+- `FindNestedTypeDef()` - find nested type by name within enclosing type
+- `GetTypeDefFields()` - get field range (start row, count) for type
+- `GetTypeDefMethods()` - get method range (start row, count) for type
+- `FindMethodByName()` - find method by name within type's method range
+- `FindFieldByName()` - find field by name within type's field range
+- `GetTypeDefInterfaces()` - get interfaces implemented by type via InterfaceImpl table
+- `GetTypeDefBaseType()` - get base type (decoded TypeDefOrRef coded index)
+- `ResolveTypeRefLocal()` - resolve TypeRef to TypeDef within same assembly
+- `TestTypeResolution()` - test function validating all type resolution functionality
+
+**Tested:** MetadataTest.dll type resolution working:
+- Found `MetadataTest.Program` at TypeDef row 33 with Main method at row 121
+- Found `OuterClass` with nested `NestedClass` at row 35
+- Found `FieldSignatures` with 28 fields including `IntField` at row 32
+- Found `DerivedClass` with base type TypeDef[2] and 1 interface
 
 #### 5.10 Assembly Identity
 
@@ -561,8 +583,8 @@ Signature types:
 6. ~~**Add coded index support** - all 13 coded index types with decode/size helpers~~ ✅
 7. ~~**Implement core tables** - Module, TypeDef, TypeRef, MethodDef with accessors~~ ✅
 8. ~~**Complete all table accessors** - all 45 ECMA-335 tables have accessors~~ ✅
-9. **Type Resolution** - TypeDef lookup, TypeRef resolution, generic instantiation ← **NEXT**
-10. **Assembly Identity** - version matching, AssemblyRef resolution
+9. ~~**Type Resolution** - TypeDef lookup, TypeRef resolution, nested types~~ ✅
+10. **Assembly Identity** - version matching, AssemblyRef resolution ← **NEXT**
 
 ### Gotchas
 

@@ -216,6 +216,10 @@ public static unsafe class Kernel
 
                 // Test IL method body parsing
                 DumpMethodBodies(ref mdRoot, ref tablesHeader);
+
+                // Test type resolution (Phase 5.9)
+                var sizes = TableSizes.Calculate(ref tablesHeader);
+                MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref sizes);
             }
             else
             {
