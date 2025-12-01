@@ -1,14 +1,14 @@
-// netos mernel - PAL Thread Local Storage (TLS)
+// ProtonOS kernel - PAL Thread Local Storage (TLS)
 // Win32-style TLS implementation for PAL compatibility.
 // Supports TlsAlloc, TlsFree, TlsGetValue, TlsSetValue.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.Platform;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.Platform;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Thread Local Storage management.

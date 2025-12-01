@@ -1,13 +1,13 @@
-// netos mernel - PAL Memory APIs
+// ProtonOS kernel - PAL Memory APIs
 // Win32-style HeapAlloc/HeapFree and VirtualAlloc/VirtualFree for PAL compatibility.
 // These are PAL (Platform Abstraction Layer) wrappers over kernel memory services.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// Heap flags for HeapCreate and HeapAlloc.
@@ -559,13 +559,13 @@ public static unsafe class Memory
     }
 
     // ========================================================================
-    // Runtime Heap Exports for netlib
-    // These are exported for netlib's RhpNewFast/RhpNewArray to use
+    // Runtime Heap Exports for korlib
+    // These are exported for korlib's RhpNewFast/RhpNewArray to use
     // ========================================================================
 
     /// <summary>
     /// Allocate zeroed memory for managed object allocation.
-    /// Exported for netlib's StartupCodeHelpers.AllocObject.
+    /// Exported for korlib's StartupCodeHelpers.AllocObject.
     /// Uses GCHeap when available (proper object header), falls back to HeapAllocator during early boot.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "PalAllocObject")]

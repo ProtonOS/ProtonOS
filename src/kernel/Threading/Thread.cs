@@ -1,13 +1,13 @@
-// netos mernel - Kernel threading primitives
+// ProtonOS kernel - Kernel threading primitives
 // Low-level threading structures for the kernel scheduler.
 // Named with "Kernel" prefix to avoid collision with System.Threading types.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.Threading;
+namespace ProtonOS.Threading;
 
 /// <summary>
 /// Kernel thread states

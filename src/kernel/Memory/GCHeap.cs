@@ -1,4 +1,4 @@
-// netos kernel - GC Heap Allocator
+// ProtonOS kernel - GC Heap Allocator
 // Manages the managed object heap with proper object headers for garbage collection.
 //
 // Block Layout (16 bytes header + object data):
@@ -22,10 +22,10 @@
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.X64;
 
-namespace Kernel.Memory;
+namespace ProtonOS.Memory;
 
 /// <summary>
 /// Object header layout (16 bytes total, stored before the MethodTable pointer):

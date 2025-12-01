@@ -1,4 +1,4 @@
-# netos Makefile
+# ProtonOS Makefile
 
 # Default target architecture
 ARCH ?= x64
@@ -6,8 +6,7 @@ ARCH ?= x64
 # Directories
 BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
-NATIVE_DIR := src/native
-NETLIB_DIR := src/netlib
+KORLIB_DIR := src/korlib
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -50,8 +49,8 @@ endif
 rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 
 # Source files
-NATIVE_SRC := $(wildcard $(NATIVE_DIR)/$(ARCH)/*.asm)
-NETLIB_SRC := $(call rwildcard,$(NETLIB_DIR),*.cs)
+NATIVE_SRC := $(wildcard $(KERNEL_DIR)/$(ARCH)/*.asm)
+KORLIB_SRC := $(call rwildcard,$(KORLIB_DIR),*.cs)
 KERNEL_SRC := $(call rwildcard,$(KERNEL_DIR),*.cs)
 
 # Object files
@@ -74,10 +73,10 @@ $(NATIVE_OBJ): $(NATIVE_SRC) | $(BUILD_DIR)
 
 native: $(NATIVE_OBJ)
 
-# Compile kernel (netlib + kernel C# sources together)
-$(KERNEL_OBJ): $(NETLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
+# Compile kernel (korlib + kernel C# sources together)
+$(KERNEL_OBJ): $(KORLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
 	@echo "BFLAT kernel"
-	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(NETLIB_SRC) $(KERNEL_SRC)
+	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(KORLIB_SRC) $(KERNEL_SRC)
 
 kernel: $(KERNEL_OBJ)
 
@@ -91,7 +90,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 image: $(BUILD_DIR)/$(EFI_NAME)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
-	mformat -i $(BUILD_DIR)/boot.img -F -v NETOS ::
+	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
@@ -109,6 +108,6 @@ info:
 	@echo "ARCH:       $(ARCH)"
 	@echo "BUILD_DIR:  $(BUILD_DIR)"
 	@echo "NATIVE_SRC: $(NATIVE_SRC)"
-	@echo "NETLIB_SRC: $(words $(NETLIB_SRC)) files"
+	@echo "KORLIB_SRC: $(words $(KORLIB_SRC)) files"
 	@echo "KERNEL_SRC: $(words $(KERNEL_SRC)) files"
 	@echo "EFI_NAME:   $(EFI_NAME)"

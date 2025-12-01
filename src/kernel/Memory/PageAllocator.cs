@@ -1,11 +1,11 @@
-// netos mernel - Physical page allocator
+// ProtonOS kernel - Physical page allocator
 // Bitmap-based allocator for 4KB pages using UEFI memory map.
 // The bitmap is placed in a reserved memory region sized based on actual physical memory.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
+using ProtonOS.Platform;
 
-namespace Kernel.Memory;
+namespace ProtonOS.Memory;
 
 /// <summary>
 /// Physical page allocator using a bitmap to track free/allocated 4KB pages.

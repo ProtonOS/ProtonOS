@@ -1,13 +1,13 @@
-// netos mernel - Local APIC driver
+// ProtonOS kernel - Local APIC driver
 // Provides Local APIC timer for preemptive scheduling.
 // Timer is calibrated using HPET for accurate timing.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// Local APIC Register offsets (memory-mapped at APIC base)

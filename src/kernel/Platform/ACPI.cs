@@ -1,10 +1,10 @@
-// netos mernel - ACPI table parsing
+// ProtonOS kernel - ACPI table parsing
 // Finds ACPI tables from UEFI configuration table to locate hardware like HPET.
 
 using System;
 using System.Runtime.InteropServices;
 
-namespace Kernel.Platform;
+namespace ProtonOS.Platform;
 
 // ============================================================================
 // ACPI GUIDs for UEFI Configuration Table

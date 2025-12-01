@@ -1,14 +1,14 @@
-// netos mernel - PAL Synchronization Primitives
+// ProtonOS kernel - PAL Synchronization Primitives
 // Win32-style synchronization objects for PAL compatibility.
 // Supports: Events (auto/manual reset), Mutexes, Semaphores
 // All objects support WaitForSingleObject/WaitForMultipleObjects patterns.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// Type of waitable PAL object

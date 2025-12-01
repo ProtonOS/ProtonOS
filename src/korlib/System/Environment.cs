@@ -1,4 +1,4 @@
-// netos netlib - Environment
+// ProtonOS korlib - Environment
 // Provides Environment.FailFast by importing from kernel PAL.
 
 using System.Runtime.InteropServices;

@@ -1,13 +1,13 @@
-// netos mernel - PAL Environment APIs
+// ProtonOS kernel - PAL Environment APIs
 // Win32-compatible environment variable APIs for PAL compatibility.
 // Used by CoreCLR for configuration and tuning.
 
 using System.Runtime.InteropServices;
-using Kernel.Memory;
-using Kernel.Threading;
-using Kernel.X64;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// Environment variable entry - stored as wide string name=value.
@@ -398,7 +398,7 @@ public static unsafe class EnvironmentApi
 
     /// <summary>
     /// Terminate execution immediately due to a fatal error.
-    /// Exported for netlib's Environment.FailFast to import via DllImport.
+    /// Exported for korlib's Environment.FailFast to import via DllImport.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
     public static void FailFast()

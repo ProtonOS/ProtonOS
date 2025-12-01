@@ -1,10 +1,10 @@
-// netos mernel - PAL XState APIs
+// ProtonOS kernel - PAL XState APIs
 // Win32-compatible XSAVE/XState management for PAL compatibility.
 // These manage extended processor state (SSE, AVX, etc.) in context structures.
 
 using System.Runtime.InteropServices;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// XSAVE feature flags returned by GetEnabledXStateFeatures.

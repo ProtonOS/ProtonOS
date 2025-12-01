@@ -1,15 +1,15 @@
-// netos mernel - x64 Exception Handling Infrastructure
+// ProtonOS kernel - x64 Exception Handling Infrastructure
 // Provides SEH-compatible exception handling for JIT code and kernel.
 // Based on Windows x64 exception handling model (RUNTIME_FUNCTION, UNWIND_INFO).
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
-using Kernel.Runtime;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
+using ProtonOS.Runtime;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// Exception codes (Win32 compatible)

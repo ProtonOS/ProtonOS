@@ -1,8 +1,8 @@
-# netlib - Custom Standard Library Implementation Plan
+# korlib - Custom Standard Library Implementation Plan
 
 ## Overview
 
-**netlib** is netos's minimal runtime library - the smallest possible foundation needed to load
+**korlib** is ProtonOS's minimal runtime library - the smallest possible foundation needed to load
 and execute standard .NET assemblies from NuGet.
 
 ### Core Insight
@@ -11,11 +11,11 @@ only the **runtime-critical types** that the CLR/NativeAOT requires, then **load
 from existing NuGet packages**.
 
 This means:
-- netlib = ~20-30 core types (primitives, Object, String, Span, GC plumbing)
+- korlib = ~20-30 core types (primitives, Object, String, Span, GC plumbing)
 - Collections, I/O, etc. = loaded from `System.Collections.dll`, `System.IO.dll`, etc.
 - System.Reflection.Metadata = loaded from NuGet directly
 
-### What netlib MUST implement (cannot be loaded)
+### What korlib MUST implement (cannot be loaded)
 1. **Primitive types** - Int32, Boolean, Byte, etc. (compiler intrinsics)
 2. **Core object model** - Object, ValueType, Enum, Array, String, Type
 3. **Span/Memory** - tightly coupled to runtime, special compiler handling
@@ -25,7 +25,7 @@ This means:
 7. **Exception plumbing** - throw/catch mechanics
 8. **Threading primitives** - if multi-threaded
 
-### What netlib should NOT implement (load from NuGet)
+### What korlib should NOT implement (load from NuGet)
 - List<T>, Dictionary<K,V>, HashSet<T> → System.Collections.dll
 - ImmutableArray<T> → System.Collections.Immutable.dll
 - Stream, MemoryStream, BinaryReader → System.IO.dll
@@ -44,7 +44,7 @@ This means:
 └─────────────────────────────────────────────────────────────┘
                               ↑ Assembly.Load()
 ┌─────────────────────────────────────────────────────────────┐
-│                    netlib (AOT compiled)                    │
+│                    korlib (AOT compiled)                    │
 │  - Primitives, Object, String, Array, Span<T>              │
 │  - GC (mark-sweep)                                          │
 │  - Exception handling                                       │
@@ -65,13 +65,13 @@ This means:
 ## Phase 1: Fork and Integrate zerolib ✓ COMPLETE
 
 ### Goal
-Get zerolib source into our tree as the foundation for netlib.
+Get zerolib source into our tree as the foundation for korlib.
 
 ### Completed Tasks
 
-#### 1.1 Created netlib directory structure ✓
+#### 1.1 Created korlib directory structure ✓
 ```
-src/netlib/
+src/korlib/
 ├── Internal/
 │   ├── Runtime/
 │   │   └── CompilerHelpers/
@@ -120,19 +120,19 @@ src/netlib/
 #### 1.3 Updated Makefile ✓
 - Changed `--stdlib:zero` to `--stdlib:none`
 - Added NETLIB_DIR and NETLIB_SRC
-- Compiles netlib + kernel sources together into single kernel.obj
-- Reorganized source structure: src/native/, src/netlib/, src/kernel/
+- Compiles korlib + kernel sources together into single kernel.obj
+- Reorganized source structure: src/native/, src/korlib/, src/kernel/
 
 #### 1.4 Verification ✓
 - Build succeeds with bflat 10.0.0-rc.1
 - All existing kernel tests pass
-- netlib integrated with kernel via export/import pattern
+- korlib integrated with kernel via export/import pattern
 
 ### Deliverables
-- [x] netlib directory with zerolib core (30 files)
+- [x] korlib directory with zerolib core (30 files)
 - [x] Build system integration (--stdlib:none)
-- [x] Export/import pattern for kernel<->netlib (PalFailFast)
-- [x] Source reorganization (src/native, src/netlib, src/kernel)
+- [x] Export/import pattern for kernel<->korlib (PalFailFast)
+- [x] Source reorganization (src/native, src/korlib, src/kernel)
 
 ---
 
@@ -144,7 +144,7 @@ Enable try/catch/throw for error handling.
 ### Completed Tasks
 
 #### 2.1 Exception class hierarchy ✓
-Implemented in `src/netlib/System/Exception.cs`:
+Implemented in `src/korlib/System/Exception.cs`:
 - Exception base class with Message, InnerException, HResult
 - SystemException, ArgumentException, ArgumentNullException
 - InvalidOperationException, NotSupportedException, NotImplementedException
@@ -154,7 +154,7 @@ Implemented in `src/netlib/System/Exception.cs`:
 - ArithmeticException, FormatException, PlatformNotSupportedException
 
 #### 2.2 ThrowHelpers ✓
-Implemented in `src/netlib/Internal/Stubs.cs`:
+Implemented in `src/korlib/Internal/Stubs.cs`:
 - RhpThrowEx - compiler-generated throw statements
 - RhpRethrow - rethrow current exception
 - RhpThrowHwEx - hardware exceptions (via native.asm)
@@ -1492,7 +1492,7 @@ Rather than loading BCL assemblies initially, we can:
 
 #### 8.1 Core Type Support
 Ensure loaded code can use:
-- Primitive types (already in netlib)
+- Primitive types (already in korlib)
 - Arrays, strings, spans
 - Basic exceptions
 
@@ -1559,7 +1559,7 @@ Full integration testing of the managed code execution pipeline.
 
 | Phase | Description | Complexity | What It Proves |
 |-------|-------------|------------|----------------|
-| 1 ✓ | Fork zerolib → netlib | Low | Build system works |
+| 1 ✓ | Fork zerolib → korlib | Low | Build system works |
 | 2 ✓ | Exception support | Low-Medium | Error handling |
 | 3 ✓ | Mark-Sweep GC | High | Managed heap works, memory reclaimed |
 | 4 | UEFI File System | Medium | Can load files from boot device |
@@ -1572,7 +1572,7 @@ Full integration testing of the managed code execution pipeline.
 ## Dependencies Graph
 
 ```
-Phase 1 (netlib base)
+Phase 1 (korlib base)
     ↓
 Phase 2 (Exceptions)
     ↓
@@ -1606,7 +1606,7 @@ Phase 9 (End-to-End Validation)
 ## Success Criteria
 
 At the end of Phase 8:
-1. Boot kernel with netlib
+1. Boot kernel with korlib
 2. GC works for managed heap
 3. Metadata reader parses any .NET assembly
 4. RyuJIT compiles IL to native code

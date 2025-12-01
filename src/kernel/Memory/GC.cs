@@ -1,4 +1,4 @@
-// netos kernel - Garbage Collector
+// ProtonOS kernel - Garbage Collector
 // Mark phase implementation with stop-the-world multi-thread root enumeration.
 //
 // Mark Phase Algorithm:
@@ -18,12 +18,12 @@
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Threading;
-using Kernel.Runtime;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.Threading;
+using ProtonOS.Runtime;
+using ProtonOS.X64;
 
-namespace Kernel.Memory;
+namespace ProtonOS.Memory;
 
 /// <summary>
 /// Garbage collector for the managed heap.

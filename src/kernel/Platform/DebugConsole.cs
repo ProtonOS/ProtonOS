@@ -1,8 +1,8 @@
-// netos mernel - Debug console output (COM1 serial)
+// ProtonOS kernel - Debug console output (COM1 serial)
 
 using System.Runtime.InteropServices;
 
-namespace Kernel.Platform;
+namespace ProtonOS.Platform;
 
 /// <summary>
 /// Early debug output via COM1 serial port.

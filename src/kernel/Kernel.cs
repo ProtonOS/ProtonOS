@@ -1,15 +1,15 @@
-// netos kernel - Managed kernel entry point
-// EfiEntry (native.asm) saves UEFI params, then calls zerolib's EfiMain, which calls Main()
+// ProtonOS kernel - Managed kernel entry point
+// EfiEntry (native.asm) saves UEFI params, then calls korlib's EfiMain, which calls Main()
 
 using System.Runtime.InteropServices;
-using Kernel.X64;
-using Kernel.PAL;
-using Kernel.Memory;
-using Kernel.Threading;
-using Kernel.Platform;
-using Kernel.Runtime;
+using ProtonOS.X64;
+using ProtonOS.PAL;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Runtime;
 
-namespace Kernel;
+namespace ProtonOS;
 
 public static unsafe class Kernel
 {
@@ -18,7 +18,7 @@ public static unsafe class Kernel
         DebugConsole.Init();
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("==============================");
-        DebugConsole.WriteLine("  netos kernel booted!");
+        DebugConsole.WriteLine("  ProtonOS kernel booted!");
         DebugConsole.WriteLine("==============================");
         DebugConsole.WriteLine();
 

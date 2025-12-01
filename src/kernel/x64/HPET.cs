@@ -1,13 +1,13 @@
-// netos mernel - HPET (High Precision Event Timer) driver
+// ProtonOS kernel - HPET (High Precision Event Timer) driver
 // Used as a reference clock for calibrating the Local APIC timer.
 // HPET provides a known, stable frequency counter.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// HPET memory-mapped register block.

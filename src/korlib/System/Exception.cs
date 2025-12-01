@@ -1,4 +1,4 @@
-// netos netlib - Exception
+// ProtonOS korlib - Exception
 // Exception class hierarchy for managed exception support.
 
 namespace System;

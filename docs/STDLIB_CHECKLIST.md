@@ -5,7 +5,7 @@ in bflat, enabling use of System.Reflection.Metadata, GC, and other BCL features
 
 ## Overview
 
-Currently netos uses `--stdlib:zero` which provides only primitive types. Switching to
+Currently ProtonOS uses `--stdlib:zero` which provides only primitive types. Switching to
 full stdlib requires implementing PAL (Platform Abstraction Layer) functions that the
 NativeAOT runtime expects from the OS.
 
@@ -57,7 +57,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 ## 1. Memory Management (CRITICAL)
 
 ### Virtual Memory
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | VirtualAlloc | [x] | Memory.cs | GC heap, code allocation |
 | VirtualFree | [x] | Memory.cs | Memory release |
@@ -65,7 +65,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 | VirtualQuery | [x] | Memory.cs | Stack bounds detection |
 
 ### Heap Management
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetProcessHeap | [x] | Memory.cs | Default heap access |
 | HeapCreate | [x] | Memory.cs | Private heaps |
@@ -76,7 +76,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 | HeapSize | [x] | Memory.cs | Query allocation size |
 
 ### Cache Control
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | FlushInstructionCache | [x] | Thread.cs | JIT code generation |
 
@@ -87,7 +87,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 ## 2. Threading (CRITICAL for GC)
 
 ### Thread Lifecycle
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | CreateThread | [x] | Thread.cs | Create managed threads |
 | ExitThread | [x] | Thread.cs | Thread termination |
@@ -97,7 +97,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 | CloseHandle (thread) | [x] | Thread.cs | Handle cleanup |
 
 ### Thread Control (GC CRITICAL)
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | SuspendThread | [x] | Thread.cs | **GC thread suspension** |
 | ResumeThread | [x] | Thread.cs | **GC thread resume** |
@@ -106,13 +106,13 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 | SleepEx | [x] | Thread.cs | Alertable sleep |
 
 ### Thread Priority
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetThreadPriority | [x] | Thread.cs | Priority query |
 | SetThreadPriority | [x] | Thread.cs | Priority adjustment |
 
 ### Thread Context (CRITICAL for SEH/GC)
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetThreadContext | [x] | Thread.cs | **GC stack scanning** |
 | SetThreadContext | [x] | Thread.cs | Exception handling |
@@ -120,7 +120,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 | RtlRestoreContext | [x] | Thread.cs | Context restore |
 
 ### Thread Description (OPT)
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | SetThreadDescription | [x] | Thread.cs | Debug thread names (optional) |
 
@@ -132,7 +132,7 @@ For UEFI with `--no-globalization` and `--no-stacktrace-data`, the main dependen
 
 NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serves the same purpose.
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | FlsAlloc | [x] | Tls.cs | Per-thread data (via TlsAlloc) |
 | FlsGetValue | [x] | Tls.cs | Get thread-local (via TlsGetValue) |
@@ -148,7 +148,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 ## 4. Synchronization (CRITICAL for GC)
 
 ### Events
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | CreateEventW | [x] | Sync.cs | GC signaling |
 | CreateEventExW | [x] | Sync.cs | Extended flags |
@@ -157,7 +157,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | CloseHandle (event) | [x] | Sync.cs | Cleanup |
 
 ### Wait Functions (GC CRITICAL)
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | WaitForSingleObject | [x] | Sync.cs | Basic wait |
 | WaitForSingleObjectEx | [x] | Sync.cs | **Alertable wait for GC** |
@@ -165,7 +165,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | WaitForMultipleObjectsEx | [x] | Sync.cs | **Alertable multi-wait** |
 
 ### Mutexes and Semaphores
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | CreateMutexW | [x] | Sync.cs | Mutex creation |
 | CreateMutexExW | [x] | Sync.cs | Extended flags |
@@ -175,7 +175,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | ReleaseSemaphore | [x] | Sync.cs | Increment count |
 
 ### Critical Sections
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | InitializeCriticalSection | [x] | CriticalSection.cs | Fast mutex |
 | InitializeCriticalSectionEx | [x] | CriticalSection.cs | With spin count |
@@ -185,7 +185,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | DeleteCriticalSection | [x] | CriticalSection.cs | Cleanup |
 
 ### SRW Locks
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | InitializeSRWLock | [x] | SRWLock.cs | Reader-writer lock |
 | AcquireSRWLockShared | [x] | SRWLock.cs | Reader lock |
@@ -196,7 +196,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | ReleaseSRWLockExclusive | [x] | SRWLock.cs | Release writer |
 
 ### Condition Variables
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | InitializeConditionVariable | [x] | ConditionVariable.cs | CV init |
 | SleepConditionVariableCS | [x] | ConditionVariable.cs | Wait with CS |
@@ -205,7 +205,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 | WakeAllConditionVariable | [x] | ConditionVariable.cs | Wake all |
 
 ### COM Wait (OPT - can stub)
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | CoWaitForMultipleHandles | [x] | Com.cs | COM interop (stub ok) |
 | CoInitializeEx | [x] | Com.cs | COM init (stub ok) |
@@ -216,7 +216,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 5. Async Procedure Calls (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | QueueUserAPC | [x] | Thread.cs | Standard APC |
 | QueueUserAPC2 | [x] | Thread.cs | Enhanced APC (Windows 10+) |
@@ -227,7 +227,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 6. Process Information (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetCurrentProcess | [x] | System.cs | Process pseudo-handle |
 | GetCurrentProcessId | [x] | System.cs | Process ID |
@@ -240,7 +240,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 7. System Information (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetSystemInfo | [x] | System.cs | Page size, CPU count |
 | GetNativeSystemInfo | [x] | System.cs | Same on 64-bit |
@@ -253,7 +253,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 8. Environment Variables (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetEnvironmentVariableW | [x] | Environment.cs | Config/tuning |
 | SetEnvironmentVariableW | [x] | Environment.cs | Set variables |
@@ -267,7 +267,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 9. String Conversion (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | MultiByteToWideChar | [x] | String.cs | UTF-8 to UTF-16 |
 | WideCharToMultiByte | [x] | String.cs | UTF-16 to UTF-8 |
@@ -280,7 +280,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 10. Console/Debug Output (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetStdHandle | [x] | Console.cs | Console handles |
 | WriteFile | [x] | Console.cs | Console output |
@@ -295,7 +295,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 11. Exception Handling (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | SetUnhandledExceptionFilter | [x] | Exception.cs | Global filter |
 | RaiseException | [x] | Exception.cs | Throw exceptions |
@@ -307,7 +307,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 12. Stack Unwinding (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | RtlLookupFunctionEntry | [x] | Exception.cs | Find unwind info |
 | RtlVirtualUnwind | [x] | Exception.cs | Unwind one frame |
@@ -321,7 +321,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 13. Interlocked Operations (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | InterlockedIncrement | [x] | Interlocked.cs | Atomic increment |
 | InterlockedDecrement | [x] | Interlocked.cs | Atomic decrement |
@@ -343,7 +343,7 @@ NativeAOT uses Fiber Local Storage (FLS) on Windows. Our TLS implementation serv
 
 ## 14. Module Loading (FUTURE - for dynamic modules)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | LoadLibraryExW | [ ] | - | Load DLL |
 | GetModuleHandleW | [ ] | - | Get module handle |
@@ -363,7 +363,7 @@ they can be stubbed initially.
 
 For SSE/AVX register preservation during context switches.
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | GetEnabledXStateFeatures | [x] | XState.cs | Query XSAVE features |
 | InitializeContext | [x] | XState.cs | Create CONTEXT struct |
@@ -395,7 +395,7 @@ These are internal runtime functions, not Win32 APIs:
 
 ## 17. Time Functions (COMPLETE)
 
-| API | Status | netos File | NativeAOT Usage |
+| API | Status | ProtonOS File | NativeAOT Usage |
 |-----|--------|------------|-----------------|
 | QueryPerformanceCounter | [x] | System.cs | High-res timing |
 | QueryPerformanceFrequency | [x] | System.cs | Timer frequency |

@@ -1,10 +1,10 @@
-// netos mernel - UEFI type definitions and boot services
+// ProtonOS kernel - UEFI type definitions and boot services
 // Provides access to UEFI memory map and boot services for kernel initialization.
 
 using System;
 using System.Runtime.InteropServices;
 
-namespace Kernel.Platform;
+namespace ProtonOS.Platform;
 
 // ============================================================================
 // UEFI Status Codes
@@ -276,7 +276,7 @@ public unsafe struct EFIBootServices
 
 /// <summary>
 /// Provides access to UEFI boot information.
-/// EfiEntry in native.asm saves the UEFI parameters before calling zerolib's EfiMain.
+/// EfiEntry in native.asm saves the UEFI parameters before calling korlib's EfiMain.
 /// </summary>
 public static unsafe class UEFIBoot
 {

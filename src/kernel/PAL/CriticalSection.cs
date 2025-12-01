@@ -1,13 +1,13 @@
-// netos mernel - PAL Critical Sections
+// ProtonOS kernel - PAL Critical Sections
 // Win32-style critical section implementation for PAL compatibility.
 // Lightweight mutex with spin-first behavior before blocking.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Critical Section - lightweight mutex with spin-wait optimization.

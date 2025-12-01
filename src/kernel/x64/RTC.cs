@@ -1,11 +1,11 @@
-// netos mernel - RTC (Real-Time Clock) driver
+// ProtonOS kernel - RTC (Real-Time Clock) driver
 // Reads the CMOS RTC to get wall-clock time at boot.
 // Uses HPET to track elapsed time for ongoing timekeeping.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
+using ProtonOS.Platform;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// RTC (Real-Time Clock) driver for reading wall-clock time from CMOS.

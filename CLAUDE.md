@@ -1,18 +1,18 @@
-# netos - Claude Reference
+# ProtonOS - Claude Reference
 
 ## Project Overview
 
-**netos** is a hybrid managed OS kernel written in C# using .NET Native AOT compilation. The key insight: **C is unnecessary** - everything traditionally done in C can be done in C# with `unsafe`, while privileged CPU instructions require assembly regardless.
+**ProtonOS** is a hybrid managed OS kernel written in C# using .NET Native AOT compilation. The key insight: **C is unnecessary** - everything traditionally done in C can be done in C# with `unsafe`, while privileged CPU instructions require assembly regardless.
 
 ### Architecture Layers
-1. **native** (~650 LOC assembly per arch) - CPU intrinsics, ISR stubs
-2. **netlib** - Minimal runtime library (forked from bflat zerolib, AGPL v3)
-3. **kernel** - Core kernel in C# compiled via bflat/NativeAOT
-4. **JIT Extensions (Future)** - Hot-loadable drivers/modules
+1. **korlib** - Kernel runtime library (forked from bflat zerolib, AGPL v3)
+2. **kernel** - Core kernel in C# + assembly compiled via bflat/NativeAOT (namespace: ProtonOS)
+   - Includes ~650 LOC assembly per arch (native.asm) for CPU intrinsics, ISR stubs
+3. **JIT Extensions (Future)** - Hot-loadable drivers/modules
 
 ## Build Environment
 
-Docker-based development using `netos-dev` container:
+Docker-based development using `protonos-dev` container:
 - **Base:** Debian Bookworm (12) Slim
 - **bflat:** 10.0.0-rc.1 - C# to Native AOT compiler (.NET 10)
 - **NASM:** 2.16.01 - x86_64 assembler (use `-f win64` for UEFI)
@@ -80,44 +80,42 @@ This kills all Docker containers to prevent stale QEMU instances from accumulati
 
 ```
 src/
-├── native/              # Native assembly
-│   └── x64/
-│       └── native.asm   # CPU intrinsics, ISR stubs (~650 LOC)
-├── netlib/              # Runtime library (AGPL v3, from bflat zerolib)
+├── korlib/              # Kernel runtime library (AGPL v3, from bflat zerolib)
 │   ├── Internal/        # Runtime internals, startup
 │   ├── System/          # Core types (Object, String, Span, etc.)
 │   └── LICENSE          # AGPL v3 license
-└── kernel/              # Managed kernel (C#)
+└── kernel/              # Kernel (C# + assembly, namespace: ProtonOS)
     ├── Kernel.cs        # Main entry point
     ├── Memory/          # HeapAllocator, PageAllocator
     ├── PAL/             # Platform Abstraction Layer (Win32-compatible APIs)
     ├── Platform/        # UEFI, ACPI, DebugConsole
+    ├── Runtime/         # PE format, GC infrastructure
     ├── Threading/       # Scheduler, Thread
-    └── x64/             # x64-specific (Arch, GDT, IDT, APIC, etc.)
+    └── x64/             # x64-specific (Arch, GDT, IDT, APIC, native.asm)
 
 build/
 └── x64/
     ├── native.obj       # Assembled native code
-    ├── kernel.obj       # Compiled C# (netlib + kernel)
+    ├── kernel.obj       # Compiled C# (korlib + kernel)
     ├── BOOTX64.EFI      # UEFI executable
     └── boot.img         # FAT32 boot image
 ```
 
 ### stdlib:none Mode
-We use `--stdlib:none` with our own netlib (forked from bflat's zerolib). This provides:
+We use `--stdlib:none` with our own korlib (forked from bflat's zerolib). This provides:
 - Core types: Object, String, Array, Span<T>, etc.
 - Compiler support types: RuntimeHelpers, Unsafe, etc.
 - Mark-sweep GC with stack/static root enumeration
 
 ### Export/Import Pattern
-netlib and kernel are compiled together but use export/import for cross-module calls:
+korlib and kernel are compiled together but use export/import for cross-module calls:
 
 ```csharp
 // Kernel exports (src/kernel/PAL/Environment.cs)
 [UnmanagedCallersOnly(EntryPoint = "PalFailFast")]
 public static void FailFast() { CPU.HaltForever(); }
 
-// netlib imports (src/netlib/System/Environment.cs)
+// korlib imports (src/korlib/System/Environment.cs)
 [DllImport("*")]
 private static extern void PalFailFast();
 ```
@@ -129,9 +127,9 @@ Compile-time architecture selection via preprocessor:
 ```csharp
 // In Kernel.cs - compile-time dispatch
 #if ARCH_X64
-    Arch.Init();  // Kernel.X64.Arch
+    Arch.Init();  // ProtonOS.X64.Arch
 #elif ARCH_ARM64
-    Arch.Init();  // Kernel.Arm64.Arch (future)
+    Arch.Init();  // ProtonOS.Arm64.Arch (future)
 #endif
 ```
 
@@ -216,15 +214,16 @@ qemu-system-x86_64 \
 - [x] Preemptive scheduler with threading
 - [x] Win32-compatible PAL (sync primitives, TLS, SEH, etc.)
 
-### netlib (In Progress)
-- [x] Phase 1: Fork zerolib as netlib foundation
-- [ ] Phase 2: Exception support (try/catch/throw)
-- [ ] Phase 3: Garbage collector
-- [ ] Phase 4: Assembly loader (PE/metadata reader)
-- [ ] Phase 5: IL interpreter
-- [ ] Phase 6-8: Load BCL assemblies, System.Reflection.Metadata
+### korlib (In Progress)
+- [x] Phase 1: Fork zerolib as korlib foundation
+- [x] Phase 2: Exception support (try/catch/throw)
+- [x] Phase 3: Garbage collector (mark-sweep with stack/static roots)
+- [ ] Phase 4: UEFI file system (load test assemblies)
+- [ ] Phase 5: Metadata reader (native System.Reflection.Metadata)
+- [ ] Phase 6: RyuJIT integration
+- [ ] Phase 7-9: Assembly execution, BCL support, validation
 
-See `docs/NETLIB_PLAN.md` for detailed roadmap.
+See `docs/KORLIB_PLAN.md` for detailed roadmap.
 
 ## Critical Memory
 - Use `./build.sh` for building - it handles container cleanup and build directory cleaning automatically

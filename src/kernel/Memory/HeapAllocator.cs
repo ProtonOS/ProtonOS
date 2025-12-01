@@ -1,12 +1,12 @@
-// netos mernel - Kernel heap allocator
+// ProtonOS kernel - Kernel heap allocator
 // Simple free-list allocator for variable-sized allocations.
 // Uses PageAllocator for backing memory, grows on demand.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.X64;
 
-namespace Kernel.Memory;
+namespace ProtonOS.Memory;
 
 /// <summary>
 /// Block header stored at the start of each allocation.

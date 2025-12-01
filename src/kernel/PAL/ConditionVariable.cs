@@ -1,13 +1,13 @@
-// netos mernel - PAL Condition Variables
+// ProtonOS kernel - PAL Condition Variables
 // Win32-style condition variable implementation for PAL compatibility.
 // Used with Critical Sections for producer/consumer and wait patterns.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Condition Variable - allows threads to atomically release a lock

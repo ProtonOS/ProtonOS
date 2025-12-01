@@ -1,9 +1,9 @@
-// netos mernel - PAL Interlocked APIs
+// ProtonOS kernel - PAL Interlocked APIs
 // Win32-compatible interlocked operations for PAL compatibility.
 
-using Kernel.X64;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Interlocked APIs - Win32-compatible atomic operations.

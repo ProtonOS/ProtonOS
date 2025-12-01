@@ -1,11 +1,11 @@
-// netos mernel - PAL COM Stubs
+// ProtonOS kernel - PAL COM Stubs
 // Win32-compatible COM API stubs for PAL compatibility.
-// COM is not supported in netos, but some NativeAOT code paths call these.
+// COM is not supported in ProtonOS, but some NativeAOT code paths call these.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
+using ProtonOS.Threading;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// COM initialization flags.
@@ -46,7 +46,7 @@ public static class HResult
 
 /// <summary>
 /// PAL COM APIs - Stubs for COM functionality.
-/// COM is not supported in netos, but these stubs allow code that calls
+/// COM is not supported in ProtonOS, but these stubs allow code that calls
 /// these APIs to continue without crashing.
 /// </summary>
 public static unsafe class COM
@@ -56,7 +56,7 @@ public static unsafe class COM
 
     /// <summary>
     /// Initialize COM for the current thread.
-    /// In netos, this is a no-op that always succeeds.
+    /// In ProtonOS, this is a no-op that always succeeds.
     /// </summary>
     /// <param name="pvReserved">Reserved, must be null</param>
     /// <param name="dwCoInit">Initialization flags</param>
@@ -90,7 +90,7 @@ public static unsafe class COM
 
     /// <summary>
     /// Wait for handles with COM message pumping.
-    /// In netos, this maps directly to WaitForMultipleObjectsEx.
+    /// In ProtonOS, this maps directly to WaitForMultipleObjectsEx.
     /// </summary>
     /// <param name="dwFlags">Wait flags</param>
     /// <param name="dwTimeout">Timeout in milliseconds</param>

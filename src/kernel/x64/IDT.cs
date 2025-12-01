@@ -1,13 +1,13 @@
-// netos mernel - x64 Interrupt Descriptor Table
+// ProtonOS kernel - x64 Interrupt Descriptor Table
 // Sets up IDT entries pointing to ISR stubs in nernel.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
+using ProtonOS.X64;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// 16-byte IDT entry for 64-bit mode

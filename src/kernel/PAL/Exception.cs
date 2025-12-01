@@ -1,12 +1,12 @@
-// netos mernel - PAL Exception APIs
+// ProtonOS kernel - PAL Exception APIs
 // Win32-compatible exception handling APIs for PAL compatibility.
 
 using System.Runtime.InteropServices;
-using Kernel.X64;
-using Kernel.Platform;
-using Kernel.Threading;
+using ProtonOS.X64;
+using ProtonOS.Platform;
+using ProtonOS.Threading;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Exception APIs - Win32-compatible exception handling functions.
@@ -230,7 +230,7 @@ public static unsafe class Exception
     }
 
     // ========================================================================
-    // Runtime Exception Exports for netlib
+    // Runtime Exception Exports for korlib
     // These are called by compiler-generated code for throw statements.
     // ========================================================================
     // RhpThrowEx, RhpRethrow, RhpThrowHwEx are implemented in native.asm

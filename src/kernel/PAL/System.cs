@@ -1,11 +1,11 @@
-// netos mernel - PAL System APIs
+// ProtonOS kernel - PAL System APIs
 // Win32-compatible system information, timing, and debug APIs for PAL compatibility.
 
 using System.Runtime.InteropServices;
-using Kernel.X64;
-using Kernel.Platform;
+using ProtonOS.X64;
+using ProtonOS.Platform;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// Processor architecture constants.
@@ -374,7 +374,7 @@ public static unsafe class ProcessApi
 
     /// <summary>
     /// Query information about a job object.
-    /// Not supported in netos - always returns failure.
+    /// Not supported in ProtonOS - always returns failure.
     /// </summary>
     public static bool QueryInformationJobObject(
         nuint hJob,
@@ -402,7 +402,7 @@ public static unsafe class VersionApi
 
     /// <summary>
     /// Determine if a process is running under WOW64 (32-bit on 64-bit).
-    /// In netos, we always run native 64-bit, so this returns false.
+    /// In ProtonOS, we always run native 64-bit, so this returns false.
     /// </summary>
     /// <param name="hProcess">Process handle (ignored)</param>
     /// <param name="pProcessMachine">Receives the process machine type</param>
@@ -431,7 +431,7 @@ public static unsafe class VersionApi
 
     /// <summary>
     /// Check if the Windows version is equal to or greater than the specified version.
-    /// In netos, we always return true for Windows 10+ version checks.
+    /// In ProtonOS, we always return true for Windows 10+ version checks.
     /// </summary>
     /// <param name="wMajorVersion">Major version to check</param>
     /// <param name="wMinorVersion">Minor version to check</param>

@@ -1,12 +1,12 @@
-// netos kernel - MethodTable structure
+// ProtonOS kernel - MethodTable structure
 // Mirrors the NativeAOT MethodTable layout for GC and runtime inspection.
 //
 // This is a kernel-side copy of the MethodTable struct. The layout must match
-// exactly what NativeAOT/bflat emits. netlib has its own internal copy for allocation.
+// exactly what NativeAOT/bflat emits. korlib has its own internal copy for allocation.
 
 using System.Runtime.InteropServices;
 
-namespace Kernel.Runtime;
+namespace ProtonOS.Runtime;
 
 /// <summary>
 /// MethodTable flags from NativeAOT runtime.

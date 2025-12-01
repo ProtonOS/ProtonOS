@@ -1,4 +1,4 @@
-// netos kernel - x64 Stack Root Enumeration
+// ProtonOS kernel - x64 Stack Root Enumeration
 // Walks the stack and enumerates all live GC references using GCInfo.
 //
 // For each stack frame:
@@ -13,11 +13,11 @@
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Runtime;
-using Kernel.Memory;
+using ProtonOS.Platform;
+using ProtonOS.Runtime;
+using ProtonOS.Memory;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// Enumerates GC roots from the stack using GCInfo.

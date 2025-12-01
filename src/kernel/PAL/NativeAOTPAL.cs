@@ -1,14 +1,14 @@
-// netos mernel - NativeAOT PAL Functions
+// ProtonOS kernel - NativeAOT PAL Functions
 // Internal PAL functions used by NativeAOT runtime.
 // These are not Win32 APIs but are called by the NativeAOT GC and runtime.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
-using Kernel.Platform;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
+using ProtonOS.Platform;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// NativeAOT-specific PAL functions.
@@ -154,7 +154,7 @@ public static unsafe class NativeAOTPAL
 
     /// <summary>
     /// Get PDB debug information for a module.
-    /// Not supported in netos - we don't have PDBs.
+    /// Not supported in ProtonOS - we don't have PDBs.
     /// </summary>
     public static bool GetPDBInfo(
         void* moduleBase,

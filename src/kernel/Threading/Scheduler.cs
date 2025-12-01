@@ -1,14 +1,14 @@
-// netos mernel - Kernel Scheduler
+// ProtonOS kernel - Kernel Scheduler
 // Round-robin preemptive scheduler with support for thread creation and context switching.
 // Designed for future Win32 PAL compatibility (CreateThread, WaitForSingleObject, etc.)
 // Uses heap allocation for thread structures - no artificial thread limits.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.Threading;
+namespace ProtonOS.Threading;
 
 /// <summary>
 /// Kernel thread scheduler - manages thread lifecycle and context switching.

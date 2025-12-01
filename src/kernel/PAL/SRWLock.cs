@@ -1,13 +1,13 @@
-// netos mernel - PAL Slim Reader/Writer Lock
+// ProtonOS kernel - PAL Slim Reader/Writer Lock
 // Win32-style SRW lock implementation for PAL compatibility.
 // Allows multiple concurrent readers OR a single exclusive writer.
 
 using System.Runtime.InteropServices;
-using Kernel.Threading;
-using Kernel.Memory;
-using Kernel.X64;
+using ProtonOS.Threading;
+using ProtonOS.Memory;
+using ProtonOS.X64;
 
-namespace Kernel.PAL;
+namespace ProtonOS.PAL;
 
 /// <summary>
 /// PAL Slim Reader/Writer Lock - allows multiple readers or single writer.

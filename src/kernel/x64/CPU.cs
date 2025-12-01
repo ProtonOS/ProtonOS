@@ -1,12 +1,12 @@
-// netos mernel - x64 CPU intrinsics
+// ProtonOS kernel - x64 CPU intrinsics
 // Centralized wrappers around native assembly for CPU-specific instructions.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// CPU intrinsics for x64 - all native function imports in one place

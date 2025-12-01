@@ -1,13 +1,13 @@
-// netos mernel - Global Descriptor Table
+// ProtonOS kernel - Global Descriptor Table
 // In 64-bit long mode, segmentation is mostly disabled but GDT is still required
 // for privilege levels, TSS, and the syscall/sysret instructions.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// GDT segment selectors (byte offsets into GDT)

@@ -1,12 +1,12 @@
-// netos mernel - x64 Virtual Memory Manager
+// ProtonOS kernel - x64 Virtual Memory Manager
 // Implements 4-level paging (PML4 -> PDPT -> PD -> PT) for x64.
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// Page table entry flags for x64 4-level paging

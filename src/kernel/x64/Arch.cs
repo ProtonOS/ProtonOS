@@ -1,12 +1,12 @@
-// netos mernel - x64 Architecture Initialization
+// ProtonOS kernel - x64 Architecture Initialization
 // Static initialization to avoid 'new' keyword issues in stdlib:zero
 
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.Memory;
-using Kernel.Threading;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+using ProtonOS.Threading;
 
-namespace Kernel.X64;
+namespace ProtonOS.X64;
 
 /// <summary>
 /// Static storage for interrupt handlers (fixed buffer wrapper)

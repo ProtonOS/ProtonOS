@@ -1,9 +1,9 @@
-// netos - PE/COFF Format Structures
+// ProtonOS - PE/COFF Format Structures
 // Portable Executable format definitions for parsing PE images.
 
 using System.Runtime.InteropServices;
 
-namespace Kernel.Runtime;
+namespace ProtonOS.Runtime;
 
 /// <summary>
 /// PE format magic constants

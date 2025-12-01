@@ -1,4 +1,4 @@
-; netos nernel - x64 native layer
+; ProtonOS kernel - x64 native layer
 ; Provides UEFI entry point hook and CPU primitives for the kernel.
 
 BITS 64
@@ -14,9 +14,9 @@ g_uefi_system_table:  dq 0
 section .text
 
 ;; ==================== UEFI Entry Point ====================
-;; Linker entry point that saves UEFI parameters, then calls zerolib's EfiMain.
+;; Linker entry point that saves UEFI parameters, then calls korlib's EfiMain.
 
-extern EfiMain  ; zerolib's EfiMain
+extern EfiMain  ; korlib's EfiMain
 
 ; EFI_STATUS EFIAPI EfiEntry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable)
 ; Windows x64 ABI: ImageHandle in rcx, SystemTable in rdx
@@ -26,7 +26,7 @@ EfiEntry:
     mov [rel g_uefi_image_handle], rcx
     mov [rel g_uefi_system_table], rdx
 
-    ; Tail-call to zerolib's EfiMain (parameters already in correct registers)
+    ; Tail-call to korlib's EfiMain (parameters already in correct registers)
     jmp EfiMain
 
 ;; ==================== Port I/O ====================

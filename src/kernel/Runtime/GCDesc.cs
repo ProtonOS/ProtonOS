@@ -1,4 +1,4 @@
-// netos kernel - GCDesc Parser
+// ProtonOS kernel - GCDesc Parser
 // Enumerates object reference fields from MethodTable's GCDesc metadata.
 //
 // GCDesc is stored BEFORE the MethodTable in memory and describes which fields
@@ -6,9 +6,9 @@
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
+using ProtonOS.Platform;
 
-namespace Kernel.Runtime;
+namespace ProtonOS.Runtime;
 
 /// <summary>
 /// A series entry in GCDesc describing a contiguous run of reference fields.

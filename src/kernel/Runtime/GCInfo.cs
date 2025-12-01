@@ -1,4 +1,4 @@
-// netos kernel - GCInfo Decoder
+// ProtonOS kernel - GCInfo Decoder
 // Parses NativeAOT GCInfo to enumerate GC references on the stack.
 //
 // GCInfo is located in .xdata after UNWIND_INFO and NativeAOT-specific data.
@@ -9,10 +9,10 @@
 
 using System;
 using System.Runtime.InteropServices;
-using Kernel.Platform;
-using Kernel.X64;
+using ProtonOS.Platform;
+using ProtonOS.X64;
 
-namespace Kernel.Runtime;
+namespace ProtonOS.Runtime;
 
 /// <summary>
 /// Flags for GCInfo header (fat header format).
