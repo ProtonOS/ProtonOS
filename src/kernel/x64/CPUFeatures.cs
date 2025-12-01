@@ -115,6 +115,11 @@ public static class CPUFeatures
     private static bool _sseEnabled;
     private static bool _avxEnabled;
 
+    // XSAVE area sizes (determined by CPUID)
+    private static uint _xsaveAreaSize;      // Total XSAVE area size for enabled features
+    private static uint _xsaveLegacySize;    // Legacy region size (512 bytes for FXSAVE format)
+    private static bool _useXsave;           // True if XSAVE is available and enabled
+
     /// <summary>
     /// Detected CPU features
     /// </summary>
@@ -129,6 +134,22 @@ public static class CPUFeatures
     /// Whether AVX is enabled
     /// </summary>
     public static bool AVXEnabled => _avxEnabled;
+
+    /// <summary>
+    /// Whether XSAVE is being used (vs FXSAVE)
+    /// </summary>
+    public static bool UseXsave => _useXsave;
+
+    /// <summary>
+    /// Size of the extended state save area in bytes.
+    /// This is the XSAVE area size if XSAVE is enabled, otherwise 512 for FXSAVE.
+    /// </summary>
+    public static uint ExtendedStateSize => _xsaveAreaSize;
+
+    /// <summary>
+    /// FXSAVE area size (legacy SSE state) - always 512 bytes
+    /// </summary>
+    public const uint FxsaveAreaSize = 512;
 
     /// <summary>
     /// Check if a specific feature is available
@@ -275,6 +296,10 @@ public static class CPUFeatures
         CPU.InitFpu();
 
         _sseEnabled = true;
+        _useXsave = false;
+        _xsaveAreaSize = FxsaveAreaSize;  // Default to FXSAVE size (512 bytes)
+        _xsaveLegacySize = FxsaveAreaSize;
+
         DebugConsole.WriteLine("[CPUFeatures] SSE enabled (CR0.EM=0, CR4.OSFXSR=1, CR4.OSXMMEXCPT=1)");
 
         // Optionally enable AVX if supported
@@ -299,7 +324,21 @@ public static class CPUFeatures
         CPU.WriteXcr0(xcr0);
 
         _avxEnabled = true;
-        DebugConsole.WriteLine("[CPUFeatures] AVX enabled (CR4.OSXSAVE=1, XCR0=0x7)");
+        _useXsave = true;
+
+        // Query XSAVE area size using CPUID.0DH
+        // Subleaf 0 with XCR0 bits returns the required XSAVE area size
+        CPU.Cpuid(0x0D, 0, out uint eax, out uint ebx, out uint ecx, out _);
+
+        // EBX = size required for all enabled features (in XCR0)
+        // ECX = maximum size for all supported features
+        // EAX = valid bits for XCR0 (lower 32 bits)
+        _xsaveAreaSize = ebx;
+        _xsaveLegacySize = FxsaveAreaSize;
+
+        DebugConsole.Write("[CPUFeatures] AVX enabled (CR4.OSXSAVE=1, XCR0=0x7), XSAVE area size: ");
+        DebugConsole.WriteDecimal(_xsaveAreaSize);
+        DebugConsole.WriteLine(" bytes");
     }
 
     private static void EnableNX()

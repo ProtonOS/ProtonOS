@@ -113,6 +113,11 @@ public unsafe struct Thread
     public APC* APCQueueHead;          // Head of APC queue (FIFO)
     public APC* APCQueueTail;          // Tail of APC queue
     public bool Alertable;             // Whether thread is in alertable wait state
+
+    // Extended processor state (FPU/SSE/AVX)
+    // Pointer to 64-byte aligned buffer for FXSAVE/XSAVE area
+    public byte* ExtendedState;        // Pointer to FXSAVE/XSAVE area (64-byte aligned)
+    public uint ExtendedStateSize;     // Size of extended state area in bytes
 }
 
 /// <summary>

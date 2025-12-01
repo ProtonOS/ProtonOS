@@ -81,6 +81,9 @@ public static unsafe class Scheduler
         bootThread->PrevReady = null;
         bootThread->NextAll = null;
 
+        // Allocate extended state area for boot thread (FPU/SSE/AVX)
+        AllocateExtendedState(bootThread);
+
         // Add to all-threads list
         _allThreadsHead = bootThread;
 
@@ -192,6 +195,9 @@ public static unsafe class Scheduler
         thread->Context.Rsp &= ~0xFUL;
         // Stack must be 16-byte aligned BEFORE call, so subtract 8 for the "return address"
         thread->Context.Rsp -= 8;
+
+        // Allocate extended state area (FPU/SSE/AVX) with 64-byte alignment
+        AllocateExtendedState(thread);
 
         threadId = thread->Id;
         _threadCount++;
@@ -398,6 +404,41 @@ public static unsafe class Scheduler
     }
 
     /// <summary>
+    /// Allocate extended processor state area (FPU/SSE/AVX) for a thread.
+    /// The area must be 64-byte aligned for XSAVE or 16-byte aligned for FXSAVE.
+    /// </summary>
+    private static void AllocateExtendedState(Thread* thread)
+    {
+        uint size = CPUFeatures.ExtendedStateSize;
+        if (size == 0)
+        {
+            // CPU features not initialized yet or no SSE support
+            thread->ExtendedState = null;
+            thread->ExtendedStateSize = 0;
+            return;
+        }
+
+        // Allocate with 64-byte alignment (XSAVE requirement, also covers FXSAVE's 16-byte)
+        // We allocate extra bytes to ensure alignment
+        ulong rawPtr = (ulong)HeapAllocator.AllocZeroed(size + 64);
+        if (rawPtr == 0)
+        {
+            DebugConsole.WriteLine("[Sched] WARNING: Failed to allocate extended state area!");
+            thread->ExtendedState = null;
+            thread->ExtendedStateSize = 0;
+            return;
+        }
+
+        // Align to 64-byte boundary
+        ulong alignedPtr = (rawPtr + 63) & ~63UL;
+        thread->ExtendedState = (byte*)alignedPtr;
+        thread->ExtendedStateSize = size;
+
+        // Initialize the XSAVE header for XRSTOR (all zeros is valid initial state)
+        // The XSAVE area is already zeroed from AllocZeroed
+    }
+
+    /// <summary>
     /// Pick the next thread to run.
     /// Called from timer interrupt or yield.
     /// </summary>
@@ -460,14 +501,30 @@ public static unsafe class Scheduler
 
             _lock.Release();
 
-            // Perform context switch
+            // Perform context switch with FPU/SSE/AVX state
             if (oldThread != null)
             {
+                // Save extended state of old thread
+                if (oldThread->ExtendedState != null)
+                {
+                    CPU.SaveExtendedState(oldThread->ExtendedState);
+                }
+
+                // Restore extended state of new thread
+                if (next->ExtendedState != null)
+                {
+                    CPU.RestoreExtendedState(next->ExtendedState);
+                }
+
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
             else
             {
-                // First switch - just load new context
+                // First switch - restore extended state and load new context
+                if (next->ExtendedState != null)
+                {
+                    CPU.RestoreExtendedState(next->ExtendedState);
+                }
                 CPU.LoadContext(&next->Context);
             }
         }

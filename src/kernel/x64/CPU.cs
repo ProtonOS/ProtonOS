@@ -68,6 +68,19 @@ public static unsafe class CPU
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void fninit();
 
+    // Extended State Save/Restore
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void fxsave(void* area);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void fxrstor(void* area);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void xsave(void* area, ulong mask);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void xrstor(void* area, ulong mask);
+
     // Descriptor Tables
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void lgdt(void* gdtPtr);
@@ -257,6 +270,54 @@ public static unsafe class CPU
     /// Initialize x87 FPU
     /// </summary>
     public static void InitFpu() => fninit();
+
+    // --- Extended State Save/Restore ---
+
+    /// <summary>
+    /// Save FPU/SSE state using FXSAVE (legacy, 512 bytes, 16-byte aligned)
+    /// </summary>
+    public static void Fxsave(void* area) => fxsave(area);
+
+    /// <summary>
+    /// Restore FPU/SSE state using FXRSTOR (legacy, 512 bytes, 16-byte aligned)
+    /// </summary>
+    public static void Fxrstor(void* area) => fxrstor(area);
+
+    /// <summary>
+    /// Save extended state using XSAVE (64-byte aligned, variable size)
+    /// </summary>
+    /// <param name="area">Pointer to 64-byte aligned XSAVE area</param>
+    /// <param name="mask">State component mask (subset of XCR0)</param>
+    public static void Xsave(void* area, ulong mask) => xsave(area, mask);
+
+    /// <summary>
+    /// Restore extended state using XRSTOR (64-byte aligned, variable size)
+    /// </summary>
+    /// <param name="area">Pointer to 64-byte aligned XSAVE area</param>
+    /// <param name="mask">State component mask (subset of XCR0)</param>
+    public static void Xrstor(void* area, ulong mask) => xrstor(area, mask);
+
+    /// <summary>
+    /// Save extended state using the best available method (XSAVE or FXSAVE)
+    /// </summary>
+    public static void SaveExtendedState(void* area)
+    {
+        if (CPUFeatures.UseXsave)
+            xsave(area, 0xFFFFFFFFFFFFFFFF);  // Save all enabled components
+        else
+            fxsave(area);
+    }
+
+    /// <summary>
+    /// Restore extended state using the best available method (XRSTOR or FXRSTOR)
+    /// </summary>
+    public static void RestoreExtendedState(void* area)
+    {
+        if (CPUFeatures.UseXsave)
+            xrstor(area, 0xFFFFFFFFFFFFFFFF);  // Restore all enabled components
+        else
+            fxrstor(area);
+    }
 
     // --- Descriptor Tables ---
 

@@ -20,7 +20,7 @@ This is a kernel-level prerequisite.
 
 - [x] Review current CR0/CR4 settings in `Arch.Init()`
 - [x] Understand x64 FPU/SSE/AVX state saving requirements
-- [ ] XSAVE area layout for context switches
+- [x] XSAVE area layout for context switches
 - [x] CPUID feature detection
 
 **Key Control Register Bits:**
@@ -54,18 +54,18 @@ This is a kernel-level prerequisite.
 #### 6.0.3 XSAVE Setup (if supported)
 - [x] Set CR4.OSXSAVE (enable XSAVE) - implemented, skipped if not supported
 - [x] Set XCR0 to enable desired state components - xsetbv implemented
-- [ ] Calculate XSAVE area size for context switches
-- [ ] Update thread context structure for extended state
+- [x] Calculate XSAVE area size for context switches - CPUFeatures.ExtendedStateSize (832 bytes with AVX)
+- [x] Update thread context structure for extended state - Thread.ExtendedState, Thread.ExtendedStateSize
 
 #### 6.0.4 Context Switch Updates
-- [ ] Save FPU/SSE state on context switch (FXSAVE or XSAVE)
-- [ ] Restore FPU/SSE state on context switch (FXRSTOR or XRSTOR)
-- [ ] Consider lazy FPU save optimization (use CR0.TS + #NM handler)
+- [x] Save FPU/SSE state on context switch (FXSAVE or XSAVE) - CPU.SaveExtendedState()
+- [x] Restore FPU/SSE state on context switch (FXRSTOR or XRSTOR) - CPU.RestoreExtendedState()
+- [ ] Consider lazy FPU save optimization (use CR0.TS + #NM handler) - deferred, eager save works
 
 ### Test
 - [x] Dynamic code execution works (4 test cases passing)
 - [ ] JIT'd code using float/double works correctly
-- [ ] Context switches preserve FPU state between threads
+- [x] Context switches preserve FPU state between threads - XSAVE/XRSTOR integrated in Scheduler.Schedule()
 - [x] SSE instructions execute without #UD (verified via CR0/CR4 state)
 
 ---

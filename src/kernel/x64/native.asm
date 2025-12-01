@@ -217,6 +217,42 @@ fninit:
     fninit
     ret
 
+;; ==================== Extended State Save/Restore ====================
+;; FXSAVE/FXRSTOR - Save/restore legacy x87/SSE state (512 bytes, 16-byte aligned)
+;; XSAVE/XRSTOR - Save/restore extended state including AVX (variable size, 64-byte aligned)
+
+global fxsave, fxrstor, xsave, xrstor
+
+; void fxsave(void* area) - Save FPU/SSE state to 512-byte area (16-byte aligned)
+; Windows x64 ABI: area in rcx
+fxsave:
+    fxsave [rcx]
+    ret
+
+; void fxrstor(void* area) - Restore FPU/SSE state from 512-byte area (16-byte aligned)
+; Windows x64 ABI: area in rcx
+fxrstor:
+    fxrstor [rcx]
+    ret
+
+; void xsave(void* area, uint64_t mask) - Save extended state (64-byte aligned)
+; Windows x64 ABI: area in rcx, mask in rdx
+; mask specifies which state components to save (XCR0 subset)
+xsave:
+    mov rax, rdx        ; Low 32 bits of mask
+    shr rdx, 32         ; High 32 bits of mask
+    xsave [rcx]         ; Save state components specified by edx:eax
+    ret
+
+; void xrstor(void* area, uint64_t mask) - Restore extended state (64-byte aligned)
+; Windows x64 ABI: area in rcx, mask in rdx
+; mask specifies which state components to restore (XCR0 subset)
+xrstor:
+    mov rax, rdx        ; Low 32 bits of mask
+    shr rdx, 32         ; High 32 bits of mask
+    xrstor [rcx]        ; Restore state components specified by edx:eax
+    ret
+
 ;; ==================== TLB ====================
 
 global invlpg
