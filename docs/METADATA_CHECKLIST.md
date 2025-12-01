@@ -3,7 +3,7 @@
 This document tracks implementation progress for Phase 4 (UEFI FS) and Phase 5 (Metadata Reader).
 
 **Locations**:
-- Phase 4 - UEFI FS: `src/kernel/Platform/UefiFileSystem.cs`
+- Phase 4 - UEFI FS: `src/kernel/Platform/UEFIFS.cs` ✅
 - Phase 5 - Metadata: `src/kernel/Runtime/Metadata/`
 
 **Reference**: `dotnet/` submodule (.NET 10 runtime source)
@@ -14,9 +14,9 @@ boot image. This catches bit-level parsing bugs early.
 
 ---
 
-## Phase 4: UEFI File System
+## Phase 4: UEFI File System ✅
 
-Must be completed first to enable iterative testing of metadata reader.
+Completed. UEFI file loading works before ExitBootServices.
 
 ### Research
 
@@ -86,22 +86,25 @@ See: [UEFI Spec 2.10 §13 Media Access](https://uefi.org/specs/UEFI/2.10/13_Prot
 
 ### Implementation
 
-**File**: `src/kernel/Platform/UefiFileSystem.cs`
+**File**: `src/kernel/Platform/UEFIFS.cs`
 
-- [ ] Locate EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on boot device
-- [ ] Open root directory
-- [ ] Open file by path
-- [ ] Get file size (EFI_FILE_INFO)
-- [ ] Read file into memory (allocate from heap)
-- [ ] Close file handle
-- [ ] Public API: `ReadFile(string path, out int length) -> byte*`
+- [x] Locate EFI_SIMPLE_FILE_SYSTEM_PROTOCOL on boot device
+- [x] Open root directory
+- [x] Open file by path
+- [x] Get file size (EFI_FILE_INFO)
+- [x] Read file into memory (allocate from UEFI pool - LoaderData)
+- [x] Close file handle
+- [x] Public API: `ReadFile(char* path, out ulong size) -> byte*`, `ReadFileAscii(string path, out ulong size) -> byte*`
+
+**Memory Safety**: File is loaded before `PageAllocator.Init()` so the allocation is captured in
+the memory map snapshot. LoaderData memory is not marked as free, so it persists after ExitBootServices.
 
 ### Test Assembly
 
-- [ ] Create minimal test project (`test/TestAssembly/`)
-- [ ] Build TestAssembly.dll with standard `dotnet build`
-- [ ] Add to boot image (update Makefile)
-- [ ] Load and print basic info (size, first bytes) to verify FS works
+- [x] Create minimal test project (`src/MetadataTest/`)
+- [x] Build MetadataTest.dll with standard `dotnet build` (.NET 10)
+- [x] Add to boot image (update Makefile `test` and `image` targets)
+- [x] Load and print basic info (address, size, MZ signature) to verify FS works
 
 ---
 
