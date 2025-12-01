@@ -3741,4 +3741,262 @@ public static unsafe class Tests
     {
         _apc2CallCount++;
     }
+
+    // ==================== JIT/Dynamic Code Execution Tests ====================
+
+    /// <summary>
+    /// Test CPU feature detection and report results.
+    /// </summary>
+    public static void TestCPUFeatures()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("========== CPU Feature Detection Test ==========");
+
+        // Initialize CPU features (detects and enables SSE/AVX)
+        CPUFeatures.Init();
+
+        // Dump detailed state
+        CPUFeatures.DumpState();
+
+        DebugConsole.WriteLine("========== CPU Features Test Complete ==========");
+    }
+
+    /// <summary>
+    /// Test dynamic code execution by allocating memory, writing machine code,
+    /// and executing it. This is the foundation for JIT compilation.
+    /// </summary>
+    public static void TestDynamicCodeExecution()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("========== Dynamic Code Execution Test ==========");
+
+        // Test 1: Simple RET instruction
+        TestDynamicRet();
+
+        // Test 2: Function that returns a constant (mov eax, N; ret)
+        TestDynamicReturnConstant();
+
+        // Test 3: Function that adds two arguments
+        TestDynamicAdd();
+
+        // Test 4: Function with conditional jump
+        TestDynamicConditional();
+
+        DebugConsole.WriteLine("========== Dynamic Code Tests Complete ==========");
+    }
+
+    /// <summary>
+    /// Test 1: Execute a dynamically generated RET instruction
+    /// </summary>
+    private static void TestDynamicRet()
+    {
+        DebugConsole.Write("[JIT Test 1] Dynamic RET: ");
+
+        // Allocate executable memory
+        // We use the heap allocator for simplicity - current kernel mappings allow execution
+        // In a production JIT, we'd use a dedicated code heap with proper W^X
+        byte* code = (byte*)HeapAllocator.Alloc(64);
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - could not allocate memory");
+            return;
+        }
+
+        DebugConsole.Write("code at 0x");
+        DebugConsole.WriteHex((ulong)code);
+        DebugConsole.Write(" - ");
+
+        // Write a simple RET (0xC3)
+        code[0] = 0xC3;  // ret
+
+        // Cast to function pointer and call
+        // void (*fn)(void)
+        var fn = (delegate*<void>)code;
+
+        // Call the dynamically generated code
+        fn();
+
+        DebugConsole.WriteLine("PASSED");
+    }
+
+    /// <summary>
+    /// Test 2: Function that returns a constant value
+    /// mov eax, 0x12345678
+    /// ret
+    /// </summary>
+    private static void TestDynamicReturnConstant()
+    {
+        DebugConsole.Write("[JIT Test 2] Return constant: ");
+
+        byte* code = (byte*)HeapAllocator.Alloc(64);
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - could not allocate memory");
+            return;
+        }
+
+        // Write: mov eax, 0x12345678; ret
+        // B8 78 56 34 12    mov eax, 0x12345678
+        // C3                ret
+        int offset = 0;
+        code[offset++] = 0xB8;  // mov eax, imm32
+        code[offset++] = 0x78;  // imm32 low byte
+        code[offset++] = 0x56;
+        code[offset++] = 0x34;
+        code[offset++] = 0x12;  // imm32 high byte
+        code[offset++] = 0xC3;  // ret
+
+        // Cast to function pointer: int (*fn)(void)
+        var fn = (delegate*<int>)code;
+
+        int result = fn();
+
+        if (result == 0x12345678)
+        {
+            DebugConsole.Write("result=0x");
+            DebugConsole.WriteHex((ulong)(uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 0x12345678, got 0x");
+            DebugConsole.WriteHex((ulong)(uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 3: Function that adds two arguments
+    /// Windows x64 ABI: first arg in ecx, second in edx, return in eax
+    /// mov eax, ecx
+    /// add eax, edx
+    /// ret
+    /// </summary>
+    private static void TestDynamicAdd()
+    {
+        DebugConsole.Write("[JIT Test 3] Add two args: ");
+
+        byte* code = (byte*)HeapAllocator.Alloc(64);
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - could not allocate memory");
+            return;
+        }
+
+        // Write: mov eax, ecx; add eax, edx; ret
+        // 89 C8             mov eax, ecx
+        // 01 D0             add eax, edx
+        // C3                ret
+        int offset = 0;
+        code[offset++] = 0x89;  // mov r/m32, r32
+        code[offset++] = 0xC8;  // mod=11 (reg), reg=ecx (001), r/m=eax (000) -> C8
+        code[offset++] = 0x01;  // add r/m32, r32
+        code[offset++] = 0xD0;  // mod=11 (reg), reg=edx (010), r/m=eax (000) -> D0
+        code[offset++] = 0xC3;  // ret
+
+        // Cast to function pointer: int (*fn)(int, int)
+        var fn = (delegate*<int, int, int>)code;
+
+        int a = 100;
+        int b = 42;
+        int result = fn(a, b);
+
+        if (result == 142)
+        {
+            DebugConsole.Write("100 + 42 = ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - expected 142, got ");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Test 4: Function with conditional jump
+    /// Returns 1 if arg > 0, else returns 0
+    /// Windows x64 ABI: arg in ecx, return in eax
+    ///
+    /// test ecx, ecx      ; set flags based on ecx
+    /// jle .zero          ; jump if ecx <= 0
+    /// mov eax, 1
+    /// ret
+    /// .zero:
+    /// xor eax, eax
+    /// ret
+    /// </summary>
+    private static void TestDynamicConditional()
+    {
+        DebugConsole.Write("[JIT Test 4] Conditional: ");
+
+        byte* code = (byte*)HeapAllocator.Alloc(64);
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - could not allocate memory");
+            return;
+        }
+
+        // Write the function
+        int offset = 0;
+
+        // test ecx, ecx (85 C9)
+        code[offset++] = 0x85;
+        code[offset++] = 0xC9;
+
+        // jle rel8 (7E xx) - jump if ZF=1 or SF!=OF (i.e., <= 0 for signed)
+        code[offset++] = 0x7E;
+        code[offset++] = 0x06;  // jump forward 6 bytes to .zero
+
+        // mov eax, 1 (B8 01 00 00 00)
+        code[offset++] = 0xB8;
+        code[offset++] = 0x01;
+        code[offset++] = 0x00;
+        code[offset++] = 0x00;
+        code[offset++] = 0x00;
+
+        // ret (C3)
+        code[offset++] = 0xC3;
+
+        // .zero:
+        // xor eax, eax (31 C0)
+        code[offset++] = 0x31;
+        code[offset++] = 0xC0;
+
+        // ret (C3)
+        code[offset++] = 0xC3;
+
+        // Cast to function pointer: int (*fn)(int)
+        var fn = (delegate*<int, int>)code;
+
+        // Test positive value
+        int r1 = fn(5);
+        // Test zero
+        int r2 = fn(0);
+        // Test negative value
+        int r3 = fn(-3);
+
+        if (r1 == 1 && r2 == 0 && r3 == 0)
+        {
+            DebugConsole.Write("fn(5)=");
+            DebugConsole.WriteDecimal((uint)r1);
+            DebugConsole.Write(", fn(0)=");
+            DebugConsole.WriteDecimal((uint)r2);
+            DebugConsole.Write(", fn(-3)=");
+            DebugConsole.WriteDecimal((uint)r3);
+            DebugConsole.WriteLine(" PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("FAILED - got ");
+            DebugConsole.WriteDecimal((uint)r1);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteDecimal((uint)r2);
+            DebugConsole.Write(", ");
+            DebugConsole.WriteDecimal((uint)r3);
+            DebugConsole.WriteLine();
+        }
+    }
 }

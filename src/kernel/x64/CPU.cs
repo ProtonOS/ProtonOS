@@ -33,6 +33,12 @@ public static unsafe class CPU
 
     // Control Registers
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong read_cr0();
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void write_cr0(ulong value);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong read_cr2();
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -40,6 +46,27 @@ public static unsafe class CPU
 
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void write_cr3(ulong value);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong read_cr4();
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void write_cr4(ulong value);
+
+    // CPUID
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void cpuid_ex(uint leaf, uint subleaf, uint* eax, uint* ebx, uint* ecx, uint* edx);
+
+    // XCR (Extended Control Registers)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong xgetbv(uint xcr);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void xsetbv(uint xcr, ulong value);
+
+    // FPU Initialization
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void fninit();
 
     // Descriptor Tables
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
@@ -157,6 +184,16 @@ public static unsafe class CPU
     // --- Control Registers ---
 
     /// <summary>
+    /// Read CR0
+    /// </summary>
+    public static ulong ReadCr0() => read_cr0();
+
+    /// <summary>
+    /// Write CR0
+    /// </summary>
+    public static void WriteCr0(ulong value) => write_cr0(value);
+
+    /// <summary>
     /// Read CR2 (page fault linear address)
     /// </summary>
     public static ulong ReadCr2() => read_cr2();
@@ -170,6 +207,56 @@ public static unsafe class CPU
     /// Write CR3 (switch page tables)
     /// </summary>
     public static void WriteCr3(ulong pml4PhysAddr) => write_cr3(pml4PhysAddr);
+
+    /// <summary>
+    /// Read CR4
+    /// </summary>
+    public static ulong ReadCr4() => read_cr4();
+
+    /// <summary>
+    /// Write CR4
+    /// </summary>
+    public static void WriteCr4(ulong value) => write_cr4(value);
+
+    // --- CPUID ---
+
+    /// <summary>
+    /// Execute CPUID instruction with leaf and subleaf
+    /// </summary>
+    public static void Cpuid(uint leaf, uint subleaf, out uint eax, out uint ebx, out uint ecx, out uint edx)
+    {
+        uint a, b, c, d;
+        cpuid_ex(leaf, subleaf, &a, &b, &c, &d);
+        eax = a;
+        ebx = b;
+        ecx = c;
+        edx = d;
+    }
+
+    /// <summary>
+    /// Execute CPUID instruction with leaf only (subleaf = 0)
+    /// </summary>
+    public static void Cpuid(uint leaf, out uint eax, out uint ebx, out uint ecx, out uint edx)
+        => Cpuid(leaf, 0, out eax, out ebx, out ecx, out edx);
+
+    // --- XCR (Extended Control Registers) ---
+
+    /// <summary>
+    /// Read XCR0 (extended control register 0)
+    /// </summary>
+    public static ulong ReadXcr0() => xgetbv(0);
+
+    /// <summary>
+    /// Write XCR0 (extended control register 0)
+    /// </summary>
+    public static void WriteXcr0(ulong value) => xsetbv(0, value);
+
+    // --- FPU ---
+
+    /// <summary>
+    /// Initialize x87 FPU
+    /// </summary>
+    public static void InitFpu() => fninit();
 
     // --- Descriptor Tables ---
 

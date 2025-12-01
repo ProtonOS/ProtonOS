@@ -94,6 +94,10 @@ public static unsafe class Kernel
         // Tests disabled for clean logs - call Tests.Run() to enable
         // Tests.Run();
 
+        // Test CPU features and dynamic code execution (JIT prerequisites)
+        Tests.TestCPUFeatures();
+        Tests.TestDynamicCodeExecution();
+
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
 

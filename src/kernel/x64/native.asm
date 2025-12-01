@@ -122,7 +122,18 @@ ltr:
 
 ;; ==================== Control Registers ====================
 
-global read_cr2, read_cr3, write_cr3
+global read_cr0, write_cr0, read_cr2, read_cr3, write_cr3, read_cr4, write_cr4
+
+; uint64_t read_cr0(void) - Read CR0
+read_cr0:
+    mov rax, cr0
+    ret
+
+; void write_cr0(uint64_t value) - Write CR0
+; Windows x64 ABI: value in rcx
+write_cr0:
+    mov cr0, rcx
+    ret
 
 ; uint64_t read_cr2(void) - Read CR2 (page fault linear address)
 read_cr2:
@@ -138,6 +149,72 @@ read_cr3:
 ; Windows x64 ABI: value in rcx
 write_cr3:
     mov cr3, rcx
+    ret
+
+; uint64_t read_cr4(void) - Read CR4
+read_cr4:
+    mov rax, cr4
+    ret
+
+; void write_cr4(uint64_t value) - Write CR4
+; Windows x64 ABI: value in rcx
+write_cr4:
+    mov cr4, rcx
+    ret
+
+;; ==================== CPUID ====================
+
+global cpuid_ex
+
+; void cpuid_ex(uint32_t leaf, uint32_t subleaf, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx)
+; Windows x64 ABI: leaf in ecx, subleaf in edx, eax* in r8, ebx* in r9, ecx* at [rsp+40], edx* at [rsp+48]
+cpuid_ex:
+    push rbx                ; rbx is callee-saved
+
+    mov eax, ecx            ; leaf
+    mov ecx, edx            ; subleaf (cpuid uses ecx for subleaf)
+    cpuid                   ; eax/ebx/ecx/edx now contain results
+
+    ; Store results
+    mov [r8], eax           ; *eax_out = eax
+    mov [r9], ebx           ; *ebx_out = ebx
+
+    ; Get stack args (note: we pushed rbx, so offset is +8 from normal)
+    mov r10, [rsp + 48]     ; ecx_out pointer
+    mov [r10], ecx          ; *ecx_out = ecx
+    mov r10, [rsp + 56]     ; edx_out pointer
+    mov [r10], edx          ; *edx_out = edx
+
+    pop rbx
+    ret
+
+;; ==================== XCR (Extended Control Registers) ====================
+
+global xgetbv, xsetbv
+
+; uint64_t xgetbv(uint32_t xcr) - Read extended control register
+; Windows x64 ABI: xcr in ecx
+xgetbv:
+    xgetbv              ; Read XCR[ecx] into edx:eax
+    shl rdx, 32
+    or rax, rdx
+    ret
+
+; void xsetbv(uint32_t xcr, uint64_t value) - Write extended control register
+; Windows x64 ABI: xcr in ecx, value in rdx
+xsetbv:
+    mov rax, rdx        ; Low 32 bits
+    shr rdx, 32         ; High 32 bits
+    xsetbv              ; Write edx:eax to XCR[ecx]
+    ret
+
+;; ==================== FPU/SSE Initialization ====================
+
+global fninit
+
+; void fninit(void) - Initialize x87 FPU
+fninit:
+    fninit
     ret
 
 ;; ==================== TLB ====================

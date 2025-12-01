@@ -18,10 +18,10 @@ This is a kernel-level prerequisite.
 
 ### Research
 
-- [ ] Review current CR0/CR4 settings in `Arch.Init()`
-- [ ] Understand x64 FPU/SSE/AVX state saving requirements
+- [x] Review current CR0/CR4 settings in `Arch.Init()`
+- [x] Understand x64 FPU/SSE/AVX state saving requirements
 - [ ] XSAVE area layout for context switches
-- [ ] CPUID feature detection
+- [x] CPUID feature detection
 
 **Key Control Register Bits:**
 - CR0.EM (bit 2) - Must be 0 for FPU/SSE
@@ -37,23 +37,23 @@ This is a kernel-level prerequisite.
 **File**: `src/kernel/x64/Arch.cs` or new `src/kernel/x64/CPUFeatures.cs`
 
 #### 6.0.1 Basic FPU/SSE Setup
-- [ ] Clear CR0.EM (enable FPU)
-- [ ] Set CR0.MP (monitor coprocessor)
-- [ ] Set CR0.NE (native FPU exceptions)
-- [ ] Set CR4.OSFXSR (enable FXSAVE/FXRSTOR)
-- [ ] Set CR4.OSXMMEXCPT (enable SSE exceptions)
-- [ ] Execute FNINIT to initialize FPU
+- [x] Clear CR0.EM (enable FPU) - verified CR0.EM=0 (UEFI sets this)
+- [x] Set CR0.MP (monitor coprocessor) - verified CR0.MP=1
+- [x] Set CR0.NE (native FPU exceptions) - verified CR0.NE=1
+- [x] Set CR4.OSFXSR (enable FXSAVE/FXRSTOR) - verified CR4.OSFXSR=1
+- [x] Set CR4.OSXMMEXCPT (enable SSE exceptions) - verified CR4.OSXMMEXCPT=1
+- [x] Execute FNINIT to initialize FPU - implemented in CPUFeatures.Init()
 
 #### 6.0.2 CPUID Feature Detection
-- [ ] Implement `CPUID` wrapper in native.asm
-- [ ] Detect SSE/SSE2/SSE3/SSSE3/SSE4.1/SSE4.2
-- [ ] Detect AVX/AVX2 support
-- [ ] Detect XSAVE support
-- [ ] Store detected features for JIT to query
+- [x] Implement `CPUID` wrapper in native.asm (cpuid_ex with subleaf support)
+- [x] Detect SSE/SSE2/SSE3/SSSE3/SSE4.1/SSE4.2 - implemented in CPUFeatures.cs
+- [x] Detect AVX/AVX2 support - implemented (not available in QEMU by default)
+- [x] Detect XSAVE support - implemented
+- [x] Store detected features for JIT to query - CPUFeatures.HasFeature()
 
 #### 6.0.3 XSAVE Setup (if supported)
-- [ ] Set CR4.OSXSAVE (enable XSAVE)
-- [ ] Set XCR0 to enable desired state components
+- [x] Set CR4.OSXSAVE (enable XSAVE) - implemented, skipped if not supported
+- [x] Set XCR0 to enable desired state components - xsetbv implemented
 - [ ] Calculate XSAVE area size for context switches
 - [ ] Update thread context structure for extended state
 
@@ -63,9 +63,10 @@ This is a kernel-level prerequisite.
 - [ ] Consider lazy FPU save optimization (use CR0.TS + #NM handler)
 
 ### Test
+- [x] Dynamic code execution works (4 test cases passing)
 - [ ] JIT'd code using float/double works correctly
 - [ ] Context switches preserve FPU state between threads
-- [ ] SSE instructions execute without #UD
+- [x] SSE instructions execute without #UD (verified via CR0/CR4 state)
 
 ---
 
