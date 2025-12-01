@@ -315,34 +315,51 @@ metadata at RVA 0x205C with valid BSJB signature, version 1.1.
 - Schema version 2.0, all heaps use 2-byte indexes
 - 8 tables present: Module(1), TypeRef(13), TypeDef(2), MethodDef(2), MemberRef(12), CustomAttribute(11), Assembly(1), AssemblyRef(1)
 
-#### 5.4 Coded Indexes
+#### 5.4 Coded Indexes ✅
 
-**Files**: `src/kernel/Runtime/Metadata/CodedIndex.cs`
+**File**: `src/kernel/Runtime/MetadataReader.cs` (CodedIndexType enum, CodedIndexHelper class)
 
-- [ ] TypeDefOrRef (TypeDef, TypeRef, TypeSpec)
-- [ ] HasConstant (Field, Param, Property)
-- [ ] HasCustomAttribute (22 options)
-- [ ] HasFieldMarshal (Field, Param)
-- [ ] HasDeclSecurity (TypeDef, MethodDef, Assembly)
-- [ ] MemberRefParent (TypeDef, TypeRef, ModuleRef, MethodDef, TypeSpec)
-- [ ] HasSemantics (Event, Property)
-- [ ] MethodDefOrRef (MethodDef, MemberRef)
-- [ ] MemberForwarded (Field, MethodDef)
-- [ ] Implementation (File, AssemblyRef, ExportedType)
-- [ ] CustomAttributeType (MethodDef, MemberRef)
-- [ ] ResolutionScope (Module, ModuleRef, AssemblyRef, TypeRef)
-- [ ] TypeOrMethodDef (TypeDef, MethodDef)
+- [x] TypeDefOrRef (TypeDef, TypeRef, TypeSpec) - 2 tag bits
+- [x] HasConstant (Field, Param, Property) - 2 tag bits
+- [x] HasCustomAttribute (22 options) - 5 tag bits
+- [x] HasFieldMarshal (Field, Param) - 1 tag bit
+- [x] HasDeclSecurity (TypeDef, MethodDef, Assembly) - 2 tag bits
+- [x] MemberRefParent (TypeDef, TypeRef, ModuleRef, MethodDef, TypeSpec) - 3 tag bits
+- [x] HasSemantics (Event, Property) - 1 tag bit
+- [x] MethodDefOrRef (MethodDef, MemberRef) - 1 tag bit
+- [x] MemberForwarded (Field, MethodDef) - 1 tag bit
+- [x] Implementation (File, AssemblyRef, ExportedType) - 2 tag bits
+- [x] CustomAttributeType (MethodDef, MemberRef) - 3 tag bits
+- [x] ResolutionScope (Module, ModuleRef, AssemblyRef, TypeRef) - 2 tag bits
+- [x] TypeOrMethodDef (TypeDef, MethodDef) - 1 tag bit
 
-#### 5.5 Metadata Tables
+**Implementation includes:**
+- `CodedIndexType` enum with all 13 coded index types
+- `CodedIndex` struct (Table + 1-based RowId)
+- `CodedIndexHelper.GetTagBits()` - returns tag bit count per type
+- `CodedIndexHelper.GetCodedIndexSize()` - calculates 2 or 4 byte size
+- `CodedIndexHelper.GetMaxRowCount()` - max row count across target tables
+- `CodedIndexHelper.Decode()` - decodes value to table ID and row ID
+- `CodedIndexHelper.DecodeTag()` - maps tag to MetadataTableId
 
-**Files**: `src/kernel/Runtime/Metadata/Tables/*.cs`
+**Tested:** ResolutionScope correctly decodes TypeRef rows to AssemblyRef[1] and nested TypeRef[3].
+
+#### 5.5 Metadata Tables (In Progress)
+
+**File**: `src/kernel/Runtime/MetadataReader.cs` (TableSizes struct + table accessor methods)
+
+**Infrastructure:**
+- [x] `TableSizes` struct with pre-calculated row sizes and table offsets
+- [x] `TableSizes.Calculate()` to compute all sizes based on heap flags and row counts
+- [x] `GetTableRow()` - generic row accessor by table ID and 1-based row ID
+- [x] `ReadIndex()` - helper to read 2 or 4 byte index values
 
 Core tables:
-- [ ] Module (0x00)
-- [ ] TypeRef (0x01)
-- [ ] TypeDef (0x02)
+- [x] Module (0x00) - `DumpModuleTable()` with name/MVID access
+- [x] TypeRef (0x01) - `GetTypeRefResolutionScope/Name/Namespace()`, `DumpTypeRefTable()`
+- [x] TypeDef (0x02) - `DumpTypeDefTable()` with flags/name/namespace/extends/field/method
 - [ ] Field (0x04)
-- [ ] MethodDef (0x06)
+- [x] MethodDef (0x06) - `GetMethodDefRVA/Name/Flags()`, `DumpMethodDefTable()`
 - [ ] Param (0x08)
 - [ ] InterfaceImpl (0x09)
 - [ ] MemberRef (0x0A)
@@ -492,9 +509,9 @@ Signature types:
 3. ~~**Parse metadata root** - verify signature, find streams~~ ✅
 4. ~~**Implement heap readers** - #Strings first (simplest), then #Blob~~ ✅
 5. ~~**Parse #~ header** - extract row counts and heap size flags~~ ✅
-6. **Implement core tables** - Module, TypeDef, TypeRef, MethodDef ← **NEXT**
-7. **Add coded index support** as needed for table columns
-8. **Iterate** - add tables/features as needed for JIT integration
+6. ~~**Add coded index support** - all 13 coded index types with decode/size helpers~~ ✅
+7. ~~**Implement core tables** - Module, TypeDef, TypeRef, MethodDef with accessors~~ ✅
+8. **Iterate** - add remaining tables/features as needed for JIT integration ← **NEXT**
 
 ### Gotchas
 

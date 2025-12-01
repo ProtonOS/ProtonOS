@@ -207,6 +207,10 @@ public static unsafe class Kernel
                 // Test heap access by reading Module and TypeDef tables
                 MetadataReader.DumpModuleTable(ref mdRoot, ref tablesHeader);
                 MetadataReader.DumpTypeDefTable(ref mdRoot, ref tablesHeader);
+
+                // Test new table accessors with TypeRef and MethodDef
+                MetadataReader.DumpTypeRefTable(ref mdRoot, ref tablesHeader);
+                MetadataReader.DumpMethodDefTable(ref mdRoot, ref tablesHeader);
             }
             else
             {

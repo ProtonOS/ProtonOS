@@ -27,6 +27,26 @@ public static class HeapSizeFlags
 }
 
 /// <summary>
+/// Coded index types for metadata table references (ECMA-335 II.24.2.6)
+/// </summary>
+public enum CodedIndexType
+{
+    TypeDefOrRef,       // TypeDef, TypeRef, TypeSpec (2 bits)
+    HasConstant,        // Field, Param, Property (2 bits)
+    HasCustomAttribute, // 22 targets (5 bits)
+    HasFieldMarshal,    // Field, Param (1 bit)
+    HasDeclSecurity,    // TypeDef, MethodDef, Assembly (2 bits)
+    MemberRefParent,    // TypeDef, TypeRef, ModuleRef, MethodDef, TypeSpec (3 bits)
+    HasSemantics,       // Event, Property (1 bit)
+    MethodDefOrRef,     // MethodDef, MemberRef (1 bit)
+    MemberForwarded,    // Field, MethodDef (1 bit)
+    Implementation,     // File, AssemblyRef, ExportedType (2 bits)
+    CustomAttributeType,// MethodDef, MemberRef (3 bits, tags 2,3 used)
+    ResolutionScope,    // Module, ModuleRef, AssemblyRef, TypeRef (2 bits)
+    TypeOrMethodDef     // TypeDef, MethodDef (1 bit)
+}
+
+/// <summary>
 /// Metadata table identifiers (ECMA-335 II.22)
 /// </summary>
 public enum MetadataTableId : byte
@@ -94,6 +114,431 @@ public unsafe struct TablesHeader
     public ulong SortedTables;      // Bitmask of sorted tables
     public fixed uint RowCounts[64]; // Row count per table (0 if not present)
     public byte* TableData;         // Pointer to start of table data
+}
+
+/// <summary>
+/// Decoded coded index value with table ID and row index
+/// </summary>
+public struct CodedIndex
+{
+    public MetadataTableId Table;
+    public uint RowId;  // 1-based row index
+}
+
+/// <summary>
+/// Static helpers for coded index operations
+/// </summary>
+public static unsafe class CodedIndexHelper
+{
+    /// <summary>
+    /// Get the number of tag bits for a coded index type
+    /// </summary>
+    public static int GetTagBits(CodedIndexType type)
+    {
+        return type switch
+        {
+            CodedIndexType.TypeDefOrRef => 2,
+            CodedIndexType.HasConstant => 2,
+            CodedIndexType.HasCustomAttribute => 5,
+            CodedIndexType.HasFieldMarshal => 1,
+            CodedIndexType.HasDeclSecurity => 2,
+            CodedIndexType.MemberRefParent => 3,
+            CodedIndexType.HasSemantics => 1,
+            CodedIndexType.MethodDefOrRef => 1,
+            CodedIndexType.MemberForwarded => 1,
+            CodedIndexType.Implementation => 2,
+            CodedIndexType.CustomAttributeType => 3,
+            CodedIndexType.ResolutionScope => 2,
+            CodedIndexType.TypeOrMethodDef => 1,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// Get the tables referenced by a coded index type
+    /// </summary>
+    public static void GetTargetTables(CodedIndexType type, out MetadataTableId* tables, out int count)
+    {
+        // Stack-allocated arrays for each coded index type
+        tables = null;
+        count = 0;
+
+        // We use static arrays since we can't easily allocate on demand
+        // The caller should use the switch to get the right tables
+    }
+
+    /// <summary>
+    /// Calculate coded index size (2 or 4 bytes) based on max row count of target tables
+    /// </summary>
+    public static int GetCodedIndexSize(CodedIndexType type, ref TablesHeader header)
+    {
+        int tagBits = GetTagBits(type);
+        uint maxRows = GetMaxRowCount(type, ref header);
+
+        // Index is large (4 bytes) if max rows shifted by tag bits exceeds 16 bits
+        return (maxRows << tagBits) > 0xFFFF ? 4 : 2;
+    }
+
+    /// <summary>
+    /// Get the maximum row count across all tables referenced by a coded index type
+    /// </summary>
+    public static uint GetMaxRowCount(CodedIndexType type, ref TablesHeader header)
+    {
+        uint max = 0;
+
+        switch (type)
+        {
+            case CodedIndexType.TypeDefOrRef:
+                max = MaxOf3(
+                    header.RowCounts[(int)MetadataTableId.TypeDef],
+                    header.RowCounts[(int)MetadataTableId.TypeRef],
+                    header.RowCounts[(int)MetadataTableId.TypeSpec]);
+                break;
+
+            case CodedIndexType.HasConstant:
+                max = MaxOf3(
+                    header.RowCounts[(int)MetadataTableId.Field],
+                    header.RowCounts[(int)MetadataTableId.Param],
+                    header.RowCounts[(int)MetadataTableId.Property]);
+                break;
+
+            case CodedIndexType.HasFieldMarshal:
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.Field],
+                    header.RowCounts[(int)MetadataTableId.Param]);
+                break;
+
+            case CodedIndexType.HasDeclSecurity:
+                max = MaxOf3(
+                    header.RowCounts[(int)MetadataTableId.TypeDef],
+                    header.RowCounts[(int)MetadataTableId.MethodDef],
+                    header.RowCounts[(int)MetadataTableId.Assembly]);
+                break;
+
+            case CodedIndexType.MemberRefParent:
+                max = MaxOf5(
+                    header.RowCounts[(int)MetadataTableId.TypeDef],
+                    header.RowCounts[(int)MetadataTableId.TypeRef],
+                    header.RowCounts[(int)MetadataTableId.ModuleRef],
+                    header.RowCounts[(int)MetadataTableId.MethodDef],
+                    header.RowCounts[(int)MetadataTableId.TypeSpec]);
+                break;
+
+            case CodedIndexType.HasSemantics:
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.Event],
+                    header.RowCounts[(int)MetadataTableId.Property]);
+                break;
+
+            case CodedIndexType.MethodDefOrRef:
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.MethodDef],
+                    header.RowCounts[(int)MetadataTableId.MemberRef]);
+                break;
+
+            case CodedIndexType.MemberForwarded:
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.Field],
+                    header.RowCounts[(int)MetadataTableId.MethodDef]);
+                break;
+
+            case CodedIndexType.Implementation:
+                max = MaxOf3(
+                    header.RowCounts[(int)MetadataTableId.File],
+                    header.RowCounts[(int)MetadataTableId.AssemblyRef],
+                    header.RowCounts[(int)MetadataTableId.ExportedType]);
+                break;
+
+            case CodedIndexType.CustomAttributeType:
+                // Only tags 2 (MethodDef) and 3 (MemberRef) are used
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.MethodDef],
+                    header.RowCounts[(int)MetadataTableId.MemberRef]);
+                break;
+
+            case CodedIndexType.ResolutionScope:
+                max = MaxOf5(
+                    header.RowCounts[(int)MetadataTableId.Module],
+                    header.RowCounts[(int)MetadataTableId.ModuleRef],
+                    header.RowCounts[(int)MetadataTableId.AssemblyRef],
+                    header.RowCounts[(int)MetadataTableId.TypeRef],
+                    0);
+                break;
+
+            case CodedIndexType.TypeOrMethodDef:
+                max = Max(
+                    header.RowCounts[(int)MetadataTableId.TypeDef],
+                    header.RowCounts[(int)MetadataTableId.MethodDef]);
+                break;
+
+            case CodedIndexType.HasCustomAttribute:
+                // 22 target tables - take max of all
+                max = MaxOf5(
+                    header.RowCounts[(int)MetadataTableId.MethodDef],
+                    header.RowCounts[(int)MetadataTableId.Field],
+                    header.RowCounts[(int)MetadataTableId.TypeRef],
+                    header.RowCounts[(int)MetadataTableId.TypeDef],
+                    header.RowCounts[(int)MetadataTableId.Param]);
+                max = MaxWithBase(max,
+                    header.RowCounts[(int)MetadataTableId.InterfaceImpl],
+                    header.RowCounts[(int)MetadataTableId.MemberRef],
+                    header.RowCounts[(int)MetadataTableId.Module],
+                    header.RowCounts[(int)MetadataTableId.DeclSecurity]);
+                max = MaxWithBase(max,
+                    header.RowCounts[(int)MetadataTableId.Property],
+                    header.RowCounts[(int)MetadataTableId.Event],
+                    header.RowCounts[(int)MetadataTableId.StandAloneSig],
+                    header.RowCounts[(int)MetadataTableId.ModuleRef]);
+                max = MaxWithBase(max,
+                    header.RowCounts[(int)MetadataTableId.TypeSpec],
+                    header.RowCounts[(int)MetadataTableId.Assembly],
+                    header.RowCounts[(int)MetadataTableId.AssemblyRef],
+                    header.RowCounts[(int)MetadataTableId.File]);
+                max = MaxWithBase(max,
+                    header.RowCounts[(int)MetadataTableId.ExportedType],
+                    header.RowCounts[(int)MetadataTableId.ManifestResource],
+                    header.RowCounts[(int)MetadataTableId.GenericParam],
+                    header.RowCounts[(int)MetadataTableId.GenericParamConstraint]);
+                max = Max(max, header.RowCounts[(int)MetadataTableId.MethodSpec]);
+                break;
+        }
+
+        return max;
+    }
+
+    /// <summary>
+    /// Decode a coded index value into table ID and row ID
+    /// </summary>
+    public static CodedIndex Decode(CodedIndexType type, uint value)
+    {
+        int tagBits = GetTagBits(type);
+        uint tagMask = (1u << tagBits) - 1;
+        uint tag = value & tagMask;
+        uint rowId = value >> tagBits;
+
+        MetadataTableId table = DecodeTag(type, tag);
+
+        return new CodedIndex { Table = table, RowId = rowId };
+    }
+
+    /// <summary>
+    /// Decode the tag portion of a coded index to a table ID
+    /// </summary>
+    private static MetadataTableId DecodeTag(CodedIndexType type, uint tag)
+    {
+        return type switch
+        {
+            CodedIndexType.TypeDefOrRef => tag switch
+            {
+                0 => MetadataTableId.TypeDef,
+                1 => MetadataTableId.TypeRef,
+                2 => MetadataTableId.TypeSpec,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.HasConstant => tag switch
+            {
+                0 => MetadataTableId.Field,
+                1 => MetadataTableId.Param,
+                2 => MetadataTableId.Property,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.HasFieldMarshal => tag switch
+            {
+                0 => MetadataTableId.Field,
+                1 => MetadataTableId.Param,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.HasDeclSecurity => tag switch
+            {
+                0 => MetadataTableId.TypeDef,
+                1 => MetadataTableId.MethodDef,
+                2 => MetadataTableId.Assembly,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.MemberRefParent => tag switch
+            {
+                0 => MetadataTableId.TypeDef,
+                1 => MetadataTableId.TypeRef,
+                2 => MetadataTableId.ModuleRef,
+                3 => MetadataTableId.MethodDef,
+                4 => MetadataTableId.TypeSpec,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.HasSemantics => tag switch
+            {
+                0 => MetadataTableId.Event,
+                1 => MetadataTableId.Property,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.MethodDefOrRef => tag switch
+            {
+                0 => MetadataTableId.MethodDef,
+                1 => MetadataTableId.MemberRef,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.MemberForwarded => tag switch
+            {
+                0 => MetadataTableId.Field,
+                1 => MetadataTableId.MethodDef,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.Implementation => tag switch
+            {
+                0 => MetadataTableId.File,
+                1 => MetadataTableId.AssemblyRef,
+                2 => MetadataTableId.ExportedType,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.CustomAttributeType => tag switch
+            {
+                2 => MetadataTableId.MethodDef,
+                3 => MetadataTableId.MemberRef,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.ResolutionScope => tag switch
+            {
+                0 => MetadataTableId.Module,
+                1 => MetadataTableId.ModuleRef,
+                2 => MetadataTableId.AssemblyRef,
+                3 => MetadataTableId.TypeRef,
+                _ => (MetadataTableId)0xFF
+            },
+            CodedIndexType.TypeOrMethodDef => tag switch
+            {
+                0 => MetadataTableId.TypeDef,
+                1 => MetadataTableId.MethodDef,
+                _ => (MetadataTableId)0xFF
+            },
+            _ => (MetadataTableId)0xFF
+        };
+    }
+
+    // Helper methods for max calculations
+    private static uint Max(uint a, uint b) => a > b ? a : b;
+    private static uint MaxOf3(uint a, uint b, uint c) => Max(Max(a, b), c);
+    private static uint MaxOf5(uint a, uint b, uint c, uint d, uint e) => Max(Max(Max(Max(a, b), c), d), e);
+    private static uint MaxWithBase(uint baseVal, uint a, uint b, uint c, uint d) => Max(Max(Max(Max(baseVal, a), b), c), d);
+}
+
+/// <summary>
+/// Pre-calculated table row sizes and offsets for efficient reading
+/// </summary>
+public unsafe struct TableSizes
+{
+    // Heap index sizes (2 or 4 bytes)
+    public int StringIndexSize;
+    public int GuidIndexSize;
+    public int BlobIndexSize;
+
+    // Simple table index sizes (2 or 4 bytes based on row counts)
+    public int FieldIndexSize;
+    public int MethodIndexSize;
+    public int ParamIndexSize;
+    public int TypeDefIndexSize;
+
+    // Coded index sizes
+    public int TypeDefOrRefSize;
+    public int ResolutionScopeSize;
+    public int MemberRefParentSize;
+    public int HasCustomAttributeSize;
+    public int CustomAttributeTypeSize;
+
+    // Row sizes for each table
+    public fixed int RowSizes[64];
+
+    // Table offsets from TableData pointer (cumulative)
+    public fixed uint TableOffsets[64];
+
+    /// <summary>
+    /// Initialize table sizes from a parsed tables header
+    /// </summary>
+    public static TableSizes Calculate(ref TablesHeader header)
+    {
+        TableSizes sizes = default;
+
+        // Heap index sizes
+        sizes.StringIndexSize = (header.HeapSizes & HeapSizeFlags.StringHeapLarge) != 0 ? 4 : 2;
+        sizes.GuidIndexSize = (header.HeapSizes & HeapSizeFlags.GuidHeapLarge) != 0 ? 4 : 2;
+        sizes.BlobIndexSize = (header.HeapSizes & HeapSizeFlags.BlobHeapLarge) != 0 ? 4 : 2;
+
+        // Simple table index sizes (large if >65535 rows)
+        sizes.FieldIndexSize = header.RowCounts[(int)MetadataTableId.Field] > 0xFFFF ? 4 : 2;
+        sizes.MethodIndexSize = header.RowCounts[(int)MetadataTableId.MethodDef] > 0xFFFF ? 4 : 2;
+        sizes.ParamIndexSize = header.RowCounts[(int)MetadataTableId.Param] > 0xFFFF ? 4 : 2;
+        sizes.TypeDefIndexSize = header.RowCounts[(int)MetadataTableId.TypeDef] > 0xFFFF ? 4 : 2;
+
+        // Coded index sizes
+        sizes.TypeDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.TypeDefOrRef, ref header);
+        sizes.ResolutionScopeSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.ResolutionScope, ref header);
+        sizes.MemberRefParentSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MemberRefParent, ref header);
+        sizes.HasCustomAttributeSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasCustomAttribute, ref header);
+        sizes.CustomAttributeTypeSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.CustomAttributeType, ref header);
+
+        // Calculate row sizes for each present table
+        // Module (0x00): Generation (2) + Name (str) + Mvid (guid) + EncId (guid) + EncBaseId (guid)
+        sizes.RowSizes[(int)MetadataTableId.Module] =
+            2 + sizes.StringIndexSize + sizes.GuidIndexSize * 3;
+
+        // TypeRef (0x01): ResolutionScope (coded) + TypeName (str) + TypeNamespace (str)
+        sizes.RowSizes[(int)MetadataTableId.TypeRef] =
+            sizes.ResolutionScopeSize + sizes.StringIndexSize * 2;
+
+        // TypeDef (0x02): Flags (4) + TypeName (str) + TypeNamespace (str) + Extends (coded) + FieldList + MethodList
+        sizes.RowSizes[(int)MetadataTableId.TypeDef] =
+            4 + sizes.StringIndexSize * 2 + sizes.TypeDefOrRefSize + sizes.FieldIndexSize + sizes.MethodIndexSize;
+
+        // Field (0x04): Flags (2) + Name (str) + Signature (blob)
+        sizes.RowSizes[(int)MetadataTableId.Field] =
+            2 + sizes.StringIndexSize + sizes.BlobIndexSize;
+
+        // MethodDef (0x06): RVA (4) + ImplFlags (2) + Flags (2) + Name (str) + Signature (blob) + ParamList
+        sizes.RowSizes[(int)MetadataTableId.MethodDef] =
+            4 + 2 + 2 + sizes.StringIndexSize + sizes.BlobIndexSize + sizes.ParamIndexSize;
+
+        // Param (0x08): Flags (2) + Sequence (2) + Name (str)
+        sizes.RowSizes[(int)MetadataTableId.Param] =
+            2 + 2 + sizes.StringIndexSize;
+
+        // InterfaceImpl (0x09): Class (TypeDef index) + Interface (TypeDefOrRef coded)
+        sizes.RowSizes[(int)MetadataTableId.InterfaceImpl] =
+            sizes.TypeDefIndexSize + sizes.TypeDefOrRefSize;
+
+        // MemberRef (0x0A): Class (MemberRefParent coded) + Name (str) + Signature (blob)
+        sizes.RowSizes[(int)MetadataTableId.MemberRef] =
+            sizes.MemberRefParentSize + sizes.StringIndexSize + sizes.BlobIndexSize;
+
+        // Constant (0x0B): Type (2) + Parent (HasConstant coded) + Value (blob)
+        int hasConstantSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.HasConstant, ref header);
+        sizes.RowSizes[(int)MetadataTableId.Constant] =
+            2 + hasConstantSize + sizes.BlobIndexSize;
+
+        // CustomAttribute (0x0C): Parent (HasCustomAttribute coded) + Type (CustomAttributeType coded) + Value (blob)
+        sizes.RowSizes[(int)MetadataTableId.CustomAttribute] =
+            sizes.HasCustomAttributeSize + sizes.CustomAttributeTypeSize + sizes.BlobIndexSize;
+
+        // Assembly (0x20): HashAlgId (4) + MajorVersion (2) + MinorVersion (2) + BuildNumber (2) + RevisionNumber (2) +
+        //                  Flags (4) + PublicKey (blob) + Name (str) + Culture (str)
+        sizes.RowSizes[(int)MetadataTableId.Assembly] =
+            4 + 2 + 2 + 2 + 2 + 4 + sizes.BlobIndexSize + sizes.StringIndexSize * 2;
+
+        // AssemblyRef (0x23): MajorVersion (2) + MinorVersion (2) + BuildNumber (2) + RevisionNumber (2) +
+        //                     Flags (4) + PublicKeyOrToken (blob) + Name (str) + Culture (str) + HashValue (blob)
+        sizes.RowSizes[(int)MetadataTableId.AssemblyRef] =
+            2 + 2 + 2 + 2 + 4 + sizes.BlobIndexSize + sizes.StringIndexSize * 2 + sizes.BlobIndexSize;
+
+        // Calculate table offsets (cumulative based on row counts and sizes)
+        uint offset = 0;
+        for (int tableId = 0; tableId <= (int)MetadataTableId.MaxTableId; tableId++)
+        {
+            sizes.TableOffsets[tableId] = offset;
+            if ((header.ValidTables & (1UL << tableId)) != 0)
+            {
+                offset += header.RowCounts[tableId] * (uint)sizes.RowSizes[tableId];
+            }
+        }
+
+        return sizes;
+    }
 }
 
 /// <summary>
@@ -784,6 +1229,301 @@ public static unsafe class MetadataReader
             }
             PrintString(ref root, nameIndex);
             DebugConsole.Write(" (flags=0x");
+            DebugConsole.WriteHex(flags);
+            DebugConsole.WriteLine(")");
+        }
+    }
+
+    // ============================================================================
+    // Low-level index reading helpers
+    // ============================================================================
+
+    /// <summary>
+    /// Read a 2-byte or 4-byte index from a pointer
+    /// </summary>
+    public static uint ReadIndex(byte* ptr, int size)
+    {
+        return size == 4 ? *(uint*)ptr : *(ushort*)ptr;
+    }
+
+    /// <summary>
+    /// Get pointer to a specific row in a table
+    /// </summary>
+    public static byte* GetTableRow(ref TablesHeader tables, ref TableSizes sizes, MetadataTableId tableId, uint rowId)
+    {
+        if (rowId == 0 || rowId > tables.RowCounts[(int)tableId])
+            return null;
+
+        return tables.TableData + sizes.TableOffsets[(int)tableId] + ((rowId - 1) * (uint)sizes.RowSizes[(int)tableId]);
+    }
+
+    // ============================================================================
+    // TypeRef table accessors (0x01)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the ResolutionScope coded index for a TypeRef row
+    /// </summary>
+    public static CodedIndex GetTypeRefResolutionScope(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeRef, rowId);
+        if (row == null)
+            return default;
+
+        uint value = ReadIndex(row, sizes.ResolutionScopeSize);
+        return CodedIndexHelper.Decode(CodedIndexType.ResolutionScope, value);
+    }
+
+    /// <summary>
+    /// Get the TypeName string index for a TypeRef row
+    /// </summary>
+    public static uint GetTypeRefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeRef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.ResolutionScopeSize, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the TypeNamespace string index for a TypeRef row
+    /// </summary>
+    public static uint GetTypeRefNamespace(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeRef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + sizes.ResolutionScopeSize + sizes.StringIndexSize, sizes.StringIndexSize);
+    }
+
+    // ============================================================================
+    // TypeDef table accessors (0x02)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for a TypeDef row
+    /// </summary>
+    public static uint GetTypeDefFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the TypeName string index for a TypeDef row
+    /// </summary>
+    public static uint GetTypeDefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the TypeNamespace string index for a TypeDef row
+    /// </summary>
+    public static uint GetTypeDefNamespace(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4 + sizes.StringIndexSize, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Extends coded index for a TypeDef row
+    /// </summary>
+    public static CodedIndex GetTypeDefExtends(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return default;
+
+        uint value = ReadIndex(row + 4 + sizes.StringIndexSize * 2, sizes.TypeDefOrRefSize);
+        return CodedIndexHelper.Decode(CodedIndexType.TypeDefOrRef, value);
+    }
+
+    /// <summary>
+    /// Get the FieldList index for a TypeDef row (1-based index into Field table)
+    /// </summary>
+    public static uint GetTypeDefFieldList(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4 + sizes.StringIndexSize * 2 + sizes.TypeDefOrRefSize, sizes.FieldIndexSize);
+    }
+
+    /// <summary>
+    /// Get the MethodList index for a TypeDef row (1-based index into MethodDef table)
+    /// </summary>
+    public static uint GetTypeDefMethodList(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.TypeDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4 + sizes.StringIndexSize * 2 + sizes.TypeDefOrRefSize + sizes.FieldIndexSize, sizes.MethodIndexSize);
+    }
+
+    // ============================================================================
+    // MethodDef table accessors (0x06)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the RVA for a MethodDef row
+    /// </summary>
+    public static uint GetMethodDefRva(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the ImplFlags for a MethodDef row
+    /// </summary>
+    public static ushort GetMethodDefImplFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 4);
+    }
+
+    /// <summary>
+    /// Get the Flags for a MethodDef row
+    /// </summary>
+    public static ushort GetMethodDefFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return *(ushort*)(row + 6);
+    }
+
+    /// <summary>
+    /// Get the Name string index for a MethodDef row
+    /// </summary>
+    public static uint GetMethodDefName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Signature blob index for a MethodDef row
+    /// </summary>
+    public static uint GetMethodDefSignature(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8 + sizes.StringIndexSize, sizes.BlobIndexSize);
+    }
+
+    /// <summary>
+    /// Get the ParamList index for a MethodDef row (1-based index into Param table)
+    /// </summary>
+    public static uint GetMethodDefParamList(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodDef, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8 + sizes.StringIndexSize + sizes.BlobIndexSize, sizes.ParamIndexSize);
+    }
+
+    // ============================================================================
+    // Dump methods using the new infrastructure
+    // ============================================================================
+
+    /// <summary>
+    /// Dump TypeRef table with full details
+    /// </summary>
+    public static void DumpTypeRefTable(ref MetadataRoot root, ref TablesHeader tables)
+    {
+        uint rowCount = tables.RowCounts[(int)MetadataTableId.TypeRef];
+        if (rowCount == 0)
+        {
+            DebugConsole.WriteLine("[Meta] No TypeRef table");
+            return;
+        }
+
+        var sizes = TableSizes.Calculate(ref tables);
+
+        DebugConsole.Write("[Meta] TypeRef table (");
+        DebugConsole.WriteDecimal(rowCount);
+        DebugConsole.WriteLine(" rows):");
+
+        for (uint i = 1; i <= rowCount; i++)
+        {
+            var scope = GetTypeRefResolutionScope(ref tables, ref sizes, i);
+            uint nameIdx = GetTypeRefName(ref tables, ref sizes, i);
+            uint nsIdx = GetTypeRefNamespace(ref tables, ref sizes, i);
+
+            DebugConsole.Write("[Meta]   ");
+            if (nsIdx != 0)
+            {
+                PrintString(ref root, nsIdx);
+                DebugConsole.Write(".");
+            }
+            PrintString(ref root, nameIdx);
+            DebugConsole.Write(" -> ");
+            PrintTableName((int)scope.Table);
+            DebugConsole.Write("[");
+            DebugConsole.WriteDecimal(scope.RowId);
+            DebugConsole.WriteLine("]");
+        }
+    }
+
+    /// <summary>
+    /// Dump MethodDef table with full details
+    /// </summary>
+    public static void DumpMethodDefTable(ref MetadataRoot root, ref TablesHeader tables)
+    {
+        uint rowCount = tables.RowCounts[(int)MetadataTableId.MethodDef];
+        if (rowCount == 0)
+        {
+            DebugConsole.WriteLine("[Meta] No MethodDef table");
+            return;
+        }
+
+        var sizes = TableSizes.Calculate(ref tables);
+
+        DebugConsole.Write("[Meta] MethodDef table (");
+        DebugConsole.WriteDecimal(rowCount);
+        DebugConsole.WriteLine(" rows):");
+
+        for (uint i = 1; i <= rowCount; i++)
+        {
+            uint rva = GetMethodDefRva(ref tables, ref sizes, i);
+            ushort implFlags = GetMethodDefImplFlags(ref tables, ref sizes, i);
+            ushort flags = GetMethodDefFlags(ref tables, ref sizes, i);
+            uint nameIdx = GetMethodDefName(ref tables, ref sizes, i);
+
+            DebugConsole.Write("[Meta]   ");
+            PrintString(ref root, nameIdx);
+            DebugConsole.Write(" (RVA=0x");
+            DebugConsole.WriteHex(rva);
+            DebugConsole.Write(", flags=0x");
             DebugConsole.WriteHex(flags);
             DebugConsole.WriteLine(")");
         }
