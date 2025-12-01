@@ -2595,6 +2595,299 @@ public static unsafe class MetadataReader
     }
 
     // ============================================================================
+    // EventMap Table (0x12)
+    // Layout: Parent (TypeDef index) + EventList (Event index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Parent (TypeDef row ID) for an EventMap row
+    /// </summary>
+    public static uint GetEventMapParent(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.EventMap, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.TypeDefIndexSize);
+    }
+
+    /// <summary>
+    /// Get the EventList (first Event row ID) for an EventMap row
+    /// </summary>
+    public static uint GetEventMapEventList(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.EventMap, rowId);
+        if (row == null)
+            return 0;
+
+        int eventIndexSize = header.RowCounts[(int)MetadataTableId.Event] > 0xFFFF ? 4 : 2;
+        return ReadIndex(row + sizes.TypeDefIndexSize, eventIndexSize);
+    }
+
+    // ============================================================================
+    // PropertyMap Table (0x15)
+    // Layout: Parent (TypeDef index) + PropertyList (Property index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Parent (TypeDef row ID) for a PropertyMap row
+    /// </summary>
+    public static uint GetPropertyMapParent(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.PropertyMap, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.TypeDefIndexSize);
+    }
+
+    /// <summary>
+    /// Get the PropertyList (first Property row ID) for a PropertyMap row
+    /// </summary>
+    public static uint GetPropertyMapPropertyList(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.PropertyMap, rowId);
+        if (row == null)
+            return 0;
+
+        int propertyIndexSize = header.RowCounts[(int)MetadataTableId.Property] > 0xFFFF ? 4 : 2;
+        return ReadIndex(row + sizes.TypeDefIndexSize, propertyIndexSize);
+    }
+
+    // ============================================================================
+    // MethodImpl Table (0x19)
+    // Layout: Class (TypeDef index) + MethodBody (MethodDefOrRef coded) + MethodDeclaration (MethodDefOrRef coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Class (TypeDef row ID) for a MethodImpl row
+    /// </summary>
+    public static uint GetMethodImplClass(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodImpl, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row, sizes.TypeDefIndexSize);
+    }
+
+    /// <summary>
+    /// Get the MethodBody (MethodDefOrRef coded index) for a MethodImpl row
+    /// </summary>
+    public static uint GetMethodImplMethodBody(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodImpl, rowId);
+        if (row == null)
+            return 0;
+
+        int methodDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MethodDefOrRef, ref header);
+        return ReadIndex(row + sizes.TypeDefIndexSize, methodDefOrRefSize);
+    }
+
+    /// <summary>
+    /// Get the MethodDeclaration (MethodDefOrRef coded index) for a MethodImpl row
+    /// </summary>
+    public static uint GetMethodImplMethodDeclaration(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.MethodImpl, rowId);
+        if (row == null)
+            return 0;
+
+        int methodDefOrRefSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.MethodDefOrRef, ref header);
+        return ReadIndex(row + sizes.TypeDefIndexSize + methodDefOrRefSize, methodDefOrRefSize);
+    }
+
+    // ============================================================================
+    // FieldRVA Table (0x1D)
+    // Layout: RVA (4) + Field (Field index)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the RVA for a FieldRVA row
+    /// </summary>
+    public static uint GetFieldRvaRva(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.FieldRVA, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the Field (Field row ID) for a FieldRVA row
+    /// </summary>
+    public static uint GetFieldRvaField(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.FieldRVA, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4, sizes.FieldIndexSize);
+    }
+
+    // ============================================================================
+    // File Table (0x26)
+    // Layout: Flags (4) + Name (str) + HashValue (blob)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for a File row
+    /// </summary>
+    public static uint GetFileFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.File, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the Name string index for a File row
+    /// </summary>
+    public static uint GetFileName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.File, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the HashValue blob index for a File row
+    /// </summary>
+    public static uint GetFileHashValue(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.File, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 4 + sizes.StringIndexSize, sizes.BlobIndexSize);
+    }
+
+    // ============================================================================
+    // ExportedType Table (0x27)
+    // Layout: Flags (4) + TypeDefId (4) + TypeName (str) + TypeNamespace (str) + Implementation (Implementation coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Flags for an ExportedType row
+    /// </summary>
+    public static uint GetExportedTypeFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ExportedType, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the TypeDefId for an ExportedType row
+    /// </summary>
+    public static uint GetExportedTypeTypeDefId(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ExportedType, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)(row + 4);
+    }
+
+    /// <summary>
+    /// Get the TypeName string index for an ExportedType row
+    /// </summary>
+    public static uint GetExportedTypeName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ExportedType, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the TypeNamespace string index for an ExportedType row
+    /// </summary>
+    public static uint GetExportedTypeNamespace(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ExportedType, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8 + sizes.StringIndexSize, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Implementation (Implementation coded index) for an ExportedType row
+    /// </summary>
+    public static uint GetExportedTypeImplementation(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ExportedType, rowId);
+        if (row == null)
+            return 0;
+
+        int implementationSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.Implementation, ref header);
+        return ReadIndex(row + 8 + sizes.StringIndexSize * 2, implementationSize);
+    }
+
+    // ============================================================================
+    // ManifestResource Table (0x28)
+    // Layout: Offset (4) + Flags (4) + Name (str) + Implementation (Implementation coded)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the Offset for a ManifestResource row
+    /// </summary>
+    public static uint GetManifestResourceOffset(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ManifestResource, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)row;
+    }
+
+    /// <summary>
+    /// Get the Flags for a ManifestResource row
+    /// </summary>
+    public static uint GetManifestResourceFlags(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ManifestResource, rowId);
+        if (row == null)
+            return 0;
+
+        return *(uint*)(row + 4);
+    }
+
+    /// <summary>
+    /// Get the Name string index for a ManifestResource row
+    /// </summary>
+    public static uint GetManifestResourceName(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ManifestResource, rowId);
+        if (row == null)
+            return 0;
+
+        return ReadIndex(row + 8, sizes.StringIndexSize);
+    }
+
+    /// <summary>
+    /// Get the Implementation (Implementation coded index) for a ManifestResource row
+    /// </summary>
+    public static uint GetManifestResourceImplementation(ref TablesHeader tables, ref TableSizes sizes, uint rowId, ref TablesHeader header)
+    {
+        byte* row = GetTableRow(ref tables, ref sizes, MetadataTableId.ManifestResource, rowId);
+        if (row == null)
+            return 0;
+
+        int implementationSize = CodedIndexHelper.GetCodedIndexSize(CodedIndexType.Implementation, ref header);
+        return ReadIndex(row + 8 + sizes.StringIndexSize, implementationSize);
+    }
+
+    // ============================================================================
     // IL Method Body Reader (ECMA-335 II.25.4)
     // ============================================================================
 

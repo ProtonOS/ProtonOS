@@ -384,29 +384,29 @@ Signature tables:
 - [x] StandAloneSig (0x11) - `GetStandAloneSigSignature()`
 
 Event/Property tables:
-- [ ] EventMap (0x12) - (row size calculated)
+- [x] EventMap (0x12) - `GetEventMapParent/EventList()`
 - [x] Event (0x14) - `GetEventFlags/Name/Type()`
-- [ ] PropertyMap (0x15) - (row size calculated)
+- [x] PropertyMap (0x15) - `GetPropertyMapParent/PropertyList()`
 - [x] Property (0x17) - `GetPropertyFlags/Name/Type()`
 - [x] MethodSemantics (0x18) - `GetMethodSemanticsSemantics/Method/Association()`
 
 Method implementation:
-- [ ] MethodImpl (0x19) - (row size calculated)
+- [x] MethodImpl (0x19) - `GetMethodImplClass/MethodBody/MethodDeclaration()`
 - [x] ModuleRef (0x1A) - `GetModuleRefName()`
 - [x] TypeSpec (0x1B) - `GetTypeSpecSignature()`
 
 P/Invoke:
 - [x] ImplMap (0x1C) - `GetImplMapMappingFlags/MemberForwarded/ImportName/ImportScope()`
-- [ ] FieldRVA (0x1D) - (row size calculated)
+- [x] FieldRVA (0x1D) - `GetFieldRvaRva/Field()`
 
 Assembly:
 - [x] Assembly (0x20) - `GetAssemblyHashAlgId/MajorVersion/MinorVersion/BuildNumber/RevisionNumber/Flags/Name/Culture()`
 - [x] AssemblyRef (0x23) - `GetAssemblyRefMajorVersion/MinorVersion/BuildNumber/RevisionNumber/Flags/Name()`, `DumpAssemblyRefTable()`
 
 Manifest:
-- [ ] File (0x26) - (row size calculated)
-- [ ] ExportedType (0x27) - (row size calculated)
-- [ ] ManifestResource (0x28) - (row size calculated)
+- [x] File (0x26) - `GetFileFlags/Name/HashValue()`
+- [x] ExportedType (0x27) - `GetExportedTypeFlags/TypeDefId/Name/Namespace/Implementation()`
+- [x] ManifestResource (0x28) - `GetManifestResourceOffset/Flags/Name/Implementation()`
 
 Nested types:
 - [x] NestedClass (0x29) - `GetNestedClassNestedClass/EnclosingClass()`
