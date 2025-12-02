@@ -4286,6 +4286,12 @@ public static unsafe class Tests
         // Test 107: Interface method dispatch through callvirt
         TestInterfaceDispatch();
 
+        // Test 108: try/finally with exception - finally runs during exception
+        TestILTryFinallyException();
+
+        // Test 109: nested try/finally blocks with exception
+        TestILNestedTryFinally();
+
         DebugConsole.WriteLine("========== IL JIT Tests Complete ==========");
     }
 
@@ -12356,6 +12362,388 @@ public static unsafe class Tests
         else
         {
             DebugConsole.WriteLine("compile FAIL FAILED");
+        }
+    }
+
+    /// <summary>
+    /// Test 108: try/finally with exception - finally runs during unwinding
+    /// Tests that finally blocks execute when an exception is thrown.
+    ///
+    /// The test function:
+    ///   static int* finallyRan;  // Static variable to track finally execution
+    ///   try {
+    ///     throw new Exception();
+    ///   }
+    ///   finally {
+    ///     *finallyRan = 1;
+    ///   }
+    ///   return 0;  // Never reached
+    ///   catch {
+    ///     return *finallyRan;  // Should be 1 if finally ran
+    ///   }
+    ///
+    /// Layout:
+    ///   IL_0000: try block starts
+    ///   IL_0000: ldarg.0 (exception object)
+    ///   IL_0001: throw
+    ///   IL_0002: try block ends (unreachable)
+    ///   IL_0002: finally block starts
+    ///   IL_0002: ldarg.1 (finallyRan pointer)
+    ///   IL_0003: ldc.i4.1
+    ///   IL_0004: stind.i4
+    ///   IL_0005: endfinally
+    ///   IL_0006: finally block ends
+    ///   IL_0006: catch block starts
+    ///   IL_0006: pop (discard exception)
+    ///   IL_0007: ldarg.1 (finallyRan pointer)
+    ///   IL_0008: ldind.i4
+    ///   IL_0009: ret
+    /// </summary>
+    private static unsafe void TestILTryFinallyException()
+    {
+        DebugConsole.Write("[IL JIT 108] try/finally exception: ");
+
+        // Static variable to track if finally ran
+        int finallyRan = 0;
+        int* finallyRanPtr = &finallyRan;
+
+        // Create exception MT
+        FakeMethodTable exceptionMT;
+        exceptionMT._usComponentSize = 0;
+        exceptionMT._usFlags = 0;
+        exceptionMT._uBaseSize = 16;
+        exceptionMT._relatedType = null;
+        exceptionMT._usNumVtableSlots = 0;
+        exceptionMT._usNumInterfaces = 0;
+        exceptionMT._uHashCode = 0xEEEE;
+
+        // Create a fake exception object
+        ulong* exceptionObj = stackalloc ulong[2];
+        exceptionObj[0] = (ulong)&exceptionMT;
+        exceptionObj[1] = 0xDEADBEEF;
+
+        // IL bytecode
+        byte* il = stackalloc byte[32];
+        int idx = 0;
+
+        // Try block: throw exception
+        int tryStart = idx;
+        il[idx++] = 0x02;  // ldarg.0 - load exception object
+        il[idx++] = 0x7A;  // throw
+        int tryEnd = idx;
+
+        // Finally block: set *finallyRan = 1
+        int finallyStart = idx;
+        il[idx++] = 0x03;  // ldarg.1 - load finallyRan pointer
+        il[idx++] = 0x17;  // ldc.i4.1 - push 1
+        il[idx++] = 0x54;  // stind.i4 - store 1 to *finallyRan
+        il[idx++] = 0xDC;  // endfinally
+        int finallyEnd = idx;
+
+        // Catch block: return *finallyRan
+        int catchStart = idx;
+        il[idx++] = 0x26;  // pop - discard exception object
+        il[idx++] = 0x03;  // ldarg.1 - load finallyRan pointer
+        il[idx++] = 0x4A;  // ldind.i4 - load value
+        il[idx++] = 0x2A;  // ret
+        int catchEnd = idx;
+
+        // Compile with 2 args: exception object, finallyRan pointer
+        var compiler = Runtime.JIT.ILCompiler.Create(il, idx, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("compile FAILED");
+            return;
+        }
+
+        // Get native offsets
+        uint codeSize = compiler.CodeSize;
+        ulong codeStart = (ulong)code;
+        byte prologSize = compiler.PrologSize;
+
+        uint nativeTryStart = (uint)compiler.GetNativeOffset(tryStart);
+        uint nativeTryEnd = (uint)compiler.GetNativeOffset(tryEnd);
+        uint nativeFinallyStart = (uint)compiler.GetNativeOffset(finallyStart);
+        uint nativeFinallyEnd = (uint)compiler.GetNativeOffset(finallyEnd);
+        uint nativeCatchStart = (uint)compiler.GetNativeOffset(catchStart);
+        uint nativeCatchEnd = codeSize;
+
+        DebugConsole.Write("try=");
+        DebugConsole.WriteHex(nativeTryStart);
+        DebugConsole.Write("-");
+        DebugConsole.WriteHex(nativeTryEnd);
+        DebugConsole.Write(" finally=");
+        DebugConsole.WriteHex(nativeFinallyStart);
+        DebugConsole.Write("-");
+        DebugConsole.WriteHex(nativeFinallyEnd);
+        DebugConsole.Write(" catch=");
+        DebugConsole.WriteHex(nativeCatchStart);
+        DebugConsole.Write("-");
+        DebugConsole.WriteHex(nativeCatchEnd);
+        DebugConsole.Write(" ");
+
+        // Create JITMethodInfo
+        var methodInfo = Runtime.JIT.JITMethodInfo.Create(
+            codeStart,
+            codeStart,
+            codeSize,
+            prologSize: prologSize,
+            frameRegister: 5,
+            frameOffset: 0
+        );
+
+        // Create EH clauses: finally clause first, then catch clause
+        // Note: clauses should be ordered inner-to-outer, and finally runs before catch
+        Runtime.JIT.JITExceptionClauses nativeClauses = default;
+
+        // Finally clause
+        Runtime.JIT.JITExceptionClause finallyClause;
+        finallyClause.Flags = Runtime.JIT.ILExceptionClauseFlags.Finally;
+        finallyClause.TryStartOffset = nativeTryStart;
+        finallyClause.TryEndOffset = nativeTryEnd;
+        finallyClause.HandlerStartOffset = nativeFinallyStart;
+        finallyClause.HandlerEndOffset = nativeFinallyEnd;
+        finallyClause.ClassTokenOrFilterOffset = 0;
+        finallyClause.IsValid = true;
+        nativeClauses.AddClause(finallyClause);
+
+        // Catch clause
+        Runtime.JIT.JITExceptionClause catchClause;
+        catchClause.Flags = Runtime.JIT.ILExceptionClauseFlags.Exception;
+        catchClause.TryStartOffset = nativeTryStart;
+        catchClause.TryEndOffset = nativeTryEnd;
+        catchClause.HandlerStartOffset = nativeCatchStart;
+        catchClause.HandlerEndOffset = nativeCatchEnd;
+        catchClause.ClassTokenOrFilterOffset = 0;
+        catchClause.IsValid = true;
+        nativeClauses.AddClause(catchClause);
+
+        // Register method
+        if (!Runtime.JIT.JITMethodRegistry.RegisterMethod(ref methodInfo, ref nativeClauses))
+        {
+            DebugConsole.WriteLine("register FAILED");
+            return;
+        }
+
+        // Call the function
+        var fn = (delegate*<void*, int*, int>)code;
+        int result = fn(exceptionObj, finallyRanPtr);
+
+        // Result should be 1 (finally ran and set the value)
+        if (result == 1 && finallyRan == 1)
+        {
+            DebugConsole.WriteLine("finally ran! PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("result=");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.Write(" finallyRan=");
+            DebugConsole.WriteDecimal((uint)finallyRan);
+            DebugConsole.WriteLine(" FAILED");
+        }
+    }
+
+    /// <summary>
+    /// Test 109: nested try/finally blocks with exception
+    /// Tests that multiple nested finally blocks all run during exception unwinding.
+    ///
+    /// The test function:
+    ///   static int* counter;  // Tracks order of finally execution
+    ///   try {                 // outer try
+    ///     try {               // inner try
+    ///       throw;
+    ///     }
+    ///     finally {
+    ///       *counter += 1;    // Should run first (innermost)
+    ///     }
+    ///   }
+    ///   finally {
+    ///     *counter += 10;     // Should run second (outer)
+    ///   }
+    ///   catch {
+    ///     return *counter;    // Should be 11 (1 + 10)
+    ///   }
+    ///
+    /// IL Layout:
+    ///   IL_0000: try_outer {
+    ///   IL_0000:   try_inner {
+    ///   IL_0000:     ldarg.0 (exception)
+    ///   IL_0001:     throw
+    ///   IL_0002:   } // try_inner
+    ///   IL_0002:   finally_inner {
+    ///   IL_0002:     ldarg.1; ldarg.1; ldind.i4; ldc.i4.1; add; stind.i4; endfinally
+    ///   IL_0009:   }
+    ///   IL_000A: } // try_outer
+    ///   IL_000A: finally_outer {
+    ///   IL_000A:   ldarg.1; ldarg.1; ldind.i4; ldc.i4.s 10; add; stind.i4; endfinally
+    ///   IL_0012: }
+    ///   IL_0013: catch {
+    ///   IL_0013:   pop; ldarg.1; ldind.i4; ret
+    ///   IL_0017: }
+    /// </summary>
+    private static unsafe void TestILNestedTryFinally()
+    {
+        DebugConsole.Write("[IL JIT 109] nested try/finally: ");
+
+        // Counter to track finally execution order
+        int counter = 0;
+        int* counterPtr = &counter;
+
+        // Create exception
+        FakeMethodTable exceptionMT;
+        exceptionMT._usComponentSize = 0;
+        exceptionMT._usFlags = 0;
+        exceptionMT._uBaseSize = 16;
+        exceptionMT._relatedType = null;
+        exceptionMT._usNumVtableSlots = 0;
+        exceptionMT._usNumInterfaces = 0;
+        exceptionMT._uHashCode = 0xEEEE;
+
+        ulong* exceptionObj = stackalloc ulong[2];
+        exceptionObj[0] = (ulong)&exceptionMT;
+        exceptionObj[1] = 0xDEADBEEF;
+
+        // IL bytecode
+        byte* il = stackalloc byte[64];
+        int idx = 0;
+
+        // Inner try block: throw exception
+        int innerTryStart = idx;
+        il[idx++] = 0x02;  // ldarg.0 - load exception object
+        il[idx++] = 0x7A;  // throw
+        int innerTryEnd = idx;
+
+        // Inner finally block: *counter += 1
+        int innerFinallyStart = idx;
+        il[idx++] = 0x03;  // ldarg.1 - counter ptr
+        il[idx++] = 0x03;  // ldarg.1 - counter ptr
+        il[idx++] = 0x4A;  // ldind.i4 - load current value
+        il[idx++] = 0x17;  // ldc.i4.1 - push 1
+        il[idx++] = 0x58;  // add
+        il[idx++] = 0x54;  // stind.i4 - store back
+        il[idx++] = 0xDC;  // endfinally
+        int innerFinallyEnd = idx;
+
+        // Outer try ends here (includes inner try+finally)
+        int outerTryEnd = idx;
+
+        // Outer finally block: *counter += 10
+        int outerFinallyStart = idx;
+        il[idx++] = 0x03;  // ldarg.1 - counter ptr
+        il[idx++] = 0x03;  // ldarg.1 - counter ptr
+        il[idx++] = 0x4A;  // ldind.i4 - load current value
+        il[idx++] = 0x1F;  // ldc.i4.s
+        il[idx++] = 10;    // 10
+        il[idx++] = 0x58;  // add
+        il[idx++] = 0x54;  // stind.i4 - store back
+        il[idx++] = 0xDC;  // endfinally
+        int outerFinallyEnd = idx;
+
+        // Catch block: return *counter
+        int catchStart = idx;
+        il[idx++] = 0x26;  // pop - discard exception
+        il[idx++] = 0x03;  // ldarg.1 - counter ptr
+        il[idx++] = 0x4A;  // ldind.i4 - load value
+        il[idx++] = 0x2A;  // ret
+        int catchEnd = idx;
+
+        // Compile with 2 args: exception object, counter pointer
+        var compiler = Runtime.JIT.ILCompiler.Create(il, idx, 2, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("compile FAILED");
+            return;
+        }
+
+        // Get native offsets
+        uint codeSize = compiler.CodeSize;
+        ulong codeStart = (ulong)code;
+        byte prologSize = compiler.PrologSize;
+
+        uint nativeInnerTryStart = (uint)compiler.GetNativeOffset(innerTryStart);
+        uint nativeInnerTryEnd = (uint)compiler.GetNativeOffset(innerTryEnd);
+        uint nativeInnerFinallyStart = (uint)compiler.GetNativeOffset(innerFinallyStart);
+        uint nativeInnerFinallyEnd = (uint)compiler.GetNativeOffset(innerFinallyEnd);
+        uint nativeOuterTryEnd = (uint)compiler.GetNativeOffset(outerTryEnd);
+        uint nativeOuterFinallyStart = (uint)compiler.GetNativeOffset(outerFinallyStart);
+        uint nativeOuterFinallyEnd = (uint)compiler.GetNativeOffset(outerFinallyEnd);
+        uint nativeCatchStart = (uint)compiler.GetNativeOffset(catchStart);
+        uint nativeCatchEnd = codeSize;
+
+        // Create JITMethodInfo
+        var methodInfo = Runtime.JIT.JITMethodInfo.Create(
+            codeStart,
+            codeStart,
+            codeSize,
+            prologSize: prologSize,
+            frameRegister: 5,
+            frameOffset: 0
+        );
+
+        // Create EH clauses - order matters! Inner clauses first.
+        Runtime.JIT.JITExceptionClauses nativeClauses = default;
+
+        // Inner finally clause (covers inner try only)
+        Runtime.JIT.JITExceptionClause innerFinallyClause;
+        innerFinallyClause.Flags = Runtime.JIT.ILExceptionClauseFlags.Finally;
+        innerFinallyClause.TryStartOffset = nativeInnerTryStart;
+        innerFinallyClause.TryEndOffset = nativeInnerTryEnd;
+        innerFinallyClause.HandlerStartOffset = nativeInnerFinallyStart;
+        innerFinallyClause.HandlerEndOffset = nativeInnerFinallyEnd;
+        innerFinallyClause.ClassTokenOrFilterOffset = 0;
+        innerFinallyClause.IsValid = true;
+        nativeClauses.AddClause(innerFinallyClause);
+
+        // Outer finally clause (covers inner try + inner finally)
+        Runtime.JIT.JITExceptionClause outerFinallyClause;
+        outerFinallyClause.Flags = Runtime.JIT.ILExceptionClauseFlags.Finally;
+        outerFinallyClause.TryStartOffset = nativeInnerTryStart;  // Outer try starts at same point
+        outerFinallyClause.TryEndOffset = nativeOuterTryEnd;  // But includes the inner finally
+        outerFinallyClause.HandlerStartOffset = nativeOuterFinallyStart;
+        outerFinallyClause.HandlerEndOffset = nativeOuterFinallyEnd;
+        outerFinallyClause.ClassTokenOrFilterOffset = 0;
+        outerFinallyClause.IsValid = true;
+        nativeClauses.AddClause(outerFinallyClause);
+
+        // Catch clause (covers entire try area)
+        Runtime.JIT.JITExceptionClause catchClause;
+        catchClause.Flags = Runtime.JIT.ILExceptionClauseFlags.Exception;
+        catchClause.TryStartOffset = nativeInnerTryStart;
+        catchClause.TryEndOffset = nativeOuterTryEnd;
+        catchClause.HandlerStartOffset = nativeCatchStart;
+        catchClause.HandlerEndOffset = nativeCatchEnd;
+        catchClause.ClassTokenOrFilterOffset = 0;
+        catchClause.IsValid = true;
+        nativeClauses.AddClause(catchClause);
+
+        // Register method
+        if (!Runtime.JIT.JITMethodRegistry.RegisterMethod(ref methodInfo, ref nativeClauses))
+        {
+            DebugConsole.WriteLine("register FAILED");
+            return;
+        }
+
+        // Call the function
+        var fn = (delegate*<void*, int*, int>)code;
+        int result = fn(exceptionObj, counterPtr);
+
+        // Result should be 11 (inner finally added 1, outer finally added 10)
+        if (result == 11 && counter == 11)
+        {
+            DebugConsole.WriteLine("both finally blocks ran! PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("result=");
+            DebugConsole.WriteDecimal((uint)result);
+            DebugConsole.Write(" counter=");
+            DebugConsole.WriteDecimal((uint)counter);
+            DebugConsole.WriteLine(" expected 11 FAILED");
         }
     }
 }

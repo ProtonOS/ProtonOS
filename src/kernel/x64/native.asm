@@ -1133,3 +1133,42 @@ capture_context:
     mov [rcx + 0x92], ax
 
     ret
+
+;; ==================== Finally Handler Support ====================
+;; Calls a finally handler with proper frame setup.
+;; The finally handler is an inline handler (not a funclet) that expects
+;; RBP to be set up to access the function's locals.
+;; The handler ends with 'endfinally' which just does 'ret'.
+
+; void call_finally_handler(ulong handlerAddress, ulong framePointer)
+; Windows x64 ABI: handlerAddress in rcx, framePointer in rdx
+;
+; The finally handler accesses locals via [rbp-X], so we need to set
+; RBP = framePointer. The handler ends with 'ret', so we just call it.
+global call_finally_handler
+call_finally_handler:
+    ; Save callee-saved registers we'll modify
+    push rbp
+    push rbx
+
+    ; Save arguments
+    mov rax, rcx        ; handler address
+    mov rbx, rdx        ; frame pointer
+
+    ; Set RBP to the original function's frame pointer
+    ; This allows the handler to access locals via [rbp-X]
+    mov rbp, rbx
+
+    ; Call the finally handler
+    ; The handler code does:
+    ;   <handler body accessing [rbp-X]>
+    ;   ret
+    ; So it just returns to us
+    call rax
+
+    ; Handler has returned via 'ret'
+    ; Restore callee-saved registers
+    pop rbx
+    pop rbp
+
+    ret

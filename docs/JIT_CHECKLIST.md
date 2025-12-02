@@ -24,7 +24,7 @@ as reference code, not integrating it directly.
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
-**Tier 0 JIT is fully functional with 107 tests passing.**
+**Tier 0 JIT is fully functional with 109 tests passing.**
 
 Deferred to future phases:
 - Funclet-based EH (Phase 6.2+)
@@ -233,7 +233,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test vtable dispatch (Test 89): callvirt through vtable slot
 - [x] Test ldvirtftn vtable dispatch (Test 90): ldvirtftn + calli through vtable slot
 
-**Current Status: 107 tests passing - Tier 0 JIT complete**
+**Current Status: 109 tests passing - Tier 0 JIT complete**
 
 ---
 
@@ -280,6 +280,15 @@ JIT'd code needs to support try/catch/finally.
 - [x] Test: JITMethodInfo creation, unwind codes, EH clause addition (Test 70)
 - [x] Test: JIT EH lookup end-to-end (Test 71)
 - [x] Test: throw/catch end-to-end (Test 92 - exception thrown, handler found, catch block runs)
+
+#### 6.2.5 Two-Pass Exception Handling (DONE)
+- [x] Pass 1: Search for matching catch handler (Typed clauses only)
+- [x] Pass 2: Execute finally/fault handlers during stack unwinding
+- [x] FindFinallyClausesInRange() to locate finally handlers between throw and catch
+- [x] ExecuteFinallyHandler() using call_finally_handler assembly trampoline
+- [x] endfinally opcode emits just `ret` (handler is called, not jumped to)
+- [x] Test: try/finally with exception (Test 108 - finally block executes)
+- [x] Test: nested try/finally (Test 109 - both finally blocks execute in order)
 
 ---
 

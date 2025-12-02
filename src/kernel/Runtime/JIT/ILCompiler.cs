@@ -3996,6 +3996,15 @@ public unsafe struct ILCompiler
     /// Compile endfinally (also endfault) - Return from finally/fault handler.
     /// Stack must be empty. Control returns to the runtime which decides
     /// where to continue (either continue unwinding or resume execution).
+    ///
+    /// For inline finally handlers called during exception handling:
+    /// - The EH runtime calls the handler with RBP set up to access locals
+    /// - endfinally just does 'ret' to return to the EH runtime
+    /// - The EH runtime then continues to the catch handler
+    ///
+    /// For normal finally execution (no exception):
+    /// - The try block completes, finally runs inline
+    /// - endfinally just falls through (the ret is never hit because leave jumps over it)
     /// </summary>
     private bool CompileEndfinally()
     {
@@ -4007,11 +4016,9 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // Call RhpCallFinallyFunclet return sequence
-        // In a simple implementation, we can just emit a ret
-        // The runtime arranges for finally handlers to be called as functions
-        // that return to the unwinding code
-        _emit.EmitEpilogue(_stackAdjust);
+        // Just emit 'ret' - the EH runtime sets up the call so ret returns to it.
+        // For normal execution, this code is skipped (leave jumps over it).
+        _emit.Ret();
 
         return true;
     }

@@ -1821,11 +1821,9 @@ public static unsafe class ExceptionHandling
             // Check if the exception offset falls within this try region
             if (offsetInFunction >= tryStart && offsetInFunction < tryEnd)
             {
-                // For now, accept any typed catch or finally
-                // TODO: Proper type matching
-                if (kind == (byte)EHClauseKind.Typed ||
-                    kind == (byte)EHClauseKind.Finally ||
-                    kind == (byte)EHClauseKind.Fault)
+                // Only match catch (Typed) clauses for Pass 1
+                // Finally/Fault handlers are executed in Pass 2
+                if (kind == (byte)EHClauseKind.Typed)
                 {
                     clause.Kind = (EHClauseKind)kind;
                     clause.TryStartOffset = tryStart;
@@ -1835,7 +1833,7 @@ public static unsafe class ExceptionHandling
                     clause.CatchTypeRva = catchTypeRva;
                     foundClauseIndex = i;
 
-                    DebugConsole.WriteLine("[EH] Found matching clause!");
+                    DebugConsole.WriteLine("[EH] Found matching catch clause!");
                     return true;
                 }
             }
@@ -1843,6 +1841,109 @@ public static unsafe class ExceptionHandling
 
         return false;
     }
+
+    /// <summary>
+    /// Find all finally/fault clauses in a function that cover a given offset.
+    /// Returns the number of finally/fault handlers found.
+    /// </summary>
+    /// <param name="ehInfo">Pointer to EH info data</param>
+    /// <param name="offsetInFunction">Current offset within the function</param>
+    /// <param name="clauses">Buffer to store found clauses (caller must provide space)</param>
+    /// <param name="maxClauses">Maximum number of clauses the buffer can hold</param>
+    /// <returns>Number of finally/fault clauses found</returns>
+    public static int FindFinallyClausesInRange(
+        byte* ehInfo,
+        uint offsetInFunction,
+        NativeAotEHClause* clauses,
+        int maxClauses)
+    {
+        if (ehInfo == null || clauses == null || maxClauses <= 0)
+            return 0;
+
+        byte* ptr = ehInfo;
+        uint clauseCount = ReadNativeUnsigned(ref ptr);
+
+        if (clauseCount > 100)
+            return 0;
+
+        int foundCount = 0;
+
+        for (uint i = 0; i < clauseCount && foundCount < maxClauses; i++)
+        {
+            uint tryStart = ReadNativeUnsigned(ref ptr);
+            uint tryEndDeltaAndKind = ReadNativeUnsigned(ref ptr);
+            byte kind = (byte)(tryEndDeltaAndKind & 0x3);
+            uint tryLength = tryEndDeltaAndKind >> 2;
+            uint tryEnd = tryStart + tryLength;
+
+            uint handlerOffset = 0;
+            if (kind != (byte)EHClauseKind.Filter)
+            {
+                handlerOffset = ReadNativeUnsigned(ref ptr);
+            }
+
+            // Skip type-specific data
+            if (kind == (byte)EHClauseKind.Typed)
+            {
+                ptr += 4; // Skip type RVA
+            }
+            else if (kind == (byte)EHClauseKind.Filter)
+            {
+                ReadNativeUnsigned(ref ptr); // handler offset
+                ReadNativeUnsigned(ref ptr); // filter offset
+            }
+
+            // Check if this is a finally/fault that covers our offset
+            if (offsetInFunction >= tryStart && offsetInFunction < tryEnd)
+            {
+                if (kind == (byte)EHClauseKind.Finally || kind == (byte)EHClauseKind.Fault)
+                {
+                    clauses[foundCount].Kind = (EHClauseKind)kind;
+                    clauses[foundCount].TryStartOffset = tryStart;
+                    clauses[foundCount].TryEndOffset = tryEnd;
+                    clauses[foundCount].HandlerOffset = handlerOffset;
+                    clauses[foundCount].FilterOffset = 0;
+                    clauses[foundCount].CatchTypeRva = 0;
+                    foundCount++;
+
+                    DebugConsole.Write("[EH] Found finally/fault clause at handler offset 0x");
+                    DebugConsole.WriteHex(handlerOffset);
+                    DebugConsole.WriteLine();
+                }
+            }
+        }
+
+        return foundCount;
+    }
+
+    /// <summary>
+    /// Execute a finally/fault handler by calling it as a function.
+    /// The handler is expected to end with 'endfinally' which does a ret.
+    /// </summary>
+    /// <param name="handlerAddress">Address of the finally handler code</param>
+    /// <param name="framePointer">RBP value for the function containing the handler</param>
+    private static void ExecuteFinallyHandler(ulong handlerAddress, ulong framePointer)
+    {
+        DebugConsole.Write("[EH] Executing finally handler at 0x");
+        DebugConsole.WriteHex(handlerAddress);
+        DebugConsole.Write(" with RBP=0x");
+        DebugConsole.WriteHex(framePointer);
+        DebugConsole.WriteLine();
+
+        // Call the finally handler as a function
+        // The handler expects RBP to be set up to access locals
+        // endfinally does 'mov rsp, rbp; pop rbp; ret' so it will return here
+        CallFinallyHandler(handlerAddress, framePointer);
+
+        DebugConsole.WriteLine("[EH] Finally handler returned");
+    }
+
+    /// <summary>
+    /// Assembly helper to call a finally handler with proper frame setup.
+    /// Implemented in native.asm
+    /// </summary>
+    [DllImport("*", EntryPoint = "call_finally_handler")]
+    private static extern void CallFinallyHandler(ulong handlerAddress, ulong framePointer);
 
     /// <summary>
     /// Dispatch a .NET exception using NativeAOT EH tables.
@@ -1948,13 +2049,13 @@ public static unsafe class ExceptionHandling
                 // Calculate offset within function
                 uint offsetInFunc = (uint)(searchContext.Rip - (imageBase + funcEntry->BeginAddress));
 
-                // Look for matching clause
+                // Look for matching catch clause (Pass 1 only finds catch, not finally)
                 NativeAotEHClause clause;
                 uint foundClauseIndex;
                 if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex))
                 {
-                    // Found a handler!
-                    DebugConsole.Write("[EH] Pass 1: Found handler in frame ");
+                    // Found a catch handler!
+                    DebugConsole.Write("[EH] Pass 1: Found catch handler in frame ");
                     DebugConsole.WriteDecimal(frame);
                     DebugConsole.Write(" at offset 0x");
                     DebugConsole.WriteHex(clause.HandlerOffset);
@@ -1962,21 +2063,82 @@ public static unsafe class ExceptionHandling
                     DebugConsole.WriteDecimal(foundClauseIndex);
                     DebugConsole.WriteLine(")");
 
-                    // TODO: Pass 2 - unwind and execute finally handlers
-                    // For now, just transfer to the catch handler
+                    // ========== Pass 2: Execute finally/fault handlers ==========
+                    // Walk from throw site to catch frame, executing finally handlers
+                    DebugConsole.WriteLine("[EH] Pass 2: Executing finally handlers");
 
-                    // Calculate handler address
-                    ulong handlerAddr = imageBase + funcEntry->BeginAddress + clause.HandlerOffset;
+                    int catchFrame = frame;
+                    ulong catchImageBase = imageBase;
+                    RuntimeFunction* catchFuncEntry = funcEntry;
+                    ExceptionContext catchSearchContext = searchContext;
 
-                    // Get the establisher frame (RSP after prolog) for this function
-                    // We need to virtually unwind to find where the frame's return address is
-                    ExceptionContext unwindContext = searchContext;
+                    // Start from throw site again
+                    ExceptionContext pass2Context = *context;
+                    int pass2Frame = 0;
+
+                    while (pass2Frame <= catchFrame && pass2Context.Rip != 0)
+                    {
+                        ulong p2ImageBase;
+                        var p2FuncEntry = LookupFunctionEntry(pass2Context.Rip, out p2ImageBase);
+
+                        if (p2FuncEntry == null)
+                        {
+                            // Leaf function - no finally handlers possible
+                            pass2Context.Rip = *(ulong*)pass2Context.Rsp;
+                            pass2Context.Rsp += 8;
+                            pass2Frame++;
+                            continue;
+                        }
+
+                        var p2UnwindInfo = (UnwindInfo*)(p2ImageBase + p2FuncEntry->UnwindInfoAddress);
+
+                        // Skip funclets
+                        if (IsFunclet(p2ImageBase, p2UnwindInfo))
+                        {
+                            ulong funcletFrame;
+                            RtlVirtualUnwind(UNW_HandlerType.UNW_FLAG_NHANDLER, p2ImageBase,
+                                pass2Context.Rip, p2FuncEntry, &pass2Context, null, &funcletFrame, null);
+                            pass2Frame++;
+                            continue;
+                        }
+
+                        byte* p2EhInfo = GetNativeAotEHInfo(p2ImageBase, p2UnwindInfo);
+                        if (p2EhInfo != null)
+                        {
+                            uint p2OffsetInFunc = (uint)(pass2Context.Rip - (p2ImageBase + p2FuncEntry->BeginAddress));
+
+                            // Find all finally/fault clauses in this frame
+                            NativeAotEHClause* finallyClauses = stackalloc NativeAotEHClause[16];
+                            int finallyCount = FindFinallyClausesInRange(p2EhInfo, p2OffsetInFunc, finallyClauses, 16);
+
+                            // Execute finally handlers (in order found - innermost first)
+                            for (int i = 0; i < finallyCount; i++)
+                            {
+                                ulong finallyAddr = p2ImageBase + p2FuncEntry->BeginAddress + finallyClauses[i].HandlerOffset;
+                                ExecuteFinallyHandler(finallyAddr, pass2Context.Rbp);
+                            }
+                        }
+
+                        // Unwind to next frame
+                        ulong estFrame;
+                        RtlVirtualUnwind(UNW_HandlerType.UNW_FLAG_NHANDLER, p2ImageBase,
+                            pass2Context.Rip, p2FuncEntry, &pass2Context, null, &estFrame, null);
+                        pass2Frame++;
+                    }
+
+                    DebugConsole.WriteLine("[EH] Pass 2 complete, transferring to catch handler");
+
+                    // ========== Transfer to catch handler ==========
+                    ulong handlerAddr = catchImageBase + catchFuncEntry->BeginAddress + clause.HandlerOffset;
+
+                    // Get the establisher frame for this function
+                    ExceptionContext unwindContext = catchSearchContext;
                     ulong handlerEstablisherFrame = 0;
                     RtlVirtualUnwind(
                         UNW_HandlerType.UNW_FLAG_NHANDLER,
-                        imageBase,
+                        catchImageBase,
                         unwindContext.Rip,
-                        funcEntry,
+                        catchFuncEntry,
                         &unwindContext,
                         null,
                         &handlerEstablisherFrame,
@@ -1991,31 +2153,21 @@ public static unsafe class ExceptionHandling
                     DebugConsole.WriteLine();
 
                     // Transfer control to handler
-                    // For inline handlers (not funclets), we need:
-                    // - RSP pointing to where the return address is (unwindContext.Rsp - 8)
-                    //   so that the handler's RET returns to the original caller
-                    // - RBP = frame pointer for accessing locals
-                    // - RCX = exception object (not used by simple handlers but convention)
-                    //
-                    // After RtlVirtualUnwind:
-                    // - unwindContext.Rsp points PAST the return address (caller's stack)
-                    // - unwindContext.Rip is the return address
-                    // We need RSP to point AT the return address for RET to work
                     context->Rip = handlerAddr;
                     context->Rsp = unwindContext.Rsp - 8;  // Point at return address
-                    context->Rbp = searchContext.Rbp;  // Keep the frame pointer
+                    context->Rbp = catchSearchContext.Rbp;  // Keep the frame pointer
                     context->Rcx = (ulong)exceptionObject;
-                    context->Rdx = searchContext.Rbp;  // Pass frame pointer
+                    context->Rdx = catchSearchContext.Rbp;  // Pass frame pointer
 
                     // Write the return address at RSP so handler's RET works
                     *(ulong*)context->Rsp = unwindContext.Rip;
 
                     // Set current exception info for rethrow support
                     SetCurrentException(exceptionObject);
-                    SetCurrentExceptionRip(searchContext.Rip);  // Save where exception occurred
-                    SetCurrentExceptionRsp(searchContext.Rsp);  // Save frame RSP
-                    SetCurrentExceptionRbp(searchContext.Rbp);  // Save frame RBP
-                    SetCurrentHandlerClause(foundClauseIndex);   // Save which clause caught it
+                    SetCurrentExceptionRip(catchSearchContext.Rip);
+                    SetCurrentExceptionRsp(catchSearchContext.Rsp);
+                    SetCurrentExceptionRbp(catchSearchContext.Rbp);
+                    SetCurrentHandlerClause(foundClauseIndex);
 
                     return true;
                 }
