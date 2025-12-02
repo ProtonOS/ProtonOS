@@ -24,10 +24,9 @@ as reference code, not integrating it directly.
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
-**Tier 0 JIT is fully functional with 106 tests passing.**
+**Tier 0 JIT is fully functional with 107 tests passing.**
 
 Deferred to future phases:
-- Interface dispatch (Phase 6.4+)
 - Funclet-based EH (Phase 6.2+)
 - Lazy FPU save optimization (Phase 6.0+)
 
@@ -234,7 +233,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test vtable dispatch (Test 89): callvirt through vtable slot
 - [x] Test ldvirtftn vtable dispatch (Test 90): ldvirtftn + calli through vtable slot
 
-**Current Status: 106 tests passing - Tier 0 JIT complete**
+**Current Status: 107 tests passing - Tier 0 JIT complete**
 
 ---
 
@@ -398,7 +397,7 @@ JIT'd code needs to work with objects, fields, arrays, and type casts.
   - [x] VTable lookup from MethodTable - Test 89
   - [x] Call through vtable slot - Test 89
   - [x] RegisterVirtual() for setting IsVirtual/VtableSlot
-- [ ] Interface method dispatch (later)
+- [x] Interface method dispatch - Test 107
 
 ### Test
 - [x] Allocate simple object with newobj (Test 83)
