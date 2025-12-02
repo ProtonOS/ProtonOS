@@ -312,7 +312,10 @@ public unsafe struct JITGCInfo
         int livenessBits = _numSafePoints * _numSlots;
 
         int totalBits = headerBits + safePointBits + slotCountBits + slotDefBits + livenessBits;
-        return (totalBits + 7) / 8 + 8; // Round up to bytes + padding
+        int calculated = (totalBits + 7) / 8 + 8; // Round up to bytes + padding
+
+        // BitWriter clears 128 bytes in its constructor, so we must return at least 128
+        return calculated < 128 ? 128 : calculated;
     }
 
     /// <summary>

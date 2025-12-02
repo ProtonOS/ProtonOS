@@ -446,6 +446,17 @@ public unsafe struct X64Emitter
     }
 
     /// <summary>
+    /// SHR reg64, imm8 - Logical shift right by immediate (zero-fill)
+    /// </summary>
+    public void ShrImm8(Reg64 reg, byte imm)
+    {
+        EmitRexSingle(true, reg);
+        _code.EmitByte(0xC1);  // SHR r/m64, imm8
+        EmitModRMReg(Reg64.RBP, reg);  // /5 opcode extension
+        _code.EmitByte(imm);
+    }
+
+    /// <summary>
     /// Zero-extend 32-bit value in register to 64-bit.
     /// Uses MOV r32, r32 (without REX.W) which clears upper 32 bits.
     /// </summary>
@@ -483,6 +494,26 @@ public unsafe struct X64Emitter
     }
 
     /// <summary>
+    /// AND reg64, imm32 (sign-extended)
+    /// </summary>
+    public void AndRI(Reg64 reg, int imm)
+    {
+        EmitRexSingle(true, reg);
+        if (imm >= -128 && imm <= 127)
+        {
+            _code.EmitByte(0x83);  // AND r/m64, imm8
+            EmitModRMReg(Reg64.RSP, reg);  // /4 opcode extension
+            _code.EmitByte((byte)imm);
+        }
+        else
+        {
+            _code.EmitByte(0x81);  // AND r/m64, imm32
+            EmitModRMReg(Reg64.RSP, reg);  // /4 opcode extension
+            _code.EmitInt32(imm);
+        }
+    }
+
+    /// <summary>
     /// OR reg64, reg64
     /// </summary>
     public void OrRR(Reg64 dst, Reg64 src)
@@ -499,6 +530,18 @@ public unsafe struct X64Emitter
     {
         EmitRex(true, right, left);
         _code.EmitByte(0x39);  // CMP r/m64, r64
+        EmitModRMReg(right, left);
+    }
+
+    /// <summary>
+    /// CMP reg32, reg32 (32-bit compare for IL int32 operations)
+    /// </summary>
+    public void CmpRR32(Reg64 left, Reg64 right)
+    {
+        // No REX.W prefix = 32-bit operation
+        // This is critical for signed comparisons of int32 values
+        EmitRex(false, right, left);
+        _code.EmitByte(0x39);  // CMP r/m32, r32
         EmitModRMReg(right, left);
     }
 
@@ -584,6 +627,26 @@ public unsafe struct X64Emitter
         int patchOffset = _code.Position;
         _code.EmitByte(0);  // Placeholder
         return patchOffset;
+    }
+
+    /// <summary>
+    /// JMP r64 - indirect jump through register
+    /// Encoding: FF /4 (ModRM with reg=4 and r/m=register)
+    /// </summary>
+    public void JmpR(Reg64 reg)
+    {
+        // REX prefix if needed (for R8-R15)
+        if ((int)reg >= 8)
+        {
+            _code.EmitByte((byte)(0x40 | 0x01));  // REX.B
+            _code.EmitByte(0xFF);
+            _code.EmitByte((byte)(0xE0 | ((int)reg & 7)));  // ModRM: mod=11, reg=4, r/m=reg
+        }
+        else
+        {
+            _code.EmitByte(0xFF);
+            _code.EmitByte((byte)(0xE0 | (int)reg));  // ModRM: mod=11, reg=4, r/m=reg
+        }
     }
 
     /// <summary>
@@ -1242,6 +1305,19 @@ public unsafe struct X64Emitter
     }
 
     /// <summary>
+    /// CVTSI2SS xmm, r32 - Convert 32-bit signed integer to single-precision float
+    /// Use this for IL int32 values to properly handle negative numbers
+    /// </summary>
+    public void Cvtsi2ssXmmR32(RegXMM dst, Reg64 src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmm(false, dst, src);  // No REX.W = 32-bit source
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x2A);  // CVTSI2SS xmm, r/m32
+        EmitModRMReg((Reg64)dst, src);
+    }
+
+    /// <summary>
     /// CVTSI2SD xmm, r64 - Convert 64-bit signed integer to double-precision float
     /// </summary>
     public void Cvtsi2sdXmmR64(RegXMM dst, Reg64 src)
@@ -1250,6 +1326,19 @@ public unsafe struct X64Emitter
         EmitRexXmm(true, dst, src);  // REX.W for 64-bit source
         _code.EmitByte(0x0F);
         _code.EmitByte(0x2A);  // CVTSI2SD xmm, r/m64
+        EmitModRMReg((Reg64)dst, src);
+    }
+
+    /// <summary>
+    /// CVTSI2SD xmm, r32 - Convert 32-bit signed integer to double-precision float
+    /// Use this for IL int32 values to properly handle negative numbers
+    /// </summary>
+    public void Cvtsi2sdXmmR32(RegXMM dst, Reg64 src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmm(false, dst, src);  // No REX.W = 32-bit source
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x2A);  // CVTSI2SD xmm, r/m32
         EmitModRMReg((Reg64)dst, src);
     }
 

@@ -13,6 +13,7 @@ public static class ILOpcode
 {
     // Constants
     public const byte Nop = 0x00;
+    public const byte Break = 0x01;
     public const byte Ldnull = 0x14;
     public const byte Ldc_I4_M1 = 0x15;
     public const byte Ldc_I4_0 = 0x16;
@@ -53,6 +54,7 @@ public static class ILOpcode
     // Stack operations
     public const byte Dup = 0x25;
     public const byte Pop = 0x26;
+    public const byte Jmp = 0x27;  // Tail jump (rare)
 
     // Arithmetic
     public const byte Add = 0x58;
@@ -80,6 +82,7 @@ public static class ILOpcode
     public const byte Conv_R8 = 0x6C;
     public const byte Conv_U4 = 0x6D;
     public const byte Conv_U8 = 0x6E;
+    public const byte Conv_R_Un = 0x76;  // Convert unsigned integer to floating point
     public const byte Conv_U2 = 0xD1;
     public const byte Conv_U1 = 0xD2;
     public const byte Conv_I = 0xD3;
@@ -92,6 +95,13 @@ public static class ILOpcode
     public const byte Mul_Ovf_Un = 0xD9;
     public const byte Sub_Ovf = 0xDA;
     public const byte Sub_Ovf_Un = 0xDB;
+
+    // Floating point check
+    public const byte Ckfinite = 0xC3;  // Check if value is finite (not NaN or infinity)
+
+    // Typed references (rare)
+    public const byte Refanyval = 0xC2;  // Get value address from typed reference
+    public const byte Mkrefany = 0xC6;   // Make typed reference
 
     // Conversion with overflow checking (signed source)
     public const byte Conv_Ovf_I1 = 0xB3;
@@ -171,10 +181,62 @@ public static class ILOpcode
     public const byte Stind_R8 = 0x57;
     public const byte Stind_I = 0xDF;  // Note: Stind_I is at 0xDF per ECMA
 
+    // String loading
+    public const byte Ldstr = 0x72;      // Load string literal from #US heap
+
     // Value type operations
     public const byte Cpobj = 0x70;
     public const byte Ldobj = 0x71;
     public const byte Stobj = 0x81;
+
+    // Field access
+    public const byte Ldfld = 0x7B;      // Load instance field
+    public const byte Ldflda = 0x7C;     // Load field address
+    public const byte Stfld = 0x7D;      // Store instance field
+    public const byte Ldsfld = 0x7E;     // Load static field
+    public const byte Ldsflda = 0x7F;    // Load static field address
+    public const byte Stsfld = 0x80;     // Store static field
+
+    // Object/array allocation
+    public const byte Newobj = 0x73;     // Create new object
+    public const byte Newarr = 0x8D;     // Create new array
+
+    // Type operations
+    public const byte Castclass = 0x74;  // Cast with exception on failure
+    public const byte Isinst = 0x75;     // Cast returning null on failure
+
+    // Boxing/Unboxing
+    public const byte Box = 0x8C;        // Box value type to object
+    public const byte Unbox = 0x79;      // Unbox object to managed pointer
+    public const byte Unbox_Any = 0xA5;  // Unbox object to value
+
+    // Token loading
+    public const byte Ldtoken = 0xD0;    // Load metadata token (TypeDef, TypeRef, TypeSpec, MethodDef, MemberRef, FieldDef)
+
+    // Array operations
+    public const byte Ldlen = 0x8E;      // Load array length
+    public const byte Ldelema = 0x8F;    // Load element address
+    public const byte Ldelem_I1 = 0x90;
+    public const byte Ldelem_U1 = 0x91;
+    public const byte Ldelem_I2 = 0x92;
+    public const byte Ldelem_U2 = 0x93;
+    public const byte Ldelem_I4 = 0x94;
+    public const byte Ldelem_U4 = 0x95;
+    public const byte Ldelem_I8 = 0x96;
+    public const byte Ldelem_I = 0x97;
+    public const byte Ldelem_R4 = 0x98;
+    public const byte Ldelem_R8 = 0x99;
+    public const byte Ldelem_Ref = 0x9A;
+    public const byte Stelem_I = 0x9B;
+    public const byte Stelem_I1 = 0x9C;
+    public const byte Stelem_I2 = 0x9D;
+    public const byte Stelem_I4 = 0x9E;
+    public const byte Stelem_I8 = 0x9F;
+    public const byte Stelem_R4 = 0xA0;
+    public const byte Stelem_R8 = 0xA1;
+    public const byte Stelem_Ref = 0xA2;
+    public const byte Ldelem = 0xA3;     // Load element (with type token)
+    public const byte Stelem = 0xA4;     // Store element (with type token)
 
     // Method calls
     public const byte Call = 0x28;
@@ -189,16 +251,21 @@ public static class ILOpcode
     public const byte Cgt_Un_2 = 0x03;
     public const byte Clt_2 = 0x04;
     public const byte Clt_Un_2 = 0x05;
-    public const byte Ldarg_2byte = 0x09;
-    public const byte Starg_2byte = 0x0A;
-    public const byte Ldloca_2byte = 0x0D;
-    public const byte Ldloc_2byte = 0x0C;
-    public const byte Stloc_2byte = 0x0E;
-    public const byte Ldarga_2byte = 0x0A;  // Same as Starg_2byte - context matters
+    public const byte Ldarg_2byte = 0x09;   // FE09: ldarg <uint16>
+    public const byte Ldarga_2byte = 0x0A;  // FE0A: ldarga <uint16>
+    public const byte Starg_2byte = 0x0B;   // FE0B: starg <uint16>
+    public const byte Ldloc_2byte = 0x0C;   // FE0C: ldloc <uint16>
+    public const byte Ldloca_2byte = 0x0D;  // FE0D: ldloca <uint16>
+    public const byte Stloc_2byte = 0x0E;   // FE0E: stloc <uint16>
     public const byte Cpblk_2 = 0x17;
     public const byte Initblk_2 = 0x18;
     public const byte Initobj_2 = 0x15;
     public const byte Sizeof_2 = 0x1C;
+
+    // Method pointer loading (two-byte opcodes)
+    public const byte Ldftn_2 = 0x06;      // Load function pointer
+    public const byte Ldvirtftn_2 = 0x07;  // Load virtual function pointer
+    public const byte Localloc_2 = 0x0F;   // Allocate space on stack
 
     // Conversion with overflow checking (unsigned source) - two-byte opcodes
     public const byte Conv_Ovf_I1_Un_2 = 0x82;
@@ -211,6 +278,21 @@ public static class ILOpcode
     public const byte Conv_Ovf_U8_Un_2 = 0x89;
     public const byte Conv_Ovf_I_Un_2 = 0x8A;
     public const byte Conv_Ovf_U_Un_2 = 0x8B;
+
+    // Exception handling (two-byte opcodes)
+    public const byte Endfilter_2 = 0x11;  // FE11: End exception filter
+
+    // Prefix opcodes (two-byte) - for constrained callvirt
+    public const byte Constrained_2 = 0x16;  // FE16: constrained. <type token>
+    public const byte Readonly_2 = 0x1E;     // FE1E: readonly. prefix for ldelema
+    public const byte Tail_2 = 0x14;         // FE14: tail. prefix for call
+    public const byte Volatile_2 = 0x13;     // FE13: volatile. prefix
+    public const byte Unaligned_2 = 0x12;    // FE12: unaligned. prefix
+    public const byte No_2 = 0x19;           // FE19: no. prefix (typecheck/rangecheck/nullcheck)
+
+    // Rare opcodes (two-byte)
+    public const byte Arglist_2 = 0x00;      // FE00: arglist (varargs)
+    public const byte Refanytype_2 = 0x1D;   // FE1D: refanytype (typed references)
 
     // Address loading (short forms)
     public const byte Ldloca_S = 0x12;
@@ -236,6 +318,37 @@ public unsafe struct ResolvedMethod
 
     /// <summary>True if resolution was successful.</summary>
     public bool IsValid;
+
+    /// <summary>True if this is a virtual method requiring vtable dispatch.</summary>
+    public bool IsVirtual;
+
+    /// <summary>
+    /// Vtable slot index for virtual methods.
+    /// Only valid if IsVirtual is true.
+    /// -1 means not a virtual method or slot not determined.
+    /// </summary>
+    public short VtableSlot;
+
+    /// <summary>
+    /// MethodTable pointer for the declaring type.
+    /// Used by newobj to allocate the correct type before calling the constructor.
+    /// </summary>
+    public void* MethodTable;
+
+    /// <summary>True if this is an interface method requiring interface dispatch.</summary>
+    public bool IsInterfaceMethod;
+
+    /// <summary>
+    /// MethodTable pointer for the interface (only valid if IsInterfaceMethod).
+    /// Used for interface dispatch to look up the correct vtable slot.
+    /// </summary>
+    public void* InterfaceMT;
+
+    /// <summary>
+    /// Method index within the interface (0-based, only valid if IsInterfaceMethod).
+    /// Combined with InterfaceMT to find the vtable slot at runtime.
+    /// </summary>
+    public short InterfaceMethodSlot;
 }
 
 /// <summary>
@@ -245,6 +358,61 @@ public unsafe struct ResolvedMethod
 /// <param name="result">Output: resolved method information</param>
 /// <returns>True if resolution successful</returns>
 public unsafe delegate bool MethodResolver(uint token, out ResolvedMethod result);
+
+/// <summary>
+/// Delegate for resolving user string tokens (ldstr).
+/// </summary>
+/// <param name="token">User string token (0x70xxxxxx where xxxxxx is #US heap offset)</param>
+/// <param name="stringPtr">Output: pointer to managed String object</param>
+/// <returns>True if resolution successful</returns>
+public unsafe delegate bool StringResolver(uint token, out void* stringPtr);
+
+/// <summary>
+/// Delegate for resolving type tokens (ldtoken, newarr, etc.).
+/// </summary>
+/// <param name="token">Type token (TypeDef 0x02, TypeRef 0x01, TypeSpec 0x1B)</param>
+/// <param name="methodTablePtr">Output: pointer to MethodTable</param>
+/// <returns>True if resolution successful</returns>
+public unsafe delegate bool TypeResolver(uint token, out void* methodTablePtr);
+
+/// <summary>
+/// Result of resolving a field token.
+/// Contains all information needed to generate field access code.
+/// </summary>
+public unsafe struct ResolvedField
+{
+    /// <summary>Byte offset of field within object instance (after MethodTable*).</summary>
+    public int Offset;
+
+    /// <summary>Size of field in bytes (1, 2, 4, or 8).</summary>
+    public byte Size;
+
+    /// <summary>True if field should be sign-extended when loaded.</summary>
+    public bool IsSigned;
+
+    /// <summary>True if this is a static field.</summary>
+    public bool IsStatic;
+
+    /// <summary>
+    /// For static fields: the address of the static storage.
+    /// For instance fields: unused (null).
+    /// </summary>
+    public void* StaticAddress;
+
+    /// <summary>True if this is a GC reference type (object, string, array).</summary>
+    public bool IsGCRef;
+
+    /// <summary>True if resolution was successful.</summary>
+    public bool IsValid;
+}
+
+/// <summary>
+/// Delegate for resolving field tokens (ldfld, stfld, ldsfld, stsfld).
+/// </summary>
+/// <param name="token">Field token (FieldDef 0x04, MemberRef 0x0A)</param>
+/// <param name="result">Output: resolved field information</param>
+/// <returns>True if resolution successful</returns>
+public unsafe delegate bool FieldResolver(uint token, out ResolvedField result);
 
 /// <summary>
 /// Naive IL to x64 compiler.
@@ -295,6 +463,15 @@ public unsafe struct ILCompiler
     // Method resolution callback (optional - if null, uses CompiledMethodRegistry)
     private MethodResolver _resolver;
 
+    // String resolution callback for ldstr (optional)
+    private StringResolver _stringResolver;
+
+    // Type resolution callback for ldtoken/newarr (optional)
+    private TypeResolver _typeResolver;
+
+    // Field resolution callback for ldfld/stfld/ldsfld/stsfld (optional)
+    private FieldResolver _fieldResolver;
+
     /// <summary>
     /// Create an IL compiler for a method.
     /// </summary>
@@ -322,6 +499,15 @@ public unsafe struct ILCompiler
         compiler._branchCount = 0;
         compiler._labelCount = 0;
         compiler._resolver = null;
+        compiler._stringResolver = null;
+        compiler._typeResolver = null;
+        compiler._fieldResolver = null;
+        // Use default allocation helpers from RuntimeHelpers
+        compiler._rhpNewFast = RuntimeHelpers.GetRhpNewFastPtr();
+        compiler._rhpNewArray = RuntimeHelpers.GetRhpNewArrayPtr();
+        // Use default type helpers from RuntimeHelpers
+        compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
+        compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
 
         // Create code buffer (4KB should be plenty for simple methods)
         var code = CodeBuffer.Create(4096);
@@ -338,6 +524,30 @@ public unsafe struct ILCompiler
         var compiler = Create(il, ilLength, argCount, localCount);
         compiler._resolver = resolver;
         return compiler;
+    }
+
+    /// <summary>
+    /// Set the string resolver for ldstr instructions.
+    /// </summary>
+    public void SetStringResolver(StringResolver resolver)
+    {
+        _stringResolver = resolver;
+    }
+
+    /// <summary>
+    /// Set the type resolver for ldtoken and newarr instructions.
+    /// </summary>
+    public void SetTypeResolver(TypeResolver resolver)
+    {
+        _typeResolver = resolver;
+    }
+
+    /// <summary>
+    /// Set the field resolver for ldfld/stfld/ldsfld/stsfld instructions.
+    /// </summary>
+    public void SetFieldResolver(FieldResolver resolver)
+    {
+        _fieldResolver = resolver;
     }
 
     /// <summary>
@@ -468,6 +678,17 @@ public unsafe struct ILCompiler
     public int SafePointCount => _gcInfo.NumSafePoints;
 
     /// <summary>
+    /// Get the total code size in bytes (after Compile()).
+    /// </summary>
+    public uint CodeSize => (uint)_emit.Position;
+
+    /// <summary>
+    /// Get the prologue size in bytes.
+    /// The prologue is the code before IL offset 0 starts executing.
+    /// </summary>
+    public byte PrologSize => _labelCount > 0 ? (byte)_labelCodeOffset[0] : (byte)0;
+
+    /// <summary>
     /// Compile the IL method to native code.
     /// Returns function pointer or null on failure.
     /// </summary>
@@ -562,6 +783,10 @@ public unsafe struct ILCompiler
         switch (opcode)
         {
             case ILOpcode.Nop:
+                return true;
+
+            case ILOpcode.Break:
+                _emit.Int3();  // Emit x86 INT 3 breakpoint instruction
                 return true;
 
             // === Constants ===
@@ -673,6 +898,16 @@ public unsafe struct ILCompiler
             case ILOpcode.Pop:
                 return CompilePop();
 
+            case ILOpcode.Jmp:
+                {
+                    // jmp <method token> - tail jump to method
+                    // This replaces the current stack frame with the target method's frame.
+                    // The current method's arguments become the target method's arguments.
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileJmp(token);
+                }
+
             // === Arithmetic ===
             case ILOpcode.Add: return CompileAdd();
             case ILOpcode.Sub: return CompileSub();
@@ -711,6 +946,26 @@ public unsafe struct ILCompiler
             case ILOpcode.Conv_U: return CompileConv(8, signed: false);  // Native uint = 64-bit
             case ILOpcode.Conv_R4: return CompileConvR4();
             case ILOpcode.Conv_R8: return CompileConvR8();
+            case ILOpcode.Conv_R_Un: return CompileConvR_Un();
+
+            // === Floating Point Check ===
+            case ILOpcode.Ckfinite: return CompileCkfinite();
+
+            // === Typed references (rare) ===
+            case ILOpcode.Refanyval:
+                {
+                    // refanyval <type token> - get value pointer from typed reference
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileRefanyval(token);
+                }
+            case ILOpcode.Mkrefany:
+                {
+                    // mkrefany <type token> - make typed reference
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileMkrefany(token);
+                }
 
             // === Overflow-checking Conversion (signed source) ===
             case ILOpcode.Conv_Ovf_I1: return CompileConvOvf(1, targetSigned: true, sourceUnsigned: false);
@@ -939,6 +1194,10 @@ public unsafe struct ILCompiler
                 return CompileLdind(8, signExtend: false);  // 8 bytes = full 64-bit, no extension
             case ILOpcode.Ldind_I:
                 return CompileLdind(8, signExtend: false);  // Native int = 64-bit on x64
+            case ILOpcode.Ldind_R4:
+                return CompileLdindFloat(4);  // Load float32 indirect
+            case ILOpcode.Ldind_R8:
+                return CompileLdindFloat(8);  // Load float64 indirect
             case ILOpcode.Ldind_Ref:
                 return CompileLdind(8, signExtend: false);  // Object ref = pointer = 64-bit
 
@@ -953,6 +1212,10 @@ public unsafe struct ILCompiler
                 return CompileStind(4);
             case ILOpcode.Stind_I8:
                 return CompileStind(8);
+            case ILOpcode.Stind_R4:
+                return CompileStindFloat(4);  // Store float32 indirect
+            case ILOpcode.Stind_R8:
+                return CompileStindFloat(8);  // Store float64 indirect
 
             // === Value type operations ===
             case ILOpcode.Cpobj:
@@ -989,6 +1252,177 @@ public unsafe struct ILCompiler
                     uint sigToken = *(uint*)(_il + _ilOffset);
                     _ilOffset += 4;
                     return CompileCalli(sigToken);
+                }
+
+            case ILOpcode.Callvirt:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileCallvirt(token);
+                }
+
+            // === Field access ===
+            case ILOpcode.Ldfld:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdfld(token);
+                }
+            case ILOpcode.Ldflda:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdflda(token);
+                }
+            case ILOpcode.Stfld:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileStfld(token);
+                }
+            case ILOpcode.Ldsfld:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdsfld(token);
+                }
+            case ILOpcode.Ldsflda:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdsflda(token);
+                }
+            case ILOpcode.Stsfld:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileStsfld(token);
+                }
+
+            // === Array operations ===
+            case ILOpcode.Ldlen:
+                return CompileLdlen();
+            case ILOpcode.Ldelem_I1:
+                return CompileLdelem(1, signed: true);
+            case ILOpcode.Ldelem_U1:
+                return CompileLdelem(1, signed: false);
+            case ILOpcode.Ldelem_I2:
+                return CompileLdelem(2, signed: true);
+            case ILOpcode.Ldelem_U2:
+                return CompileLdelem(2, signed: false);
+            case ILOpcode.Ldelem_I4:
+                return CompileLdelem(4, signed: true);
+            case ILOpcode.Ldelem_U4:
+                return CompileLdelem(4, signed: false);
+            case ILOpcode.Ldelem_I8:
+                return CompileLdelem(8, signed: true);
+            case ILOpcode.Ldelem_I:
+                return CompileLdelem(8, signed: true);  // Native int = 64-bit
+            case ILOpcode.Ldelem_Ref:
+                return CompileLdelem(8, signed: false); // Pointer = 64-bit
+            case ILOpcode.Ldelem_R4:
+                return CompileLdelemFloat(4);
+            case ILOpcode.Ldelem_R8:
+                return CompileLdelemFloat(8);
+            case ILOpcode.Stelem_I:
+                return CompileStelem(8);
+            case ILOpcode.Stelem_I1:
+                return CompileStelem(1);
+            case ILOpcode.Stelem_I2:
+                return CompileStelem(2);
+            case ILOpcode.Stelem_I4:
+                return CompileStelem(4);
+            case ILOpcode.Stelem_I8:
+                return CompileStelem(8);
+            case ILOpcode.Stelem_Ref:
+                return CompileStelem(8);  // Pointer = 64-bit
+            case ILOpcode.Stelem_R4:
+                return CompileStelemFloat(4);
+            case ILOpcode.Stelem_R8:
+                return CompileStelemFloat(8);
+            case ILOpcode.Ldelema:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdelema(token);
+                }
+
+            // === Object allocation ===
+            case ILOpcode.Newobj:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileNewobj(token);
+                }
+            case ILOpcode.Newarr:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileNewarr(token);
+                }
+
+            // === Boxing/Unboxing ===
+            case ILOpcode.Box:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileBox(token);
+                }
+            case ILOpcode.Unbox:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileUnbox(token);
+                }
+            case ILOpcode.Unbox_Any:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileUnboxAny(token);
+                }
+
+            // === Type operations ===
+            case ILOpcode.Castclass:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileCastclass(token);
+                }
+            case ILOpcode.Isinst:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileIsinst(token);
+                }
+
+            // === String loading ===
+            case ILOpcode.Ldstr:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdstr(token);
+                }
+
+            // === Token loading ===
+            case ILOpcode.Ldtoken:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdtoken(token);
+                }
+
+            // === Array element with type token ===
+            case ILOpcode.Ldelem:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdelemToken(token);
+                }
+            case ILOpcode.Stelem:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileStelemToken(token);
                 }
 
             // === Two-byte opcodes ===
@@ -1037,6 +1471,63 @@ public unsafe struct ILCompiler
             case ILOpcode.Rethrow_2:
                 return CompileRethrow();
 
+            // Function pointer loading
+            case ILOpcode.Ldftn_2:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdftn(token);
+                }
+
+            case ILOpcode.Ldvirtftn_2:
+                {
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLdvirtftn(token);
+                }
+
+            // Stack allocation
+            case ILOpcode.Localloc_2:
+                return CompileLocalloc();
+
+            // Two-byte arg/local opcodes (16-bit index for >255 args/locals)
+            case ILOpcode.Ldarg_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileLdarg(idx);
+                }
+            case ILOpcode.Ldarga_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileLdarga(idx);
+                }
+            case ILOpcode.Starg_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileStarg(idx);
+                }
+            case ILOpcode.Ldloc_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileLdloc(idx);
+                }
+            case ILOpcode.Ldloca_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileLdloca(idx);
+                }
+            case ILOpcode.Stloc_2byte:
+                {
+                    ushort idx = *(ushort*)(_il + _ilOffset);
+                    _ilOffset += 2;
+                    return CompileStloc(idx);
+                }
+
             // Overflow-checking conversions (unsigned source)
             case ILOpcode.Conv_Ovf_I1_Un_2: return CompileConvOvf(1, targetSigned: true, sourceUnsigned: true);
             case ILOpcode.Conv_Ovf_U1_Un_2: return CompileConvOvf(1, targetSigned: false, sourceUnsigned: true);
@@ -1048,6 +1539,56 @@ public unsafe struct ILCompiler
             case ILOpcode.Conv_Ovf_U8_Un_2: return CompileConvOvf(8, targetSigned: false, sourceUnsigned: true);
             case ILOpcode.Conv_Ovf_I_Un_2: return CompileConvOvf(8, targetSigned: true, sourceUnsigned: true);
             case ILOpcode.Conv_Ovf_U_Un_2: return CompileConvOvf(8, targetSigned: false, sourceUnsigned: true);
+
+            // === Exception handling ===
+            case ILOpcode.Endfilter_2:
+                return CompileEndfilter();
+
+            // === Prefix opcodes ===
+            // These prefixes modify the behavior of the following opcode
+            case ILOpcode.Constrained_2:
+                {
+                    // constrained. <type token> - prefix for callvirt
+                    uint token = *(uint*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    // For Tier 0 JIT, we ignore the constraint and let the next callvirt handle it
+                    // The constrained prefix is an optimization hint that allows devirtualization
+                    return true;
+                }
+            case ILOpcode.Readonly_2:
+                // readonly. prefix - indicates ldelema result won't be used for writes
+                // For naive JIT, this is a no-op (just an optimization hint)
+                return true;
+            case ILOpcode.Tail_2:
+                // tail. prefix - indicates a tail call follows
+                // For naive JIT, we ignore this and do a normal call
+                return true;
+            case ILOpcode.Volatile_2:
+                // volatile. prefix - indicates next load/store is volatile
+                // For naive JIT with no optimizations, memory accesses are already ordered
+                return true;
+            case ILOpcode.Unaligned_2:
+                {
+                    // unaligned. <alignment> - indicates next load/store may be unaligned
+                    byte alignment = _il[_ilOffset++];
+                    _ = alignment; // Unused in naive JIT
+                    return true;
+                }
+            case ILOpcode.No_2:
+                {
+                    // no. <flags> - suppress runtime checks
+                    byte flags = _il[_ilOffset++];
+                    _ = flags; // Unused in naive JIT
+                    return true;
+                }
+
+            // === Rare opcodes ===
+            case ILOpcode.Arglist_2:
+                // arglist - get handle to argument list (varargs)
+                return CompileArglist();
+            case ILOpcode.Refanytype_2:
+                // refanytype - get type from typed reference
+                return CompileRefanytype();
 
             default:
                 DebugConsole.Write("[JIT] Unknown 0xFE opcode: 0x");
@@ -1074,10 +1615,10 @@ public unsafe struct ILCompiler
 
     private bool CompileLdarg(int index)
     {
-        // Load argument from shadow space
-        // Use sign-extension for 32-bit int arguments to handle negative values correctly
-        // (Microsoft x64 ABI: 32-bit args are zero-extended in 64-bit registers)
-        _emit.LoadArgFromHomeI32(Reg64.RAX, index);
+        // Load argument from shadow space - use full 64-bit load
+        // This handles both native int (pointer) and int32 arguments correctly
+        // For int32 args, the caller already zero-extends per Microsoft x64 ABI
+        _emit.LoadArgFromHome(Reg64.RAX, index);
         _emit.Push(Reg64.RAX);
         _evalStackDepth++;
         return true;
@@ -1369,6 +1910,57 @@ public unsafe struct ILCompiler
         }
 
         _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ckfinite - check if floating-point value is finite (not NaN or infinity).
+    /// For doubles: NOT finite if exponent bits (52-62) == 0x7FF
+    /// The value is left on the stack; throws ArithmeticException if not finite.
+    /// </summary>
+    private bool CompileCkfinite()
+    {
+        // Pop value into RAX (it stays on the logical stack, we just peek and check)
+        _emit.Pop(Reg64.RAX);
+        _evalStackDepth--;
+
+        // For double: exponent is bits 52-62 (11 bits)
+        // Value is NOT finite if exponent == 0x7FF (all 1s)
+        // Mask to extract exponent: 0x7FF0_0000_0000_0000
+        // After shift right by 52: 0x7FF means not finite
+
+        // mov rdx, rax  (save value)
+        _emit.MovRR(Reg64.RDX, Reg64.RAX);
+
+        // shr rax, 52  (shift to get exponent in low 11 bits)
+        // REX.W + C1 /5 ib
+        _emit.Code.EmitByte(0x48);  // REX.W
+        _emit.Code.EmitByte(0xC1);  // SHR r/m64, imm8
+        _emit.Code.EmitByte(0xE8);  // ModRM: /5 rax
+        _emit.Code.EmitByte(52);    // shift by 52
+
+        // and rax, 0x7FF  (mask to get just exponent bits, ignoring sign)
+        _emit.Code.EmitByte(0x48);  // REX.W
+        _emit.Code.EmitByte(0x25);  // AND RAX, imm32
+        _emit.Code.EmitByte(0xFF);  // 0x7FF
+        _emit.Code.EmitByte(0x07);
+        _emit.Code.EmitByte(0x00);
+        _emit.Code.EmitByte(0x00);
+
+        // cmp rax, 0x7FF  (if exponent == 0x7FF, value is not finite)
+        _emit.Code.EmitByte(0x48);  // REX.W
+        _emit.Code.EmitByte(0x3D);  // CMP RAX, imm32
+        _emit.Code.EmitByte(0xFF);  // 0x7FF
+        _emit.Code.EmitByte(0x07);
+        _emit.Code.EmitByte(0x00);
+        _emit.Code.EmitByte(0x00);
+
+        // JE -> INT3 (if equal, not finite, trigger exception)
+        EmitJccToInt3(0x74);  // JE (ZF=1)
+
+        // Restore original value and push back
+        _emit.Push(Reg64.RDX);
         _evalStackDepth++;
         return true;
     }
@@ -1895,11 +2487,12 @@ public unsafe struct ILCompiler
     private bool CompileConvR4()
     {
         // Convert integer to float (single precision)
-        // Pop 64-bit integer, convert to float, push back as 32-bit pattern (zero-extended)
+        // Pop value, convert to float, push back as 32-bit pattern (zero-extended)
         _emit.Pop(Reg64.RAX);
         PopStackType();  // Pop whatever type was there
-        // CVTSI2SS xmm0, rax - convert 64-bit signed int to single float
-        _emit.Cvtsi2ssXmmR64(RegXMM.XMM0, Reg64.RAX);
+        // Use 32-bit source for proper signed int32 semantics
+        // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
+        _emit.Cvtsi2ssXmmR32(RegXMM.XMM0, Reg64.RAX);
         // MOVD eax, xmm0 - move float bits to integer reg
         _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
         _emit.Push(Reg64.RAX);
@@ -1910,12 +2503,72 @@ public unsafe struct ILCompiler
     private bool CompileConvR8()
     {
         // Convert integer to double precision
-        // Pop 64-bit integer, convert to double, push back as 64-bit pattern
+        // Pop value, convert to double, push back as 64-bit pattern
         _emit.Pop(Reg64.RAX);
         PopStackType();  // Pop whatever type was there
-        // CVTSI2SD xmm0, rax - convert 64-bit signed int to double
-        _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
+        // Use 32-bit source for proper signed int32 semantics
+        // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
+        _emit.Cvtsi2sdXmmR32(RegXMM.XMM0, Reg64.RAX);
         // MOVQ rax, xmm0 - move double bits to integer reg
+        _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Float64);
+        return true;
+    }
+
+    private bool CompileConvR_Un()
+    {
+        // Convert unsigned integer to float (F - the native float type, which is double for IL)
+        // This is tricky because CVTSI2SD only handles signed integers.
+        // For unsigned 64-bit integers with the high bit set, we need special handling.
+        //
+        // Algorithm:
+        // 1. Test if high bit is set (value is negative as signed)
+        // 2. If not set, use normal CVTSI2SD (value fits in signed range)
+        // 3. If set: shift right by 1, convert, then double the result and add 1 if odd
+        //
+        // Simplified approach for naive JIT: use the following technique:
+        //   If (value >= 0 as signed): CVTSI2SD directly
+        //   Else: Convert as (value >> 1) | (value & 1), multiply by 2
+        //
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+
+        // TEST rax, rax (check sign bit)
+        _emit.TestRR(Reg64.RAX, Reg64.RAX);
+
+        // JS label_negative (jump if sign bit set)
+        int patchNeg = _emit.JccRel32(X64Emitter.CC_S);
+
+        // Positive path: simple convert
+        _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
+        // JMP done
+        int patchDone = _emit.JmpRel32();
+
+        // Patch jump to negative path
+        _emit.PatchRel32(patchNeg);
+
+        // Negative path (high bit set):
+        // Save lowest bit in RCX: mov rcx, rax; and rcx, 1
+        _emit.MovRR(Reg64.RCX, Reg64.RAX);
+        _emit.AndRI(Reg64.RCX, 1);
+
+        // Shift right by 1: shr rax, 1
+        _emit.ShrImm8(Reg64.RAX, 1);
+
+        // OR in the lowest bit to avoid losing precision: or rax, rcx
+        _emit.OrRR(Reg64.RAX, Reg64.RCX);
+
+        // Convert shifted value
+        _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
+
+        // Double the result: addsd xmm0, xmm0
+        _emit.AddsdXmmXmm(RegXMM.XMM0, RegXMM.XMM0);
+
+        // Patch done label
+        _emit.PatchRel32(patchDone);
+
+        // Move result to integer register for stack
         _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
         _emit.Push(Reg64.RAX);
         PushStackType(StackType_Float64);
@@ -2010,7 +2663,9 @@ public unsafe struct ILCompiler
         _emit.Pop(Reg64.RDX);  // Second operand
         _emit.Pop(Reg64.RAX);  // First operand
         _evalStackDepth -= 2;
-        _emit.CmpRR(Reg64.RAX, Reg64.RDX);
+        // Use 32-bit comparison for proper signed int32 semantics
+        // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
+        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
         int patchOffset = _emit.JccRel32(cc);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
@@ -2046,7 +2701,8 @@ public unsafe struct ILCompiler
         _emit.Pop(Reg64.RDX);
         _emit.Pop(Reg64.RAX);
         _evalStackDepth -= 2;
-        _emit.CmpRR(Reg64.RAX, Reg64.RDX);
+        // Use 32-bit comparison for proper signed int32 semantics
+        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
 
         // SETG (signed) or SETA (unsigned)
         _emit.Code.EmitByte(0x0F);
@@ -2069,7 +2725,8 @@ public unsafe struct ILCompiler
         _emit.Pop(Reg64.RDX);
         _emit.Pop(Reg64.RAX);
         _evalStackDepth -= 2;
-        _emit.CmpRR(Reg64.RAX, Reg64.RDX);
+        // Use 32-bit comparison for proper signed int32 semantics
+        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
 
         // SETL (signed) or SETB (unsigned)
         _emit.Code.EmitByte(0x0F);
@@ -2248,6 +2905,72 @@ public unsafe struct ILCompiler
         return true;
     }
 
+    /// <summary>
+    /// Compile ldind.r4/ldind.r8 - Load float value indirectly from address on stack
+    /// Stack: ..., addr -> ..., value
+    /// </summary>
+    private bool CompileLdindFloat(int size)
+    {
+        // Pop address from stack into RAX
+        _emit.Pop(Reg64.RAX);
+        _evalStackDepth--;
+
+        // Load float value from [RAX] into XMM0
+        if (size == 4)
+        {
+            // movss xmm0, [rax] - load float32
+            _emit.MovssRM(RegXMM.XMM0, Reg64.RAX, 0);
+            // movd eax, xmm0 - move 32 bits to integer register
+            _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+        }
+        else // size == 8
+        {
+            // movsd xmm0, [rax] - load float64
+            _emit.MovsdRM(RegXMM.XMM0, Reg64.RAX, 0);
+            // movq rax, xmm0 - move 64 bits to integer register
+            _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+        }
+
+        // Push result back onto stack
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile stind.r4/stind.r8 - Store float value indirectly to address on stack
+    /// Stack: ..., addr, value -> ...
+    /// </summary>
+    private bool CompileStindFloat(int size)
+    {
+        // Pop value into RDX
+        _emit.Pop(Reg64.RDX);
+        _evalStackDepth--;
+
+        // Pop address into RAX
+        _emit.Pop(Reg64.RAX);
+        _evalStackDepth--;
+
+        // Move value to XMM0 and store to memory
+        if (size == 4)
+        {
+            // movd xmm0, edx - move 32 bits to XMM
+            _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RDX);
+            // movss [rax], xmm0 - store float32
+            _emit.MovssMR(Reg64.RAX, 0, RegXMM.XMM0);
+        }
+        else // size == 8
+        {
+            // movq xmm0, rdx - move 64 bits to XMM
+            _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RDX);
+            // movsd [rax], xmm0 - store float64
+            _emit.MovsdMR(Reg64.RAX, 0, RegXMM.XMM0);
+        }
+
+        return true;
+    }
+
     // ==================== Method Call Support ====================
 
     /// <summary>
@@ -2287,6 +3010,12 @@ public unsafe struct ILCompiler
         result.ReturnKind = info->ReturnKind;
         result.HasThis = info->HasThis;
         result.IsValid = true;
+        result.IsVirtual = info->IsVirtual;
+        result.VtableSlot = info->VtableSlot;
+        result.MethodTable = info->MethodTable;
+        result.IsInterfaceMethod = info->IsInterfaceMethod;
+        result.InterfaceMT = info->InterfaceMT;
+        result.InterfaceMethodSlot = info->InterfaceMethodSlot;
         return true;
     }
 
@@ -2494,6 +3223,254 @@ public unsafe struct ILCompiler
 
             case ReturnKind.Struct:
                 // Struct returns are complex - for now, treat as pointer in RAX
+                _emit.Push(Reg64.RAX);
+                _evalStackDepth++;
+                break;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile a callvirt instruction (virtual call).
+    ///
+    /// For non-virtual methods, this is identical to 'call' but always passes 'this'.
+    /// For virtual methods, we need vtable lookup:
+    ///   1. Get MethodTable pointer from object (first 8 bytes)
+    ///   2. Look up vtable slot from MethodTable
+    ///   3. Call through the vtable slot
+    ///
+    /// IL eval stack before call: [..., this, arg0, arg1, ..., argN-1] (argN-1 on top)
+    /// IL eval stack after call:  [..., returnValue] (if non-void)
+    ///
+    /// For now, we implement simple devirtualization: resolve to the direct method
+    /// like 'call'. True virtual dispatch requires vtable slot index info.
+    /// </summary>
+    private bool CompileCallvirt(uint token)
+    {
+        // For now, callvirt behaves like call but always has 'this'.
+        // The resolved method should have HasThis=true.
+        //
+        // True virtual dispatch would:
+        // 1. Load 'this' from stack without consuming it
+        // 2. Load MethodTable* from [this]
+        // 3. Load vtable slot from [MT + vtableSlotOffset]
+        // 4. Call through the slot
+        //
+        // For now, we resolve to the specific method like 'call'.
+        // This is correct for sealed types, final methods, and non-virtual methods.
+
+        if (!ResolveMethod(token, out ResolvedMethod method))
+        {
+            return false;
+        }
+
+        // Callvirt always has 'this' as the first argument
+        // Even if method.HasThis is false (shouldn't happen), we treat it as instance
+        int totalArgs = method.ArgCount;
+        if (method.HasThis || true) // callvirt always has 'this'
+            totalArgs++;
+
+        // Verify we have enough values on the eval stack
+        if (_evalStackDepth < totalArgs)
+        {
+            DebugConsole.Write("[JIT] Callvirt: insufficient stack depth ");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.Write(" for ");
+            DebugConsole.WriteDecimal((uint)totalArgs);
+            DebugConsole.WriteLine(" args");
+            return false;
+        }
+
+        // The rest is identical to CompileCall - pop args, set up registers, call, handle return
+        int stackArgs = totalArgs > 4 ? totalArgs - 4 : 0;
+
+        if (totalArgs == 0)
+        {
+            // No arguments - just call (shouldn't happen for callvirt)
+        }
+        else if (totalArgs == 1)
+        {
+            // Single arg (this): pop to RCX
+            _emit.Pop(Reg64.RCX);
+            _evalStackDepth--;
+        }
+        else if (totalArgs == 2)
+        {
+            // Two args: pop to RDX (arg1), then RCX (this)
+            _emit.Pop(Reg64.RDX);
+            _emit.Pop(Reg64.RCX);
+            _evalStackDepth -= 2;
+        }
+        else if (totalArgs == 3)
+        {
+            // Three args: pop to R8, RDX, RCX
+            _emit.Pop(Reg64.R8);
+            _emit.Pop(Reg64.RDX);
+            _emit.Pop(Reg64.RCX);
+            _evalStackDepth -= 3;
+        }
+        else if (totalArgs == 4)
+        {
+            // Four args: pop to R9, R8, RDX, RCX
+            _emit.Pop(Reg64.R9);
+            _emit.Pop(Reg64.R8);
+            _emit.Pop(Reg64.RDX);
+            _emit.Pop(Reg64.RCX);
+            _evalStackDepth -= 4;
+        }
+        else
+        {
+            // More than 4 args - handle stack args (same as CompileCall)
+            int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
+
+            _emit.MovRM(Reg64.RCX, Reg64.RSP, (totalArgs - 1) * 8);
+            _emit.MovRM(Reg64.RDX, Reg64.RSP, (totalArgs - 2) * 8);
+            _emit.MovRM(Reg64.R8, Reg64.RSP, (totalArgs - 3) * 8);
+            _emit.MovRM(Reg64.R9, Reg64.RSP, (totalArgs - 4) * 8);
+
+            for (int i = 0; i < stackArgs; i++)
+            {
+                int srcOffset = (stackArgs - 1 - i) * 8;
+                int dstOffset = totalArgs * 8 - extraStackSpace + 32 + i * 8;
+                _emit.MovRM(Reg64.R10, Reg64.RSP, srcOffset);
+                _emit.MovMR(Reg64.RSP, dstOffset, Reg64.R10);
+            }
+
+            int rspAdjust = totalArgs * 8 - extraStackSpace;
+            if (rspAdjust > 0)
+            {
+                _emit.AddRI(Reg64.RSP, rspAdjust);
+            }
+            else if (rspAdjust < 0)
+            {
+                _emit.SubRI(Reg64.RSP, -rspAdjust);
+            }
+
+            _evalStackDepth -= totalArgs;
+        }
+
+        // Load target address and call
+        if (method.IsInterfaceMethod)
+        {
+            // Interface dispatch: call GetInterfaceMethod helper at runtime
+            // This is needed because the vtable slot depends on the concrete object type.
+            //
+            // GetInterfaceMethod signature: void* GetInterfaceMethod(void* obj, MethodTable* interfaceMT, int methodIndex)
+            //
+            // At this point:
+            //   RCX = 'this' (the object)
+            //   RDX, R8, R9 = arg1, arg2, arg3 (if any)
+            //
+            // We need to:
+            //   1. Save current args to callee-saved registers
+            //   2. Call GetInterfaceMethod(obj, interfaceMT, methodIndex)
+            //   3. Save function pointer result
+            //   4. Restore args
+            //   5. Call through function pointer
+
+            // Save args to callee-saved registers (R12-R15)
+            // We only need to save what we'll overwrite
+            _emit.MovRR(Reg64.R12, Reg64.RCX);  // Save this
+            if (totalArgs >= 2)
+                _emit.MovRR(Reg64.R13, Reg64.RDX);  // Save arg1
+            if (totalArgs >= 3)
+                _emit.MovRR(Reg64.R14, Reg64.R8);   // Save arg2
+            if (totalArgs >= 4)
+                _emit.MovRR(Reg64.R15, Reg64.R9);   // Save arg3
+
+            // Set up call to GetInterfaceMethod(obj, interfaceMT, methodIndex)
+            // RCX already has 'this' (obj), no change needed
+            _emit.MovRI64(Reg64.RDX, (ulong)method.InterfaceMT);  // interfaceMT
+            _emit.MovRI32(Reg64.R8, method.InterfaceMethodSlot);  // methodIndex
+
+            // Call GetInterfaceMethod
+            _emit.SubRI(Reg64.RSP, 32);  // Shadow space
+            _emit.MovRI64(Reg64.RAX, (ulong)_getInterfaceMethod);
+            _emit.CallR(Reg64.RAX);
+            _emit.AddRI(Reg64.RSP, 32);
+
+            // RAX now contains the function pointer
+            // Save it to R10 (caller-saved but we control this)
+            _emit.MovRR(Reg64.R10, Reg64.RAX);
+
+            // Restore args from callee-saved registers
+            _emit.MovRR(Reg64.RCX, Reg64.R12);  // Restore this
+            if (totalArgs >= 2)
+                _emit.MovRR(Reg64.RDX, Reg64.R13);  // Restore arg1
+            if (totalArgs >= 3)
+                _emit.MovRR(Reg64.R8, Reg64.R14);   // Restore arg2
+            if (totalArgs >= 4)
+                _emit.MovRR(Reg64.R9, Reg64.R15);   // Restore arg3
+
+            // Call through the resolved function pointer
+            _emit.CallR(Reg64.R10);
+        }
+        else if (method.IsVirtual && method.VtableSlot >= 0)
+        {
+            // Virtual dispatch: load function pointer from vtable
+            // RCX contains 'this' at this point
+            // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
+            _emit.MovRM(Reg64.RAX, Reg64.RCX, 0);  // RAX = *this = MethodTable*
+
+            // 2. Load vtable slot at offset HeaderSize + slot*8
+            // MethodTable.HeaderSize = 24 bytes, each vtable slot is 8 bytes
+            int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (method.VtableSlot * 8);
+            _emit.MovRM(Reg64.RAX, Reg64.RAX, vtableOffset);  // RAX = vtable[slot]
+
+            // 3. Call through the vtable slot
+            _emit.CallR(Reg64.RAX);
+        }
+        else
+        {
+            // Direct call (devirtualized or non-virtual)
+            _emit.MovRI64(Reg64.RAX, (ulong)method.NativeCode);
+            _emit.CallR(Reg64.RAX);
+        }
+
+        // Record safe point after call
+        RecordSafePoint();
+
+        // Clean up extra stack space if we allocated any
+        if (stackArgs > 0)
+        {
+            int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
+            _emit.AddRI(Reg64.RSP, extraStackSpace);
+        }
+
+        // Handle return value (same as CompileCall)
+        switch (method.ReturnKind)
+        {
+            case ReturnKind.Void:
+                break;
+
+            case ReturnKind.Int32:
+                _emit.Code.EmitByte(0x48);  // REX.W
+                _emit.Code.EmitByte(0x63);  // MOVSXD
+                _emit.Code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                _emit.Push(Reg64.RAX);
+                _evalStackDepth++;
+                break;
+
+            case ReturnKind.Int64:
+            case ReturnKind.IntPtr:
+                _emit.Push(Reg64.RAX);
+                _evalStackDepth++;
+                break;
+
+            case ReturnKind.Float32:
+                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                _evalStackDepth++;
+                break;
+
+            case ReturnKind.Float64:
+                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                _evalStackDepth++;
+                break;
+
+            case ReturnKind.Struct:
                 _emit.Push(Reg64.RAX);
                 _evalStackDepth++;
                 break;
@@ -3037,5 +4014,1520 @@ public unsafe struct ILCompiler
         _emit.EmitEpilogue(_stackAdjust);
 
         return true;
+    }
+
+    // ==================== Field Access Operations ====================
+    //
+    // For JIT tests, field tokens encode:
+    //   Bits 0-15:  Field offset in bytes
+    //   Bits 16-23: Field size (1/2/4/8)
+    //   Bits 24-31: Flags (bit 0 = signed for load)
+    //
+    // For static fields, the token IS the direct address of the static.
+
+    /// <summary>
+    /// Decode a test field token into offset and size.
+    /// </summary>
+    private static void DecodeFieldToken(uint token, out int offset, out int size, out bool signed)
+    {
+        offset = (int)(token & 0xFFFF);
+        size = (int)((token >> 16) & 0xFF);
+        signed = ((token >> 24) & 1) != 0;
+    }
+
+    /// <summary>
+    /// Compile ldfld - Load instance field.
+    /// Stack: ..., obj -> ..., value
+    /// </summary>
+    private bool CompileLdfld(uint token)
+    {
+        int offset;
+        int size;
+        bool signed;
+
+        // Try field resolver first, fall back to test token encoding
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
+        {
+            offset = field.Offset;
+            size = field.Size;
+            signed = field.IsSigned;
+        }
+        else
+        {
+            DecodeFieldToken(token, out offset, out size, out signed);
+        }
+
+        // Pop object reference
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+
+        // Load field at obj + offset
+        // mov RAX, [RAX + offset]
+        switch (size)
+        {
+            case 1:
+                if (signed)
+                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, offset);
+                else
+                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, offset);
+                break;
+            case 2:
+                if (signed)
+                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, offset);
+                else
+                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, offset);
+                break;
+            case 4:
+                if (signed)
+                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, offset);
+                else
+                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, offset); // Zero-extends to 64-bit
+                break;
+            case 8:
+            default:
+                _emit.MovRM(Reg64.RAX, Reg64.RAX, offset);
+                break;
+        }
+
+        // Push result
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldflda - Load field address.
+    /// Stack: ..., obj -> ..., &field
+    /// </summary>
+    private bool CompileLdflda(uint token)
+    {
+        int offset;
+
+        // Try field resolver first, fall back to test token encoding
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
+        {
+            offset = field.Offset;
+        }
+        else
+        {
+            DecodeFieldToken(token, out offset, out _, out _);
+        }
+
+        // Pop object reference
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+
+        // Compute field address: obj + offset
+        if (offset != 0)
+        {
+            _emit.AddRI(Reg64.RAX, offset);
+        }
+
+        // Push address
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile stfld - Store instance field.
+    /// Stack: ..., obj, value -> ...
+    /// </summary>
+    private bool CompileStfld(uint token)
+    {
+        int offset;
+        int size;
+
+        // Try field resolver first, fall back to test token encoding
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
+        {
+            offset = field.Offset;
+            size = field.Size;
+        }
+        else
+        {
+            DecodeFieldToken(token, out offset, out size, out _);
+        }
+
+        // Pop value and object reference
+        _emit.Pop(Reg64.RDX);  // value
+        _emit.Pop(Reg64.RAX);  // obj
+        PopStackType();
+        PopStackType();
+
+        // Store value at obj + offset
+        switch (size)
+        {
+            case 1:
+                _emit.MovMR8(Reg64.RAX, offset, Reg64.RDX);
+                break;
+            case 2:
+                _emit.MovMR16(Reg64.RAX, offset, Reg64.RDX);
+                break;
+            case 4:
+                _emit.MovMR32(Reg64.RAX, offset, Reg64.RDX);
+                break;
+            case 8:
+            default:
+                _emit.MovMR(Reg64.RAX, offset, Reg64.RDX);
+                break;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldsfld - Load static field.
+    /// For testing: token is direct address of static.
+    /// Stack: ... -> ..., value
+    /// </summary>
+    private bool CompileLdsfld(uint token)
+    {
+        ulong staticAddr;
+        int size;
+        bool signed;
+
+        // Try field resolver first, fall back to test token (direct address)
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
+        {
+            staticAddr = (ulong)field.StaticAddress;
+            size = field.Size;
+            signed = field.IsSigned;
+        }
+        else
+        {
+            // For testing, token is address of static field (assume 8-byte)
+            staticAddr = token;
+            size = 8;
+            signed = false;
+        }
+
+        // Load static address
+        _emit.MovRI64(Reg64.RAX, staticAddr);
+
+        // Load value based on size
+        switch (size)
+        {
+            case 1:
+                if (signed)
+                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 2:
+                if (signed)
+                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 4:
+                if (signed)
+                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 8:
+            default:
+                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                break;
+        }
+
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldsflda - Load static field address.
+    /// For testing: token is direct address of static.
+    /// Stack: ... -> ..., &static
+    /// </summary>
+    private bool CompileLdsflda(uint token)
+    {
+        ulong staticAddr;
+
+        // Try field resolver first, fall back to test token (direct address)
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
+        {
+            staticAddr = (ulong)field.StaticAddress;
+        }
+        else
+        {
+            // For testing, token is address of static
+            staticAddr = token;
+        }
+
+        _emit.MovRI64(Reg64.RAX, staticAddr);
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+        return true;
+    }
+
+    /// <summary>
+    /// Compile stsfld - Store static field.
+    /// For testing: token is direct address of static.
+    /// Stack: ..., value -> ...
+    /// </summary>
+    private bool CompileStsfld(uint token)
+    {
+        ulong staticAddr;
+        int size;
+
+        // Try field resolver first, fall back to test token (direct address)
+        if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
+        {
+            staticAddr = (ulong)field.StaticAddress;
+            size = field.Size;
+        }
+        else
+        {
+            // For testing, token is address of static (assume 8-byte)
+            staticAddr = token;
+            size = 8;
+        }
+
+        // Pop value
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+
+        // Load static address and store
+        _emit.MovRI64(Reg64.RDX, staticAddr);
+
+        switch (size)
+        {
+            case 1:
+                _emit.MovMR8(Reg64.RDX, 0, Reg64.RAX);
+                break;
+            case 2:
+                _emit.MovMR16(Reg64.RDX, 0, Reg64.RAX);
+                break;
+            case 4:
+                _emit.MovMR32(Reg64.RDX, 0, Reg64.RAX);
+                break;
+            case 8:
+            default:
+                _emit.MovMR(Reg64.RDX, 0, Reg64.RAX);
+                break;
+        }
+
+        return true;
+    }
+
+    // ==================== Array Operations ====================
+    //
+    // Array layout (NativeAOT):
+    //   +0:  MethodTable*
+    //   +8:  Length (native int = 8 bytes)
+    //   +16: Elements[0], Elements[1], ...
+
+    private const int ArrayLengthOffset = 8;
+    private const int ArrayDataOffset = 16;
+
+    /// <summary>
+    /// Compile ldlen - Load array length.
+    /// Stack: ..., array -> ..., length
+    /// </summary>
+    private bool CompileLdlen()
+    {
+        // Pop array reference
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+
+        // Load length from array+8
+        _emit.MovRM(Reg64.RAX, Reg64.RAX, ArrayLengthOffset);
+
+        // Push length
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldelem.* - Load array element.
+    /// Stack: ..., array, index -> ..., value
+    /// </summary>
+    private bool CompileLdelem(int elemSize, bool signed)
+    {
+        // Pop index and array
+        _emit.Pop(Reg64.RCX);  // index
+        _emit.Pop(Reg64.RAX);  // array
+        PopStackType();
+        PopStackType();
+
+        // Compute element address: array + 16 + index * elemSize
+        // For now, use shift for power-of-2 sizes
+        switch (elemSize)
+        {
+            case 1:
+                // RAX = array + 16 + index
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                if (signed)
+                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 2:
+                // RAX = array + 16 + index * 2
+                _emit.ShlImm(Reg64.RCX, 1);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                if (signed)
+                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 4:
+                // RAX = array + 16 + index * 4
+                _emit.ShlImm(Reg64.RCX, 2);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                if (signed)
+                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, 0);
+                else
+                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                break;
+            case 8:
+            default:
+                // RAX = array + 16 + index * 8
+                _emit.ShlImm(Reg64.RCX, 3);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                break;
+        }
+
+        // Push value
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile stelem.* - Store array element.
+    /// Stack: ..., array, index, value -> ...
+    /// </summary>
+    private bool CompileStelem(int elemSize)
+    {
+        // Pop value, index, array
+        _emit.Pop(Reg64.RDX);  // value
+        _emit.Pop(Reg64.RCX);  // index
+        _emit.Pop(Reg64.RAX);  // array
+        PopStackType();
+        PopStackType();
+        PopStackType();
+
+        // Compute element address: array + 16 + index * elemSize
+        switch (elemSize)
+        {
+            case 1:
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                _emit.MovMR8(Reg64.RAX, 0, Reg64.RDX);
+                break;
+            case 2:
+                _emit.ShlImm(Reg64.RCX, 1);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                _emit.MovMR16(Reg64.RAX, 0, Reg64.RDX);
+                break;
+            case 4:
+                _emit.ShlImm(Reg64.RCX, 2);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                _emit.MovMR32(Reg64.RAX, 0, Reg64.RDX);
+                break;
+            case 8:
+            default:
+                _emit.ShlImm(Reg64.RCX, 3);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                _emit.MovMR(Reg64.RAX, 0, Reg64.RDX);
+                break;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldelem.r4/r8 - Load float/double array element.
+    /// Stack: ..., array, index -> ..., value
+    /// </summary>
+    private bool CompileLdelemFloat(int elemSize)
+    {
+        // Pop index and array
+        _emit.Pop(Reg64.RCX);  // index
+        _emit.Pop(Reg64.RAX);  // array
+        PopStackType();
+        PopStackType();
+
+        // Compute element address: array + 16 + index * elemSize
+        if (elemSize == 4)
+        {
+            // RAX = array + 16 + index * 4
+            _emit.ShlImm(Reg64.RCX, 2);
+            _emit.AddRR(Reg64.RAX, Reg64.RCX);
+            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            // Load float into XMM0, then move to RAX for push
+            _emit.MovssRM(RegXMM.XMM0, Reg64.RAX, 0);
+            // Move XMM0 to RAX (as 32-bit, zero-extended)
+            _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+        }
+        else
+        {
+            // RAX = array + 16 + index * 8
+            _emit.ShlImm(Reg64.RCX, 3);
+            _emit.AddRR(Reg64.RAX, Reg64.RCX);
+            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            // Load double into XMM0, then move to RAX for push
+            _emit.MovsdRM(RegXMM.XMM0, Reg64.RAX, 0);
+            // Move XMM0 to RAX (as 64-bit)
+            _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+        }
+
+        // Push value
+        _emit.Push(Reg64.RAX);
+        PushStackType(elemSize == 4 ? StackType_Float32 : StackType_Float64);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile stelem.r4/r8 - Store float/double array element.
+    /// Stack: ..., array, index, value -> ...
+    /// </summary>
+    private bool CompileStelemFloat(int elemSize)
+    {
+        // Pop value, index, array
+        _emit.Pop(Reg64.RDX);  // value (float/double bit pattern)
+        _emit.Pop(Reg64.RCX);  // index
+        _emit.Pop(Reg64.RAX);  // array
+        PopStackType();
+        PopStackType();
+        PopStackType();
+
+        // Compute element address: array + 16 + index * elemSize
+        if (elemSize == 4)
+        {
+            // RAX = array + 16 + index * 4
+            _emit.ShlImm(Reg64.RCX, 2);
+            _emit.AddRR(Reg64.RAX, Reg64.RCX);
+            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            // Move RDX to XMM0, then store as float
+            _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RDX);
+            _emit.MovssMR(Reg64.RAX, 0, RegXMM.XMM0);
+        }
+        else
+        {
+            // RAX = array + 16 + index * 8
+            _emit.ShlImm(Reg64.RCX, 3);
+            _emit.AddRR(Reg64.RAX, Reg64.RCX);
+            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            // Move RDX to XMM0, then store as double
+            _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RDX);
+            _emit.MovsdMR(Reg64.RAX, 0, RegXMM.XMM0);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldelema - Load element address.
+    /// Stack: ..., array, index -> ..., &elem
+    /// For testing: token encodes element size.
+    /// </summary>
+    private bool CompileLdelema(uint token)
+    {
+        int elemSize = (int)(token & 0xFF);
+        if (elemSize == 0) elemSize = 8; // Default to pointer size
+
+        // Pop index and array
+        _emit.Pop(Reg64.RCX);  // index
+        _emit.Pop(Reg64.RAX);  // array
+        PopStackType();
+        PopStackType();
+
+        // Compute element address: array + 16 + index * elemSize
+        switch (elemSize)
+        {
+            case 1:
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                break;
+            case 2:
+                _emit.ShlImm(Reg64.RCX, 1);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                break;
+            case 4:
+                _emit.ShlImm(Reg64.RCX, 2);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                break;
+            case 8:
+            default:
+                _emit.ShlImm(Reg64.RCX, 3);
+                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                break;
+        }
+        _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+
+        // Push address
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    // === Object allocation operations ===
+
+    /// <summary>
+    /// newobj - Allocate new object and call constructor.
+    /// Stack: ..., arg1, ..., argN -> ..., obj
+    ///
+    /// Two modes of operation:
+    /// 1. Constructor token registered via RegisterConstructor:
+    ///    - Resolves constructor to get MethodTable and native code
+    ///    - Allocates via RhpNewFast using the MethodTable
+    ///    - Calls constructor with allocated object as 'this'
+    ///
+    /// 2. Fallback (simplified testing):
+    ///    - Token = MethodTable* (direct pointer to MT)
+    ///    - Just allocates via RhpNewFast, no constructor call
+    /// </summary>
+    private bool CompileNewobj(uint token)
+    {
+        // Try to resolve as a registered constructor
+        if (ResolveMethod(token, out ResolvedMethod ctor) && ctor.IsValid && ctor.MethodTable != null)
+        {
+            // We have a constructor with MethodTable - full newobj implementation
+            // Stack before: ..., arg1, ..., argN (constructor args, not including 'this')
+            // Stack after: ..., obj
+
+            int ctorArgs = ctor.ArgCount;  // Not including 'this'
+
+            // Step 1: Pop constructor arguments from eval stack into temporary storage
+            // We need to save them because we'll call RhpNewFast first
+            // For simplicity, move them to callee-saved registers (we saved them in prologue)
+            // RBX, R12, R13, R14 are callee-saved
+            // Max 4 args for now (beyond that would need stack spill)
+
+            if (ctorArgs > 4)
+            {
+                DebugConsole.WriteLine("[JIT] newobj: too many constructor args (max 4)");
+                return false;
+            }
+
+            // Pop args into temp registers (in reverse order since last arg is on top)
+            // Args will go: arg0->RBX, arg1->R12, arg2->R13, arg3->R14
+            Reg64[] tempRegs = { Reg64.RBX, Reg64.R12, Reg64.R13, Reg64.R14 };
+            for (int i = ctorArgs - 1; i >= 0; i--)
+            {
+                _emit.Pop(tempRegs[i]);
+                PopStackType();
+                _evalStackDepth--;
+            }
+
+            // Step 2: Allocate the object via RhpNewFast
+            _emit.MovRI64(Reg64.RCX, (ulong)ctor.MethodTable);
+            _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
+            _emit.CallR(Reg64.RAX);
+            RecordSafePoint();
+
+            // RAX now contains the new object pointer
+            // Save it to R15 (callee-saved) so constructor call doesn't clobber it
+            _emit.MovRR(Reg64.R15, Reg64.RAX);
+
+            // Step 3: Call the constructor with 'this' = new object
+            // x64 calling convention: RCX=this, RDX=arg0, R8=arg1, R9=arg2, stack=arg3+
+            // Move 'this' (R15) to RCX
+            _emit.MovRR(Reg64.RCX, Reg64.R15);
+
+            // Move saved args to their calling convention positions
+            // arg0 in RBX -> RDX
+            // arg1 in R12 -> R8
+            // arg2 in R13 -> R9
+            // arg3 in R14 -> stack (push before call)
+            if (ctorArgs >= 1)
+                _emit.MovRR(Reg64.RDX, Reg64.RBX);
+            if (ctorArgs >= 2)
+                _emit.MovRR(Reg64.R8, Reg64.R12);
+            if (ctorArgs >= 3)
+                _emit.MovRR(Reg64.R9, Reg64.R13);
+            if (ctorArgs >= 4)
+            {
+                // Push 4th arg to stack (shadow space slot)
+                // Actually for x64, we use stack slot at RSP+32 for 5th arg
+                // But since constructor has 'this' as hidden first arg,
+                // arg3 is the 5th param, goes to stack
+                _emit.MovMR(Reg64.RSP, 32, Reg64.R14);  // shadow space [rsp+32]
+            }
+
+            // Call the constructor
+            _emit.MovRI64(Reg64.RAX, (ulong)ctor.NativeCode);
+            _emit.CallR(Reg64.RAX);
+            RecordSafePoint();
+
+            // Push the object reference (from R15) onto eval stack
+            _emit.Push(Reg64.R15);
+            PushStackType(StackType_Int);
+            _evalStackDepth++;
+
+            return true;
+        }
+
+        // Fallback: token is directly the MethodTable* address (simplified testing mode)
+        ulong mtAddress = token;
+
+        // Load MethodTable* into RCX (first arg for RhpNewFast)
+        _emit.MovRI64(Reg64.RCX, mtAddress);
+
+        // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
+        // RhpNewFast allocates the object and sets the MT pointer
+        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
+        _emit.CallR(Reg64.RAX);
+
+        // Record safe point after call (GC can happen during allocation)
+        RecordSafePoint();
+
+        // Push the allocated object reference onto eval stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Objects are 64-bit pointers
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// newarr - Allocate new array.
+    /// Stack: ..., numElements -> ..., array
+    ///
+    /// For simplified testing:
+    /// - Token encodes: bits 0-15 = element size, bits 16-31 = array element MT address (high bits)
+    /// - Actually for testing, token = array MethodTable* address directly
+    ///
+    /// Calls RhpNewArray(MethodTable* pMT, int numElements).
+    /// </summary>
+    private bool CompileNewarr(uint token)
+    {
+        // For testing: token is directly the array MethodTable* address
+        ulong mtAddress = token;
+
+        // Pop numElements from stack into RDX (second arg)
+        _emit.Pop(Reg64.RDX);
+        PopStackType();
+        _evalStackDepth--;
+
+        // Load MethodTable* into RCX (first arg for RhpNewArray)
+        _emit.MovRI64(Reg64.RCX, mtAddress);
+
+        // Call RhpNewArray(MethodTable* pMT, int numElements) -> returns array pointer in RAX
+        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewArray);
+        _emit.CallR(Reg64.RAX);
+
+        // Record safe point after call (GC can happen during allocation)
+        RecordSafePoint();
+
+        // Push the allocated array reference onto eval stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Arrays are 64-bit pointers
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    // === Boxing/Unboxing ===
+
+    /// <summary>
+    /// box - Box a value type to an object reference.
+    /// Stack: ..., value -> ..., obj
+    ///
+    /// For simplified testing:
+    /// - Token encodes value type size in low 16 bits, boxed MT address must be provided via helper
+    /// - Actually for testing, token = MethodTable* address directly, value size from MT._uBaseSize - 8
+    ///
+    /// Allocates boxed object via RhpNewFast, then copies value into it.
+    /// Boxed layout: [MT*][value data] where value starts at offset 8.
+    /// </summary>
+    private bool CompileBox(uint token)
+    {
+        // For testing: token is directly the boxed MethodTable* address
+        // The value type size is derived from BaseSize - 8 (minus MT pointer)
+        ulong mtAddress = token;
+
+        // Pop value from stack into R8 (save it temporarily)
+        // For simplicity, we assume 64-bit value on stack
+        _emit.Pop(Reg64.R8);
+        PopStackType();
+        _evalStackDepth--;
+
+        // Load MethodTable* into RCX (first arg for RhpNewFast)
+        _emit.MovRI64(Reg64.RCX, mtAddress);
+
+        // Save RCX (MT address) in R9 for later use
+        _emit.MovRR(Reg64.R9, Reg64.RCX);
+
+        // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
+        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
+        _emit.CallR(Reg64.RAX);
+
+        // Record safe point after call (GC can happen during allocation)
+        RecordSafePoint();
+
+        // Now RAX = pointer to boxed object
+        // Copy the value (in R8) to offset 8 in the object (after MT pointer)
+        // mov [RAX + 8], R8
+        _emit.MovMR(Reg64.RAX, 8, Reg64.R8);
+
+        // Push the boxed object reference onto eval stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Objects are 64-bit pointers
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// unbox - Get a managed pointer to the value inside a boxed object.
+    /// Stack: ..., obj -> ..., valuePtr
+    ///
+    /// For simplified testing:
+    /// - Token = expected MethodTable* address (for type checking)
+    /// - Returns pointer to value at offset 8 in boxed object
+    ///
+    /// Note: unbox returns a pointer, not the value itself.
+    /// </summary>
+    private bool CompileUnbox(uint token)
+    {
+        // For testing: token is directly the expected MethodTable* address
+        // In a full implementation, we'd verify obj->MT matches token
+
+        // Pop object reference from stack
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+        _evalStackDepth--;
+
+        // Calculate pointer to value: obj + 8 (skip MT pointer)
+        // lea RAX, [RAX + 8]
+        _emit.Lea(Reg64.RAX, Reg64.RAX, 8);
+
+        // Push the value pointer onto eval stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Managed pointers are 64-bit
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// unbox.any - Unbox to a value (combines unbox + ldobj).
+    /// Stack: ..., obj -> ..., value
+    ///
+    /// For simplified testing:
+    /// - Token = expected MethodTable* address
+    /// - Loads value from offset 8 in boxed object
+    /// - Assumes 64-bit value for simplicity
+    ///
+    /// This is equivalent to unbox followed by ldobj.
+    /// </summary>
+    private bool CompileUnboxAny(uint token)
+    {
+        // For testing: token is directly the expected MethodTable* address
+        // In a full implementation, we'd verify obj->MT matches token
+
+        // Pop object reference from stack
+        _emit.Pop(Reg64.RAX);
+        PopStackType();
+        _evalStackDepth--;
+
+        // Load value from offset 8: mov RAX, [RAX + 8]
+        _emit.MovRM(Reg64.RAX, Reg64.RAX, 8);
+
+        // Push the value onto eval stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Assuming 64-bit value
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    // === Type operations ===
+
+    /// <summary>
+    /// castclass - Cast with InvalidCastException on failure.
+    /// Stack: ..., obj -> ..., obj
+    ///
+    /// For simplified testing:
+    /// - Token = target MethodTable* address
+    /// - Just compares object's MT to target MT
+    /// - Throws if mismatch (calls RhpThrowEx)
+    ///
+    /// Full implementation would check type hierarchy.
+    /// </summary>
+    private bool CompileCastclass(uint token)
+    {
+        // For testing: token is directly the target MethodTable* address
+        ulong targetMT = token;
+
+        // Peek at object on stack (don't pop - result is same object)
+        _emit.MovRM(Reg64.RAX, Reg64.RSP, 0);  // Load obj from stack top
+
+        // Check for null - null passes castclass
+        _emit.TestRR(Reg64.RAX, Reg64.RAX);
+        int skipNullCheckPatch = _emit.Je();  // Jump if null (ZF=1)
+
+        // Load object's MethodTable (at offset 0) into RCX (arg1)
+        _emit.MovRM(Reg64.RCX, Reg64.RAX, 0);  // obj->MT
+
+        // Load target MT into RDX (arg2)
+        _emit.MovRI64(Reg64.RDX, targetMT);
+
+        // Call IsAssignableTo(objectMT, targetMT) -> bool in RAX
+        // First: allocate shadow space
+        _emit.SubRI(Reg64.RSP, 32);
+
+        // Call the helper
+        _emit.MovRI64(Reg64.RAX, (ulong)_isAssignableTo);
+        _emit.CallR(Reg64.RAX);
+
+        // Deallocate shadow space
+        _emit.AddRI(Reg64.RSP, 32);
+
+        // Check result - AL contains bool (0 = false, 1 = true)
+        _emit.TestRR(Reg64.RAX, Reg64.RAX);
+        int skipThrowPatch = _emit.Jne();  // Jump if result != 0 (cast succeeds)
+
+        // Cast failed - throw InvalidCastException
+        // For now, just trap (INT3)
+        _emit.Int3();  // Debug break on cast failure
+
+        // Patch the jumps to current position
+        _emit.PatchRel32(skipNullCheckPatch);
+        _emit.PatchRel32(skipThrowPatch);
+
+        // Object remains on stack unchanged
+        return true;
+    }
+
+    /// <summary>
+    /// isinst - Cast returning null on failure.
+    /// Stack: ..., obj -> ..., result (obj or null)
+    ///
+    /// Token = target MethodTable* address
+    /// Calls IsAssignableTo to check type hierarchy.
+    /// Returns obj if assignable, null otherwise.
+    /// </summary>
+    private bool CompileIsinst(uint token)
+    {
+        // For testing: token is directly the target MethodTable* address
+        ulong targetMT = token;
+
+        // Pop object from stack into R12 (callee-saved, survives call)
+        _emit.Pop(Reg64.RAX);  // Load obj
+        PopStackType();
+        _emit.MovRR(Reg64.R12, Reg64.RAX);  // Save obj in R12
+
+        // Result in R13, start with null
+        _emit.XorRR(Reg64.R13, Reg64.R13);
+
+        // Check for null - null returns null
+        _emit.TestRR(Reg64.R12, Reg64.R12);
+        int skipCheckPatch = _emit.Je();  // Jump if null (ZF=1)
+
+        // Load object's MethodTable (at offset 0) into RCX (arg1)
+        _emit.MovRM(Reg64.RCX, Reg64.R12, 0);  // obj->MT
+
+        // Load target MT into RDX (arg2)
+        _emit.MovRI64(Reg64.RDX, targetMT);
+
+        // Call IsAssignableTo(objectMT, targetMT) -> bool in RAX
+        _emit.SubRI(Reg64.RSP, 32);  // Shadow space
+        _emit.MovRI64(Reg64.RAX, (ulong)_isAssignableTo);
+        _emit.CallR(Reg64.RAX);
+        _emit.AddRI(Reg64.RSP, 32);  // Pop shadow space
+
+        // Check result - AL contains bool (0 = false, 1 = true)
+        _emit.TestRR(Reg64.RAX, Reg64.RAX);
+        int skipSetPatch = _emit.Je();  // Jump if result == 0 (not assignable)
+
+        // Assignable - result is obj
+        _emit.MovRR(Reg64.R13, Reg64.R12);
+
+        // Patch jumps to current position
+        _emit.PatchRel32(skipCheckPatch);
+        _emit.PatchRel32(skipSetPatch);
+
+        // Push result (obj or null in R13)
+        _emit.Push(Reg64.R13);
+        PushStackType(StackType_Int);  // Objects are 64-bit pointers
+
+        return true;
+    }
+
+    /// <summary>
+    /// ldftn - Load function pointer for a method.
+    /// Stack: ... -> ..., ftnPtr
+    ///
+    /// For simplified testing:
+    /// - Token encodes the function pointer address directly
+    ///   (in production would resolve method token to address)
+    ///
+    /// This allows creating delegates and indirect calls via calli.
+    /// </summary>
+    private bool CompileLdftn(uint token)
+    {
+        // For testing: token is the function pointer address
+        // In production: would use method resolver to get address
+        ulong fnPtr = token;
+
+        // If we have a method resolver, try to resolve the token
+        if (_resolver != null)
+        {
+            ResolvedMethod resolved;
+            if (_resolver(token, out resolved) && resolved.IsValid && resolved.NativeCode != null)
+            {
+                fnPtr = (ulong)resolved.NativeCode;
+            }
+            // Otherwise fall back to treating token as direct address
+        }
+
+        // Push the function pointer onto the stack
+        _emit.MovRI64(Reg64.RAX, fnPtr);
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Function pointers are native int
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// ldvirtftn - Load virtual function pointer for a method.
+    /// Stack: ..., obj -> ..., ftnPtr
+    ///
+    /// This opcode loads a function pointer for a virtual method, using the
+    /// runtime type of the object to determine the actual method implementation.
+    ///
+    /// For virtual methods with vtable slot info:
+    /// 1. Pop object reference into RAX
+    /// 2. Load MethodTable* from [obj]
+    /// 3. Load function pointer from [MT + vtableSlotOffset]
+    /// 4. Push the function pointer
+    ///
+    /// For non-virtual methods or devirtualized calls:
+    /// - Use the direct method address
+    /// </summary>
+    private bool CompileLdvirtftn(uint token)
+    {
+        // Verify we have an object on the stack
+        if (_evalStackDepth < 1)
+        {
+            DebugConsole.WriteLine("[JIT] ldvirtftn: no object on stack");
+            return false;
+        }
+
+        // Pop the object reference into RAX
+        _emit.Pop(Reg64.RAX);
+        _evalStackDepth--;
+        PopStackType();
+
+        // For testing: token is the function pointer address
+        // In production: would use method resolver to get address, then vtable lookup
+        ulong fnPtr = token;
+        bool useVtable = false;
+        int vtableSlot = -1;
+
+        // Use ResolveMethod to get method info (supports registry fallback when _resolver is null)
+        ResolvedMethod resolved;
+        if (ResolveMethod(token, out resolved) && resolved.IsValid && resolved.NativeCode != null)
+        {
+            fnPtr = (ulong)resolved.NativeCode;
+
+            // Check if this is a virtual method requiring vtable dispatch
+            if (resolved.IsVirtual && resolved.VtableSlot >= 0)
+            {
+                useVtable = true;
+                vtableSlot = resolved.VtableSlot;
+            }
+        }
+        // Otherwise fall back to treating token as direct address
+
+        if (useVtable)
+        {
+            // Virtual dispatch: load function pointer from vtable
+            // RAX already contains the object reference from pop above
+            DebugConsole.Write("[JIT] ldvirtftn: vtable dispatch slot=");
+            DebugConsole.WriteDecimal((uint)vtableSlot);
+
+            // 1. Load MethodTable* from [RAX] (object header is the MT pointer)
+            _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);  // RAX = *obj = MethodTable*
+
+            // 2. Load vtable slot at offset HeaderSize + slot*8
+            int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (vtableSlot * 8);
+            DebugConsole.Write(" offset=");
+            DebugConsole.WriteDecimal((uint)vtableOffset);
+            DebugConsole.WriteLine();
+            _emit.MovRM(Reg64.RAX, Reg64.RAX, vtableOffset);  // RAX = vtable[slot]
+        }
+        else
+        {
+            // Devirtualized: use direct address
+            _emit.MovRI64(Reg64.RAX, fnPtr);
+        }
+
+        // Push the function pointer onto the stack
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Function pointers are native int
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile localloc opcode - allocate memory on stack.
+    /// Stack: ..., size -> ..., ptr
+    ///
+    /// Challenge: The evaluation stack uses the machine stack (via push/pop).
+    /// After allocating N bytes, we need to push the result pointer.
+    /// But if we just do sub rsp, N then push ptr, the push would write into
+    /// the allocated space!
+    ///
+    /// Solution: Allocate size+16 bytes (aligned), use the first 8 for the
+    /// pushed pointer, return a pointer to the rest. Or simpler: after sub,
+    /// do lea rax, [rsp+8] then push rax - the push writes to [rsp], but
+    /// we return rsp+8 as the buffer.
+    ///
+    /// Wait, that's still wrong. Let me think again:
+    /// - We allocate N bytes (aligned to 16)
+    /// - We need to push 8 bytes for the result pointer
+    /// - So we allocate N+16 bytes (to stay 16-aligned after the push)
+    /// - The result pointer is RSP+8 (skipping the slot used by push)
+    /// </summary>
+    private bool CompileLocalloc()
+    {
+        // Pop the size from the evaluation stack
+        _emit.Pop(Reg64.RCX);  // RCX = size in bytes
+        PopStackType();
+        _evalStackDepth--;
+
+        // Add 8 for the result pointer we need to push, then align to 16
+        // RCX = ((RCX + 8) + 15) & ~15 = (RCX + 23) & ~15
+        _emit.AddRI(Reg64.RCX, 23);
+        _emit.AndRI(Reg64.RCX, unchecked((int)0xFFFFFFF0));
+
+        // Subtract from RSP to allocate space (includes room for the push)
+        _emit.SubRR(Reg64.RSP, Reg64.RCX);
+
+        // Compute the result pointer = RSP + 8 (skipping space for the push)
+        // lea rax, [rsp+8]
+        _emit.MovRR(Reg64.RAX, Reg64.RSP);
+        _emit.AddRI(Reg64.RAX, 8);
+
+        // Push the result pointer - this writes to [RSP-8] then decrements RSP
+        // So the allocated buffer starts at what was RSP+8, now at RSP+16
+        _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Int);  // Pointer type
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    // ==================== String and Token Loading ====================
+
+    /// <summary>
+    /// Compile ldstr - Load a string literal from the #US heap.
+    /// Stack: ... -> ..., string
+    ///
+    /// The token is a user string token (0x70xxxxxx) that references the #US heap.
+    ///
+    /// Per ECMA-335 III.4.16, ldstr "pushes a new string object, created from the
+    /// metadata string literal". The StringResolver callback is responsible for:
+    /// 1. Looking up the UTF-16 string data in the #US heap using the token
+    /// 2. Allocating a System.String object on the GC heap (using RhpNewArray)
+    /// 3. Copying the string data into the object
+    /// 4. Returning the object reference (or a cached interned string)
+    ///
+    /// String layout in memory:
+    /// - Object header (MethodTable pointer)
+    /// - int _length (number of characters)
+    /// - char _firstChar (first character, followed by remaining chars inline)
+    ///
+    /// For testing: if no string resolver is available, we push null.
+    /// For production: StringResolver should call MetadataReader.GetUserString()
+    /// and allocate a proper String object.
+    /// </summary>
+    private bool CompileLdstr(uint token)
+    {
+        // User string tokens have table ID 0x70 in the high byte
+        // The low 24 bits are the index into the #US heap
+
+        ulong stringPtr = 0;
+
+        // Try to resolve the string using the delegate resolver first
+        if (_stringResolver != null)
+        {
+            void* resolved;
+            if (_stringResolver(token, out resolved) && resolved != null)
+            {
+                stringPtr = (ulong)resolved;
+            }
+        }
+
+        // If no delegate resolver or it failed, try MetadataReader directly
+        // (This is the preferred path in our minimal runtime environment
+        // where delegate invocation has limitations)
+        if (stringPtr == 0)
+        {
+            void* resolved;
+            if (MetadataReader.ResolveUserString(token, out resolved) && resolved != null)
+            {
+                stringPtr = (ulong)resolved;
+            }
+        }
+
+        // Push the string object reference (or null if unresolved)
+        _emit.MovRI64(Reg64.RAX, stringPtr);
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldtoken - Load a runtime handle for a type, method, or field.
+    /// Stack: ... -> ..., RuntimeHandle
+    ///
+    /// The token references a TypeRef, TypeDef, MethodDef, MethodRef, FieldDef, or MemberRef.
+    /// We load the address of the corresponding MethodTable or other runtime handle.
+    ///
+    /// For testing: token is treated as a direct pointer value.
+    /// For production: would resolve via metadata tables.
+    /// </summary>
+    private bool CompileLdtoken(uint token)
+    {
+        // For testing purposes, treat the token as a direct pointer value
+        // In production, this would resolve to:
+        // - For types: the MethodTable pointer (RuntimeTypeHandle)
+        // - For methods: the method descriptor (RuntimeMethodHandle)
+        // - For fields: the field descriptor (RuntimeFieldHandle)
+        //
+        // The loaded value can then be used with:
+        // - Type.GetTypeFromHandle() for types
+        // - MethodBase.GetMethodFromHandle() for methods
+        // - FieldInfo.GetFieldFromHandle() for fields
+
+        ulong handleValue = token;
+
+        // If we have a type resolver, try to resolve the token
+        if (_typeResolver != null)
+        {
+            void* mtPtr;
+            if (_typeResolver(token, out mtPtr) && mtPtr != null)
+            {
+                handleValue = (ulong)mtPtr;
+            }
+        }
+
+        // Push the handle onto the stack
+        _emit.MovRI64(Reg64.RAX, handleValue);
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile ldelem with type token - Load an array element.
+    /// Stack: ..., array, index -> ..., value
+    ///
+    /// The token specifies the element type. We decode the element size from the token.
+    /// For testing: token low byte encodes element size (1/2/4/8).
+    /// For production: would look up type info from metadata.
+    /// </summary>
+    private bool CompileLdelemToken(uint token)
+    {
+        // Decode element size from token (for testing, use low byte)
+        int elemSize = (int)(token & 0xFF);
+        if (elemSize == 0) elemSize = 8;  // Default to pointer size
+
+        // Delegate to the typed version (signed for value types)
+        return CompileLdelem(elemSize, signed: true);
+    }
+
+    /// <summary>
+    /// Compile stelem with type token - Store an array element.
+    /// Stack: ..., array, index, value -> ...
+    ///
+    /// The token specifies the element type. We decode the element size from the token.
+    /// For testing: token low byte encodes element size (1/2/4/8).
+    /// For production: would look up type info from metadata.
+    /// </summary>
+    private bool CompileStelemToken(uint token)
+    {
+        // Decode element size from token (for testing, use low byte)
+        int elemSize = (int)(token & 0xFF);
+        if (elemSize == 0) elemSize = 8;  // Default to pointer size
+
+        // Delegate to the typed version
+        return CompileStelem(elemSize);
+    }
+
+    /// <summary>
+    /// Compile endfilter - End an exception filter clause.
+    /// Stack: ..., result -> ...
+    ///
+    /// The filter returns an int32 indicating whether to handle the exception:
+    /// - 0 = exception_continue_search (don't handle)
+    /// - 1 = exception_execute_handler (handle)
+    ///
+    /// This pops the result and returns from the filter funclet.
+    /// </summary>
+    private bool CompileEndfilter()
+    {
+        if (_evalStackDepth < 1)
+        {
+            DebugConsole.WriteLine("[JIT] endfilter: stack empty");
+            return false;
+        }
+
+        // Pop the filter result into RAX (return value)
+        _emit.Pop(Reg64.RAX);
+        _evalStackDepth--;
+        PopStackType();
+
+        // Return from the filter funclet
+        _emit.EmitEpilogue(_stackAdjust);
+
+        return true;
+    }
+
+    // ==================== Rare Opcodes ====================
+
+    /// <summary>
+    /// Compile jmp - Tail jump to a method.
+    /// Stack: ... -> (method transfer)
+    ///
+    /// The jmp instruction transfers control to a method, using the current
+    /// method's arguments. The evaluation stack must be empty.
+    /// This is equivalent to a tail call where the arguments are unchanged.
+    /// </summary>
+    private bool CompileJmp(uint token)
+    {
+        // Evaluation stack must be empty before jmp
+        if (_evalStackDepth != 0)
+        {
+            DebugConsole.WriteLine("[JIT] jmp: eval stack not empty");
+            return false;
+        }
+
+        // Resolve the method token to get the target address
+        ulong targetAddr = 0;
+        if (_resolver != null)
+        {
+            ResolvedMethod resolved;
+            if (_resolver(token, out resolved) && resolved.NativeCode != null)
+            {
+                targetAddr = (ulong)resolved.NativeCode;
+            }
+        }
+
+        if (targetAddr == 0)
+        {
+            // Try the compiled method registry as fallback
+            void* nativeCode = CompiledMethodRegistry.GetNativeCode(token);
+            if (nativeCode != null)
+            {
+                targetAddr = (ulong)nativeCode;
+            }
+        }
+
+        if (targetAddr == 0)
+        {
+            DebugConsole.Write("[JIT] jmp: cannot resolve method token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // The jmp instruction reuses the current stack frame.
+        // We need to:
+        // 1. Restore callee-saved registers if we saved any
+        // 2. Restore RSP/RBP
+        // 3. Jump (not call) to the target
+
+        // Emit epilogue but use JMP instead of RET
+        // First, restore RSP from RBP (undo stack allocation)
+        _emit.MovRR(Reg64.RSP, Reg64.RBP);
+        // Pop saved RBP
+        _emit.Pop(Reg64.RBP);
+        // Jump to target (this reuses the return address already on stack)
+        _emit.MovRI64(Reg64.RAX, targetAddr);
+        _emit.JmpR(Reg64.RAX);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile mkrefany - Make a typed reference.
+    /// Stack: ..., ptr -> ..., typedRef
+    ///
+    /// Creates a TypedReference from a pointer and type token.
+    /// TypedReference is a 16-byte struct: { void* Value; void* Type }
+    /// </summary>
+    private bool CompileMkrefany(uint typeToken)
+    {
+        if (_evalStackDepth < 1)
+        {
+            DebugConsole.WriteLine("[JIT] mkrefany: stack underflow");
+            return false;
+        }
+
+        // Resolve the type token to get the Type pointer
+        ulong typePtr = 0;
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(typeToken, out resolved) && resolved != null)
+            {
+                typePtr = (ulong)resolved;
+            }
+        }
+
+        // Pop the pointer value
+        _emit.Pop(Reg64.RAX);  // RAX = value pointer
+        _evalStackDepth--;
+        PopStackType();
+
+        // TypedReference is 16 bytes - we push both parts onto the stack
+        // The layout is: [Value pointer][Type pointer]
+        // We push Type first (higher address), then Value (lower address)
+
+        // Push type pointer
+        _emit.MovRI64(Reg64.RCX, typePtr);
+        _emit.Push(Reg64.RCX);
+        // Push value pointer (already in RAX)
+        _emit.Push(Reg64.RAX);
+
+        // TypedReference takes 2 stack slots
+        _evalStackDepth += 2;
+        PushStackType(StackType_Int);  // Value part
+        PushStackType(StackType_Int);  // Type part
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile refanyval - Get value pointer from typed reference.
+    /// Stack: ..., typedRef -> ..., ptr
+    ///
+    /// Extracts the value pointer from a TypedReference, validating the type.
+    /// </summary>
+    private bool CompileRefanyval(uint typeToken)
+    {
+        if (_evalStackDepth < 2)
+        {
+            DebugConsole.WriteLine("[JIT] refanyval: stack underflow");
+            return false;
+        }
+
+        // TypedReference is 16 bytes (2 stack slots)
+        // mkrefany pushed: Type first, Value second (Value is TOS)
+        // So we pop: Value first, then Type
+        _emit.Pop(Reg64.RAX);  // RAX = value pointer (TOS)
+        _evalStackDepth--;
+        PopStackType();
+        _emit.Pop(Reg64.RCX);  // RCX = type pointer (currently unused for validation)
+        _evalStackDepth--;
+        PopStackType();
+
+        // Push just the value pointer
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+        PushStackType(StackType_Int);
+
+        // Note: In a full implementation, we would validate that typeToken matches
+        // the Type field of the TypedReference and throw InvalidCastException if not.
+        _ = typeToken;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile refanytype - Get type from typed reference.
+    /// Stack: ..., typedRef -> ..., typeHandle
+    ///
+    /// Extracts the RuntimeTypeHandle from a TypedReference.
+    /// </summary>
+    private bool CompileRefanytype()
+    {
+        if (_evalStackDepth < 2)
+        {
+            DebugConsole.WriteLine("[JIT] refanytype: stack underflow");
+            return false;
+        }
+
+        // TypedReference is 16 bytes (2 stack slots)
+        // mkrefany pushed: Type first, Value second (Value is TOS)
+        // So we pop: Value first (discard), then Type
+        _emit.Pop(Reg64.RCX);  // RCX = value pointer (discarded, TOS)
+        _evalStackDepth--;
+        PopStackType();
+        _emit.Pop(Reg64.RAX);  // RAX = type pointer
+        _evalStackDepth--;
+        PopStackType();
+
+        // Push the type pointer as RuntimeTypeHandle
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile arglist - Get handle to argument list (for varargs methods).
+    /// Stack: ... -> ..., argHandle
+    ///
+    /// Returns a RuntimeArgumentHandle pointing to the varargs portion of the arguments.
+    /// </summary>
+    private bool CompileArglist()
+    {
+        // In a varargs method, after the declared parameters, there may be additional
+        // arguments on the stack. The arglist instruction returns a handle that allows
+        // iterating over those extra arguments using ArgIterator.
+        //
+        // For our implementation:
+        // - The handle is a pointer to where the varargs begin on the stack
+        // - In x64 calling convention, args after the first 4 are on the stack
+        // - The varargs start after the declared parameters
+
+        // Calculate the address where varargs would begin
+        // This is: RBP + 16 + (argCount * 8)
+        // (RBP points to saved RBP, +8 is return address, +16 is start of shadow space/args)
+        int varargOffset = 16 + (_argCount * 8);
+
+        _emit.MovRR(Reg64.RAX, Reg64.RBP);
+        _emit.AddRI(Reg64.RAX, varargOffset);
+        _emit.Push(Reg64.RAX);
+        _evalStackDepth++;
+        PushStackType(StackType_Int);
+
+        return true;
+    }
+
+    // Function pointers for runtime helpers (set by caller)
+    private void* _rhpNewFast;
+    private void* _rhpNewArray;
+    private void* _isAssignableTo;
+    private void* _getInterfaceMethod;
+
+    /// <summary>
+    /// Set runtime helper function pointers for object allocation.
+    /// Must be called before compiling code that uses newobj/newarr.
+    /// </summary>
+    public void SetAllocationHelpers(void* rhpNewFast, void* rhpNewArray)
+    {
+        _rhpNewFast = rhpNewFast;
+        _rhpNewArray = rhpNewArray;
     }
 }

@@ -587,10 +587,8 @@ public static unsafe class JITMethodRegistry
     private static SpinLock _lock;
     private static bool _initialized;
 
-    // Separate storage for EH info data (needs to be in data section, not code heap)
-    private static byte* _ehInfoStorage;
-    private static int _ehInfoOffset;
-    private const int EHInfoStorageSize = 16 * 1024;  // 16KB for EH info
+    // Note: UNWIND_INFO and EH info are allocated from CodeHeap alongside method code
+    // because RUNTIME_FUNCTION RVAs must all be relative to the same ImageBase (CodeBase).
 
     /// <summary>
     /// Initialize the JIT method registry.
@@ -610,17 +608,7 @@ public static unsafe class JITMethodRegistry
             return false;
         }
 
-        // Allocate EH info storage
-        _ehInfoStorage = (byte*)VirtualMemory.AllocateVirtualRange(0, EHInfoStorageSize, true,
-            PageFlags.Present | PageFlags.Writable);
-        if (_ehInfoStorage == null)
-        {
-            DebugConsole.WriteLine("[JITRegistry] Failed to allocate EH info storage");
-            return false;
-        }
-
         _methodCount = 0;
-        _ehInfoOffset = 0;
         _initialized = true;
 
         DebugConsole.WriteLine("[JITRegistry] Initialized");
@@ -629,6 +617,8 @@ public static unsafe class JITMethodRegistry
 
     /// <summary>
     /// Register a JIT-compiled method with exception handling support.
+    /// UNWIND_INFO and EH info are allocated from CodeHeap so that all RVAs
+    /// in RUNTIME_FUNCTION are relative to the same ImageBase (CodeBase).
     /// </summary>
     /// <param name="info">Method info structure to register</param>
     /// <param name="nativeClauses">EH clauses with native offsets</param>
@@ -657,33 +647,65 @@ public static unsafe class JITMethodRegistry
             }
         }
 
-        // Finalize unwind info first (to set up the structure)
+        // Finalize unwind info first (to set up the structure in the local info)
         info.FinalizeUnwindInfo(info.EHClauseCount > 0);
 
         // Store method info
         int index = _methodCount++;
         _methods[index] = info;
 
-        // Build EH info data into separate storage
-        byte* ehInfoPtr = null;
-        if (info.EHClauseCount > 0)
+        // Allocate UNWIND_INFO from CodeHeap so it can be addressed via RVA from CodeBase
+        // UNWIND_INFO is 64 bytes in JITMethodInfo._unwindData
+        const int unwindInfoSize = 64;
+        byte* unwindInfoInCodeHeap = CodeHeap.Alloc(unwindInfoSize);
+        if (unwindInfoInCodeHeap == null)
         {
-            ehInfoPtr = _ehInfoStorage + _ehInfoOffset;
-            int ehInfoSize;
-            _methods[index].BuildEHInfo(ehInfoPtr, out ehInfoSize);
-            _ehInfoOffset += (ehInfoSize + 3) & ~3;  // DWORD align
-
-            // Patch the EH info RVA in the UNWIND_INFO
-            // EH info is in _ehInfoStorage, need to calculate RVA relative to CodeBase
-            uint ehInfoRva = (uint)((ulong)ehInfoPtr - info.CodeBase);
-            _methods[index].PatchEHInfoRva(ehInfoRva);
+            _methodCount--;
+            _lock.Release();
+            DebugConsole.WriteLine("[JITRegistry] Failed to allocate unwind info from CodeHeap");
+            return false;
         }
 
-        // Calculate UNWIND_INFO RVA
-        // The UNWIND_INFO is at a fixed offset within the JITMethodInfo struct
-        byte* methodInfoPtr = (byte*)&_methods[index];
-        uint unwindRva = (uint)((ulong)_methods[index].GetUnwindInfoPtr() - info.CodeBase);
+        // Copy unwind info to CodeHeap allocation
+        byte* srcUnwind = _methods[index].GetUnwindInfoPtr();
+        for (int i = 0; i < unwindInfoSize; i++)
+        {
+            unwindInfoInCodeHeap[i] = srcUnwind[i];
+        }
+
+        // Calculate UNWIND_INFO RVA relative to CodeBase
+        uint unwindRva = (uint)((ulong)unwindInfoInCodeHeap - info.CodeBase);
         _methods[index].Function.UnwindInfoAddress = unwindRva;
+
+        // Allocate and build EH info in CodeHeap if needed
+        if (info.EHClauseCount > 0)
+        {
+            // Estimate EH info size: count (1-5 bytes) + clauses (up to ~20 bytes each)
+            int ehInfoMaxSize = 5 + (info.EHClauseCount * 24);
+            byte* ehInfoInCodeHeap = CodeHeap.Alloc((ulong)ehInfoMaxSize);
+            if (ehInfoInCodeHeap == null)
+            {
+                _methodCount--;
+                _lock.Release();
+                DebugConsole.WriteLine("[JITRegistry] Failed to allocate EH info from CodeHeap");
+                return false;
+            }
+
+            // Build EH info directly into CodeHeap allocation
+            int ehInfoSize;
+            _methods[index].BuildEHInfo(ehInfoInCodeHeap, out ehInfoSize);
+
+            // Calculate EH info RVA relative to CodeBase
+            uint ehInfoRva = (uint)((ulong)ehInfoInCodeHeap - info.CodeBase);
+
+            // Patch the EH info RVA in the CodeHeap copy of UNWIND_INFO
+            // The RVA field is at: header(4) + unwindcodes(aligned) + handlerRVA(4) + flags(1)
+            int unwindCodeCount = unwindInfoInCodeHeap[2];
+            int offset = 4 + ((unwindCodeCount + 1) & ~1) * 2;
+            offset += 4;  // Skip handler RVA
+            offset += 1;  // Skip unwind block flags
+            *(uint*)(unwindInfoInCodeHeap + offset) = ehInfoRva;
+        }
 
         // Register with ExceptionHandling
         bool success = ExceptionHandling.AddFunctionTable(
@@ -699,6 +721,8 @@ public static unsafe class JITMethodRegistry
             DebugConsole.WriteHex(info.Function.BeginAddress);
             DebugConsole.Write("-0x");
             DebugConsole.WriteHex(info.Function.EndAddress);
+            DebugConsole.Write(" unwind=0x");
+            DebugConsole.WriteHex(unwindRva);
             if (info.EHClauseCount > 0)
             {
                 DebugConsole.Write(" with ");

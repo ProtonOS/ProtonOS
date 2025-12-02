@@ -1968,17 +1968,47 @@ public static unsafe class ExceptionHandling
                     // Calculate handler address
                     ulong handlerAddr = imageBase + funcEntry->BeginAddress + clause.HandlerOffset;
 
+                    // Get the establisher frame (RSP after prolog) for this function
+                    // We need to virtually unwind to find where the frame's return address is
+                    ExceptionContext unwindContext = searchContext;
+                    ulong handlerEstablisherFrame = 0;
+                    RtlVirtualUnwind(
+                        UNW_HandlerType.UNW_FLAG_NHANDLER,
+                        imageBase,
+                        unwindContext.Rip,
+                        funcEntry,
+                        &unwindContext,
+                        null,
+                        &handlerEstablisherFrame,
+                        null);
+
                     DebugConsole.Write("[EH] Transferring to handler at 0x");
                     DebugConsole.WriteHex(handlerAddr);
+                    DebugConsole.Write(" estFrame=0x");
+                    DebugConsole.WriteHex(handlerEstablisherFrame);
+                    DebugConsole.Write(" unwindRsp=0x");
+                    DebugConsole.WriteHex(unwindContext.Rsp);
                     DebugConsole.WriteLine();
 
                     // Transfer control to handler
-                    // The handler funclet expects:
-                    // - RCX = exception object
-                    // - RDX = frame pointer (for accessing locals)
+                    // For inline handlers (not funclets), we need:
+                    // - RSP pointing to where the return address is (unwindContext.Rsp - 8)
+                    //   so that the handler's RET returns to the original caller
+                    // - RBP = frame pointer for accessing locals
+                    // - RCX = exception object (not used by simple handlers but convention)
+                    //
+                    // After RtlVirtualUnwind:
+                    // - unwindContext.Rsp points PAST the return address (caller's stack)
+                    // - unwindContext.Rip is the return address
+                    // We need RSP to point AT the return address for RET to work
                     context->Rip = handlerAddr;
+                    context->Rsp = unwindContext.Rsp - 8;  // Point at return address
+                    context->Rbp = searchContext.Rbp;  // Keep the frame pointer
                     context->Rcx = (ulong)exceptionObject;
-                    context->Rdx = context->Rbp;  // Pass frame pointer
+                    context->Rdx = searchContext.Rbp;  // Pass frame pointer
+
+                    // Write the return address at RSP so handler's RET works
+                    *(ulong*)context->Rsp = unwindContext.Rip;
 
                     // Set current exception info for rethrow support
                     SetCurrentException(exceptionObject);

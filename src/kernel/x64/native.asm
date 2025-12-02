@@ -895,22 +895,13 @@ RhpThrowEx:
     mov r14, [rsp + 0x80]
     mov r15, [rsp + 0x88]
 
-    ; Set up stack for funclet call
-    ; Funclet expects to be called on the establisher frame's stack
+    ; Set up stack for handler
+    ; For inline handlers (not funclets), context->Rsp already points to return address
+    ; Handler's RET will pop the return address and return to the original caller
     mov rsp, r11
 
-    ; Ensure 16-byte stack alignment before call
-    and rsp, ~0xF
-    sub rsp, 32             ; shadow space for Windows x64 calling convention
-
-    ; Call the funclet - it returns continuation address in RAX
-    call rax
-
-    ; RAX now contains the continuation address
-    ; Clean up shadow space and continue
-    add rsp, 32
-
-    ; Jump to continuation address (where execution continues after the try-catch)
+    ; Jump directly to handler - it will RET to the original caller
+    ; The C# code has set up RSP to point at the return address
     jmp rax
 
 ; void RhpRethrow()
@@ -961,8 +952,8 @@ RhpRethrow:
     call RhpRethrow_Handler
     add rsp, 32
 
-    ; If we return, handler modified context - call funclet like RhpThrowEx
-    mov rax, [rsp + 0x00]   ; funclet address
+    ; If we return, handler modified context - jump to handler like RhpThrowEx
+    mov rax, [rsp + 0x00]   ; handler address
     mov r11, [rsp + 0x08]   ; establisher frame RSP
     mov rcx, [rsp + 0x30]   ; exception object
     mov rdx, [rsp + 0x10]   ; frame pointer (RBP)
@@ -973,10 +964,7 @@ RhpRethrow:
     mov r14, [rsp + 0x80]
     mov r15, [rsp + 0x88]
     mov rsp, r11
-    and rsp, ~0xF
-    sub rsp, 32
-    call rax
-    add rsp, 32
+    ; Jump directly to handler - it will RET to the original caller
     jmp rax
 
 ; void RhpThrowHwEx(uint exceptionCode, void* faultingIP)

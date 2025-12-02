@@ -58,6 +58,35 @@ public unsafe struct CompiledMethodInfo
     /// <summary>True if the method has been compiled.</summary>
     public bool IsCompiled;
 
+    /// <summary>True if this is a virtual method requiring vtable dispatch.</summary>
+    public bool IsVirtual;
+
+    /// <summary>
+    /// Vtable slot index for virtual methods. -1 if not virtual or unknown.
+    /// </summary>
+    public short VtableSlot;
+
+    /// <summary>
+    /// MethodTable pointer for constructors. Used by newobj to allocate the type.
+    /// Null for non-constructor methods.
+    /// </summary>
+    public void* MethodTable;
+
+    /// <summary>True if this is an interface method requiring interface dispatch.</summary>
+    public bool IsInterfaceMethod;
+
+    /// <summary>
+    /// MethodTable pointer for the interface (only valid if IsInterfaceMethod).
+    /// Used for interface dispatch to look up the correct vtable slot.
+    /// </summary>
+    public void* InterfaceMT;
+
+    /// <summary>
+    /// Method index within the interface (0-based, only valid if IsInterfaceMethod).
+    /// Combined with InterfaceMT to find the vtable slot at runtime.
+    /// </summary>
+    public short InterfaceMethodSlot;
+
     /// <summary>
     /// Argument types for the first 8 arguments.
     /// Packed: 4 bits per arg, args 0-1 in byte 0, args 2-3 in byte 1, etc.
@@ -219,6 +248,22 @@ public static unsafe class CompiledMethodRegistry
     /// </summary>
     public static bool Register(uint token, void* code, byte argCount, ReturnKind returnKind, bool hasThis = false)
     {
+        return RegisterVirtual(token, code, argCount, returnKind, hasThis, false, -1);
+    }
+
+    /// <summary>
+    /// Register a compiled virtual method with vtable slot information.
+    /// </summary>
+    /// <param name="token">Metadata token identifying the method.</param>
+    /// <param name="code">Native code entry point.</param>
+    /// <param name="argCount">Number of parameters (not including 'this').</param>
+    /// <param name="returnKind">Return type classification.</param>
+    /// <param name="hasThis">True if this is an instance method.</param>
+    /// <param name="isVirtual">True if this is a virtual method.</param>
+    /// <param name="vtableSlot">Vtable slot index for virtual methods (-1 if not virtual).</param>
+    public static bool RegisterVirtual(uint token, void* code, byte argCount, ReturnKind returnKind,
+        bool hasThis, bool isVirtual, int vtableSlot)
+    {
         if (!_initialized)
             Initialize();
 
@@ -234,6 +279,8 @@ public static unsafe class CompiledMethodRegistry
             existing->ReturnKind = returnKind;
             existing->HasThis = hasThis;
             existing->IsCompiled = true;
+            existing->IsVirtual = isVirtual;
+            existing->VtableSlot = (short)vtableSlot;
             return true;
         }
 
@@ -261,6 +308,153 @@ public static unsafe class CompiledMethodRegistry
         entry->ReturnKind = returnKind;
         entry->HasThis = hasThis;
         entry->IsCompiled = true;
+        entry->IsVirtual = isVirtual;
+        entry->VtableSlot = (short)vtableSlot;
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return true;
+    }
+
+    /// <summary>
+    /// Register a constructor method with its MethodTable.
+    /// Used by newobj to allocate the correct type then call the constructor.
+    /// </summary>
+    /// <param name="token">Metadata token identifying the constructor.</param>
+    /// <param name="code">Native code entry point.</param>
+    /// <param name="argCount">Number of parameters (not including 'this').</param>
+    /// <param name="methodTable">MethodTable of the declaring type (used for allocation).</param>
+    public static bool RegisterConstructor(uint token, void* code, byte argCount, void* methodTable)
+    {
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0)
+            return false;
+
+        // Check if already registered - update if so
+        CompiledMethodInfo* existing = Lookup(token);
+        if (existing != null)
+        {
+            existing->NativeCode = code;
+            existing->ArgCount = argCount;
+            existing->ReturnKind = ReturnKind.Void;  // Constructors return void
+            existing->HasThis = true;                 // Constructors always have 'this'
+            existing->IsCompiled = true;
+            existing->IsVirtual = false;
+            existing->VtableSlot = -1;
+            existing->MethodTable = methodTable;
+            return true;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return false;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry
+        entry->Token = token;
+        entry->NativeCode = code;
+        entry->ArgCount = argCount;
+        entry->ReturnKind = ReturnKind.Void;  // Constructors return void
+        entry->HasThis = true;                 // Constructors always have 'this'
+        entry->IsCompiled = true;
+        entry->IsVirtual = false;
+        entry->VtableSlot = -1;
+        entry->MethodTable = methodTable;
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return true;
+    }
+
+    /// <summary>
+    /// Register an interface method requiring interface dispatch.
+    /// </summary>
+    /// <param name="token">Metadata token identifying the interface method.</param>
+    /// <param name="argCount">Number of parameters (not including 'this').</param>
+    /// <param name="returnKind">Return type classification.</param>
+    /// <param name="interfaceMT">MethodTable of the interface.</param>
+    /// <param name="interfaceMethodSlot">Method index within the interface (0-based).</param>
+    public static bool RegisterInterface(uint token, byte argCount, ReturnKind returnKind,
+        void* interfaceMT, int interfaceMethodSlot)
+    {
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0)
+            return false;
+
+        // Check if already registered - update if so
+        CompiledMethodInfo* existing = Lookup(token);
+        if (existing != null)
+        {
+            existing->NativeCode = null;  // No direct code - uses runtime dispatch
+            existing->ArgCount = argCount;
+            existing->ReturnKind = returnKind;
+            existing->HasThis = true;  // Interface methods always have 'this'
+            existing->IsCompiled = true;
+            existing->IsVirtual = false;
+            existing->VtableSlot = -1;
+            existing->IsInterfaceMethod = true;
+            existing->InterfaceMT = interfaceMT;
+            existing->InterfaceMethodSlot = (short)interfaceMethodSlot;
+            return true;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return false;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry
+        entry->Token = token;
+        entry->NativeCode = null;  // No direct code - uses runtime dispatch
+        entry->ArgCount = argCount;
+        entry->ReturnKind = returnKind;
+        entry->HasThis = true;  // Interface methods always have 'this'
+        entry->IsCompiled = true;
+        entry->IsVirtual = false;
+        entry->VtableSlot = -1;
+        entry->IsInterfaceMethod = true;
+        entry->InterfaceMT = interfaceMT;
+        entry->InterfaceMethodSlot = (short)interfaceMethodSlot;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -373,6 +567,8 @@ public static unsafe class CompiledMethodRegistry
         entry->ReturnKind = returnKind;
         entry->HasThis = hasThis;
         entry->IsCompiled = false;
+        entry->IsVirtual = false;
+        entry->VtableSlot = -1;
 
         // Update block header
         block->Header.UsedCount++;

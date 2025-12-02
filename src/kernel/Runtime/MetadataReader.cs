@@ -27,6 +27,48 @@ public static class HeapSizeFlags
 }
 
 /// <summary>
+/// MethodDef Flags from ECMA-335 II.23.1.10
+/// These flags describe the accessibility and semantics of a method.
+/// </summary>
+public static class MethodDefFlags
+{
+    // Member access mask (3 bits)
+    public const ushort MemberAccessMask = 0x0007;
+    public const ushort CompilerControlled = 0x0000; // Member not referenceable
+    public const ushort Private = 0x0001;            // Accessible only by parent type
+    public const ushort FamANDAssem = 0x0002;        // Accessible by sub-types only in this assembly
+    public const ushort Assembly = 0x0003;           // Accessible by anyone in the assembly
+    public const ushort Family = 0x0004;             // Accessible only by type and sub-types
+    public const ushort FamORAssem = 0x0005;         // Accessible by sub-types anywhere, plus anyone in assembly
+    public const ushort Public = 0x0006;             // Accessible by anyone
+
+    // Method semantics flags
+    public const ushort Static = 0x0010;             // Method is static
+    public const ushort Final = 0x0020;              // Method cannot be overridden (sealed)
+    public const ushort Virtual = 0x0040;            // Method is virtual
+    public const ushort HideBySig = 0x0080;          // Hide by name and signature
+
+    // VTable layout mask
+    public const ushort VtableLayoutMask = 0x0100;
+    public const ushort ReuseSlot = 0x0000;          // Reuse parent slot (override)
+    public const ushort NewSlot = 0x0100;            // Create new slot in vtable
+
+    // Implementation flags
+    public const ushort CheckAccessOnOverride = 0x0200;  // Override access checking
+    public const ushort Abstract = 0x0400;           // Method doesn't have an implementation
+    public const ushort SpecialName = 0x0800;        // Method is special (e.g., .ctor, .cctor)
+
+    // Interop flags
+    public const ushort PInvokeImpl = 0x2000;        // Implementation is forwarded via PInvoke
+    public const ushort UnmanagedExport = 0x0008;    // Reserved for runtime use
+
+    // Additional flags
+    public const ushort RTSpecialName = 0x1000;      // Reserved for runtime use
+    public const ushort HasSecurity = 0x4000;        // Method has security associate with it
+    public const ushort RequireSecObject = 0x8000;   // Method calls another method with security attribute
+}
+
+/// <summary>
 /// Coded index types for metadata table references (ECMA-335 II.24.2.6)
 /// </summary>
 public enum CodedIndexType
@@ -1573,6 +1615,59 @@ public static unsafe class MetadataReader
             return 0;
 
         return ReadIndex(row + 8 + sizes.StringIndexSize + sizes.BlobIndexSize, sizes.ParamIndexSize);
+    }
+
+    /// <summary>
+    /// Check if a MethodDef is virtual (requires vtable dispatch).
+    /// </summary>
+    /// <param name="tables">The tables header.</param>
+    /// <param name="sizes">The table sizes.</param>
+    /// <param name="rowId">1-based MethodDef row ID.</param>
+    /// <returns>True if the method is virtual.</returns>
+    public static bool IsMethodDefVirtual(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        ushort flags = GetMethodDefFlags(ref tables, ref sizes, rowId);
+        return (flags & MethodDefFlags.Virtual) != 0;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef is final (sealed, cannot be overridden).
+    /// A method that is virtual but also final can be devirtualized.
+    /// </summary>
+    /// <param name="tables">The tables header.</param>
+    /// <param name="sizes">The table sizes.</param>
+    /// <param name="rowId">1-based MethodDef row ID.</param>
+    /// <returns>True if the method is final.</returns>
+    public static bool IsMethodDefFinal(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        ushort flags = GetMethodDefFlags(ref tables, ref sizes, rowId);
+        return (flags & MethodDefFlags.Final) != 0;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef is static.
+    /// </summary>
+    /// <param name="tables">The tables header.</param>
+    /// <param name="sizes">The table sizes.</param>
+    /// <param name="rowId">1-based MethodDef row ID.</param>
+    /// <returns>True if the method is static.</returns>
+    public static bool IsMethodDefStatic(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        ushort flags = GetMethodDefFlags(ref tables, ref sizes, rowId);
+        return (flags & MethodDefFlags.Static) != 0;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef creates a new vtable slot (as opposed to overriding).
+    /// </summary>
+    /// <param name="tables">The tables header.</param>
+    /// <param name="sizes">The table sizes.</param>
+    /// <param name="rowId">1-based MethodDef row ID.</param>
+    /// <returns>True if the method creates a new slot.</returns>
+    public static bool IsMethodDefNewSlot(ref TablesHeader tables, ref TableSizes sizes, uint rowId)
+    {
+        ushort flags = GetMethodDefFlags(ref tables, ref sizes, rowId);
+        return (flags & MethodDefFlags.NewSlot) != 0;
     }
 
     // ============================================================================
@@ -3983,6 +4078,120 @@ public static unsafe class MetadataReader
                 DebugConsole.WriteLine();
             }
         }
+    }
+
+    // ========================================================================
+    // String Allocation for JIT ldstr
+    // ========================================================================
+
+    /// <summary>
+    /// Cached String MethodTable pointer for allocating new strings.
+    /// Stored as void* to avoid type conflicts between System.Runtime.MethodTable
+    /// and ProtonOS.Runtime.MethodTable.
+    /// </summary>
+    private static void* _stringMethodTable;
+
+    /// <summary>
+    /// Cached MetadataRoot for string resolution (set when loading assemblies)
+    /// </summary>
+    private static MetadataRoot* _cachedMetadataRoot;
+
+    /// <summary>
+    /// Initialize the String MethodTable cache. Must be called before AllocateUserString.
+    /// </summary>
+    public static void InitStringMethodTable()
+    {
+        // Get the MethodTable from an empty string literal
+        // The compiler embeds the MethodTable pointer in the object header
+        string emptyStr = "";
+        _stringMethodTable = (void*)emptyStr.m_pMethodTable;
+        DebugConsole.Write("[MetadataReader] String MethodTable cached at 0x");
+        DebugConsole.WriteHex((ulong)_stringMethodTable);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Set the cached metadata root for string resolution.
+    /// Called by Kernel after parsing assembly metadata.
+    /// </summary>
+    public static void SetMetadataRoot(MetadataRoot* root)
+    {
+        _cachedMetadataRoot = root;
+    }
+
+    /// <summary>
+    /// Allocate a managed String object from a user string token.
+    /// This is used by the JIT compiler for the ldstr opcode.
+    /// </summary>
+    /// <param name="root">Metadata root containing the #US heap</param>
+    /// <param name="token">User string token (0x70xxxxxx)</param>
+    /// <returns>Pointer to allocated String object, or null on failure</returns>
+    public static void* AllocateUserString(ref MetadataRoot root, uint token)
+    {
+        // Extract the #US heap index from the token
+        // User string tokens have 0x70 in the high byte
+        uint index = token & 0x00FFFFFF;
+
+        // Get the string data from the #US heap
+        uint charCount;
+        ushort* chars = GetUserString(ref root, index, out charCount);
+
+        // Note: charCount == 0 is valid (empty string with trailing byte)
+        // Only return null if the pointer is invalid
+        if (chars == null)
+            return null;
+
+        // Ensure String MethodTable is initialized
+        if (_stringMethodTable == null)
+        {
+            DebugConsole.WriteLine("[MetadataReader] String MethodTable not initialized!");
+            return null;
+        }
+
+        // Allocate String object
+        // String layout: [MethodTable*][int _length][char _firstChar...]
+        // Size = 8 (MT) + 4 (length) + charCount * 2 + 2 (possible null terminator alignment)
+        uint size = (uint)(8 + 4 + (charCount + 1) * 2);  // +1 for safety
+
+        // Use GCHeap to allocate (or HeapAllocator during early boot)
+        void* stringObj;
+        if (Memory.GCHeap.IsInitialized)
+            stringObj = Memory.GCHeap.AllocZeroed(size);
+        else
+            stringObj = Memory.HeapAllocator.AllocZeroed(size);
+
+        if (stringObj == null)
+            return null;
+
+        // Set up the String object
+        // [0]: MethodTable pointer
+        *(void**)stringObj = _stringMethodTable;
+        // [8]: _length field
+        *(int*)((byte*)stringObj + 8) = (int)charCount;
+        // [12]: _firstChar and following chars
+        ushort* dest = (ushort*)((byte*)stringObj + 12);
+        for (uint i = 0; i < charCount; i++)
+        {
+            dest[i] = chars[i];
+        }
+
+        return stringObj;
+    }
+
+    /// <summary>
+    /// Resolve a user string token to a String object pointer.
+    /// This is the StringResolver implementation for ILCompiler.
+    /// Uses the cached MetadataRoot set by SetMetadataRoot.
+    /// </summary>
+    public static bool ResolveUserString(uint token, out void* stringPtr)
+    {
+        stringPtr = null;
+
+        if (_cachedMetadataRoot == null)
+            return false;
+
+        stringPtr = AllocateUserString(ref *_cachedMetadataRoot, token);
+        return stringPtr != null;
     }
 }
 

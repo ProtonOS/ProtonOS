@@ -17,6 +17,23 @@ public static unsafe class Kernel
     private static byte* _testAssembly;
     private static ulong _testAssemblySize;
 
+    // Cached MetadataRoot for the test assembly (for string resolution)
+    private static Runtime.MetadataRoot _testMetadataRoot;
+
+    /// <summary>
+    /// Get a pointer to the test assembly's MetadataRoot.
+    /// Returns null if no assembly has been loaded/parsed.
+    /// </summary>
+    public static Runtime.MetadataRoot* GetTestMetadataRoot()
+    {
+        // Static fields have fixed addresses in the managed heap
+        // This is safe because _testMetadataRoot is a static field
+        fixed (Runtime.MetadataRoot* ptr = &_testMetadataRoot)
+        {
+            return ptr;
+        }
+    }
+
     public static void Main()
     {
         DebugConsole.Init();
@@ -96,6 +113,15 @@ public static unsafe class Kernel
 
         // Tests disabled for clean logs - call Tests.Run() to enable
         // Tests.Run();
+
+        // Initialize String MethodTable for JIT ldstr support
+        Runtime.MetadataReader.InitStringMethodTable();
+
+        // Set up the MetadataRoot for string resolution (ldstr)
+        Runtime.MetadataReader.SetMetadataRoot(GetTestMetadataRoot());
+
+        // Initialize runtime helpers for JIT (allocation, MD array, etc.)
+        Runtime.RuntimeHelpers.Init();
 
         // Test CPU features and dynamic code execution (JIT prerequisites)
         Tests.TestCPUFeatures();
@@ -207,6 +233,9 @@ public static unsafe class Kernel
         // Parse metadata streams
         if (MetadataReader.Init(metadataRoot, corHeader->MetaData.Size, out var mdRoot))
         {
+            // Save the MetadataRoot for later use (e.g., string resolution)
+            _testMetadataRoot = mdRoot;
+
             MetadataReader.Dump(ref mdRoot);
 
             // Parse #~ (tables) stream header
