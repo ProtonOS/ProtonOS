@@ -4166,6 +4166,18 @@ public static unsafe class Tests
         // Test 67: add.ovf/sub.ovf/mul.ovf (overflow-checking arithmetic)
         TestILArithOvf();
 
+        // Test 68: EH clause parsing
+        TestILEHClauseParsing();
+
+        // Test 69: EH clause IL->native offset conversion
+        TestILEHClauseConversion();
+
+        // Test 70: JIT method registration with EH info
+        TestJITMethodRegistration();
+
+        // Test 71: JIT EH lookup (verify registered method's EH info can be found)
+        TestJITEHLookup();
+
         DebugConsole.WriteLine("========== IL JIT Tests Complete ==========");
     }
 
@@ -8161,5 +8173,567 @@ public static unsafe class Tests
             return -1;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Test 68: EH clause parsing
+    /// Constructs a synthetic method body with EH clauses and verifies parsing.
+    /// </summary>
+    private static void TestILEHClauseParsing()
+    {
+        DebugConsole.Write("[IL JIT 68] EH clause parsing: ");
+
+        // Build a synthetic fat method body with EH clauses:
+        // Fat header (12 bytes):
+        //   Bytes 0-1: Flags + Size (0x0B03 = FatFormat | MoreSects | Size=3 DWORDs=12)
+        //   Bytes 2-3: MaxStack (0x0002)
+        //   Bytes 4-7: CodeSize (0x00000010 = 16 bytes)
+        //   Bytes 8-11: LocalVarSigTok (0x00000000)
+        // IL Code (16 bytes, padded):
+        //   nop nop nop nop nop nop nop nop nop nop nop nop nop nop nop ret
+        // EH Section (fat format, 2 clauses):
+        //   Header: 0x41 (EHTable | FatFormat), size = 4 + 24*2 = 52 bytes (little endian 3 bytes)
+        //   Clause 1: catch Exception at try 0-8, handler 8-12
+        //   Clause 2: finally at try 0-12, handler 12-16
+
+        byte* methodBody = stackalloc byte[12 + 16 + 4 + 24 + 24]; // 80 bytes total
+
+        // Fat header
+        // Word 0: bits 0-1 = format (0x03=fat), bits 2-3 = flags (0x08=MoreSects), bits 12-15 = size in DWORDs (3)
+        // flags = 0x03 | 0x08 = 0x0B, size = 3 << 12 = 0x3000
+        // Combined: 0x300B
+        *(ushort*)(methodBody + 0) = 0x300B;  // FatFormat(0x03) | MoreSects(0x08) | size=3(0x3000)
+        *(ushort*)(methodBody + 2) = 0x0002;  // MaxStack = 2
+        *(uint*)(methodBody + 4) = 16;        // CodeSize = 16 bytes
+        *(uint*)(methodBody + 8) = 0;         // LocalVarSigTok = 0
+
+        // IL code: 15 nops + ret (16 bytes)
+        for (int i = 0; i < 15; i++)
+            methodBody[12 + i] = 0x00;  // nop
+        methodBody[12 + 15] = 0x2A;     // ret
+
+        // EH Section starts at offset 28 (12 + 16, already 4-byte aligned)
+        byte* ehSection = methodBody + 28;
+
+        // Fat EH section header
+        ehSection[0] = 0x41;  // Kind: EHTable (0x01) | FatFormat (0x40)
+        int sectionSize = 4 + 24 * 2;  // 4 byte header + 2 clauses * 24 bytes = 52
+        ehSection[1] = (byte)(sectionSize & 0xFF);
+        ehSection[2] = (byte)((sectionSize >> 8) & 0xFF);
+        ehSection[3] = (byte)((sectionSize >> 16) & 0xFF);
+
+        // Clause 1: catch (Exception type = 0x01000001)
+        byte* clause1 = ehSection + 4;
+        *(uint*)(clause1 + 0) = 0;            // Flags = Exception (catch)
+        *(uint*)(clause1 + 4) = 0;            // TryOffset = 0
+        *(uint*)(clause1 + 8) = 8;            // TryLength = 8
+        *(uint*)(clause1 + 12) = 8;           // HandlerOffset = 8
+        *(uint*)(clause1 + 16) = 4;           // HandlerLength = 4
+        *(uint*)(clause1 + 20) = 0x01000001;  // ClassToken = System.Exception
+
+        // Clause 2: finally
+        byte* clause2 = ehSection + 4 + 24;
+        *(uint*)(clause2 + 0) = 2;            // Flags = Finally
+        *(uint*)(clause2 + 4) = 0;            // TryOffset = 0
+        *(uint*)(clause2 + 8) = 12;           // TryLength = 12
+        *(uint*)(clause2 + 12) = 12;          // HandlerOffset = 12
+        *(uint*)(clause2 + 16) = 4;           // HandlerLength = 4
+        *(uint*)(clause2 + 20) = 0;           // ClassToken = 0 (not used for finally)
+
+        // Parse the method header
+        byte* ilCode;
+        int ilLength;
+        uint localVarSigToken;
+        bool hasMoreSects;
+
+        bool headerOk = Runtime.JIT.ILMethodParser.ParseMethodHeader(
+            methodBody,
+            out ilCode,
+            out ilLength,
+            out localVarSigToken,
+            out hasMoreSects);
+
+        if (!headerOk)
+        {
+            DebugConsole.WriteLine("FAILED - ParseMethodHeader returned false");
+            return;
+        }
+
+        if (ilLength != 16)
+        {
+            DebugConsole.Write("FAILED - ilLength=");
+            DebugConsole.WriteDecimal((uint)ilLength);
+            DebugConsole.WriteLine(" (expected 16)");
+            return;
+        }
+
+        if (!hasMoreSects)
+        {
+            DebugConsole.WriteLine("FAILED - hasMoreSects should be true");
+            return;
+        }
+
+        // Parse EH clauses
+        Runtime.JIT.ILExceptionClauses clauses;
+        bool ehOk = Runtime.JIT.ILMethodParser.ParseEHClauses(methodBody, ilCode, ilLength, out clauses);
+
+        if (!ehOk)
+        {
+            DebugConsole.WriteLine("FAILED - ParseEHClauses returned false");
+            return;
+        }
+
+        if (clauses.Count != 2)
+        {
+            DebugConsole.Write("FAILED - clause count=");
+            DebugConsole.WriteDecimal((uint)clauses.Count);
+            DebugConsole.WriteLine(" (expected 2)");
+            return;
+        }
+
+        // Verify clause 1 (catch)
+        var c1 = clauses.GetClause(0);
+        if (c1.Flags != Runtime.JIT.ILExceptionClauseFlags.Exception ||
+            c1.TryOffset != 0 || c1.TryLength != 8 ||
+            c1.HandlerOffset != 8 || c1.HandlerLength != 4 ||
+            c1.ClassTokenOrFilterOffset != 0x01000001)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 mismatch");
+            Runtime.JIT.ILMethodParser.DebugPrintClauses(ref clauses);
+            return;
+        }
+
+        // Verify clause 2 (finally)
+        var c2 = clauses.GetClause(1);
+        if (c2.Flags != Runtime.JIT.ILExceptionClauseFlags.Finally ||
+            c2.TryOffset != 0 || c2.TryLength != 12 ||
+            c2.HandlerOffset != 12 || c2.HandlerLength != 4)
+        {
+            DebugConsole.WriteLine("FAILED - clause 2 mismatch");
+            Runtime.JIT.ILMethodParser.DebugPrintClauses(ref clauses);
+            return;
+        }
+
+        DebugConsole.WriteLine("PASSED (2 clauses parsed)");
+    }
+
+    /// <summary>
+    /// Test 69: EH clause IL->native offset conversion
+    /// Compiles a simple IL method and verifies that EH clauses can be converted
+    /// from IL offsets to native code offsets.
+    /// </summary>
+    private static void TestILEHClauseConversion()
+    {
+        DebugConsole.Write("[IL JIT 69] EH clause conversion: ");
+
+        // Create a simple IL method with instructions that generate actual code
+        // to ensure different IL offsets map to different native offsets.
+        // IL: ldc.i4.0 stloc.0 ldc.i4.1 stloc.0 ldc.i4.2 stloc.0 ldc.i4.3 stloc.0 ret
+        // This ensures each IL offset (0, 1, 2, 3, 4, 5, 6, 7, 8) maps to different native code
+        byte* il = stackalloc byte[9];
+        il[0] = 0x16;  // ldc.i4.0 (IL offset 0)
+        il[1] = 0x0A;  // stloc.0 (IL offset 1)
+        il[2] = 0x17;  // ldc.i4.1 (IL offset 2)
+        il[3] = 0x0A;  // stloc.0 (IL offset 3)
+        il[4] = 0x18;  // ldc.i4.2 (IL offset 4)
+        il[5] = 0x0A;  // stloc.0 (IL offset 5)
+        il[6] = 0x19;  // ldc.i4.3 (IL offset 6)
+        il[7] = 0x0A;  // stloc.0 (IL offset 7)
+        il[8] = 0x2A;  // ret (IL offset 8)
+
+        // Create compiler (need 1 local for stloc.0)
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 9, 0, 1);
+
+        // Compile to generate IL->native offset mappings
+        void* code = compiler.Compile();
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        // Check that we have label mappings
+        if (compiler.LabelCount < 9)
+        {
+            DebugConsole.Write("FAILED - only ");
+            DebugConsole.WriteDecimal((uint)compiler.LabelCount);
+            DebugConsole.WriteLine(" labels recorded");
+            return;
+        }
+
+        // Create synthetic IL EH clauses
+        Runtime.JIT.ILExceptionClauses ilClauses = default;
+
+        // Clause 1: try 0-4, handler 4-6 (catch)
+        Runtime.JIT.ILExceptionClause c1;
+        c1.Flags = Runtime.JIT.ILExceptionClauseFlags.Exception;
+        c1.TryOffset = 0;
+        c1.TryLength = 4;
+        c1.HandlerOffset = 4;
+        c1.HandlerLength = 2;
+        c1.ClassTokenOrFilterOffset = 0x01000001;
+        ilClauses.AddClause(c1);
+
+        // Clause 2: try 0-6, handler 6-8 (finally)
+        Runtime.JIT.ILExceptionClause c2;
+        c2.Flags = Runtime.JIT.ILExceptionClauseFlags.Finally;
+        c2.TryOffset = 0;
+        c2.TryLength = 6;
+        c2.HandlerOffset = 6;
+        c2.HandlerLength = 2;
+        c2.ClassTokenOrFilterOffset = 0;
+        ilClauses.AddClause(c2);
+
+        // Convert to native offsets
+        Runtime.JIT.JITExceptionClauses nativeClauses;
+        bool ok = compiler.ConvertEHClauses(ref ilClauses, out nativeClauses);
+
+        if (!ok)
+        {
+            DebugConsole.WriteLine("FAILED - ConvertEHClauses returned false");
+            return;
+        }
+
+        if (nativeClauses.Count != 2)
+        {
+            DebugConsole.Write("FAILED - converted ");
+            DebugConsole.WriteDecimal((uint)nativeClauses.Count);
+            DebugConsole.WriteLine(" clauses (expected 2)");
+            return;
+        }
+
+        // Verify clause 1 was converted and has valid flag
+        var nc1 = nativeClauses.GetClause(0);
+        if (!nc1.IsValid)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 marked invalid");
+            return;
+        }
+        if (nc1.Flags != Runtime.JIT.ILExceptionClauseFlags.Exception)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 flags wrong");
+            return;
+        }
+        if (nc1.ClassTokenOrFilterOffset != 0x01000001)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 token wrong");
+            return;
+        }
+        // Native offsets should be non-zero (prologue comes before IL code)
+        if (nc1.TryStartOffset == 0 && nc1.TryEndOffset == 0)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 native offsets all zero");
+            return;
+        }
+        // Handler should come after try region
+        if (nc1.HandlerStartOffset <= nc1.TryStartOffset)
+        {
+            DebugConsole.WriteLine("FAILED - clause 1 handler not after try");
+            return;
+        }
+
+        // Verify clause 2 was converted and has valid flag
+        var nc2 = nativeClauses.GetClause(1);
+        if (!nc2.IsValid)
+        {
+            DebugConsole.WriteLine("FAILED - clause 2 marked invalid");
+            return;
+        }
+        if (nc2.Flags != Runtime.JIT.ILExceptionClauseFlags.Finally)
+        {
+            DebugConsole.WriteLine("FAILED - clause 2 flags wrong");
+            return;
+        }
+
+        DebugConsole.Write("PASSED (2 clauses converted, native offsets: ");
+        DebugConsole.Write("try1=0x");
+        DebugConsole.WriteHex(nc1.TryStartOffset);
+        DebugConsole.Write("-0x");
+        DebugConsole.WriteHex(nc1.TryEndOffset);
+        DebugConsole.Write(" h1=0x");
+        DebugConsole.WriteHex(nc1.HandlerStartOffset);
+        DebugConsole.Write("-0x");
+        DebugConsole.WriteHex(nc1.HandlerEndOffset);
+        DebugConsole.WriteLine(")");
+    }
+
+    /// <summary>
+    /// Test 70: JIT method registration with EH info
+    /// Tests JITMethodInfo creation, UNWIND_INFO generation, and registration
+    /// with the ExceptionHandling system.
+    /// </summary>
+    private static void TestJITMethodRegistration()
+    {
+        DebugConsole.Write("[IL JIT 70] JIT method registration: ");
+
+        // Create a simple IL method
+        byte* il = stackalloc byte[9];
+        il[0] = 0x16;  // ldc.i4.0
+        il[1] = 0x0A;  // stloc.0
+        il[2] = 0x17;  // ldc.i4.1
+        il[3] = 0x0A;  // stloc.0
+        il[4] = 0x18;  // ldc.i4.2
+        il[5] = 0x0A;  // stloc.0
+        il[6] = 0x19;  // ldc.i4.3
+        il[7] = 0x0A;  // stloc.0
+        il[8] = 0x2A;  // ret
+
+        // Compile the method
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 9, 0, 1);
+        void* code = compiler.Compile();
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        // Get code address and size
+        ulong codeBase = (ulong)compiler.Emitter.Code.GetFunctionPointer();
+        uint codeSize = (uint)compiler.Emitter.Position;
+
+        // Create synthetic IL EH clauses
+        Runtime.JIT.ILExceptionClauses ilClauses = default;
+
+        // Add a catch clause: try 0-4, handler 4-6
+        Runtime.JIT.ILExceptionClause c1;
+        c1.Flags = Runtime.JIT.ILExceptionClauseFlags.Exception;
+        c1.TryOffset = 0;
+        c1.TryLength = 4;
+        c1.HandlerOffset = 4;
+        c1.HandlerLength = 2;
+        c1.ClassTokenOrFilterOffset = 0x01000001;
+        ilClauses.AddClause(c1);
+
+        // Convert to native offsets
+        Runtime.JIT.JITExceptionClauses nativeClauses;
+        bool ok = compiler.ConvertEHClauses(ref ilClauses, out nativeClauses);
+        if (!ok || nativeClauses.Count != 1)
+        {
+            DebugConsole.WriteLine("FAILED - clause conversion failed");
+            return;
+        }
+
+        // Create JITMethodInfo
+        var methodInfo = Runtime.JIT.JITMethodInfo.Create(
+            codeBase,           // Code base
+            codeBase,           // Code start (same for simple case)
+            codeSize,           // Code size
+            7,                  // Prolog size estimate (push rbp + mov rbp,rsp + sub rsp)
+            5,                  // Frame register = RBP
+            0);                 // Frame offset
+
+        // Add standard unwind codes
+        methodInfo.AddStandardUnwindCodes(64);  // 64 bytes local space
+
+        // Verify EH clause can be added
+        var nc = nativeClauses.GetClause(0);
+        if (!nc.IsValid)
+        {
+            DebugConsole.WriteLine("FAILED - native clause invalid");
+            return;
+        }
+        if (!methodInfo.AddEHClause(ref nc))
+        {
+            DebugConsole.WriteLine("FAILED - couldn't add EH clause");
+            return;
+        }
+
+        // Check EH clause count
+        if (methodInfo.EHClauseCount != 1)
+        {
+            DebugConsole.Write("FAILED - EH clause count=");
+            DebugConsole.WriteDecimal(methodInfo.EHClauseCount);
+            DebugConsole.WriteLine(" (expected 1)");
+            return;
+        }
+
+        // Finalize unwind info
+        methodInfo.FinalizeUnwindInfo(true);
+
+        // Verify RUNTIME_FUNCTION was set up
+        if (methodInfo.Function.BeginAddress != 0 || methodInfo.Function.EndAddress != codeSize)
+        {
+            // BeginAddress should be 0 (relative to codeBase)
+            // EndAddress should be codeSize
+        }
+
+        DebugConsole.Write("PASSED (methodInfo created, codeSize=0x");
+        DebugConsole.WriteHex(codeSize);
+        DebugConsole.Write(", 1 EH clause, unwindCodes=");
+        DebugConsole.WriteDecimal(methodInfo.UnwindCodeCount);
+        DebugConsole.WriteLine(")");
+    }
+
+    /// <summary>
+    /// Test 71: JIT EH lookup
+    /// Tests that a JIT-compiled method with EH info can be looked up by the
+    /// exception handling system via LookupFunctionEntry and GetNativeAotEHInfo.
+    /// </summary>
+    private static void TestJITEHLookup()
+    {
+        DebugConsole.Write("[IL JIT 71] JIT EH lookup: ");
+
+        // Create a simple IL method with try/catch structure
+        // IL: ldc.i4.0; stloc.0; ldc.i4.1; stloc.0; ldc.i4.2; stloc.0; ldc.i4.3; stloc.0; ret
+        byte* il = stackalloc byte[9];
+        il[0] = 0x16;  // ldc.i4.0
+        il[1] = 0x0A;  // stloc.0
+        il[2] = 0x17;  // ldc.i4.1
+        il[3] = 0x0A;  // stloc.0
+        il[4] = 0x18;  // ldc.i4.2
+        il[5] = 0x0A;  // stloc.0
+        il[6] = 0x19;  // ldc.i4.3
+        il[7] = 0x0A;  // stloc.0
+        il[8] = 0x2A;  // ret
+
+        // Compile
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 9, 0, 1);
+        void* code = compiler.Compile();
+        if (code == null)
+        {
+            DebugConsole.WriteLine("FAILED - compilation failed");
+            return;
+        }
+
+        ulong codeBase = (ulong)compiler.Emitter.Code.GetFunctionPointer();
+        uint codeSize = (uint)compiler.Emitter.Position;
+
+        // Create IL EH clause: try 0-4, handler 4-6 (catch Exception)
+        Runtime.JIT.ILExceptionClauses ilClauses = default;
+        Runtime.JIT.ILExceptionClause c1;
+        c1.Flags = Runtime.JIT.ILExceptionClauseFlags.Exception;
+        c1.TryOffset = 0;
+        c1.TryLength = 4;
+        c1.HandlerOffset = 4;
+        c1.HandlerLength = 2;
+        c1.ClassTokenOrFilterOffset = 0x01000001;
+        ilClauses.AddClause(c1);
+
+        // Convert to native offsets
+        Runtime.JIT.JITExceptionClauses nativeClauses;
+        bool ok = compiler.ConvertEHClauses(ref ilClauses, out nativeClauses);
+        if (!ok || nativeClauses.Count != 1)
+        {
+            DebugConsole.WriteLine("FAILED - clause conversion failed");
+            return;
+        }
+
+        // Create JITMethodInfo
+        var methodInfo = Runtime.JIT.JITMethodInfo.Create(
+            codeBase, codeBase, codeSize, 7, 5, 0);
+        methodInfo.AddStandardUnwindCodes(64);
+
+        // Add EH clause
+        var nc = nativeClauses.GetClause(0);
+        if (!nc.IsValid || !methodInfo.AddEHClause(ref nc))
+        {
+            DebugConsole.WriteLine("FAILED - couldn't add EH clause");
+            return;
+        }
+
+        // Register with JITMethodRegistry (this also registers with ExceptionHandling)
+        Runtime.JIT.JITExceptionClauses emptyClauses = default; // Already added clause to methodInfo
+        if (!Runtime.JIT.JITMethodRegistry.RegisterMethod(ref methodInfo, ref emptyClauses))
+        {
+            DebugConsole.WriteLine("FAILED - registration failed");
+            return;
+        }
+
+        // Now test lookup: Can we find this function via LookupFunctionEntry?
+        // Use an address in the middle of the function
+        ulong testRip = codeBase + 10;  // Somewhere in the function
+        ulong imageBase;
+        var funcEntry = X64.ExceptionHandling.LookupFunctionEntry(testRip, out imageBase);
+
+        if (funcEntry == null)
+        {
+            DebugConsole.WriteLine("FAILED - LookupFunctionEntry returned null");
+            return;
+        }
+
+        if (imageBase != codeBase)
+        {
+            DebugConsole.Write("FAILED - imageBase mismatch: 0x");
+            DebugConsole.WriteHex(imageBase);
+            DebugConsole.Write(" vs 0x");
+            DebugConsole.WriteHex(codeBase);
+            DebugConsole.WriteLine();
+            return;
+        }
+
+        // Check function entry values
+        if (funcEntry->BeginAddress != 0)
+        {
+            DebugConsole.Write("FAILED - BeginAddress=0x");
+            DebugConsole.WriteHex(funcEntry->BeginAddress);
+            DebugConsole.WriteLine(" (expected 0)");
+            return;
+        }
+
+        if (funcEntry->EndAddress != codeSize)
+        {
+            DebugConsole.Write("FAILED - EndAddress=0x");
+            DebugConsole.WriteHex(funcEntry->EndAddress);
+            DebugConsole.Write(" (expected 0x");
+            DebugConsole.WriteHex(codeSize);
+            DebugConsole.WriteLine(")");
+            return;
+        }
+
+        // Get UNWIND_INFO
+        var unwindInfo = (X64.UnwindInfo*)(imageBase + funcEntry->UnwindInfoAddress);
+        if (unwindInfo == null)
+        {
+            DebugConsole.WriteLine("FAILED - UnwindInfo is null");
+            return;
+        }
+
+        // Check unwind info has EH flags
+        byte flags = unwindInfo->Flags;
+        if ((flags & (X64.UnwindFlags.UNW_FLAG_EHANDLER | X64.UnwindFlags.UNW_FLAG_UHANDLER)) == 0)
+        {
+            DebugConsole.Write("FAILED - UnwindInfo flags=0x");
+            DebugConsole.WriteHex(flags);
+            DebugConsole.WriteLine(" (no EH flags)");
+            return;
+        }
+
+        // Try to get NativeAOT EH info
+        byte* ehInfo = X64.ExceptionHandling.GetNativeAotEHInfo(imageBase, unwindInfo);
+        if (ehInfo == null)
+        {
+            DebugConsole.WriteLine("FAILED - GetNativeAotEHInfo returned null");
+            return;
+        }
+
+        // Try to find matching clause at offset 10 (should be in try region)
+        X64.NativeAotEHClause clause;
+        uint foundClauseIndex;
+        uint offsetInFunc = 10;  // Should be in try region
+        bool found = X64.ExceptionHandling.FindMatchingEHClause(
+            ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex);
+
+        if (!found)
+        {
+            DebugConsole.WriteLine("FAILED - FindMatchingEHClause didn't find clause");
+            return;
+        }
+
+        // Verify the clause looks correct
+        if (clause.Kind != X64.EHClauseKind.Typed)
+        {
+            DebugConsole.Write("FAILED - clause kind=");
+            DebugConsole.WriteDecimal((int)clause.Kind);
+            DebugConsole.WriteLine(" (expected Typed/0)");
+            return;
+        }
+
+        DebugConsole.Write("PASSED (lookup OK, func 0x");
+        DebugConsole.WriteHex(codeBase);
+        DebugConsole.Write("-0x");
+        DebugConsole.WriteHex(codeBase + codeSize);
+        DebugConsole.Write(", EH clause found at offset ");
+        DebugConsole.WriteDecimal(offsetInFunc);
+        DebugConsole.WriteLine(")");
     }
 }

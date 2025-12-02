@@ -142,6 +142,14 @@ public static class ILOpcode
     public const byte Blt_Un = 0x44;
     public const byte Switch = 0x45;
 
+    // Exception handling
+    public const byte Leave = 0xDD;
+    public const byte Leave_S = 0xDE;
+    public const byte Throw = 0x7A;
+    public const byte Rethrow = 0xFE;  // 0xFE 0x1A two-byte opcode
+    public const byte Rethrow_2 = 0x1A;
+    public const byte Endfinally = 0xDC;
+
     // Indirect load/store
     public const byte Ldind_I1 = 0x46;
     public const byte Ldind_U1 = 0x47;
@@ -313,6 +321,46 @@ public unsafe struct ILCompiler
     /// Get the emitter (for accessing the code buffer)
     /// </summary>
     public ref X64Emitter Emitter => ref _emit;
+
+    /// <summary>
+    /// Get the number of IL->native offset mappings recorded.
+    /// </summary>
+    public int LabelCount => _labelCount;
+
+    /// <summary>
+    /// Convert IL exception clauses to native exception clauses using recorded offset mappings.
+    /// Must be called after Compile() succeeds.
+    /// </summary>
+    /// <param name="ilClauses">IL exception clauses parsed from method body</param>
+    /// <param name="nativeClauses">Output: converted native clauses</param>
+    /// <returns>True if all clauses converted successfully</returns>
+    public bool ConvertEHClauses(ref ILExceptionClauses ilClauses, out JITExceptionClauses nativeClauses)
+    {
+        fixed (int* ilOffsets = _labelILOffset)
+        fixed (int* nativeOffsets = _labelCodeOffset)
+        {
+            return EHClauseConverter.ConvertClauses(
+                ref ilClauses,
+                out nativeClauses,
+                ilOffsets,
+                nativeOffsets,
+                _labelCount);
+        }
+    }
+
+    /// <summary>
+    /// Find the native code offset for a given IL offset.
+    /// Returns -1 if not found.
+    /// </summary>
+    public int GetNativeOffset(int ilOffset)
+    {
+        for (int i = 0; i < _labelCount; i++)
+        {
+            if (_labelILOffset[i] == ilOffset)
+                return _labelCodeOffset[i];
+        }
+        return -1;
+    }
 
     /// <summary>
     /// Compile the IL method to native code.
@@ -749,6 +797,26 @@ public unsafe struct ILCompiler
             case ILOpcode.Switch:
                 return CompileSwitch();
 
+            // === Exception handling ===
+            case ILOpcode.Leave_S:
+                {
+                    sbyte offset = (sbyte)_il[_ilOffset++];
+                    return CompileLeave(_ilOffset + offset);
+                }
+
+            case ILOpcode.Leave:
+                {
+                    int offset = *(int*)(_il + _ilOffset);
+                    _ilOffset += 4;
+                    return CompileLeave(_ilOffset + offset);
+                }
+
+            case ILOpcode.Throw:
+                return CompileThrow();
+
+            case ILOpcode.Endfinally:
+                return CompileEndfinally();
+
             // === Indirect load/store ===
             case ILOpcode.Ldind_I1:
                 return CompileLdind(1, signExtend: true);
@@ -860,6 +928,9 @@ public unsafe struct ILCompiler
                     _ilOffset += 4;
                     return CompileSizeof(token);
                 }
+
+            case ILOpcode.Rethrow_2:
+                return CompileRethrow();
 
             // Overflow-checking conversions (unsigned source)
             case ILOpcode.Conv_Ovf_I1_Un_2: return CompileConvOvf(1, targetSigned: true, sourceUnsigned: true);
@@ -2561,6 +2632,103 @@ public unsafe struct ILCompiler
         delegate*<void*, void*, ulong, void*> memcopyFn = &CPU.MemCopy;
         _emit.MovRI64(Reg64.RAX, (ulong)memcopyFn);
         _emit.CallR(Reg64.RAX);
+
+        return true;
+    }
+
+    // ==================== Exception Handling Operations ====================
+
+    /// <summary>
+    /// Compile leave/leave.s - Exit a try or catch block.
+    /// The leave instruction empties the evaluation stack and branches to the target.
+    /// If leaving a try block with a finally handler, the finally is executed first
+    /// (handled by the runtime, not by this instruction).
+    /// </summary>
+    private bool CompileLeave(int targetIL)
+    {
+        // Leave empties the evaluation stack (reset to 0)
+        // We don't need to emit pops since we're jumping away and the
+        // target IL expects an empty stack
+        _evalStackDepth = 0;
+
+        // Emit unconditional jump to target
+        // This is the same as br but conceptually different - it's for exiting protected regions
+        int patchOffset = _emit.JmpRel32();
+        RecordBranch(_ilOffset, targetIL, patchOffset);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile throw - Throw an exception.
+    /// Stack: ..., exception -> ...
+    /// Pops the exception object and calls the runtime exception thrower.
+    /// Control does not return from this instruction (unless the exception is caught).
+    /// </summary>
+    private bool CompileThrow()
+    {
+        if (_evalStackDepth < 1)
+        {
+            DebugConsole.WriteLine("[JIT] throw: insufficient stack depth");
+            return false;
+        }
+
+        // Pop exception object into RCX (first arg for RhpThrowEx)
+        _emit.Pop(Reg64.RCX);
+        _evalStackDepth--;
+
+        // Call RhpThrowEx (defined in native.asm)
+        // This captures context and dispatches the exception
+        // It does not return normally - it unwinds to a handler
+        var throwFn = CPU.GetThrowExFuncPtr();
+        _emit.MovRI64(Reg64.RAX, (ulong)throwFn);
+        _emit.CallR(Reg64.RAX);
+
+        // RhpThrowEx does not return, but we add int3 for safety
+        _emit.Int3();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile rethrow - Rethrow the current exception.
+    /// This is only valid inside a catch handler.
+    /// Stack: ... -> ... (no change - current exception is rethrown)
+    /// </summary>
+    private bool CompileRethrow()
+    {
+        // Call RhpRethrow (defined in native.asm)
+        // This rethrows the current exception that's being handled
+        var rethrowFn = CPU.GetRethrowFuncPtr();
+        _emit.MovRI64(Reg64.RAX, (ulong)rethrowFn);
+        _emit.CallR(Reg64.RAX);
+
+        // RhpRethrow does not return
+        _emit.Int3();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile endfinally (also endfault) - Return from finally/fault handler.
+    /// Stack must be empty. Control returns to the runtime which decides
+    /// where to continue (either continue unwinding or resume execution).
+    /// </summary>
+    private bool CompileEndfinally()
+    {
+        if (_evalStackDepth != 0)
+        {
+            DebugConsole.Write("[JIT] endfinally: stack not empty (depth=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.WriteLine(")");
+            return false;
+        }
+
+        // Call RhpCallFinallyFunclet return sequence
+        // In a simple implementation, we can just emit a ret
+        // The runtime arranges for finally handlers to be called as functions
+        // that return to the unwinding code
+        _emit.EmitEpilogue(_stackAdjust);
 
         return true;
     }

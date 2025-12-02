@@ -116,6 +116,13 @@ public static unsafe class CPU
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void load_context(CPUContext* context);
 
+    // Exception Throwing (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void RhpThrowEx(void* exceptionObject);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void RhpRethrow();
+
     // PAL Context Restore (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void restore_pal_context(void* context);
@@ -399,6 +406,20 @@ public static unsafe class CPU
     /// </summary>
     public static void RestorePALContext(void* context)
         => restore_pal_context(context);
+
+    // --- Exception Throwing ---
+
+    /// <summary>
+    /// Get the function pointer to RhpThrowEx for JIT code.
+    /// </summary>
+    public static delegate*<void*, void> GetThrowExFuncPtr()
+        => &RhpThrowEx;
+
+    /// <summary>
+    /// Get the function pointer to RhpRethrow for JIT code.
+    /// </summary>
+    public static delegate*<void> GetRethrowFuncPtr()
+        => &RhpRethrow;
 
     // --- Atomic Operations ---
 

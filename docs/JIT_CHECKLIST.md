@@ -211,7 +211,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test conv.ovf.* opcodes (Test 66): conv.ovf.i1, u1, i2, u4
 - [x] Test arith.ovf opcodes (Test 67): add.ovf, sub.ovf, mul.ovf (signed/unsigned)
 
-**Current Status: 67 tests passing**
+**Current Status: 71 tests passing**
 
 ---
 
@@ -219,21 +219,44 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 
 JIT'd code needs to support try/catch/finally.
 
+**Files**: `src/kernel/Runtime/JIT/EHClauses.cs`, `ILCompiler.cs`, `CPU.cs`
+
 ### Research
 
-- [ ] How NativeAOT EH works (our current implementation)
-- [ ] EH clause format in method body
+- [x] How NativeAOT EH works (our current implementation) - ExceptionHandling.cs
+- [x] EH clause format in method body - ECMA-335 II.25.4.5-6
 - [ ] Funclet-based exception handling
-- [ ] Stack unwinding
+- [ ] Stack unwinding for JIT code
 
 ### Implementation
 
-- [ ] Parse EH clauses from method body
-- [ ] Generate try region code
-- [ ] Generate catch handler funclets
-- [ ] Generate finally handler funclets
-- [ ] Hook into existing exception dispatch
-- [ ] Generate appropriate GCInfo for handlers
+#### 6.2.1 EH Clause Parsing (DONE)
+- [x] Parse IL EH clauses from method body (ILMethodParser in EHClauses.cs)
+- [x] Support fat and small EH section formats
+- [x] Handle Exception, Filter, Finally, Fault clause types
+- [x] Test: 2 clauses parsed correctly (Test 68)
+
+#### 6.2.2 IL→Native Offset Mapping (DONE)
+- [x] Track IL offset → native code offset during compilation
+- [x] JITExceptionClause struct for native offsets
+- [x] EHClauseConverter.ConvertClauses() to convert IL clauses to native
+- [x] ILCompiler.ConvertEHClauses() integration
+- [x] Test: 2 clauses converted with correct native offsets (Test 69)
+
+#### 6.2.3 EH Opcodes (DONE)
+- [x] leave/leave.s - Exit protected region (empties stack, jumps to target)
+- [x] throw - Call RhpThrowEx with exception object
+- [x] rethrow - Call RhpRethrow
+- [x] endfinally - Epilogue for finally/fault handlers
+
+#### 6.2.4 Runtime Integration (DONE)
+- [x] Generate RUNTIME_FUNCTION for JIT methods (JITMethodInfo struct)
+- [x] Generate UNWIND_INFO with EH handler flag (AddStandardUnwindCodes, FinalizeUnwindInfo)
+- [x] Register with ExceptionHandling.AddFunctionTable() (JITMethodRegistry.RegisterMethod)
+- [x] Generate NativeAOT-compatible EH clause data (AddEHClause, BuildEHInfo with NativeUnsigned encoding)
+- [ ] Hook into existing exception dispatch (end-to-end test pending)
+- [x] Test: JITMethodInfo creation, unwind codes, EH clause addition (Test 70)
+- [x] Test: JIT EH lookup end-to-end (Test 71)
 
 ---
 

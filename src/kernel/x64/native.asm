@@ -608,6 +608,33 @@ load_context:
     ; Jump to new context
     ret
 
+; RhpStackProbe - Stack probe for large stack allocations
+; Windows x64 ABI: probe size in rax
+; Must touch each page to avoid guard page violations
+global RhpStackProbe
+RhpStackProbe:
+    ; rax contains the number of bytes to allocate
+    ; We need to touch each page from rsp down to rsp-rax
+    ; On Windows, page size is 4096 (0x1000)
+
+    ; Preserve rax for the caller (will be subtracted from rsp by caller)
+    push rax
+    push rcx
+
+    ; Start probing from current rsp
+    mov rcx, rsp
+    sub rcx, 8              ; Account for pushed rax
+
+.probe_loop:
+    sub rcx, 0x1000         ; Move down one page
+    test [rcx], eax         ; Touch the page (reading is enough)
+    sub rax, 0x1000
+    ja .probe_loop          ; Continue if more pages to probe
+
+    pop rcx
+    pop rax
+    ret
+
 ;; ==================== PAL Context Restore ====================
 ;; Restore context from PAL CONTEXT structure (different layout from CpuContext)
 
