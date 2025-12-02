@@ -64,7 +64,9 @@ This is a kernel-level prerequisite.
 
 ### Test
 - [x] Dynamic code execution works (4 test cases passing)
-- [ ] JIT'd code using float/double works correctly
+- [x] Float/double load constants work correctly (ldc.r4, ldc.r8 - Tests 38-39)
+- [x] Float/double conversion works correctly (conv.r4, conv.r8 - Tests 40-41)
+- [x] Float/double arithmetic implemented with SSE (add/sub/mul/div - Test 74)
 - [x] Context switches preserve FPU state between threads - XSAVE/XRSTOR integrated in Scheduler.Schedule()
 - [x] SSE instructions execute without #UD (verified via CR0/CR4 state)
 
@@ -165,21 +167,12 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Return value handling (Int32, Int64, Void)
 - [x] CompiledMethodRegistry for method token resolution
 
-#### 6.1.10 Object Operations (requires GC/type system)
-- [ ] `newobj` - Allocate and call constructor
-- [ ] `ldfld`, `stfld` - Instance field access
-- [ ] `ldsfld`, `stsfld` - Static field access
-- [ ] `ldflda`, `ldsflda` - Field address
-- [ ] `ldlen` - Array length
-- [ ] `ldelem.*`, `stelem.*` - Array element access
-- [ ] `ldelema` - Array element address
+#### 6.1.10 Object Operations (deferred to Phase 6.4)
+- See Phase 6.4 for object allocation, field access, arrays, and type operations
 
-#### 6.1.11 Type Operations (requires type system)
-- [ ] `castclass` - Cast with exception on failure
-- [ ] `isinst` - Cast returning null on failure
-- [ ] `box`, `unbox`, `unbox.any`
-- [ ] `ldtoken` - Load metadata token
-- [x] `sizeof` - Type size
+#### 6.1.11 Type Operations (deferred to Phase 6.4)
+- See Phase 6.4 for type casts (castclass, isinst, box, unbox)
+- [x] `sizeof` - Type size (implemented)
 
 #### 6.1.12 Indirect Operations
 - [x] `ldind.*` - Load indirect (ldind.i1/u1/i2/u2/i4/u4/i8/i/ref)
@@ -211,7 +204,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test conv.ovf.* opcodes (Test 66): conv.ovf.i1, u1, i2, u4
 - [x] Test arith.ovf opcodes (Test 67): add.ovf, sub.ovf, mul.ovf (signed/unsigned)
 
-**Current Status: 71 tests passing**
+**Current Status: 73 tests passing**
 
 ---
 
@@ -260,28 +253,126 @@ JIT'd code needs to support try/catch/finally.
 
 ---
 
-## Phase 6.3: GC Integration
+## Phase 6.3: GC Integration (DONE)
 
-JIT'd code must be GC-safe.
+JIT'd code must be GC-safe so GC can enumerate stack roots.
 
-### Research
+**Status**: Phase 6.3 complete (73 tests passing). Stack root enumeration now supports JIT'd frames.
 
-- [ ] GCInfo format we already decode (from Phase 3)
-- [ ] How to emit GCInfo for JIT'd code
-- [ ] Safe point identification (call sites)
-- [ ] Stack slot liveness tracking
+### Research (DONE)
+
+- [x] GCInfo format we already decode (GCInfoDecoder in GCInfo.cs)
+- [x] How to emit GCInfo for JIT'd code (must emit NativeAOT-compatible format)
+- [x] Safe point identification (call sites - after CALL instruction)
+- [x] Stack slot liveness tracking (all GC locals live at all safe points for naive JIT)
+
+**Key insight**: The GCInfoDecoder already handles decoding. JIT just needs to emit compatible GCInfo:
+- Header: fat/slim, code length, safe points, interruptible ranges, slot counts
+- Safe point offsets (sorted code offsets where GC can happen)
+- Slot definitions (register/stack slots with flags)
+- Liveness data (which slots are live at each safe point)
 
 ### Implementation
 
-- [ ] Track which locals contain GC references
-- [ ] Emit GCInfo describing stack layout
-- [ ] Mark safe points (call sites)
-- [ ] Register compiled method with code manager
-- [ ] Verify GC can walk JIT'd frames
+#### 6.3.1 JITGCInfo Builder (DONE)
+- [x] JITGCInfo struct to accumulate GC info during compilation
+- [x] AddStackSlot(offset, isInterior, isPinned) - record GC stack slot
+- [x] AddSafePoint(codeOffset) - record call site offset
+- [x] BuildGCInfo(buffer) - encode in NativeAOT format
+- [x] Test: GCInfo roundtrip (Test 72 - encode with JITGCInfo, decode with GCInfoDecoder)
+
+#### 6.3.2 Track GC References in ILCompiler (DONE)
+- [x] Detect GC reference types via gcRefMask parameter (Object, String, arrays, etc.)
+- [x] Mark locals containing GC references (ILCompiler._gcRefMask)
+- [x] Track arguments that are GC references (bit localCount+i in gcRefMask)
+- [x] InitializeGCSlots() to pass GC slot info to JITGCInfo builder
+
+#### 6.3.3 Safe Point Recording (DONE)
+- [x] After each CALL instruction, record native code offset as safe point (RecordSafePoint)
+- [x] For naive JIT: all GC slots live at all safe points (conservative)
+
+#### 6.3.4 GCInfo Integration with JITMethodInfo (DONE)
+- [x] Add GCInfo storage to JITMethodInfo (_gcInfoData[128], GCInfoSize)
+- [x] SetGCInfo() method to store encoded GCInfo
+- [x] GetGCInfoPtr() method to retrieve GCInfo
+- [x] FindGCInfoForIP() for GC to lookup GCInfo by instruction pointer
+- [x] Test: JITMethodInfo GCInfo storage and retrieval (Test 73)
+
+#### 6.3.5 Stack Root Enumeration for JIT Methods (DONE)
+- [x] Modified StackRoots.EnumerateStackRoots to check JITMethodRegistry.FindGCInfoForIP()
+- [x] When AOT GCInfo lookup returns null, fall back to JIT GCInfo lookup
+- [x] JIT frames now identified with "(JIT)" marker in debug output
+- [ ] Test GC.Collect finds roots in JIT'd stack frames (end-to-end test pending)
+- Note: Static roots for JIT'd code deferred - not needed until JIT loads full assemblies with static fields
 
 ---
 
-## Phase 6.4: Basic Optimizations
+## Phase 6.4: Object Model and Type System
+
+JIT'd code needs to work with objects, fields, arrays, and type casts.
+
+**Prerequisites**: GC integration (Phase 6.3) for object allocation
+
+### Research
+
+- [ ] Study newobj IL semantics and allocation helpers
+- [ ] Understand MethodTable layout for field offsets
+- [ ] Array element size and layout calculations
+- [ ] Virtual method dispatch (vtable layout)
+- [ ] Interface dispatch mechanisms
+
+### Implementation
+
+#### 6.4.1 Object Allocation
+- [ ] `newobj` - Allocate and call constructor
+  - [ ] Call RhpNewFast or GC.Alloc for object allocation
+  - [ ] Initialize MethodTable pointer
+  - [ ] Call constructor (IL .ctor method)
+- [ ] Array allocation (newarr)
+- [ ] Multi-dimensional arrays (later)
+
+#### 6.4.2 Field Access
+- [ ] `ldfld` - Load instance field
+- [ ] `stfld` - Store instance field
+- [ ] `ldflda` - Load instance field address
+- [ ] `ldsfld` - Load static field
+- [ ] `stsfld` - Store static field
+- [ ] `ldsflda` - Load static field address
+- [ ] Field offset lookup from MethodTable
+
+#### 6.4.3 Array Operations
+- [ ] `ldlen` - Get array length
+- [ ] `ldelem.*` - Load array element (all variants)
+- [ ] `stelem.*` - Store array element (all variants)
+- [ ] `ldelema` - Load array element address
+- [ ] Array bounds checking
+
+#### 6.4.4 Type Operations
+- [ ] `castclass` - Cast with exception on failure
+- [ ] `isinst` - Cast returning null on failure
+- [ ] Type hierarchy lookup (IsAssignableFrom)
+- [ ] `box` - Box value type to object
+- [ ] `unbox` - Unbox to pointer
+- [ ] `unbox.any` - Unbox and copy value
+
+#### 6.4.5 Instance Method Calls
+- [ ] `call` with hasThis flag (instance methods)
+- [ ] `callvirt` - Virtual method dispatch
+  - [ ] VTable lookup from MethodTable
+  - [ ] Call through vtable slot
+- [ ] Interface method dispatch (later)
+
+### Test
+- [ ] Allocate simple object with newobj
+- [ ] Read/write instance fields
+- [ ] Create and access arrays
+- [ ] Test type casts (castclass, isinst)
+- [ ] Call instance methods
+- [ ] Call virtual methods
+
+---
+
+## Phase 6.5: Basic Optimizations
 
 Low-hanging fruit after correctness is achieved.
 
@@ -302,7 +393,7 @@ Low-hanging fruit after correctness is achieved.
 
 ---
 
-## Phase 6.5: SSA Transform (Future)
+## Phase 6.6: SSA Transform (Future)
 
 Foundation for advanced optimizations.
 
@@ -313,7 +404,7 @@ Foundation for advanced optimizations.
 
 ---
 
-## Phase 6.6: Advanced Optimizations (Future)
+## Phase 6.7: Advanced Optimizations (Future)
 
 Major performance wins, implement as needed.
 
@@ -333,7 +424,7 @@ Major performance wins, implement as needed.
 
 ---
 
-## Phase 6.7: Better Register Allocation (Future)
+## Phase 6.8: Better Register Allocation (Future)
 
 - [ ] Linear scan register allocation
 - [ ] Live range computation

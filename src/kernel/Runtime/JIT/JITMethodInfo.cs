@@ -72,6 +72,17 @@ public unsafe struct JITMethodInfo
     private fixed byte _ehClauseData[256];
 
     /// <summary>
+    /// Fixed storage for GCInfo data.
+    /// GCInfo describes which stack slots and registers contain live GC references
+    /// at each safe point (call sites). Used by GC during stack walking.
+    /// Max size is ~128 bytes for typical methods.
+    /// </summary>
+    private fixed byte _gcInfoData[128];
+
+    /// <summary>Size of the GCInfo data stored in _gcInfoData.</summary>
+    public int GCInfoSize;
+
+    /// <summary>
     /// Create JITMethodInfo for a compiled method.
     /// </summary>
     /// <param name="codeBase">Base address of the code region</param>
@@ -351,6 +362,47 @@ public unsafe struct JITMethodInfo
             return p;
         }
     }
+
+    /// <summary>
+    /// Get pointer to GCInfo data.
+    /// </summary>
+    public byte* GetGCInfoPtr()
+    {
+        fixed (byte* p = _gcInfoData)
+        {
+            return p;
+        }
+    }
+
+    /// <summary>
+    /// Store GCInfo data for this method.
+    /// </summary>
+    /// <param name="gcInfoData">Pointer to encoded GCInfo data.</param>
+    /// <param name="size">Size of the GCInfo data in bytes.</param>
+    /// <returns>True if stored successfully, false if too large.</returns>
+    public bool SetGCInfo(byte* gcInfoData, int size)
+    {
+        if (size > 128 || size <= 0)
+        {
+            GCInfoSize = 0;
+            return false;
+        }
+
+        fixed (byte* p = _gcInfoData)
+        {
+            for (int i = 0; i < size; i++)
+            {
+                p[i] = gcInfoData[i];
+            }
+        }
+        GCInfoSize = size;
+        return true;
+    }
+
+    /// <summary>
+    /// Check if this method has GCInfo.
+    /// </summary>
+    public bool HasGCInfo => GCInfoSize > 0;
 
     /// <summary>
     /// Patch the EH info RVA in the UNWIND_INFO structure.
@@ -663,4 +715,60 @@ public static unsafe class JITMethodRegistry
     /// Get the number of registered methods.
     /// </summary>
     public static int MethodCount => _methodCount;
+
+    /// <summary>
+    /// Find the GCInfo for a given instruction pointer.
+    /// Used by GC during stack walking to enumerate stack roots in JIT'd frames.
+    /// </summary>
+    /// <param name="ip">Instruction pointer (absolute address)</param>
+    /// <param name="gcInfoPtr">Output: pointer to GCInfo data if found</param>
+    /// <param name="gcInfoSize">Output: size of GCInfo data</param>
+    /// <param name="codeOffset">Output: offset of IP within the method (for safe point lookup)</param>
+    /// <returns>True if GCInfo found for this IP</returns>
+    public static bool FindGCInfoForIP(ulong ip, out byte* gcInfoPtr, out int gcInfoSize, out uint codeOffset)
+    {
+        gcInfoPtr = null;
+        gcInfoSize = 0;
+        codeOffset = 0;
+
+        if (!_initialized || _methodCount == 0)
+            return false;
+
+        // Linear search through registered methods
+        // TODO: Could optimize with binary search if we keep methods sorted by address
+        for (int i = 0; i < _methodCount; i++)
+        {
+            ref JITMethodInfo info = ref _methods[i];
+
+            // Calculate absolute address range
+            ulong beginAddr = info.CodeBase + info.Function.BeginAddress;
+            ulong endAddr = info.CodeBase + info.Function.EndAddress;
+
+            if (ip >= beginAddr && ip < endAddr)
+            {
+                // Found the method containing this IP
+                if (info.HasGCInfo)
+                {
+                    gcInfoPtr = info.GetGCInfoPtr();
+                    gcInfoSize = info.GCInfoSize;
+                    codeOffset = (uint)(ip - beginAddr);
+                    return true;
+                }
+                // Method found but no GCInfo (no GC refs in this method)
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Get method info pointer by index (for testing).
+    /// </summary>
+    public static JITMethodInfo* GetMethodInfo(int index)
+    {
+        if (!_initialized || index < 0 || index >= _methodCount)
+            return null;
+        return &_methods[index];
+    }
 }

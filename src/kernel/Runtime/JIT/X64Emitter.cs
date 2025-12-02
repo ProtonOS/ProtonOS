@@ -1277,6 +1277,128 @@ public unsafe struct X64Emitter
         EmitModRMReg((Reg64)dst, (Reg64)src);
     }
 
+    // ==================== SSE Arithmetic ====================
+
+    /// <summary>
+    /// ADDSS xmm, xmm - Add scalar single-precision
+    /// </summary>
+    public void AddssXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x58);  // ADDSS xmm, xmm/m32
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// ADDSD xmm, xmm - Add scalar double-precision
+    /// </summary>
+    public void AddsdXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x58);  // ADDSD xmm, xmm/m64
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// SUBSS xmm, xmm - Subtract scalar single-precision
+    /// </summary>
+    public void SubssXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x5C);  // SUBSS xmm, xmm/m32
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// SUBSD xmm, xmm - Subtract scalar double-precision
+    /// </summary>
+    public void SubsdXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x5C);  // SUBSD xmm, xmm/m64
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// MULSS xmm, xmm - Multiply scalar single-precision
+    /// </summary>
+    public void MulssXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x59);  // MULSS xmm, xmm/m32
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// MULSD xmm, xmm - Multiply scalar double-precision
+    /// </summary>
+    public void MulsdXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x59);  // MULSD xmm, xmm/m64
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// DIVSS xmm, xmm - Divide scalar single-precision
+    /// </summary>
+    public void DivssXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x5E);  // DIVSS xmm, xmm/m32
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// DIVSD xmm, xmm - Divide scalar double-precision
+    /// </summary>
+    public void DivsdXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x5E);  // DIVSD xmm, xmm/m64
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// MOVSS xmm, xmm - Move scalar single-precision (register to register)
+    /// </summary>
+    public void MovssXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x10);  // MOVSS xmm, xmm/m32
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
+    /// <summary>
+    /// MOVSD xmm, xmm - Move scalar double-precision (register to register)
+    /// </summary>
+    public void MovsdXmmXmm(RegXMM dst, RegXMM src)
+    {
+        _code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmXmm(dst, src);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x10);  // MOVSD xmm, xmm/m64
+        EmitModRMReg((Reg64)dst, (Reg64)src);
+    }
+
     // ==================== Patch Helpers ====================
 
     /// <summary>

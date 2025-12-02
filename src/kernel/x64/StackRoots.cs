@@ -15,6 +15,7 @@ using System;
 using System.Runtime.InteropServices;
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
+using ProtonOS.Runtime.JIT;
 using ProtonOS.Memory;
 
 namespace ProtonOS.X64;
@@ -57,8 +58,24 @@ public static unsafe class StackRoots
                 uint codeOffset = (uint)(walkContext.Rip - (imageBase + funcEntry->BeginAddress));
 
                 // Get GCInfo for this function
+                // First try AOT path (GCInfo embedded after UNWIND_INFO)
                 var unwindInfo = (UnwindInfo*)(imageBase + funcEntry->UnwindInfoAddress);
                 byte* gcInfo = GCInfoHelper.GetGCInfo(imageBase, unwindInfo);
+                bool isJitFrame = false;
+
+                // If no GCInfo from AOT path, check if this is JIT'd code
+                if (gcInfo == null)
+                {
+                    byte* jitGCInfo;
+                    int jitGCSize;
+                    uint jitCodeOffset;
+                    if (JITMethodRegistry.FindGCInfoForIP(walkContext.Rip, out jitGCInfo, out jitGCSize, out jitCodeOffset))
+                    {
+                        gcInfo = jitGCInfo;
+                        codeOffset = jitCodeOffset;
+                        isJitFrame = true;
+                    }
+                }
 
                 // Debug: show frame info (first few frames only)
                 // Disabled verbose output - too much noise
@@ -104,6 +121,7 @@ public static unsafe class StackRoots
                     {
                         DebugConsole.Write("  [StackRoot] Frame ");
                         DebugConsole.WriteDecimal((uint)frameIndex);
+                        if (isJitFrame) DebugConsole.Write(" (JIT)");
                         DebugConsole.Write(" offset=");
                         DebugConsole.WriteDecimal(codeOffset);
                         DebugConsole.Write(": ");

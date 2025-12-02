@@ -263,9 +263,21 @@ public unsafe struct ILCompiler
     private int _localCount;
     private int _stackAdjust;
 
+    // GC tracking: bitmask for which locals/args are GC references
+    // Bit i set = local i is GC reference (for i < localCount)
+    // Bit (localCount + i) set = arg i is GC reference
+    private ulong _gcRefMask;
+
+    // GC info builder for stack root enumeration
+    private JITGCInfo _gcInfo;
+
     // Evaluation stack tracking (naive approach: just track depth)
     // For a more sophisticated approach, track register allocation
     private int _evalStackDepth;
+
+    // Stack type tracking for float support (0=int, 1=float32, 2=float64)
+    private const int MaxStackDepth = 32;
+    private fixed byte _evalStackTypes[MaxStackDepth];
 
     // Fixed-size array for branch targets
     private const int MaxBranches = 64;
@@ -288,6 +300,15 @@ public unsafe struct ILCompiler
     /// </summary>
     public static ILCompiler Create(byte* il, int ilLength, int argCount, int localCount)
     {
+        return CreateWithGCInfo(il, ilLength, argCount, localCount, 0);
+    }
+
+    /// <summary>
+    /// Create an IL compiler with GC reference tracking.
+    /// </summary>
+    /// <param name="gcRefMask">Bitmask: bit i = local i is GC ref, bit (localCount+i) = arg i is GC ref</param>
+    public static ILCompiler CreateWithGCInfo(byte* il, int ilLength, int argCount, int localCount, ulong gcRefMask)
+    {
         ILCompiler compiler;
         compiler._il = il;
         compiler._ilLength = ilLength;
@@ -295,6 +316,8 @@ public unsafe struct ILCompiler
         compiler._argCount = argCount;
         compiler._localCount = localCount;
         compiler._stackAdjust = 0;
+        compiler._gcRefMask = gcRefMask;
+        compiler._gcInfo = default;
         compiler._evalStackDepth = 0;
         compiler._branchCount = 0;
         compiler._labelCount = 0;
@@ -361,6 +384,88 @@ public unsafe struct ILCompiler
         }
         return -1;
     }
+
+    /// <summary>
+    /// Record a GC safe point at the current code position.
+    /// Safe points are where GC can safely scan stack roots.
+    /// Called after emitting CALL instructions.
+    /// </summary>
+    private void RecordSafePoint()
+    {
+        if (_gcRefMask != 0)
+        {
+            _gcInfo.AddSafePoint((uint)_emit.Position);
+        }
+    }
+
+    /// <summary>
+    /// Initialize GC slots based on gcRefMask.
+    /// Must be called after prologue is emitted.
+    /// </summary>
+    private void InitializeGCSlots()
+    {
+        if (_gcRefMask == 0)
+            return;
+
+        // Register locals that are GC references
+        for (int i = 0; i < _localCount && i < 64; i++)
+        {
+            if ((_gcRefMask & (1UL << i)) != 0)
+            {
+                // Local i is a GC reference at [rbp - (i+1)*8]
+                int offset = X64Emitter.GetLocalOffset(i);
+                _gcInfo.AddStackSlot(offset);
+            }
+        }
+
+        // Register args that are GC references (bit localCount+i = arg i)
+        for (int i = 0; i < _argCount && (_localCount + i) < 64; i++)
+        {
+            if ((_gcRefMask & (1UL << (_localCount + i))) != 0)
+            {
+                // Arg i is a GC reference - homed to shadow space at [rbp + 16 + i*8]
+                int offset = 16 + i * 8;
+                _gcInfo.AddStackSlot(offset);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finalize the GCInfo and build the encoded data.
+    /// Must be called after Compile() succeeds.
+    /// </summary>
+    /// <param name="buffer">Buffer to write GCInfo to.</param>
+    /// <param name="outSize">Output: size of generated GCInfo in bytes.</param>
+    /// <returns>True if successful, false if no GC refs or error.</returns>
+    public bool FinalizeGCInfo(byte* buffer, out int outSize)
+    {
+        outSize = 0;
+        if (_gcRefMask == 0)
+            return false;
+
+        // Initialize with final code length
+        _gcInfo.Init((uint)_emit.Position, true);
+
+        // Re-add the GC slots (Init clears them)
+        InitializeGCSlots();
+
+        return _gcInfo.BuildGCInfo(buffer, out outSize);
+    }
+
+    /// <summary>
+    /// Get the maximum size needed for GCInfo buffer.
+    /// </summary>
+    public int MaxGCInfoSize => _gcInfo.MaxGCInfoSize();
+
+    /// <summary>
+    /// Check if this method has any GC reference slots.
+    /// </summary>
+    public bool HasGCRefs => _gcRefMask != 0;
+
+    /// <summary>
+    /// Get the number of safe points recorded.
+    /// </summary>
+    public int SafePointCount => _gcInfo.NumSafePoints;
 
     /// <summary>
     /// Compile the IL method to native code.
@@ -1013,41 +1118,199 @@ public unsafe struct ILCompiler
     {
         // Discard top of stack
         _emit.AddRI(Reg64.RSP, 8);
-        _evalStackDepth--;
+        PopStackType();
         return true;
     }
+
+    // Stack type constants
+    private const byte StackType_Int = 0;
+    private const byte StackType_Float32 = 1;
+    private const byte StackType_Float64 = 2;
+
+    // Helper to push a type onto the type stack
+    private void PushStackType(byte type)
+    {
+        if (_evalStackDepth < MaxStackDepth)
+        {
+            fixed (byte* types = _evalStackTypes)
+            {
+                types[_evalStackDepth] = type;
+            }
+        }
+        _evalStackDepth++;
+    }
+
+    // Helper to pop a type from the type stack
+    private byte PopStackType()
+    {
+        if (_evalStackDepth > 0)
+        {
+            _evalStackDepth--;
+            fixed (byte* types = _evalStackTypes)
+            {
+                return types[_evalStackDepth];
+            }
+        }
+        return StackType_Int;
+    }
+
+    // Helper to peek at the top type
+    private byte PeekStackType()
+    {
+        if (_evalStackDepth > 0)
+        {
+            fixed (byte* types = _evalStackTypes)
+            {
+                return types[_evalStackDepth - 1];
+            }
+        }
+        return StackType_Int;
+    }
+
+    // Check if type is float (single or double)
+    private bool IsFloatType(byte type) => type == StackType_Float32 || type == StackType_Float64;
 
     private bool CompileAdd()
     {
         // Pop two values, add, push result
-        _emit.Pop(Reg64.RDX);  // Second operand
-        _emit.Pop(Reg64.RAX);  // First operand
-        _evalStackDepth -= 2;
-        _emit.AddRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+        // Peek at operand types before popping
+        byte type2 = PopStackType();
+        byte type1 = PopStackType();
+
+        if (IsFloatType(type1) || IsFloatType(type2))
+        {
+            // Float arithmetic - use SSE
+            // Pop both operands from memory stack
+            _emit.Pop(Reg64.RDX);  // Second operand (bits)
+            _emit.Pop(Reg64.RAX);  // First operand (bits)
+
+            // Determine if single or double precision (use widest type)
+            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+
+            if (isDouble)
+            {
+                // Move bit patterns to XMM registers
+                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
+                // ADDSD xmm0, xmm1
+                _emit.AddsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                // Move result bits back
+                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float64);
+            }
+            else
+            {
+                // Single precision
+                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
+                // ADDSS xmm0, xmm1
+                _emit.AddssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                // Move result bits back
+                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float32);
+            }
+        }
+        else
+        {
+            // Integer arithmetic
+            _emit.Pop(Reg64.RDX);  // Second operand
+            _emit.Pop(Reg64.RAX);  // First operand
+            _emit.AddRR(Reg64.RAX, Reg64.RDX);
+            _emit.Push(Reg64.RAX);
+            PushStackType(StackType_Int);
+        }
         return true;
     }
 
     private bool CompileSub()
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
-        _evalStackDepth -= 2;
-        _emit.SubRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+        // Pop two values, subtract, push result
+        byte type2 = PopStackType();
+        byte type1 = PopStackType();
+
+        if (IsFloatType(type1) || IsFloatType(type2))
+        {
+            // Float arithmetic - use SSE
+            _emit.Pop(Reg64.RDX);  // Second operand (bits)
+            _emit.Pop(Reg64.RAX);  // First operand (bits)
+
+            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+
+            if (isDouble)
+            {
+                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
+                _emit.SubsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float64);
+            }
+            else
+            {
+                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
+                _emit.SubssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float32);
+            }
+        }
+        else
+        {
+            // Integer arithmetic
+            _emit.Pop(Reg64.RDX);
+            _emit.Pop(Reg64.RAX);
+            _emit.SubRR(Reg64.RAX, Reg64.RDX);
+            _emit.Push(Reg64.RAX);
+            PushStackType(StackType_Int);
+        }
         return true;
     }
 
     private bool CompileMul()
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
-        _evalStackDepth -= 2;
-        _emit.ImulRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+        // Pop two values, multiply, push result
+        byte type2 = PopStackType();
+        byte type1 = PopStackType();
+
+        if (IsFloatType(type1) || IsFloatType(type2))
+        {
+            // Float arithmetic - use SSE
+            _emit.Pop(Reg64.RDX);  // Second operand (bits)
+            _emit.Pop(Reg64.RAX);  // First operand (bits)
+
+            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+
+            if (isDouble)
+            {
+                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
+                _emit.MulsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float64);
+            }
+            else
+            {
+                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
+                _emit.MulssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float32);
+            }
+        }
+        else
+        {
+            // Integer arithmetic
+            _emit.Pop(Reg64.RDX);
+            _emit.Pop(Reg64.RAX);
+            _emit.ImulRR(Reg64.RAX, Reg64.RDX);
+            _emit.Push(Reg64.RAX);
+            PushStackType(StackType_Int);
+        }
         return true;
     }
 
@@ -1163,32 +1426,65 @@ public unsafe struct ILCompiler
     {
         // Division: dividend / divisor
         // IL stack: [..., dividend, divisor] -> [..., quotient]
-        _emit.Pop(Reg64.RCX);  // Divisor to RCX (preserving RDX)
-        _emit.Pop(Reg64.RAX);  // Dividend to RAX
-        _evalStackDepth -= 2;
+        byte type2 = PopStackType();
+        byte type1 = PopStackType();
 
-        if (signed)
+        if (IsFloatType(type1) || IsFloatType(type2))
         {
-            // Sign-extend RAX into RDX:RAX
-            _emit.Cqo();
-            // Signed divide
-            _emit.Idiv(Reg64.RCX);
+            // Float division - use SSE
+            _emit.Pop(Reg64.RCX);  // Divisor (bits)
+            _emit.Pop(Reg64.RAX);  // Dividend (bits)
+
+            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+
+            if (isDouble)
+            {
+                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RCX);
+                _emit.DivsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float64);
+            }
+            else
+            {
+                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
+                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RCX);
+                _emit.DivssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+                _emit.Push(Reg64.RAX);
+                PushStackType(StackType_Float32);
+            }
         }
         else
         {
-            // For unsigned 32-bit division, we need to zero-extend the operands
-            // to ensure they're treated as unsigned 32-bit values, not sign-extended 64-bit
-            _emit.ZeroExtend32(Reg64.RAX);
-            _emit.ZeroExtend32(Reg64.RCX);
-            // Zero RDX for unsigned division
-            _emit.XorRR(Reg64.RDX, Reg64.RDX);
-            // Unsigned divide
-            _emit.Div(Reg64.RCX);
-        }
+            // Integer division
+            _emit.Pop(Reg64.RCX);  // Divisor to RCX (preserving RDX)
+            _emit.Pop(Reg64.RAX);  // Dividend to RAX
 
-        // Quotient is in RAX
-        _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+            if (signed)
+            {
+                // Sign-extend RAX into RDX:RAX
+                _emit.Cqo();
+                // Signed divide
+                _emit.Idiv(Reg64.RCX);
+            }
+            else
+            {
+                // For unsigned 32-bit division, we need to zero-extend the operands
+                // to ensure they're treated as unsigned 32-bit values, not sign-extended 64-bit
+                _emit.ZeroExtend32(Reg64.RAX);
+                _emit.ZeroExtend32(Reg64.RCX);
+                // Zero RDX for unsigned division
+                _emit.XorRR(Reg64.RDX, Reg64.RDX);
+                // Unsigned divide
+                _emit.Div(Reg64.RCX);
+            }
+
+            // Quotient is in RAX
+            _emit.Push(Reg64.RAX);
+            PushStackType(StackType_Int);
+        }
         return true;
     }
 
@@ -1583,7 +1879,7 @@ public unsafe struct ILCompiler
         // Float is 4 bytes, but we push 8 bytes (zero-extended)
         _emit.MovRI32(Reg64.RAX, (int)bits);
         _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+        PushStackType(StackType_Float32);
         return true;
     }
 
@@ -1592,7 +1888,7 @@ public unsafe struct ILCompiler
         // Load double constant - push 64-bit pattern to stack
         _emit.MovRI64(Reg64.RAX, bits);
         _emit.Push(Reg64.RAX);
-        _evalStackDepth++;
+        PushStackType(StackType_Float64);
         return true;
     }
 
@@ -1601,11 +1897,13 @@ public unsafe struct ILCompiler
         // Convert integer to float (single precision)
         // Pop 64-bit integer, convert to float, push back as 32-bit pattern (zero-extended)
         _emit.Pop(Reg64.RAX);
+        PopStackType();  // Pop whatever type was there
         // CVTSI2SS xmm0, rax - convert 64-bit signed int to single float
         _emit.Cvtsi2ssXmmR64(RegXMM.XMM0, Reg64.RAX);
         // MOVD eax, xmm0 - move float bits to integer reg
         _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
         _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Float32);
         return true;
     }
 
@@ -1614,11 +1912,13 @@ public unsafe struct ILCompiler
         // Convert integer to double precision
         // Pop 64-bit integer, convert to double, push back as 64-bit pattern
         _emit.Pop(Reg64.RAX);
+        PopStackType();  // Pop whatever type was there
         // CVTSI2SD xmm0, rax - convert 64-bit signed int to double
         _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
         // MOVQ rax, xmm0 - move double bits to integer reg
         _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
         _emit.Push(Reg64.RAX);
+        PushStackType(StackType_Float64);
         return true;
     }
 
@@ -2141,6 +2441,9 @@ public unsafe struct ILCompiler
         _emit.MovRI64(Reg64.RAX, (ulong)method.NativeCode);
         _emit.CallR(Reg64.RAX);
 
+        // Record safe point after call (GC can happen during callee execution)
+        RecordSafePoint();
+
         // Clean up extra stack space if we allocated any
         if (stackArgs > 0)
         {
@@ -2322,6 +2625,9 @@ public unsafe struct ILCompiler
 
         // Call through the function pointer in R11
         _emit.CallR(Reg64.R11);
+
+        // Record safe point after call (GC can happen during callee execution)
+        RecordSafePoint();
 
         // Clean up extra stack space if we allocated any
         if (stackArgs > 0)
