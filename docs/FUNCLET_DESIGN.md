@@ -1,5 +1,7 @@
 # Funclet-Based Exception Handling Design
 
+**Status: IMPLEMENTED** - Tests 111-112 verify the implementation. See TIER0_JIT_COMPLETION.md for details.
+
 ## Overview
 
 This document describes the design for implementing proper funclet-based exception handling in the ProtonOS JIT. This replaces the temporary inline handler approach with full Windows x64 SEH compliance, matching our NativeAOT-based AOT code.

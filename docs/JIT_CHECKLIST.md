@@ -24,10 +24,9 @@ as reference code, not integrating it directly.
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
-**Tier 0 JIT is fully functional with 112 tests passing.**
+**Tier 0 JIT is fully functional with 116 tests passing (Tests 1-112 plus 4 dynamic code tests).**
 
 Deferred to future phases:
-- Funclet-based EH (Phase 6.2+)
 - Lazy FPU save optimization (Phase 6.0+)
 
 **Infrastructure:**
@@ -237,7 +236,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test vtable dispatch (Test 89): callvirt through vtable slot
 - [x] Test ldvirtftn vtable dispatch (Test 90): ldvirtftn + calli through vtable slot
 
-**Current Status: 112 tests passing - Tier 0 JIT complete**
+**Current Status: 116 tests passing (Tests 1-112 + 4 dynamic code tests) - Tier 0 JIT complete**
 
 ---
 
@@ -251,8 +250,8 @@ JIT'd code needs to support try/catch/finally.
 
 - [x] How NativeAOT EH works (our current implementation) - ExceptionHandling.cs
 - [x] EH clause format in method body - ECMA-335 II.25.4.5-6
-- [ ] Funclet-based exception handling
-- [ ] Stack unwinding for JIT code
+- [x] Funclet-based exception handling (Tests 111-112)
+- [x] Stack unwinding for JIT code (via RUNTIME_FUNCTION registration)
 
 ### Implementation
 
@@ -293,6 +292,16 @@ JIT'd code needs to support try/catch/finally.
 - [x] endfinally opcode emits just `ret` (handler is called, not jumped to)
 - [x] Test: try/finally with exception (Test 108 - finally block executes)
 - [x] Test: nested try/finally (Test 109 - both finally blocks execute in order)
+
+#### 6.2.6 Funclet-Based Compilation (DONE)
+- [x] Two-pass compilation (`CompileWithFunclets()`) - pass 1 compiles main body, pass 2 compiles handlers as funclets
+- [x] Funclet prolog: `push rbp; mov rbp, rdx` - RDX contains parent frame pointer
+- [x] Funclet epilog: `pop rbp; ret` - returns to EH runtime
+- [x] JITMethodInfo funclet storage: `AllocateFunclets()`, `AddFunclet()`, `FinalizeFuncletUnwindInfo()`
+- [x] Per-funclet RUNTIME_FUNCTION and UNWIND_INFO registration
+- [x] Filter clause execution: `call_filter_funclet` assembly helper, `ExecuteFilterFunclet()` C# wrapper
+- [x] Test: Funclet registration (Test 111 - validates funclet count and registration)
+- [x] Test: CompileWithFunclets (Test 112 - verifies funclet prolog bytes, parent variable access)
 
 ---
 

@@ -4,7 +4,7 @@ This document assesses the remaining work required to complete the ProtonOS Tier
 
 ## Executive Summary
 
-The Tier 0 JIT is **COMPLETE**. All five gaps have been addressed. 112 tests pass. The JIT is ready for:
+The Tier 0 JIT is **COMPLETE**. All five gaps have been addressed. 116 tests pass (Tests 1-112 + 4 dynamic code tests). The JIT is ready for:
 - Real .NET assembly execution (when wired to assembly loader)
 - Tier 1 optimization work (register allocation, constant folding, etc.)
 
@@ -105,7 +105,7 @@ Filter clause execution has been fully implemented for `catch when` expressions.
 ### Testing Note
 
 Direct testing of filter clauses would require generating IL with filter EH clauses and compiling filter funclets, which is complex. The runtime execution path is validated by:
-- All 112 existing tests still pass (no regressions)
+- All 116 existing tests still pass (no regressions)
 - JIT's `endfilter` opcode is already tested
 - The filter calling convention follows the same pattern as `call_finally_handler`
 
@@ -347,7 +347,7 @@ All gaps have been addressed. The JIT is **production-ready** for real .NET asse
 
 The JIT is ready for Tier 1 optimization work:
 - All 220+ CIL opcodes implemented
-- 112 tests passing
+- 116 tests passing (Tests 1-112 + 4 dynamic code tests)
 - Complete exception handling with funclets
 - Full metadata token resolution infrastructure
 
