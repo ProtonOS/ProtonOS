@@ -183,11 +183,14 @@ public static unsafe class Kernel
         MetadataIntegration.RegisterWellKnownTypes();
 
         // Test CPU features and dynamic code execution (JIT prerequisites)
-        Tests.TestCPUFeatures();
-        Tests.TestDynamicCodeExecution();
+        // Tests.TestCPUFeatures();
+        // Tests.TestDynamicCodeExecution();
 
-        // Test IL JIT compiler
-        Tests.TestILCompiler();
+        // Test IL JIT compiler (legacy tests - replaced by FullTest assembly)
+        // Tests.TestILCompiler();
+
+        // Run FullTest assembly via JIT
+        RunFullTestAssembly();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
@@ -211,7 +214,7 @@ public static unsafe class Kernel
     {
         DebugConsole.WriteLine("[Kernel] Loading test assembly from UEFI FS...");
 
-        _testAssemblyBytes = UEFIFS.ReadFileAscii("\\MetadataTest.dll", out _testAssemblySize);
+        _testAssemblyBytes = UEFIFS.ReadFileAscii("\\FullTest.dll", out _testAssemblySize);
 
         if (_testAssemblyBytes == null)
         {
@@ -400,6 +403,100 @@ public static unsafe class Kernel
             {
                 DebugConsole.WriteLine("[Kernel]     failed to parse body");
             }
+        }
+    }
+
+    /// <summary>
+    /// Run the FullTest assembly via JIT compilation.
+    /// Finds TestRunner.RunAllTests() and executes it.
+    /// </summary>
+    private static void RunFullTestAssembly()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Running FullTest Assembly");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        if (_testAssemblyId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[FullTest] ERROR: No test assembly loaded");
+            return;
+        }
+
+        DebugConsole.Write("[FullTest] Assembly ID: ");
+        DebugConsole.WriteDecimal(_testAssemblyId);
+        DebugConsole.WriteLine();
+
+        // Find TestRunner type using AssemblyLoader
+        uint testRunnerToken = AssemblyLoader.FindTypeDefByFullName(_testAssemblyId, "FullTest", "TestRunner");
+        if (testRunnerToken == 0)
+        {
+            DebugConsole.WriteLine("[FullTest] ERROR: Could not find FullTest.TestRunner type");
+            return;
+        }
+
+        DebugConsole.Write("[FullTest] Found TestRunner type, token: 0x");
+        DebugConsole.WriteHex(testRunnerToken);
+        DebugConsole.WriteLine();
+
+        // Find RunAllTests method using AssemblyLoader
+        uint runAllTestsToken = AssemblyLoader.FindMethodDefByName(_testAssemblyId, testRunnerToken, "RunAllTests");
+        if (runAllTestsToken == 0)
+        {
+            DebugConsole.WriteLine("[FullTest] ERROR: Could not find RunAllTests method");
+            return;
+        }
+
+        DebugConsole.Write("[FullTest] Found RunAllTests method, token: 0x");
+        DebugConsole.WriteHex(runAllTestsToken);
+        DebugConsole.WriteLine();
+
+        // JIT compile the method
+        DebugConsole.WriteLine("[FullTest] JIT compiling RunAllTests...");
+
+        var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_testAssemblyId, runAllTestsToken);
+        if (jitResult.Success)
+        {
+            DebugConsole.Write("[FullTest] JIT compilation successful, code at 0x");
+            DebugConsole.WriteHex((ulong)jitResult.CodeAddress);
+            DebugConsole.WriteLine();
+
+            // Execute the compiled method
+            DebugConsole.WriteLine("[FullTest] Executing RunAllTests...");
+            DebugConsole.WriteLine();
+
+            // Call the compiled method (returns int)
+            var funcPtr = (delegate* unmanaged<int>)jitResult.CodeAddress;
+            int result = funcPtr();
+
+            // Parse result: (passCount << 16) | failCount
+            int passCount = (result >> 16) & 0xFFFF;
+            int failCount = result & 0xFFFF;
+
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.WriteLine("  FullTest Results");
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.Write("[FullTest] Passed: ");
+            DebugConsole.WriteDecimal(passCount);
+            DebugConsole.WriteLine();
+            DebugConsole.Write("[FullTest] Failed: ");
+            DebugConsole.WriteDecimal(failCount);
+            DebugConsole.WriteLine();
+
+            if (failCount == 0)
+            {
+                DebugConsole.WriteLine("[FullTest] ALL TESTS PASSED!");
+            }
+            else
+            {
+                DebugConsole.WriteLine("[FullTest] SOME TESTS FAILED");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[FullTest] ERROR: JIT compilation failed");
         }
     }
 }

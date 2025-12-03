@@ -1082,6 +1082,134 @@ public static unsafe class AssemblyLoader
     }
 
     // ============================================================================
+    // Type/Method Lookup by Name
+    // ============================================================================
+
+    /// <summary>
+    /// Find a TypeDef by name in an assembly.
+    /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// Note: This searches by simple name only (no namespace).
+    /// </summary>
+    public static uint FindTypeDefByName(uint assemblyId, string name)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        for (uint row = 1; row <= typeCount; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
+            byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (StringEqualsLiteral(typeName, name))
+            {
+                return 0x02000000 | row;  // TypeDef token
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Find a TypeDef by namespace and name in an assembly.
+    /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// </summary>
+    public static uint FindTypeDefByFullName(uint assemblyId, string ns, string name)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        for (uint row = 1; row <= typeCount; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, row);
+
+            byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* typeNs = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            // Match namespace (empty string or null both match empty)
+            bool nsMatch = false;
+            if ((ns == null || ns.Length == 0) && (typeNs == null || typeNs[0] == 0))
+                nsMatch = true;
+            else if (ns != null && typeNs != null && StringEqualsLiteral(typeNs, ns))
+                nsMatch = true;
+
+            if (nsMatch && StringEqualsLiteral(typeName, name))
+            {
+                return 0x02000000 | row;  // TypeDef token
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Find a MethodDef by name within a specific TypeDef.
+    /// Returns the MethodDef token (0x06xxxxxx) or 0 if not found.
+    /// </summary>
+    public static uint FindMethodDefByName(uint assemblyId, uint typeToken, string name)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint typeRow = typeToken & 0x00FFFFFF;
+        if (typeRow == 0)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        // Get the method list start for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+
+        // Get the method list end (start of next type's methods, or total method count + 1)
+        uint methodEnd;
+        if (typeRow < typeCount)
+        {
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+        }
+        else
+        {
+            methodEnd = methodCount + 1;
+        }
+
+        // Search methods in this type's method list
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            uint methodNameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* methodName = MetadataReader.GetString(ref asm->Metadata, methodNameIdx);
+
+            if (StringEqualsLiteral(methodName, name))
+            {
+                return 0x06000000 | methodRow;  // MethodDef token
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Compare a null-terminated heap string with a literal C# string.
+    /// </summary>
+    private static bool StringEqualsLiteral(byte* heapStr, string literal)
+    {
+        if (heapStr == null)
+            return literal == null || literal.Length == 0;
+        if (literal == null)
+            return heapStr[0] == 0;
+
+        for (int i = 0; i < literal.Length; i++)
+        {
+            if (heapStr[i] != (byte)literal[i])
+                return false;
+        }
+        return heapStr[literal.Length] == 0;  // Ensure null-terminator
+    }
+
+    // ============================================================================
     // Statistics
     // ============================================================================
 

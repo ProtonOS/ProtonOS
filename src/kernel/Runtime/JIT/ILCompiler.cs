@@ -350,6 +350,12 @@ public unsafe struct ResolvedMethod
     /// Combined with InterfaceMT to find the vtable slot at runtime.
     /// </summary>
     public short InterfaceMethodSlot;
+
+    /// <summary>
+    /// Pointer to the CompiledMethodInfo registry entry.
+    /// Used for indirect calls when NativeCode is not yet known (recursive methods).
+    /// </summary>
+    public void* RegistryEntry;
 }
 
 /// <summary>
@@ -553,6 +559,15 @@ public unsafe struct ILCompiler
     public void SetFieldResolver(FieldResolver resolver)
     {
         _fieldResolver = resolver;
+    }
+
+    /// <summary>
+    /// Set the method resolver for call instructions.
+    /// This enables lazy JIT compilation of called methods.
+    /// </summary>
+    public void SetMethodResolver(MethodResolver resolver)
+    {
+        _resolver = resolver;
     }
 
     /// <summary>
@@ -3182,7 +3197,25 @@ public unsafe struct ILCompiler
 
         // Load target address and call
         // We use an indirect call through RAX to support any address
-        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+        if (method.NativeCode != null)
+        {
+            // Direct call - we already know the target address
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+        }
+        else if (method.RegistryEntry != null)
+        {
+            // Indirect call through registry entry (for recursive/pending methods)
+            // The NativeCode will be filled in by the time the call actually executes
+            // Layout: CompiledMethodInfo { uint Token; void* NativeCode; ... }
+            // NativeCode is at offset 8 (after 4-byte Token + 4 bytes padding for alignment)
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.RegistryEntry);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);  // Load [RAX+8] = NativeCode
+        }
+        else
+        {
+            DebugConsole.WriteLine("[JIT] ERROR: No native code and no registry entry");
+            return false;
+        }
         X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during callee execution)

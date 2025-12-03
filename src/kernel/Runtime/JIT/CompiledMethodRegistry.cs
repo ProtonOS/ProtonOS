@@ -58,6 +58,9 @@ public unsafe struct CompiledMethodInfo
     /// <summary>True if the method has been compiled.</summary>
     public bool IsCompiled;
 
+    /// <summary>True if compilation is in progress (prevents recursive JIT).</summary>
+    public bool IsBeingCompiled;
+
     /// <summary>True if this is a virtual method requiring vtable dispatch.</summary>
     public bool IsVirtual;
 
@@ -323,6 +326,97 @@ public static unsafe class CompiledMethodRegistry
         UpdateNextFreeIndex(block);
 
         _totalCount++;
+        return true;
+    }
+
+    /// <summary>
+    /// Reserve a slot for a method that is being compiled.
+    /// This prevents infinite recursion when compiling recursive methods.
+    /// Returns the reserved entry, or null if the method is already being compiled.
+    /// </summary>
+    public static CompiledMethodInfo* ReserveForCompilation(uint token, byte argCount, ReturnKind returnKind, bool hasThis)
+    {
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0)
+            return null;
+
+        // Check if already exists
+        CompiledMethodInfo* existing = Lookup(token);
+        if (existing != null)
+        {
+            if (existing->IsBeingCompiled)
+            {
+                // Already being compiled - this is a recursive call
+                return null;
+            }
+            if (existing->IsCompiled)
+            {
+                // Already compiled - no need to reserve
+                return existing;
+            }
+            // Update the entry
+            existing->IsBeingCompiled = true;
+            existing->ArgCount = argCount;
+            existing->ReturnKind = returnKind;
+            existing->HasThis = hasThis;
+            return existing;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return null;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry with placeholder values
+        entry->Token = token;
+        entry->NativeCode = null;  // Will be set after compilation
+        entry->ArgCount = argCount;
+        entry->ReturnKind = returnKind;
+        entry->HasThis = hasThis;
+        entry->IsCompiled = false;
+        entry->IsBeingCompiled = true;  // Mark as being compiled
+        entry->IsVirtual = false;
+        entry->VtableSlot = -1;
+        entry->MethodTable = null;
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return entry;
+    }
+
+    /// <summary>
+    /// Complete a reserved method compilation.
+    /// Sets the native code pointer and marks as compiled.
+    /// </summary>
+    public static bool CompleteCompilation(uint token, void* code)
+    {
+        CompiledMethodInfo* entry = Lookup(token);
+        if (entry == null)
+            return false;
+
+        entry->NativeCode = code;
+        entry->IsCompiled = true;
+        entry->IsBeingCompiled = false;
         return true;
     }
 

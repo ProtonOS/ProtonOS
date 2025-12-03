@@ -1002,6 +1002,131 @@ public static unsafe class MetadataIntegration
     {
         compiler.SetTypeResolver(ResolveType);
         compiler.SetFieldResolver(ResolveField);
+        compiler.SetMethodResolver(ResolveMethod);
+    }
+
+    /// <summary>
+    /// Resolve a method token to native code, JIT compiling if necessary.
+    /// This enables lazy JIT compilation of called methods.
+    /// </summary>
+    public static bool ResolveMethod(uint token, out ResolvedMethod result)
+    {
+        result = default;
+
+        // First check if already in registry
+        CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(token);
+        if (info != null)
+        {
+            if (info->IsCompiled)
+            {
+                result.NativeCode = info->NativeCode;
+                result.ArgCount = info->ArgCount;
+                result.ReturnKind = info->ReturnKind;
+                result.HasThis = info->HasThis;
+                result.IsValid = true;
+                result.IsVirtual = info->IsVirtual;
+                result.VtableSlot = info->VtableSlot;
+                result.MethodTable = info->MethodTable;
+                result.IsInterfaceMethod = info->IsInterfaceMethod;
+                result.InterfaceMT = info->InterfaceMT;
+                result.InterfaceMethodSlot = info->InterfaceMethodSlot;
+                result.RegistryEntry = info;  // Always set registry entry
+                return true;
+            }
+            else if (info->IsBeingCompiled)
+            {
+                // Method is being compiled - this is a recursive call
+                // We need to emit an indirect call through the registry entry
+                // The native code will be filled in when compilation completes
+                result.NativeCode = null;  // Will be filled in later
+                result.ArgCount = info->ArgCount;
+                result.ReturnKind = info->ReturnKind;
+                result.HasThis = info->HasThis;
+                result.IsValid = true;
+                result.IsVirtual = false;
+                result.VtableSlot = -1;
+                result.MethodTable = null;
+                result.IsInterfaceMethod = false;
+                result.InterfaceMT = null;
+                result.InterfaceMethodSlot = -1;
+                result.RegistryEntry = info;  // Important: pass registry entry for indirect call
+                return true;
+            }
+        }
+
+        // Not compiled yet - need to JIT it
+        // Extract table ID from token to determine token type
+        uint tableId = (token >> 24) & 0xFF;
+
+        if (tableId == 0x06) // MethodDef token
+        {
+            // JIT compile the method
+            if (_currentAssemblyId == 0)
+            {
+                DebugConsole.WriteLine("[MetaInt] No current assembly set for JIT");
+                return false;
+            }
+
+            var jitResult = Tier0JIT.CompileMethod(_currentAssemblyId, token);
+            if (!jitResult.Success)
+            {
+                // Check if it failed because of recursion (method being compiled)
+                info = CompiledMethodRegistry.Lookup(token);
+                if (info != null && info->IsBeingCompiled)
+                {
+                    // Recursive call - return info for indirect call
+                    result.NativeCode = null;
+                    result.ArgCount = info->ArgCount;
+                    result.ReturnKind = info->ReturnKind;
+                    result.HasThis = info->HasThis;
+                    result.IsValid = true;
+                    result.RegistryEntry = info;  // Important: set registry entry for indirect call
+                    return true;
+                }
+                DebugConsole.Write("[MetaInt] Failed to JIT compile method 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine();
+                return false;
+            }
+
+            // Now look it up again - should be registered
+            info = CompiledMethodRegistry.Lookup(token);
+            if (info == null || !info->IsCompiled)
+            {
+                DebugConsole.WriteLine("[MetaInt] Method not in registry after JIT");
+                return false;
+            }
+
+            result.NativeCode = info->NativeCode;
+            result.ArgCount = info->ArgCount;
+            result.ReturnKind = info->ReturnKind;
+            result.HasThis = info->HasThis;
+            result.IsValid = true;
+            result.IsVirtual = info->IsVirtual;
+            result.VtableSlot = info->VtableSlot;
+            result.MethodTable = info->MethodTable;
+            result.IsInterfaceMethod = info->IsInterfaceMethod;
+            result.InterfaceMT = info->InterfaceMT;
+            result.InterfaceMethodSlot = info->InterfaceMethodSlot;
+            result.RegistryEntry = info;  // Set registry entry
+            return true;
+        }
+        else if (tableId == 0x0A) // MemberRef token
+        {
+            // External method reference - resolve through the assembly's references
+            // For now, just fail as we don't support cross-assembly calls yet
+            DebugConsole.Write("[MetaInt] MemberRef calls not yet supported: 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+        else
+        {
+            DebugConsole.Write("[MetaInt] Unknown method token table: 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
     }
 
     // ============================================================================

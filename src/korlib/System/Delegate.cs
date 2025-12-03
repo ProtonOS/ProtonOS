@@ -18,30 +18,31 @@ namespace System
 {
     public abstract class Delegate
     {
-        internal object m_firstParameter;
-        internal object m_helperObject;
-        internal nint m_extraFunctionPointerOrData;
-        internal IntPtr m_functionPointer;
+        // Field names must match what NativeAOT expects (underscore prefix, not m_ prefix)
+        internal object _firstParameter;
+        internal object _helperObject;
+        internal nint _extraFunctionPointerOrData;
+        internal IntPtr _functionPointer;
 
         private void InitializeClosedStaticThunk(object firstParameter, IntPtr functionPointer, IntPtr functionPointerThunk)
         {
-            m_extraFunctionPointerOrData = functionPointer;
-            m_helperObject = firstParameter;
-            m_functionPointer = functionPointerThunk;
-            m_firstParameter = this;
+            _extraFunctionPointerOrData = functionPointer;
+            _helperObject = firstParameter;
+            _functionPointer = functionPointerThunk;
+            _firstParameter = this;
         }
 
         private void InitializeOpenStaticThunk(object firstParameter, IntPtr functionPointer, IntPtr functionPointerThunk)
         {
-            m_firstParameter = this;
-            m_functionPointer = functionPointerThunk;
-            m_extraFunctionPointerOrData = functionPointer;
+            _firstParameter = this;
+            _functionPointer = functionPointerThunk;
+            _extraFunctionPointerOrData = functionPointer;
         }
 
         private void InitializeClosedInstance(object firstParameter, IntPtr functionPointer)
         {
-            m_functionPointer = functionPointer;
-            m_firstParameter = firstParameter;
+            _functionPointer = functionPointer;
+            _firstParameter = firstParameter;
         }
     }
 

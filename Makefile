@@ -7,7 +7,7 @@ ARCH ?= x64
 BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
-TEST_DIR := src/MetadataTest
+TEST_DIR := src/FullTest
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -59,7 +59,7 @@ NATIVE_OBJ := $(BUILD_DIR)/native.obj
 KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 
 # Test assembly output
-TEST_DLL := $(BUILD_DIR)/MetadataTest.dll
+TEST_DLL := $(BUILD_DIR)/FullTest.dll
 
 # Targets
 .PHONY: all clean native kernel test image run
@@ -84,10 +84,10 @@ $(KERNEL_OBJ): $(KORLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
 
 kernel: $(KERNEL_OBJ)
 
-# Build test assembly (standard .NET DLL for metadata testing)
-$(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/MetadataTest.csproj | $(BUILD_DIR)
-	@echo "DOTNET build MetadataTest"
-	dotnet build $(TEST_DIR)/MetadataTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+# Build test assembly (standard .NET DLL for JIT testing)
+$(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/FullTest.csproj | $(BUILD_DIR)
+	@echo "DOTNET build FullTest"
+	dotnet build $(TEST_DIR)/FullTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
 test: $(TEST_DLL)
 
@@ -105,7 +105,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL)
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
-	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/MetadataTest.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

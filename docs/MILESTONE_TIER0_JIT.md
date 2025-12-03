@@ -11,13 +11,16 @@ ProtonOS has reached a significant milestone: a fully functional Tier 0 JIT comp
 
 What makes this remarkable is that the entire kernel, including the JIT compiler itself, is written in C# and compiled using bflat's NativeAOT. We're running managed code that compiles and executes more managed code, all on bare metal.
 
+**Latest Update (December 2024):** The JIT now supports **lazy compilation** - methods are compiled on-demand when first called. The FullTest assembly exercises 65+ real methods compiled from IL to native x64 code, including recursive methods via indirect calls through the method registry.
+
 ---
 
 ## By the Numbers
 
 | Metric | Value |
 |--------|-------|
-| **IL JIT Tests** | 116 passing |
+| **FullTest Assembly Tests** | 55 passing (real .NET assembly) |
+| **Methods JIT Compiled** | 65+ on-demand |
 | **IL Opcodes Supported** | ~200 (full ECMA-335 coverage) |
 | **Lines of JIT Code** | ~5,500 (ILCompiler.cs) |
 | **Lines of x64 Emitter** | ~600 (X64Emitter.cs) |
@@ -82,15 +85,25 @@ The JIT is designed for portability:
 - **Compile-Time Dispatch:** Global using aliases select implementation
 - **Clean Separation:** ILCompiler is arch-agnostic, X64Emitter handles encoding
 
-### 6. Runtime Infrastructure
+### 6. Lazy JIT Compilation
+
+Methods are compiled on-demand when first called:
+
+- **Method Resolver:** Integrated into call instruction compilation
+- **Recursive Method Support:** Uses indirect calls through registry entries
+- **Compilation State Tracking:** `IsBeingCompiled` flag prevents infinite recursion
+- **Reservation Pattern:** Methods reserved before compilation, completed after
+
+### 7. Runtime Infrastructure
 
 Supporting systems that make it all work:
 
 - **AssemblyLoader:** Per-assembly registries, unloading support
-- **CompiledMethodRegistry:** Fast lookup of JIT-compiled methods
-- **MetadataIntegration:** Token resolution, type lookup, signature parsing
+- **CompiledMethodRegistry:** Fast lookup of JIT-compiled methods, reservation for recursive calls
+- **MetadataIntegration:** Token resolution, type lookup, signature parsing, method resolution
 - **CodeHeap:** Executable memory allocation with proper permissions
 - **GCHeap:** Object allocation with headers for GC and type info
+- **Tier0JIT:** High-level entry point for JIT compilation from metadata tokens
 
 ---
 
@@ -134,18 +147,24 @@ Supporting systems that make it all work:
 
 ## Test Coverage Highlights
 
-The 116 tests cover:
+### FullTest Assembly (55 tests via real .NET assembly)
 
-1. **Basic Operations (1-30):** Constants, arithmetic, bitwise, comparisons
-2. **Control Flow (31-45):** Branches, loops, switch statements
-3. **Calls (46-65):** Static, instance, virtual, indirect, varargs
-4. **Memory (55-67):** Block operations, object operations, sizeof
-5. **Exception Handling (68-73, 92, 108-109):** Try/catch/finally, nested, multiple handlers
-6. **GC Integration (72-73, 93):** GCInfo encoding, stack root tracking
-7. **Type System (78-86):** isinst, castclass, box/unbox, ldtoken
-8. **Arrays (77, 88, 96-98, 103-106, 111):** Single/multi/jagged, all element types
-9. **Strings (94):** ldstr with interning
-10. **Advanced (99-102, 107, 110, 112):** TypedRef, arglist, interface dispatch, funclets
+The FullTest assembly is a real .NET assembly (compiled with standard `dotnet build`) that exercises the JIT through actual method execution:
+
+1. **Arithmetic Tests:** Add, subtract, multiply, divide, remainder, negate, overflow variants
+2. **Comparison Tests:** ceq, cgt, clt (signed and unsigned)
+3. **Bitwise Tests:** And, or, xor, not, shift left/right
+4. **Control Flow Tests:** Branches (beq, bne, bgt, blt, bge, ble), loops, switch
+5. **Local Variable Tests:** Simple locals, many locals, local addresses
+6. **Method Call Tests:** Simple calls, calls with args, call chains, recursive calls (Factorial)
+7. **Conversion Tests:** conv.i4, conv.i8, conv.u4, conv.i1, conv.u1, conv.i2, conv.u2
+8. **Array Tests:** newarr, stelem, ldelem, ldlen, array sum
+9. **Field Tests:** Static fields (read, write, multiple)
+10. **Object Tests:** ldnull
+
+### Infrastructure Tests (synthetic IL, 116 tests)
+
+The kernel also includes comprehensive synthetic IL tests that validate individual opcodes and edge cases.
 
 ---
 
