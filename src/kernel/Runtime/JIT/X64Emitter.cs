@@ -1,5 +1,8 @@
 // ProtonOS JIT - x64 Instruction Emitter
 // Emits x64 machine code with proper REX prefix and ModR/M encoding.
+// Implements ICodeEmitter for architecture-neutral JIT support.
+
+using ProtonOS.Arch;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -28,77 +31,16 @@ public enum RegXMM : byte
 /// <summary>
 /// x64 instruction emitter for JIT compilation.
 /// Builds on CodeBuffer to emit properly encoded x64 instructions.
+/// Implements ICodeEmitter for architecture-neutral JIT support.
 /// </summary>
-public unsafe struct X64Emitter
+public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
 {
-    private CodeBuffer _code;
-
-    /// <summary>
-    /// Create an emitter with the given code buffer
-    /// </summary>
-    public static X64Emitter Create(ref CodeBuffer code)
-    {
-        X64Emitter emitter;
-        emitter._code = code;
-        return emitter;
-    }
-
-    /// <summary>
-    /// Get the underlying code buffer (for patching, getting function pointer, etc.)
-    /// </summary>
-    public ref CodeBuffer Code => ref _code;
-
-    /// <summary>
-    /// Current code position
-    /// </summary>
-    public int Position => _code.Position;
-
-    // ==================== REX Prefix Helpers ====================
-
-    /// <summary>
-    /// REX prefix bits:
-    /// 0100WRXB
-    /// W = 64-bit operand size
-    /// R = ModR/M reg field extension (bit 3)
-    /// X = SIB index field extension (bit 3)
-    /// B = ModR/M r/m or SIB base field extension (bit 3)
-    /// </summary>
+    // REX prefix constants (also used by static interface methods)
     private const byte REX = 0x40;
     private const byte REX_W = 0x08;  // 64-bit operand size
     private const byte REX_R = 0x04;  // Extend ModR/M reg
     private const byte REX_X = 0x02;  // Extend SIB index
     private const byte REX_B = 0x01;  // Extend ModR/M r/m or SIB base
-
-    /// <summary>
-    /// Emit REX prefix if needed for 64-bit operation or extended registers
-    /// </summary>
-    private void EmitRex(bool w, Reg64 reg, Reg64 rm)
-    {
-        byte rex = REX;
-        if (w) rex |= REX_W;
-        if ((byte)reg >= 8) rex |= REX_R;
-        if ((byte)rm >= 8) rex |= REX_B;
-
-        // Only emit REX if it has bits set beyond the base 0x40
-        // or if we need W=1 for 64-bit operand size
-        if (rex != REX || w)
-            _code.EmitByte(rex);
-    }
-
-    /// <summary>
-    /// Emit REX prefix for single register operations
-    /// </summary>
-    private void EmitRexSingle(bool w, Reg64 rm)
-    {
-        byte rex = REX;
-        if (w) rex |= REX_W;
-        if ((byte)rm >= 8) rex |= REX_B;
-
-        if (rex != REX || w)
-            _code.EmitByte(rex);
-    }
-
-    // ==================== ModR/M Helpers ====================
 
     /// <summary>
     /// Build ModR/M byte
@@ -111,32 +53,59 @@ public unsafe struct X64Emitter
         return (byte)((mod << 6) | ((reg & 7) << 3) | (rm & 7));
     }
 
+    // ==================== Instance Methods (Legacy - for reference during migration) ====================
+    // NOTE: These instance methods use _code field. All new code should use the static
+    // ICodeEmitter interface methods instead (see section at end of file).
+
+    private CodeBuffer _code;
+
     /// <summary>
-    /// Emit ModR/M for register-to-register operation
+    /// Create an emitter for the given code buffer (legacy instance pattern)
     /// </summary>
+    public static X64Emitter Create(ref CodeBuffer code)
+    {
+        X64Emitter emit = default;
+        emit._code = code;
+        return emit;
+    }
+
+    // Instance helper methods for legacy code
+    private void EmitRex(bool w, Reg64 reg, Reg64 rm)
+    {
+        byte rex = REX;
+        if (w) rex |= REX_W;
+        if ((byte)reg >= 8) rex |= REX_R;
+        if ((byte)rm >= 8) rex |= REX_B;
+        if (rex != REX || w)
+            _code.EmitByte(rex);
+    }
+
+    private void EmitRexSingle(bool w, Reg64 rm)
+    {
+        byte rex = REX;
+        if (w) rex |= REX_W;
+        if ((byte)rm >= 8) rex |= REX_B;
+        if (rex != REX || w)
+            _code.EmitByte(rex);
+    }
+
     private void EmitModRMReg(Reg64 reg, Reg64 rm)
     {
         _code.EmitByte(ModRM(0b11, (byte)reg, (byte)rm));
     }
 
-    /// <summary>
-    /// Emit ModR/M for [reg] memory access (no displacement)
-    /// </summary>
     private void EmitModRMMem(Reg64 reg, Reg64 baseReg)
     {
         byte baseEnc = (byte)((byte)baseReg & 7);
-
-        // RSP/R12 requires SIB byte
-        if (baseEnc == 4)
+        if (baseEnc == 4) // RSP/R12 needs SIB
         {
-            _code.EmitByte(ModRM(0b00, (byte)reg, 0b100));  // r/m = 100 means SIB follows
-            _code.EmitByte(0x24);  // SIB: scale=0, index=RSP (none), base=RSP
+            _code.EmitByte(ModRM(0b00, (byte)reg, 0b100));
+            _code.EmitByte(0x24); // SIB: scale=0, index=none, base=RSP
         }
-        // RBP/R13 with mod=00 means RIP-relative, need mod=01 with disp8=0
-        else if (baseEnc == 5)
+        else if (baseEnc == 5) // RBP/R13 needs disp
         {
             _code.EmitByte(ModRM(0b01, (byte)reg, baseEnc));
-            _code.EmitByte(0);  // disp8 = 0
+            _code.EmitByte(0); // disp8 = 0
         }
         else
         {
@@ -144,47 +113,35 @@ public unsafe struct X64Emitter
         }
     }
 
-    /// <summary>
-    /// Emit ModR/M for [reg+disp8] memory access
-    /// </summary>
     private void EmitModRMMemDisp8(Reg64 reg, Reg64 baseReg, sbyte disp)
     {
         byte baseEnc = (byte)((byte)baseReg & 7);
-
-        if (baseEnc == 4)  // RSP/R12 requires SIB
+        if (baseEnc == 4) // RSP/R12 needs SIB
         {
             _code.EmitByte(ModRM(0b01, (byte)reg, 0b100));
-            _code.EmitByte(0x24);  // SIB for RSP base
-            _code.EmitByte((byte)disp);
+            _code.EmitByte(0x24);
         }
         else
         {
             _code.EmitByte(ModRM(0b01, (byte)reg, baseEnc));
-            _code.EmitByte((byte)disp);
         }
+        _code.EmitByte((byte)disp);
     }
 
-    /// <summary>
-    /// Emit ModR/M for [reg+disp32] memory access
-    /// </summary>
     private void EmitModRMMemDisp32(Reg64 reg, Reg64 baseReg, int disp)
     {
         byte baseEnc = (byte)((byte)baseReg & 7);
-
-        if (baseEnc == 4)  // RSP/R12 requires SIB
+        if (baseEnc == 4) // RSP/R12 needs SIB
         {
             _code.EmitByte(ModRM(0b10, (byte)reg, 0b100));
-            _code.EmitByte(0x24);  // SIB for RSP base
-            _code.EmitInt32(disp);
+            _code.EmitByte(0x24);
         }
         else
         {
             _code.EmitByte(ModRM(0b10, (byte)reg, baseEnc));
-            _code.EmitInt32(disp);
         }
+        _code.EmitInt32(disp);
     }
-
-    // ==================== Data Movement ====================
 
     /// <summary>
     /// MOV reg64, reg64
@@ -1511,5 +1468,1805 @@ public unsafe struct X64Emitter
         }
         // Direct byte patch
         _code.Code[patchOffset] = (byte)rel;
+    }
+
+    // ==================== ICodeEmitter Static Interface Implementation ====================
+    // These static methods implement the architecture-neutral interface.
+    // They use static helper methods that directly emit to the CodeBuffer.
+
+    // Static versions of the helper methods for use by interface implementation
+    private static void EmitRexS(ref CodeBuffer code, bool w, Reg64 reg, Reg64 rm)
+    {
+        byte rex = REX;
+        if (w) rex |= REX_W;
+        if ((byte)reg >= 8) rex |= REX_R;
+        if ((byte)rm >= 8) rex |= REX_B;
+        if (rex != REX || w)
+            code.EmitByte(rex);
+    }
+
+    private static void EmitRexSingleS(ref CodeBuffer code, bool w, Reg64 rm)
+    {
+        byte rex = REX;
+        if (w) rex |= REX_W;
+        if ((byte)rm >= 8) rex |= REX_B;
+        if (rex != REX || w)
+            code.EmitByte(rex);
+    }
+
+    private static void EmitModRMRegS(ref CodeBuffer code, Reg64 reg, Reg64 rm)
+    {
+        code.EmitByte(ModRM(0b11, (byte)reg, (byte)rm));
+    }
+
+    private static void EmitModRMMemS(ref CodeBuffer code, Reg64 reg, Reg64 baseReg)
+    {
+        byte baseEnc = (byte)((byte)baseReg & 7);
+        if (baseEnc == 4)
+        {
+            code.EmitByte(ModRM(0b00, (byte)reg, 0b100));
+            code.EmitByte(0x24);
+        }
+        else if (baseEnc == 5)
+        {
+            code.EmitByte(ModRM(0b01, (byte)reg, baseEnc));
+            code.EmitByte(0);
+        }
+        else
+        {
+            code.EmitByte(ModRM(0b00, (byte)reg, baseEnc));
+        }
+    }
+
+    private static void EmitModRMMemDispS(ref CodeBuffer code, Reg64 reg, Reg64 baseReg, int disp)
+    {
+        byte baseEnc = (byte)((byte)baseReg & 7);
+        if (disp == 0 && baseEnc != 5) // RBP/R13 always need disp
+        {
+            EmitModRMMemS(ref code, reg, baseReg);
+        }
+        else if (disp >= -128 && disp <= 127)
+        {
+            if (baseEnc == 4)
+            {
+                code.EmitByte(ModRM(0b01, (byte)reg, 0b100));
+                code.EmitByte(0x24);
+            }
+            else
+            {
+                code.EmitByte(ModRM(0b01, (byte)reg, baseEnc));
+            }
+            code.EmitByte((byte)disp);
+        }
+        else
+        {
+            if (baseEnc == 4)
+            {
+                code.EmitByte(ModRM(0b10, (byte)reg, 0b100));
+                code.EmitByte(0x24);
+            }
+            else
+            {
+                code.EmitByte(ModRM(0b10, (byte)reg, baseEnc));
+            }
+            code.EmitInt32(disp);
+        }
+    }
+
+    /// <summary>
+    /// Map VReg to x64 Reg64.
+    /// </summary>
+    public static Reg64 Map(VReg vreg) => vreg switch
+    {
+        VReg.R0 => Reg64.RAX,   // Return value + scratch
+        VReg.R1 => Reg64.RCX,   // Arg0 (MS x64 ABI)
+        VReg.R2 => Reg64.RDX,   // Arg1
+        VReg.R3 => Reg64.R8,    // Arg2
+        VReg.R4 => Reg64.R9,    // Arg3
+        VReg.R5 => Reg64.R10,   // Scratch
+        VReg.R6 => Reg64.R11,   // Scratch
+        VReg.R7 => Reg64.RBX,   // Callee-saved
+        VReg.R8 => Reg64.R12,   // Callee-saved
+        VReg.R9 => Reg64.R13,   // Callee-saved
+        VReg.R10 => Reg64.R14,  // Callee-saved
+        VReg.R11 => Reg64.R15,  // Callee-saved
+        VReg.SP => Reg64.RSP,
+        VReg.FP => Reg64.RBP,
+        _ => Reg64.RAX,
+    };
+
+    /// <summary>
+    /// Map VRegF to x64 RegXMM.
+    /// </summary>
+    private static RegXMM MapF(VRegF vreg) => (RegXMM)(byte)vreg;
+
+    /// <summary>
+    /// Map Condition to x64 condition code.
+    /// </summary>
+    private static byte MapCondition(Condition cond) => cond switch
+    {
+        Condition.Equal => CC_E,
+        Condition.NotEqual => CC_NE,
+        Condition.LessThan => CC_L,
+        Condition.LessOrEqual => CC_LE,
+        Condition.GreaterThan => CC_G,
+        Condition.GreaterOrEqual => CC_GE,
+        Condition.Below => CC_B,
+        Condition.BelowOrEqual => CC_BE,
+        Condition.Above => CC_A,
+        Condition.AboveOrEqual => CC_AE,
+        _ => CC_E,
+    };
+
+    // === Calling Convention Info ===
+    public static int ArgRegisterCount => 4;
+    public static int ShadowSpaceSize => 32;
+    public static int StackAlignment => 16;
+
+    // === Prologue / Epilogue ===
+    public static int EmitPrologue(ref CodeBuffer code, int localBytes)
+    {
+        // push rbp
+        code.EmitByte(0x55);
+        // mov rbp, rsp
+        code.EmitByte(0x48);
+        code.EmitByte(0x89);
+        code.EmitByte(0xE5);
+
+        // Align stack to 16 bytes (include saved rbp)
+        int frameSize = localBytes + ShadowSpaceSize;
+        frameSize = (frameSize + 15) & ~15;
+
+        if (frameSize > 0)
+        {
+            // sub rsp, frameSize
+            code.EmitByte(0x48);
+            code.EmitByte(0x81);
+            code.EmitByte(0xEC);
+            code.EmitInt32(frameSize);
+        }
+        return frameSize;
+    }
+
+    public static void EmitEpilogue(ref CodeBuffer code, int stackAdjust)
+    {
+        // Use leave instruction: mov rsp, rbp; pop rbp
+        // This properly restores RSP regardless of any modifications during the function
+        // (e.g., localloc, push/pop imbalances, etc.)
+        // The stackAdjust parameter is no longer needed when using frame pointer epilogue
+        _ = stackAdjust; // Unused - we restore from RBP instead
+        code.EmitByte(0xC9);  // leave
+        // ret
+        code.EmitByte(0xC3);
+    }
+
+    public static void HomeArguments(ref CodeBuffer code, int argCount)
+    {
+        // Home register arguments to shadow space
+        // RCX -> [rbp+16], RDX -> [rbp+24], R8 -> [rbp+32], R9 -> [rbp+40]
+        if (argCount > 0)
+        {
+            // mov [rbp+16], rcx
+            code.EmitByte(0x48);
+            code.EmitByte(0x89);
+            code.EmitByte(0x4D);
+            code.EmitByte(0x10);
+        }
+        if (argCount > 1)
+        {
+            // mov [rbp+24], rdx
+            code.EmitByte(0x48);
+            code.EmitByte(0x89);
+            code.EmitByte(0x55);
+            code.EmitByte(0x18);
+        }
+        if (argCount > 2)
+        {
+            // mov [rbp+32], r8
+            code.EmitByte(0x4C);
+            code.EmitByte(0x89);
+            code.EmitByte(0x45);
+            code.EmitByte(0x20);
+        }
+        if (argCount > 3)
+        {
+            // mov [rbp+40], r9
+            code.EmitByte(0x4C);
+            code.EmitByte(0x89);
+            code.EmitByte(0x4D);
+            code.EmitByte(0x28);
+        }
+    }
+
+    // === Register Operations ===
+    public static void MovRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x89);  // MOV r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void MovRI64(ref CodeBuffer code, VReg dst, ulong imm)
+    {
+        var d = Map(dst);
+        EmitRexSingleS(ref code, true, d);
+        code.EmitByte((byte)(0xB8 + ((byte)d & 7)));  // MOV r64, imm64
+        code.EmitQword(imm);
+    }
+
+    public static void MovRI32(ref CodeBuffer code, VReg dst, int imm)
+    {
+        var d = Map(dst);
+        if ((byte)d >= 8)
+            code.EmitByte((byte)(REX | REX_B));
+        code.EmitByte((byte)(0xB8 + ((byte)d & 7)));  // MOV r32, imm32
+        code.EmitInt32(imm);
+    }
+
+    public static void ZeroReg(ref CodeBuffer code, VReg reg)
+    {
+        var r = Map(reg);
+        // XOR r32, r32 clears upper 32 bits and is shorter
+        if ((byte)r >= 8)
+        {
+            code.EmitByte((byte)(REX | REX_R | REX_B));
+        }
+        code.EmitByte(0x31);  // XOR r/m32, r32
+        EmitModRMRegS(ref code, r, r);
+    }
+
+    // === Memory Operations ===
+    public static void Load64(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        EmitRexS(ref code, true, d, b);
+        code.EmitByte(0x8B);  // MOV r64, r/m64
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load32(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        // 32-bit load zero-extends to 64-bit, no REX.W needed
+        if ((byte)d >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)d >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x8B);  // MOV r32, r/m32
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load32Signed(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        EmitRexS(ref code, true, d, b);  // REX.W for 64-bit destination
+        code.EmitByte(0x63);  // MOVSXD r64, r/m32
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load16(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        if ((byte)d >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)d >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0xB7);  // MOVZX r32, r/m16
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load16Signed(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        EmitRexS(ref code, true, d, b);  // REX.W for 64-bit destination
+        code.EmitByte(0x0F);
+        code.EmitByte(0xBF);  // MOVSX r64, r/m16
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load8(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        if ((byte)d >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)d >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0xB6);  // MOVZX r32, r/m8
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Load8Signed(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        EmitRexS(ref code, true, d, b);  // REX.W for 64-bit destination
+        code.EmitByte(0x0F);
+        code.EmitByte(0xBE);  // MOVSX r64, r/m8
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    public static void Store64(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        var b = Map(baseReg);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, b);
+        code.EmitByte(0x89);  // MOV r/m64, r64
+        EmitModRMMemDispS(ref code, s, b, disp);
+    }
+
+    public static void Store32(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        var b = Map(baseReg);
+        var s = Map(src);
+        if ((byte)s >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)s >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x89);  // MOV r/m32, r32
+        EmitModRMMemDispS(ref code, s, b, disp);
+    }
+
+    public static void Store16(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        var b = Map(baseReg);
+        var s = Map(src);
+        code.EmitByte(0x66);  // Operand size prefix
+        if ((byte)s >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)s >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x89);  // MOV r/m16, r16
+        EmitModRMMemDispS(ref code, s, b, disp);
+    }
+
+    public static void Store8(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        var b = Map(baseReg);
+        var s = Map(src);
+        // Need REX prefix for R8-R15 or to access SPL/BPL/SIL/DIL
+        if ((byte)s >= 8 || (byte)b >= 8 || (byte)s >= 4)
+        {
+            byte rex = REX;
+            if ((byte)s >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x88);  // MOV r/m8, r8
+        EmitModRMMemDispS(ref code, s, b, disp);
+    }
+
+    public static void LoadAddress(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        var d = Map(dst);
+        var b = Map(baseReg);
+        EmitRexS(ref code, true, d, b);
+        code.EmitByte(0x8D);  // LEA r64, m
+        EmitModRMMemDispS(ref code, d, b, disp);
+    }
+
+    // === Arithmetic ===
+    public static void Add(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x01);  // ADD r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void AddImm(ref CodeBuffer code, VReg dst, int imm)
+    {
+        var d = Map(dst);
+        EmitRexSingleS(ref code, true, d);
+        if (imm >= -128 && imm <= 127)
+        {
+            code.EmitByte(0x83);  // ADD r/m64, imm8
+            code.EmitByte(ModRM(0b11, 0, (byte)d));
+            code.EmitByte((byte)imm);
+        }
+        else
+        {
+            code.EmitByte(0x81);  // ADD r/m64, imm32
+            code.EmitByte(ModRM(0b11, 0, (byte)d));
+            code.EmitInt32(imm);
+        }
+    }
+
+    public static void Sub(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x29);  // SUB r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void SubImm(ref CodeBuffer code, VReg dst, int imm)
+    {
+        var d = Map(dst);
+        EmitRexSingleS(ref code, true, d);
+        if (imm >= -128 && imm <= 127)
+        {
+            code.EmitByte(0x83);  // SUB r/m64, imm8
+            code.EmitByte(ModRM(0b11, 5, (byte)d));
+            code.EmitByte((byte)imm);
+        }
+        else
+        {
+            code.EmitByte(0x81);  // SUB r/m64, imm32
+            code.EmitByte(ModRM(0b11, 5, (byte)d));
+            code.EmitInt32(imm);
+        }
+    }
+
+    public static void Mul(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0xAF);  // IMUL r64, r/m64
+        EmitModRMRegS(ref code, d, s);
+    }
+
+    public static void DivSigned(ref CodeBuffer code, VReg divisor)
+    {
+        var r = Map(divisor);
+        EmitRexSingleS(ref code, true, r);
+        code.EmitByte(0xF7);  // IDIV r/m64
+        code.EmitByte(ModRM(0b11, 7, (byte)r));
+    }
+
+    public static void DivUnsigned(ref CodeBuffer code, VReg divisor)
+    {
+        var r = Map(divisor);
+        EmitRexSingleS(ref code, true, r);
+        code.EmitByte(0xF7);  // DIV r/m64
+        code.EmitByte(ModRM(0b11, 6, (byte)r));
+    }
+
+    public static void Neg(ref CodeBuffer code, VReg reg)
+    {
+        var r = Map(reg);
+        EmitRexSingleS(ref code, true, r);
+        code.EmitByte(0xF7);  // NEG r/m64
+        code.EmitByte(ModRM(0b11, 3, (byte)r));
+    }
+
+    // === Bitwise Operations ===
+    public static void And(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x21);  // AND r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void AndImm(ref CodeBuffer code, VReg dst, int imm)
+    {
+        var d = Map(dst);
+        EmitRexSingleS(ref code, true, d);
+        if (imm >= -128 && imm <= 127)
+        {
+            code.EmitByte(0x83);  // AND r/m64, imm8
+            code.EmitByte(ModRM(0b11, 4, (byte)d));
+            code.EmitByte((byte)imm);
+        }
+        else
+        {
+            code.EmitByte(0x81);  // AND r/m64, imm32
+            code.EmitByte(ModRM(0b11, 4, (byte)d));
+            code.EmitInt32(imm);
+        }
+    }
+
+    public static void Or(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x09);  // OR r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void Xor(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRexS(ref code, true, s, d);
+        code.EmitByte(0x31);  // XOR r/m64, r64
+        EmitModRMRegS(ref code, s, d);
+    }
+
+    public static void Not(ref CodeBuffer code, VReg reg)
+    {
+        var r = Map(reg);
+        EmitRexSingleS(ref code, true, r);
+        code.EmitByte(0xF7);  // NOT r/m64
+        code.EmitByte(ModRM(0b11, 2, (byte)r));
+    }
+
+    public static void ShiftLeft(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        // x64 requires shift amount in CL
+        if (s != Reg64.RCX)
+        {
+            EmitRexS(ref code, true, Reg64.RCX, s);
+            code.EmitByte(0x89);  // MOV
+            EmitModRMRegS(ref code, s, Reg64.RCX);
+        }
+        EmitRexSingleS(ref code, true, v);
+        code.EmitByte(0xD3);  // SHL r/m64, CL
+        code.EmitByte(ModRM(0b11, 4, (byte)v));
+    }
+
+    public static void ShiftLeftImm(ref CodeBuffer code, VReg value, byte imm)
+    {
+        var v = Map(value);
+        EmitRexSingleS(ref code, true, v);
+        if (imm == 1)
+        {
+            code.EmitByte(0xD1);  // SHL r/m64, 1
+            code.EmitByte(ModRM(0b11, 4, (byte)v));
+        }
+        else
+        {
+            code.EmitByte(0xC1);  // SHL r/m64, imm8
+            code.EmitByte(ModRM(0b11, 4, (byte)v));
+            code.EmitByte(imm);
+        }
+    }
+
+    public static void ShiftRightSigned(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        if (s != Reg64.RCX)
+        {
+            EmitRexS(ref code, true, Reg64.RCX, s);
+            code.EmitByte(0x89);
+            EmitModRMRegS(ref code, s, Reg64.RCX);
+        }
+        EmitRexSingleS(ref code, true, v);
+        code.EmitByte(0xD3);  // SAR r/m64, CL
+        code.EmitByte(ModRM(0b11, 7, (byte)v));
+    }
+
+    public static void ShiftRightUnsigned(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        if (s != Reg64.RCX)
+        {
+            EmitRexS(ref code, true, Reg64.RCX, s);
+            code.EmitByte(0x89);
+            EmitModRMRegS(ref code, s, Reg64.RCX);
+        }
+        EmitRexSingleS(ref code, true, v);
+        code.EmitByte(0xD3);  // SHR r/m64, CL
+        code.EmitByte(ModRM(0b11, 5, (byte)v));
+    }
+
+    // === Comparison ===
+    public static void Compare(ref CodeBuffer code, VReg left, VReg right)
+    {
+        var l = Map(left);
+        var r = Map(right);
+        EmitRexS(ref code, true, r, l);
+        code.EmitByte(0x39);  // CMP r/m64, r64
+        EmitModRMRegS(ref code, r, l);
+    }
+
+    public static void Compare32(ref CodeBuffer code, VReg left, VReg right)
+    {
+        var l = Map(left);
+        var r = Map(right);
+        if ((byte)l >= 8 || (byte)r >= 8)
+        {
+            byte rex = REX;
+            if ((byte)r >= 8) rex |= REX_R;
+            if ((byte)l >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x39);  // CMP r/m32, r32
+        EmitModRMRegS(ref code, r, l);
+    }
+
+    public static void CompareImm(ref CodeBuffer code, VReg reg, int imm)
+    {
+        var r = Map(reg);
+        EmitRexSingleS(ref code, true, r);
+        if (imm >= -128 && imm <= 127)
+        {
+            code.EmitByte(0x83);  // CMP r/m64, imm8
+            code.EmitByte(ModRM(0b11, 7, (byte)r));
+            code.EmitByte((byte)imm);
+        }
+        else
+        {
+            code.EmitByte(0x81);  // CMP r/m64, imm32
+            code.EmitByte(ModRM(0b11, 7, (byte)r));
+            code.EmitInt32(imm);
+        }
+    }
+
+    public static void Test(ref CodeBuffer code, VReg left, VReg right)
+    {
+        var l = Map(left);
+        var r = Map(right);
+        EmitRexS(ref code, true, r, l);
+        code.EmitByte(0x85);  // TEST r/m64, r64
+        EmitModRMRegS(ref code, r, l);
+    }
+
+    // === Control Flow ===
+    public static void Ret(ref CodeBuffer code)
+    {
+        code.EmitByte(0xC3);  // RET
+    }
+
+    public static void CallReg(ref CodeBuffer code, VReg target)
+    {
+        var t = Map(target);
+        if ((byte)t >= 8)
+            code.EmitByte((byte)(REX | REX_B));
+        code.EmitByte(0xFF);  // CALL r/m64
+        code.EmitByte(ModRM(0b11, 2, (byte)t));
+    }
+
+    public static int CallRel32(ref CodeBuffer code)
+    {
+        code.EmitByte(0xE8);  // CALL rel32
+        int patchOffset = code.Position;
+        code.EmitInt32(0);  // Placeholder
+        return patchOffset;
+    }
+
+    public static int JumpRel32(ref CodeBuffer code)
+    {
+        code.EmitByte(0xE9);  // JMP rel32
+        int patchOffset = code.Position;
+        code.EmitInt32(0);  // Placeholder
+        return patchOffset;
+    }
+
+    public static void JumpReg(ref CodeBuffer code, VReg target)
+    {
+        var t = Map(target);
+        if ((byte)t >= 8)
+            code.EmitByte((byte)(REX | REX_B));
+        code.EmitByte(0xFF);  // JMP r/m64
+        code.EmitByte(ModRM(0b11, 4, (byte)t));
+    }
+
+    public static int JumpConditional(ref CodeBuffer code, Condition cond)
+    {
+        code.EmitByte(0x0F);
+        code.EmitByte((byte)(0x80 + MapCondition(cond)));  // Jcc rel32
+        int patchOffset = code.Position;
+        code.EmitInt32(0);  // Placeholder
+        return patchOffset;
+    }
+
+    public static void PatchRel32(ref CodeBuffer code, int patchOffset)
+    {
+        code.PatchRelative32(patchOffset);
+    }
+
+    // === Stack Operations ===
+    public static void Push(ref CodeBuffer code, VReg reg)
+    {
+        var r = Map(reg);
+        if ((byte)r >= 8)
+            code.EmitByte((byte)(REX | REX_B));
+        code.EmitByte((byte)(0x50 + ((byte)r & 7)));  // PUSH r64
+    }
+
+    public static void Pop(ref CodeBuffer code, VReg reg)
+    {
+        var r = Map(reg);
+        if ((byte)r >= 8)
+            code.EmitByte((byte)(REX | REX_B));
+        code.EmitByte((byte)(0x58 + ((byte)r & 7)));  // POP r64
+    }
+
+    // === Argument/Local Access ===
+    public static int GetArgOffset(int argIndex)
+    {
+        // Args are at [rbp+16+argIndex*8] after prologue
+        return 16 + argIndex * 8;
+    }
+
+    public static int GetLocalOffset(int localIndex)
+    {
+        // Locals are at [rbp-8], [rbp-16], etc.
+        return GetLocalOffset(localIndex, 8);
+    }
+
+    public static void LoadArg(ref CodeBuffer code, VReg dst, int argIndex)
+    {
+        // Load from homed location: [rbp+16+argIndex*8]
+        int offset = GetArgOffset(argIndex);
+        Load64(ref code, dst, VReg.FP, offset);
+    }
+
+    public static void LoadLocal(ref CodeBuffer code, VReg dst, int localIndex)
+    {
+        int offset = GetLocalOffset(localIndex, 8);
+        Load64(ref code, dst, VReg.FP, offset);
+    }
+
+    public static void StoreLocal(ref CodeBuffer code, int localIndex, VReg src)
+    {
+        int offset = GetLocalOffset(localIndex, 8);
+        Store64(ref code, VReg.FP, offset, src);
+    }
+
+    // === Floating Point ===
+    // Static helper for XMM REX prefix
+    private static void EmitRexXmmS(ref CodeBuffer code, bool w, RegXMM xmm, Reg64 rm)
+    {
+        byte rex = REX;
+        if (w) rex |= REX_W;
+        if ((byte)xmm >= 8) rex |= REX_R;
+        if ((byte)rm >= 8) rex |= REX_B;
+        if (rex != REX || w)
+            code.EmitByte(rex);
+    }
+
+    private static void EmitRexXmmXmmS(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+    }
+
+    public static void LoadFloat32(ref CodeBuffer code, VRegF dst, VReg baseReg, int disp)
+    {
+        var xmm = MapF(dst);
+        var b = Map(baseReg);
+        code.EmitByte(0xF3);  // SSE prefix
+        EmitRexXmmS(ref code, false, xmm, b);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x10);  // MOVSS xmm, m32
+        EmitModRMMemDispS(ref code, (Reg64)xmm, b, disp);
+    }
+
+    public static void LoadFloat64(ref CodeBuffer code, VRegF dst, VReg baseReg, int disp)
+    {
+        var xmm = MapF(dst);
+        var b = Map(baseReg);
+        code.EmitByte(0xF2);  // SSE2 prefix
+        EmitRexXmmS(ref code, false, xmm, b);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x10);  // MOVSD xmm, m64
+        EmitModRMMemDispS(ref code, (Reg64)xmm, b, disp);
+    }
+
+    public static void StoreFloat32(ref CodeBuffer code, VReg baseReg, int disp, VRegF src)
+    {
+        var xmm = MapF(src);
+        var b = Map(baseReg);
+        code.EmitByte(0xF3);
+        EmitRexXmmS(ref code, false, xmm, b);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x11);  // MOVSS m32, xmm
+        EmitModRMMemDispS(ref code, (Reg64)xmm, b, disp);
+    }
+
+    public static void StoreFloat64(ref CodeBuffer code, VReg baseReg, int disp, VRegF src)
+    {
+        var xmm = MapF(src);
+        var b = Map(baseReg);
+        code.EmitByte(0xF2);
+        EmitRexXmmS(ref code, false, xmm, b);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x11);  // MOVSD m64, xmm
+        EmitModRMMemDispS(ref code, (Reg64)xmm, b, disp);
+    }
+
+    public static void MovFF(ref CodeBuffer code, VRegF dst, VRegF src, bool isDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(isDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x10);  // MOVSS/MOVSD xmm, xmm
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    public static void AddFloat(ref CodeBuffer code, VRegF dst, VRegF src, bool isDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(isDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x58);  // ADDSS/ADDSD
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    public static void SubFloat(ref CodeBuffer code, VRegF dst, VRegF src, bool isDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(isDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5C);  // SUBSS/SUBSD
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    public static void MulFloat(ref CodeBuffer code, VRegF dst, VRegF src, bool isDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(isDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x59);  // MULSS/MULSD
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    public static void DivFloat(ref CodeBuffer code, VRegF dst, VRegF src, bool isDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(isDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5E);  // DIVSS/DIVSD
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    // === Conversions ===
+    public static void ConvertInt32ToFloat(ref CodeBuffer code, VRegF dst, VReg src, bool toDouble)
+    {
+        var xmm = MapF(dst);
+        var r = Map(src);
+        code.EmitByte(toDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmS(ref code, false, xmm, r);  // No REX.W = 32-bit source
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);  // CVTSI2SS/CVTSI2SD
+        EmitModRMRegS(ref code, (Reg64)xmm, r);
+    }
+
+    public static void ConvertInt64ToFloat(ref CodeBuffer code, VRegF dst, VReg src, bool toDouble)
+    {
+        var xmm = MapF(dst);
+        var r = Map(src);
+        code.EmitByte(toDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmS(ref code, true, xmm, r);  // REX.W for 64-bit source
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);  // CVTSI2SS/CVTSI2SD
+        EmitModRMRegS(ref code, (Reg64)xmm, r);
+    }
+
+    public static void ConvertFloatToInt64(ref CodeBuffer code, VReg dst, VRegF src, bool fromDouble)
+    {
+        var r = Map(dst);
+        var xmm = MapF(src);
+        code.EmitByte(fromDouble ? (byte)0xF2 : (byte)0xF3);
+        EmitRexXmmS(ref code, true, (RegXMM)r, (Reg64)xmm);  // REX.W for 64-bit dest
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2C);  // CVTTSS2SI/CVTTSD2SI (truncate)
+        EmitModRMRegS(ref code, r, (Reg64)xmm);
+    }
+
+    public static void ConvertFloatPrecision(ref CodeBuffer code, VRegF dst, VRegF src, bool toDouble)
+    {
+        var d = MapF(dst);
+        var s = MapF(src);
+        code.EmitByte(toDouble ? (byte)0xF3 : (byte)0xF2);  // F3 for CVTSS2SD, F2 for CVTSD2SS
+        EmitRexXmmXmmS(ref code, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5A);  // CVTSS2SD or CVTSD2SS
+        EmitModRMRegS(ref code, (Reg64)d, (Reg64)s);
+    }
+
+    // === Miscellaneous ===
+    public static void Nop(ref CodeBuffer code)
+    {
+        code.EmitByte(0x90);  // NOP
+    }
+
+    public static void Breakpoint(ref CodeBuffer code)
+    {
+        code.EmitByte(0xCC);  // INT 3
+    }
+
+    public static void SignExtendForDivision(ref CodeBuffer code)
+    {
+        // CQO - sign-extend RAX to RDX:RAX for 64-bit division
+        code.EmitByte(0x48);  // REX.W
+        code.EmitByte(0x99);  // CQO
+    }
+
+    public static void ZeroExtend32(ref CodeBuffer code, VReg reg)
+    {
+        // Move 32-bit to 32-bit clears upper 32 bits
+        var r = Map(reg);
+        if ((byte)r >= 8)
+        {
+            code.EmitByte((byte)(REX | REX_R | REX_B));
+        }
+        code.EmitByte(0x89);  // MOV r32, r32
+        EmitModRMRegS(ref code, r, r);
+    }
+
+    // ==================== Additional Static Methods for ILCompiler ====================
+    // These provide VReg-based static methods matching the instance method signatures
+
+    /// <summary>
+    /// Move from memory to register (64-bit): dst = [baseReg + disp]
+    /// </summary>
+    public static void MovRM(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load64(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move from register to memory (64-bit): [baseReg + disp] = src
+    /// </summary>
+    public static void MovMR(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        Store64(ref code, baseReg, disp, src);
+    }
+
+    /// <summary>
+    /// Move from memory to register (32-bit zero-extended): dst = [baseReg + disp]
+    /// </summary>
+    public static void MovRM32(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load32(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move from register to memory (32-bit): [baseReg + disp] = src
+    /// </summary>
+    public static void MovMR32(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        Store32(ref code, baseReg, disp, src);
+    }
+
+    /// <summary>
+    /// Move from register to memory (16-bit): [baseReg + disp] = src
+    /// </summary>
+    public static void MovMR16(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        Store16(ref code, baseReg, disp, src);
+    }
+
+    /// <summary>
+    /// Move from register to memory (8-bit): [baseReg + disp] = src
+    /// </summary>
+    public static void MovMR8(ref CodeBuffer code, VReg baseReg, int disp, VReg src)
+    {
+        Store8(ref code, baseReg, disp, src);
+    }
+
+    /// <summary>
+    /// Add register to register: dst = dst + src
+    /// </summary>
+    public static void AddRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        Add(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// Add immediate to register: dst = dst + imm
+    /// </summary>
+    public static void AddRI(ref CodeBuffer code, VReg dst, int imm)
+    {
+        AddImm(ref code, dst, imm);
+    }
+
+    /// <summary>
+    /// Subtract register from register: dst = dst - src
+    /// </summary>
+    public static void SubRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        Sub(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// Subtract immediate from register: dst = dst - imm
+    /// </summary>
+    public static void SubRI(ref CodeBuffer code, VReg dst, int imm)
+    {
+        SubImm(ref code, dst, imm);
+    }
+
+    /// <summary>
+    /// Signed multiply: dst = dst * src
+    /// </summary>
+    public static void ImulRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        Mul(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// XOR register with register: dst = dst ^ src
+    /// </summary>
+    public static void XorRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        Xor(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// OR register with register: dst = dst | src
+    /// </summary>
+    public static void OrRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        Or(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// AND register with register: dst = dst & src
+    /// </summary>
+    public static void AndRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        And(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// Shift left by immediate.
+    /// </summary>
+    public static void ShlImm(ref CodeBuffer code, VReg reg, byte imm)
+    {
+        ShiftLeftImm(ref code, reg, imm);
+    }
+
+    /// <summary>
+    /// Shift right (arithmetic/signed) by register.
+    /// </summary>
+    public static void SarCL(ref CodeBuffer code, VReg reg)
+    {
+        // Shift amount in CL (R1)
+        ShiftRightSigned(ref code, reg, VReg.R1);
+    }
+
+    /// <summary>
+    /// Shift right (logical/unsigned) by register.
+    /// </summary>
+    public static void ShrCL(ref CodeBuffer code, VReg reg)
+    {
+        ShiftRightUnsigned(ref code, reg, VReg.R1);
+    }
+
+    /// <summary>
+    /// Shift left by register.
+    /// </summary>
+    public static void ShlCL(ref CodeBuffer code, VReg reg)
+    {
+        ShiftLeft(ref code, reg, VReg.R1);
+    }
+
+    /// <summary>
+    /// Compare register with register (64-bit).
+    /// </summary>
+    public static void CmpRR(ref CodeBuffer code, VReg left, VReg right)
+    {
+        Compare(ref code, left, right);
+    }
+
+    /// <summary>
+    /// Compare register with register (32-bit).
+    /// </summary>
+    public static void CmpRR32(ref CodeBuffer code, VReg left, VReg right)
+    {
+        Compare32(ref code, left, right);
+    }
+
+    /// <summary>
+    /// Compare register with immediate.
+    /// </summary>
+    public static void CmpRI(ref CodeBuffer code, VReg reg, int imm)
+    {
+        CompareImm(ref code, reg, imm);
+    }
+
+    /// <summary>
+    /// Test register with register (AND without storing result).
+    /// </summary>
+    public static void TestRR(ref CodeBuffer code, VReg left, VReg right)
+    {
+        Test(ref code, left, right);
+    }
+
+    /// <summary>
+    /// Call through register.
+    /// </summary>
+    public static void CallR(ref CodeBuffer code, VReg target)
+    {
+        CallReg(ref code, target);
+    }
+
+    /// <summary>
+    /// INT 3 breakpoint.
+    /// </summary>
+    public static void Int3(ref CodeBuffer code)
+    {
+        Breakpoint(ref code);
+    }
+
+    /// <summary>
+    /// Load effective address: dst = baseReg + disp
+    /// </summary>
+    public static void Lea(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        LoadAddress(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Jump relative 32-bit. Returns patch offset.
+    /// </summary>
+    public static int JmpRel32(ref CodeBuffer code)
+    {
+        return JumpRel32(ref code);
+    }
+
+    /// <summary>
+    /// Conditional jump. Returns patch offset.
+    /// </summary>
+    public static int JccRel32(ref CodeBuffer code, byte cc)
+    {
+        // Map x64 condition codes to Condition enum
+        Condition cond = cc switch
+        {
+            CC_E => Condition.Equal,
+            CC_NE => Condition.NotEqual,
+            CC_L => Condition.LessThan,
+            CC_LE => Condition.LessOrEqual,
+            CC_G => Condition.GreaterThan,
+            CC_GE => Condition.GreaterOrEqual,
+            CC_B => Condition.Below,
+            CC_BE => Condition.BelowOrEqual,
+            CC_A => Condition.Above,
+            CC_AE => Condition.AboveOrEqual,
+            _ => Condition.Equal,
+        };
+        return JumpConditional(ref code, cond);
+    }
+
+    /// <summary>
+    /// Jump if equal (ZF=1).
+    /// </summary>
+    public static int Je(ref CodeBuffer code)
+    {
+        return JumpConditional(ref code, Condition.Equal);
+    }
+
+    /// <summary>
+    /// Jump if not equal (ZF=0).
+    /// </summary>
+    public static int Jne(ref CodeBuffer code)
+    {
+        return JumpConditional(ref code, Condition.NotEqual);
+    }
+
+    /// <summary>
+    /// Move with zero-extend from byte: dst = zero-extend([baseReg + disp])
+    /// </summary>
+    public static void MovzxByte(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load8(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move with sign-extend from byte: dst = sign-extend([baseReg + disp])
+    /// </summary>
+    public static void MovsxByte(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load8Signed(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move with zero-extend from word: dst = zero-extend([baseReg + disp])
+    /// </summary>
+    public static void MovzxWord(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load16(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move with sign-extend from word: dst = sign-extend([baseReg + disp])
+    /// </summary>
+    public static void MovsxWord(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load16Signed(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move with sign-extend from dword: dst = sign-extend([baseReg + disp])
+    /// </summary>
+    public static void MovsxdRM(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load32Signed(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Load argument from home/shadow space.
+    /// </summary>
+    public static void LoadArgFromHome(ref CodeBuffer code, VReg dst, int argIndex)
+    {
+        LoadArg(ref code, dst, argIndex);
+    }
+
+    /// <summary>
+    /// Negate register: reg = -reg
+    /// </summary>
+    public static void NegR(ref CodeBuffer code, VReg reg)
+    {
+        Neg(ref code, reg);
+    }
+
+    /// <summary>
+    /// NOT register: reg = ~reg
+    /// </summary>
+    public static void NotR(ref CodeBuffer code, VReg reg)
+    {
+        Not(ref code, reg);
+    }
+
+    /// <summary>
+    /// CQO - sign-extend RAX to RDX:RAX for 64-bit signed division.
+    /// </summary>
+    public static void Cqo(ref CodeBuffer code)
+    {
+        SignExtendForDivision(ref code);
+    }
+
+    /// <summary>
+    /// IDIV - signed divide RDX:RAX by register.
+    /// </summary>
+    public static void IdivR(ref CodeBuffer code, VReg divisor)
+    {
+        DivSigned(ref code, divisor);
+    }
+
+    /// <summary>
+    /// DIV - unsigned divide RDX:RAX by register.
+    /// </summary>
+    public static void DivR(ref CodeBuffer code, VReg divisor)
+    {
+        DivUnsigned(ref code, divisor);
+    }
+
+    // ==================== XMM Static Methods ====================
+
+    /// <summary>
+    /// Move qword from GPR to XMM: xmm = r64 (bits)
+    /// </summary>
+    public static void MovqXmmR64(ref CodeBuffer code, RegXMM xmm, VReg src)
+    {
+        var s = Map(src);
+        // 66 REX.W 0F 6E /r - MOVQ xmm, r/m64
+        code.EmitByte(0x66);
+        EmitRexS(ref code, true, (Reg64)xmm, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x6E);
+        EmitModRMRegS(ref code, (Reg64)xmm, s);
+    }
+
+    /// <summary>
+    /// Move qword from XMM to GPR: r64 = xmm (bits)
+    /// </summary>
+    public static void MovqR64Xmm(ref CodeBuffer code, VReg dst, RegXMM xmm)
+    {
+        var d = Map(dst);
+        // 66 REX.W 0F 7E /r - MOVQ r/m64, xmm
+        code.EmitByte(0x66);
+        EmitRexS(ref code, true, (Reg64)xmm, d);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x7E);
+        EmitModRMRegS(ref code, (Reg64)xmm, d);
+    }
+
+    /// <summary>
+    /// Move dword from GPR to XMM: xmm = r32 (bits)
+    /// </summary>
+    public static void MovdXmmR32(ref CodeBuffer code, RegXMM xmm, VReg src)
+    {
+        var s = Map(src);
+        // 66 0F 6E /r - MOVD xmm, r/m32
+        code.EmitByte(0x66);
+        if ((byte)xmm >= 8 || (byte)s >= 8)
+        {
+            byte rex = REX;
+            if ((byte)xmm >= 8) rex |= REX_R;
+            if ((byte)s >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x6E);
+        EmitModRMRegS(ref code, (Reg64)xmm, s);
+    }
+
+    /// <summary>
+    /// Move dword from XMM to GPR: r32 = xmm (bits)
+    /// </summary>
+    public static void MovdR32Xmm(ref CodeBuffer code, VReg dst, RegXMM xmm)
+    {
+        var d = Map(dst);
+        // 66 0F 7E /r - MOVD r/m32, xmm
+        code.EmitByte(0x66);
+        if ((byte)xmm >= 8 || (byte)d >= 8)
+        {
+            byte rex = REX;
+            if ((byte)xmm >= 8) rex |= REX_R;
+            if ((byte)d >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x7E);
+        EmitModRMRegS(ref code, (Reg64)xmm, d);
+    }
+
+    /// <summary>
+    /// ADDSD - Add scalar double.
+    /// </summary>
+    public static void AddsdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F2 0F 58 /r
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x58);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// ADDSS - Add scalar single.
+    /// </summary>
+    public static void AddssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F3 0F 58 /r
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x58);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// SUBSD - Subtract scalar double.
+    /// </summary>
+    public static void SubsdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F2 0F 5C /r
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5C);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// SUBSS - Subtract scalar single.
+    /// </summary>
+    public static void SubssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F3 0F 5C /r
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5C);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// MULSD - Multiply scalar double.
+    /// </summary>
+    public static void MulsdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F2 0F 59 /r
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x59);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// MULSS - Multiply scalar single.
+    /// </summary>
+    public static void MulssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F3 0F 59 /r
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x59);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// DIVSD - Divide scalar double.
+    /// </summary>
+    public static void DivsdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F2 0F 5E /r
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5E);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// DIVSS - Divide scalar single.
+    /// </summary>
+    public static void DivssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F3 0F 5E /r
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5E);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// MOVSS from memory: xmm = [baseReg + disp]
+    /// </summary>
+    public static void MovssRM(ref CodeBuffer code, RegXMM dst, VReg baseReg, int disp)
+    {
+        var b = Map(baseReg);
+        // F3 0F 10 /r - MOVSS xmm, m32
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x10);
+        EmitModRMMemDispS(ref code, (Reg64)dst, b, disp);
+    }
+
+    /// <summary>
+    /// MOVSS to memory: [baseReg + disp] = xmm
+    /// </summary>
+    public static void MovssMR(ref CodeBuffer code, VReg baseReg, int disp, RegXMM src)
+    {
+        var b = Map(baseReg);
+        // F3 0F 11 /r - MOVSS m32, xmm
+        code.EmitByte(0xF3);
+        if ((byte)src >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)src >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x11);
+        EmitModRMMemDispS(ref code, (Reg64)src, b, disp);
+    }
+
+    /// <summary>
+    /// MOVSD from memory: xmm = [baseReg + disp]
+    /// </summary>
+    public static void MovsdRM(ref CodeBuffer code, RegXMM dst, VReg baseReg, int disp)
+    {
+        var b = Map(baseReg);
+        // F2 0F 10 /r - MOVSD xmm, m64
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x10);
+        EmitModRMMemDispS(ref code, (Reg64)dst, b, disp);
+    }
+
+    /// <summary>
+    /// MOVSD to memory: [baseReg + disp] = xmm
+    /// </summary>
+    public static void MovsdMR(ref CodeBuffer code, VReg baseReg, int disp, RegXMM src)
+    {
+        var b = Map(baseReg);
+        // F2 0F 11 /r - MOVSD m64, xmm
+        code.EmitByte(0xF2);
+        if ((byte)src >= 8 || (byte)b >= 8)
+        {
+            byte rex = REX;
+            if ((byte)src >= 8) rex |= REX_R;
+            if ((byte)b >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x11);
+        EmitModRMMemDispS(ref code, (Reg64)src, b, disp);
+    }
+
+    /// <summary>
+    /// CVTSI2SD - Convert signed int64 to double: xmm = (double)r64
+    /// </summary>
+    public static void Cvtsi2sdXmmR64(ref CodeBuffer code, RegXMM dst, VReg src)
+    {
+        var s = Map(src);
+        // F2 REX.W 0F 2A /r
+        code.EmitByte(0xF2);
+        EmitRexS(ref code, true, (Reg64)dst, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);
+        EmitModRMRegS(ref code, (Reg64)dst, s);
+    }
+
+    /// <summary>
+    /// CVTSI2SS - Convert signed int64 to float: xmm = (float)r64
+    /// </summary>
+    public static void Cvtsi2ssXmmR64(ref CodeBuffer code, RegXMM dst, VReg src)
+    {
+        var s = Map(src);
+        // F3 REX.W 0F 2A /r
+        code.EmitByte(0xF3);
+        EmitRexS(ref code, true, (Reg64)dst, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);
+        EmitModRMRegS(ref code, (Reg64)dst, s);
+    }
+
+    /// <summary>
+    /// CVTTSD2SI - Convert double to signed int64 (truncate): r64 = (int64)xmm
+    /// </summary>
+    public static void Cvttsd2siR64Xmm(ref CodeBuffer code, VReg dst, RegXMM src)
+    {
+        var d = Map(dst);
+        // F2 REX.W 0F 2C /r
+        code.EmitByte(0xF2);
+        EmitRexS(ref code, true, d, (Reg64)src);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2C);
+        EmitModRMRegS(ref code, d, (Reg64)src);
+    }
+
+    /// <summary>
+    /// CVTTSS2SI - Convert float to signed int64 (truncate): r64 = (int64)xmm
+    /// </summary>
+    public static void Cvttss2siR64Xmm(ref CodeBuffer code, VReg dst, RegXMM src)
+    {
+        var d = Map(dst);
+        // F3 REX.W 0F 2C /r
+        code.EmitByte(0xF3);
+        EmitRexS(ref code, true, d, (Reg64)src);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2C);
+        EmitModRMRegS(ref code, d, (Reg64)src);
+    }
+
+    /// <summary>
+    /// CVTSS2SD - Convert float to double: dst = (double)src
+    /// </summary>
+    public static void Cvtss2sdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F3 0F 5A /r
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5A);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// CVTSD2SS - Convert double to float: dst = (float)src
+    /// </summary>
+    public static void Cvtsd2ssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // F2 0F 5A /r
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x5A);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// UCOMISD - Compare unordered scalar double.
+    /// </summary>
+    public static void UcomisdXmmXmm(ref CodeBuffer code, RegXMM left, RegXMM right)
+    {
+        // 66 0F 2E /r
+        code.EmitByte(0x66);
+        if ((byte)left >= 8 || (byte)right >= 8)
+        {
+            byte rex = REX;
+            if ((byte)left >= 8) rex |= REX_R;
+            if ((byte)right >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2E);
+        code.EmitByte(ModRM(0b11, (byte)left, (byte)right));
+    }
+
+    /// <summary>
+    /// UCOMISS - Compare unordered scalar single.
+    /// </summary>
+    public static void UcomissXmmXmm(ref CodeBuffer code, RegXMM left, RegXMM right)
+    {
+        // 0F 2E /r
+        if ((byte)left >= 8 || (byte)right >= 8)
+        {
+            byte rex = REX;
+            if ((byte)left >= 8) rex |= REX_R;
+            if ((byte)right >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2E);
+        code.EmitByte(ModRM(0b11, (byte)left, (byte)right));
+    }
+
+    /// <summary>
+    /// XORPS - XOR packed single (for zeroing XMM registers).
+    /// </summary>
+    public static void XorpsXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // 0F 57 /r
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x57);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// Shift right by immediate (logical/unsigned).
+    /// </summary>
+    public static void ShrImm8(ref CodeBuffer code, VReg reg, byte imm)
+    {
+        var r = Map(reg);
+        // REX.W C1 /5 ib - SHR r64, imm8
+        EmitRexS(ref code, true, Reg64.RAX, r);
+        code.EmitByte(0xC1);
+        code.EmitByte(ModRM(0b11, 5, (byte)((byte)r & 7)));
+        code.EmitByte(imm);
+    }
+
+    /// <summary>
+    /// CVTSI2SS - Convert signed int32 to float: xmm = (float)r32
+    /// </summary>
+    public static void Cvtsi2ssXmmR32(ref CodeBuffer code, RegXMM dst, VReg src)
+    {
+        var s = Map(src);
+        // F3 0F 2A /r - CVTSI2SS xmm, r32
+        code.EmitByte(0xF3);
+        if ((byte)dst >= 8 || (byte)s >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)s >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);
+        EmitModRMRegS(ref code, (Reg64)dst, s);
+    }
+
+    /// <summary>
+    /// CVTSI2SD - Convert signed int32 to double: xmm = (double)r32
+    /// </summary>
+    public static void Cvtsi2sdXmmR32(ref CodeBuffer code, RegXMM dst, VReg src)
+    {
+        var s = Map(src);
+        // F2 0F 2A /r - CVTSI2SD xmm, r32
+        code.EmitByte(0xF2);
+        if ((byte)dst >= 8 || (byte)s >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)s >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2A);
+        EmitModRMRegS(ref code, (Reg64)dst, s);
     }
 }

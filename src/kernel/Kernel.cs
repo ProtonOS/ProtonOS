@@ -110,9 +110,9 @@ public static unsafe class Kernel
 
         // Initialize architecture-specific code (GDT, IDT, virtual memory)
 #if ARCH_X64
-        Arch.Init();
+        ProtonOS.X64.Arch.Init();
 #elif ARCH_ARM64
-        // TODO: Arch.Init();
+        // TODO: ProtonOS.Arm64.Arch.Init();
 #endif
 
         // Initialize kernel heap
@@ -142,7 +142,7 @@ public static unsafe class Kernel
 
         // Second-stage arch init (timers, enable interrupts)
 #if ARCH_X64
-        Arch.InitStage2();
+        ProtonOS.X64.Arch.InitStage2();
 #endif
 
         // Tests disabled for clean logs - call Tests.Run() to enable

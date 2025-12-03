@@ -3,6 +3,7 @@
 
 using ProtonOS.Platform;
 using ProtonOS.X64;
+using ProtonOS.Arch;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -421,7 +422,7 @@ public unsafe delegate bool FieldResolver(uint token, out ResolvedField result);
 /// </summary>
 public unsafe struct ILCompiler
 {
-    private X64Emitter _emit;
+    private CodeBuffer _code;
     private byte* _il;
     private int _ilLength;
     private int _ilOffset;
@@ -515,8 +516,7 @@ public unsafe struct ILCompiler
         compiler._compilingFunclet = false;
 
         // Create code buffer (4KB should be plenty for simple methods)
-        var code = CodeBuffer.Create(4096);
-        compiler._emit = X64Emitter.Create(ref code);
+        compiler._code = CodeBuffer.Create(4096);
 
         return compiler;
     }
@@ -556,9 +556,9 @@ public unsafe struct ILCompiler
     }
 
     /// <summary>
-    /// Get the emitter (for accessing the code buffer)
+    /// Get the code buffer.
     /// </summary>
-    public ref X64Emitter Emitter => ref _emit;
+    public ref CodeBuffer Code => ref _code;
 
     /// <summary>
     /// Get the number of IL->native offset mappings recorded.
@@ -609,7 +609,7 @@ public unsafe struct ILCompiler
     {
         if (_gcRefMask != 0)
         {
-            _gcInfo.AddSafePoint((uint)_emit.Position);
+            _gcInfo.AddSafePoint((uint)_code.Position);
         }
     }
 
@@ -659,7 +659,7 @@ public unsafe struct ILCompiler
             return false;
 
         // Initialize with final code length
-        _gcInfo.Init((uint)_emit.Position, true);
+        _gcInfo.Init((uint)_code.Position, true);
 
         // Re-add the GC slots (Init clears them)
         InitializeGCSlots();
@@ -685,7 +685,7 @@ public unsafe struct ILCompiler
     /// <summary>
     /// Get the total code size in bytes (after Compile()).
     /// </summary>
-    public uint CodeSize => (uint)_emit.Position;
+    public uint CodeSize => (uint)_code.Position;
 
     /// <summary>
     /// Get the prologue size in bytes.
@@ -702,17 +702,17 @@ public unsafe struct ILCompiler
         // Emit prologue
         // Calculate local space: localCount * 8 + evalStack space
         int localBytes = _localCount * 8 + 64;  // 64 bytes for eval stack
-        _stackAdjust = _emit.EmitPrologue(localBytes, false);
+        _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes);
 
         // Home arguments to shadow space (so we can load them later)
         if (_argCount > 0)
-            _emit.HomeArguments(_argCount);
+            X64Emitter.HomeArguments(ref _code, _argCount);
 
         // Process IL
         while (_ilOffset < _ilLength)
         {
             // Record label for this IL offset
-            RecordLabel(_ilOffset, _emit.Position);
+            RecordLabel(_ilOffset, _code.Position);
 
             byte opcode = _il[_ilOffset++];
 
@@ -730,7 +730,7 @@ public unsafe struct ILCompiler
         // Patch forward branches
         PatchBranches();
 
-        return _emit.Code.GetFunctionPointer();
+        return _code.GetFunctionPointer();
     }
 
     private void RecordLabel(int ilOffset, int codeOffset)
@@ -775,7 +775,7 @@ public unsafe struct ILCompiler
                 int patchOffset = _branchPatchOffset[i];
                 // Calculate relative offset: target - (patch + 4)
                 int rel = codeOffset - (patchOffset + 4);
-                _emit.Code.PatchInt32(patchOffset, rel);
+                _code.PatchInt32(patchOffset, rel);
             }
         }
     }
@@ -791,7 +791,7 @@ public unsafe struct ILCompiler
                 return true;
 
             case ILOpcode.Break:
-                _emit.Int3();  // Emit x86 INT 3 breakpoint instruction
+                X64Emitter.Int3(ref _code);  // Emit x86 INT 3 breakpoint instruction
                 return true;
 
             // === Constants ===
@@ -1610,10 +1610,12 @@ public unsafe struct ILCompiler
 
     private bool CompileLdcI4(int value)
     {
-        // Push constant onto eval stack
-        // For naive implementation: mov rax, imm; push rax
-        _emit.MovRI32(Reg64.RAX, value);
-        _emit.Push(Reg64.RAX);
+        // Push constant onto eval stack (sign-extended to 64-bit)
+        // For naive implementation: mov rax, imm64; push rax
+        // We sign-extend to 64-bit so that comparisons with long work correctly
+        // and so that returning negative i4 values works properly
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)(long)value);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -1623,8 +1625,8 @@ public unsafe struct ILCompiler
         // Load argument from shadow space - use full 64-bit load
         // This handles both native int (pointer) and int32 arguments correctly
         // For int32 args, the caller already zero-extends per Microsoft x64 ABI
-        _emit.LoadArgFromHome(Reg64.RAX, index);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.LoadArgFromHome(ref _code, VReg.R0, index);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -1635,8 +1637,8 @@ public unsafe struct ILCompiler
         // After prologue: [rbp-8] = local0, [rbp-16] = local1, etc.
         // But we need to account for shadow space + stack adjustment
         int offset = X64Emitter.GetLocalOffset(index);
-        _emit.MovRM(Reg64.RAX, Reg64.RBP, offset);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -1644,18 +1646,18 @@ public unsafe struct ILCompiler
     private bool CompileStloc(int index)
     {
         // Pop from eval stack, store to local
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
         int offset = X64Emitter.GetLocalOffset(index);
-        _emit.MovMR(Reg64.RBP, offset, Reg64.RAX);
+        X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
         return true;
     }
 
     private bool CompileDup()
     {
         // Duplicate top of stack
-        _emit.MovRM(Reg64.RAX, Reg64.RSP, 0);  // Read top without popping
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);  // Read top without popping
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -1663,7 +1665,7 @@ public unsafe struct ILCompiler
     private bool CompilePop()
     {
         // Discard top of stack
-        _emit.AddRI(Reg64.RSP, 8);
+        X64Emitter.AddRI(ref _code, VReg.SP, 8);
         PopStackType();
         return true;
     }
@@ -1727,8 +1729,8 @@ public unsafe struct ILCompiler
         {
             // Float arithmetic - use SSE
             // Pop both operands from memory stack
-            _emit.Pop(Reg64.RDX);  // Second operand (bits)
-            _emit.Pop(Reg64.RAX);  // First operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
 
             // Determine if single or double precision (use widest type)
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
@@ -1736,35 +1738,35 @@ public unsafe struct ILCompiler
             if (isDouble)
             {
                 // Move bit patterns to XMM registers
-                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
                 // ADDSD xmm0, xmm1
-                _emit.AddsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.AddsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float64);
             }
             else
             {
                 // Single precision
-                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
                 // ADDSS xmm0, xmm1
-                _emit.AddssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.AddssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float32);
             }
         }
         else
         {
             // Integer arithmetic
-            _emit.Pop(Reg64.RDX);  // Second operand
-            _emit.Pop(Reg64.RAX);  // First operand
-            _emit.AddRR(Reg64.RAX, Reg64.RDX);
-            _emit.Push(Reg64.RAX);
+            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
+            X64Emitter.Pop(ref _code, VReg.R0);  // First operand
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+            X64Emitter.Push(ref _code, VReg.R0);
             PushStackType(StackType_Int);
         }
         return true;
@@ -1779,37 +1781,37 @@ public unsafe struct ILCompiler
         if (IsFloatType(type1) || IsFloatType(type2))
         {
             // Float arithmetic - use SSE
-            _emit.Pop(Reg64.RDX);  // Second operand (bits)
-            _emit.Pop(Reg64.RAX);  // First operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
 
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
 
             if (isDouble)
             {
-                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
-                _emit.SubsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.SubsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float64);
             }
             else
             {
-                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
-                _emit.SubssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.SubssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float32);
             }
         }
         else
         {
             // Integer arithmetic
-            _emit.Pop(Reg64.RDX);
-            _emit.Pop(Reg64.RAX);
-            _emit.SubRR(Reg64.RAX, Reg64.RDX);
-            _emit.Push(Reg64.RAX);
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R0);
+            X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
+            X64Emitter.Push(ref _code, VReg.R0);
             PushStackType(StackType_Int);
         }
         return true;
@@ -1824,37 +1826,37 @@ public unsafe struct ILCompiler
         if (IsFloatType(type1) || IsFloatType(type2))
         {
             // Float arithmetic - use SSE
-            _emit.Pop(Reg64.RDX);  // Second operand (bits)
-            _emit.Pop(Reg64.RAX);  // First operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
+            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
 
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
 
             if (isDouble)
             {
-                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RDX);
-                _emit.MulsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.MulsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float64);
             }
             else
             {
-                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RDX);
-                _emit.MulssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.MulssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float32);
             }
         }
         else
         {
             // Integer arithmetic
-            _emit.Pop(Reg64.RDX);
-            _emit.Pop(Reg64.RAX);
-            _emit.ImulRR(Reg64.RAX, Reg64.RDX);
-            _emit.Push(Reg64.RAX);
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R0);
+            X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
+            X64Emitter.Push(ref _code, VReg.R0);
             PushStackType(StackType_Int);
         }
         return true;
@@ -1866,34 +1868,34 @@ public unsafe struct ILCompiler
 
     private bool CompileAddOvf(bool unsigned)
     {
-        _emit.Pop(Reg64.RDX);  // Second operand
-        _emit.Pop(Reg64.RAX);  // First operand
+        X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
+        X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         _evalStackDepth -= 2;
-        _emit.AddRR(Reg64.RAX, Reg64.RDX);
+        X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileSubOvf(bool unsigned)
     {
-        _emit.Pop(Reg64.RDX);  // Second operand (subtrahend)
-        _emit.Pop(Reg64.RAX);  // First operand (minuend)
+        X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (subtrahend)
+        X64Emitter.Pop(ref _code, VReg.R0);  // First operand (minuend)
         _evalStackDepth -= 2;
-        _emit.SubRR(Reg64.RAX, Reg64.RDX);
+        X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1 = borrow)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileMulOvf(bool unsigned)
     {
-        _emit.Pop(Reg64.RDX);  // Second operand
-        _emit.Pop(Reg64.RAX);  // First operand
+        X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
+        X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         _evalStackDepth -= 2;
 
         if (unsigned)
@@ -1901,20 +1903,20 @@ public unsafe struct ILCompiler
             // mul rdx: unsigned RAX * RDX -> RDX:RAX
             // If RDX != 0 after, overflow occurred
             // Encoding: REX.W + F7 /4 (mul r/m64)
-            _emit.Code.EmitByte(0x48);  // REX.W
-            _emit.Code.EmitByte(0xF7);  // MUL
-            _emit.Code.EmitByte(0xE2);  // ModRM: /4 rdx
+            _code.EmitByte(0x48);  // REX.W
+            _code.EmitByte(0xF7);  // MUL
+            _code.EmitByte(0xE2);  // ModRM: /4 rdx
             // mul sets CF=OF=1 if high half is non-zero
             EmitJccToInt3(0x72);  // JC overflow
         }
         else
         {
             // imul rax, rdx: signed, result in RAX, sets OF if overflow
-            _emit.ImulRR(Reg64.RAX, Reg64.RDX);
+            X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
             EmitJccToInt3(0x70);  // JO overflow
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -1927,7 +1929,7 @@ public unsafe struct ILCompiler
     private bool CompileCkfinite()
     {
         // Pop value into RAX (it stays on the logical stack, we just peek and check)
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // For double: exponent is bits 52-62 (11 bits)
@@ -1936,86 +1938,86 @@ public unsafe struct ILCompiler
         // After shift right by 52: 0x7FF means not finite
 
         // mov rdx, rax  (save value)
-        _emit.MovRR(Reg64.RDX, Reg64.RAX);
+        X64Emitter.MovRR(ref _code, VReg.R2, VReg.R0);
 
         // shr rax, 52  (shift to get exponent in low 11 bits)
         // REX.W + C1 /5 ib
-        _emit.Code.EmitByte(0x48);  // REX.W
-        _emit.Code.EmitByte(0xC1);  // SHR r/m64, imm8
-        _emit.Code.EmitByte(0xE8);  // ModRM: /5 rax
-        _emit.Code.EmitByte(52);    // shift by 52
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0xC1);  // SHR r/m64, imm8
+        _code.EmitByte(0xE8);  // ModRM: /5 rax
+        _code.EmitByte(52);    // shift by 52
 
         // and rax, 0x7FF  (mask to get just exponent bits, ignoring sign)
-        _emit.Code.EmitByte(0x48);  // REX.W
-        _emit.Code.EmitByte(0x25);  // AND RAX, imm32
-        _emit.Code.EmitByte(0xFF);  // 0x7FF
-        _emit.Code.EmitByte(0x07);
-        _emit.Code.EmitByte(0x00);
-        _emit.Code.EmitByte(0x00);
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0x25);  // AND RAX, imm32
+        _code.EmitByte(0xFF);  // 0x7FF
+        _code.EmitByte(0x07);
+        _code.EmitByte(0x00);
+        _code.EmitByte(0x00);
 
         // cmp rax, 0x7FF  (if exponent == 0x7FF, value is not finite)
-        _emit.Code.EmitByte(0x48);  // REX.W
-        _emit.Code.EmitByte(0x3D);  // CMP RAX, imm32
-        _emit.Code.EmitByte(0xFF);  // 0x7FF
-        _emit.Code.EmitByte(0x07);
-        _emit.Code.EmitByte(0x00);
-        _emit.Code.EmitByte(0x00);
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0x3D);  // CMP RAX, imm32
+        _code.EmitByte(0xFF);  // 0x7FF
+        _code.EmitByte(0x07);
+        _code.EmitByte(0x00);
+        _code.EmitByte(0x00);
 
         // JE -> INT3 (if equal, not finite, trigger exception)
         EmitJccToInt3(0x74);  // JE (ZF=1)
 
         // Restore original value and push back
-        _emit.Push(Reg64.RDX);
+        X64Emitter.Push(ref _code, VReg.R2);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileNeg()
     {
-        _emit.Pop(Reg64.RAX);
-        _emit.Neg(Reg64.RAX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
+        X64Emitter.Neg(ref _code, VReg.R0);
+        X64Emitter.Push(ref _code, VReg.R0);
         return true;
     }
 
     private bool CompileAnd()
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
-        _emit.AndRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.AndRR(ref _code, VReg.R0, VReg.R2);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileOr()
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
-        _emit.OrRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.OrRR(ref _code, VReg.R0, VReg.R2);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileXor()
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
-        _emit.XorRR(Reg64.RAX, Reg64.RDX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileNot()
     {
-        _emit.Pop(Reg64.RAX);
-        _emit.Not(Reg64.RAX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
+        X64Emitter.Not(ref _code, VReg.R0);
+        X64Emitter.Push(ref _code, VReg.R0);
         return true;
     }
 
@@ -2029,57 +2031,57 @@ public unsafe struct ILCompiler
         if (IsFloatType(type1) || IsFloatType(type2))
         {
             // Float division - use SSE
-            _emit.Pop(Reg64.RCX);  // Divisor (bits)
-            _emit.Pop(Reg64.RAX);  // Dividend (bits)
+            X64Emitter.Pop(ref _code, VReg.R1);  // Divisor (bits)
+            X64Emitter.Pop(ref _code, VReg.R0);  // Dividend (bits)
 
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
 
             if (isDouble)
             {
-                _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovqXmmR64(RegXMM.XMM1, Reg64.RCX);
-                _emit.DivsdXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R1);
+                X64Emitter.DivsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float64);
             }
             else
             {
-                _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RAX);
-                _emit.MovdXmmR32(RegXMM.XMM1, Reg64.RCX);
-                _emit.DivssXmmXmm(RegXMM.XMM0, RegXMM.XMM1);
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R1);
+                X64Emitter.DivssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 PushStackType(StackType_Float32);
             }
         }
         else
         {
             // Integer division
-            _emit.Pop(Reg64.RCX);  // Divisor to RCX (preserving RDX)
-            _emit.Pop(Reg64.RAX);  // Dividend to RAX
+            X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX (preserving RDX)
+            X64Emitter.Pop(ref _code, VReg.R0);  // Dividend to RAX
 
             if (signed)
             {
                 // Sign-extend RAX into RDX:RAX
-                _emit.Cqo();
+                X64Emitter.Cqo(ref _code);
                 // Signed divide
-                _emit.Idiv(Reg64.RCX);
+                X64Emitter.IdivR(ref _code, VReg.R1);
             }
             else
             {
                 // For unsigned 32-bit division, we need to zero-extend the operands
                 // to ensure they're treated as unsigned 32-bit values, not sign-extended 64-bit
-                _emit.ZeroExtend32(Reg64.RAX);
-                _emit.ZeroExtend32(Reg64.RCX);
+                X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+                X64Emitter.ZeroExtend32(ref _code, VReg.R1);
                 // Zero RDX for unsigned division
-                _emit.XorRR(Reg64.RDX, Reg64.RDX);
+                X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
                 // Unsigned divide
-                _emit.Div(Reg64.RCX);
+                X64Emitter.DivR(ref _code, VReg.R1);
             }
 
             // Quotient is in RAX
-            _emit.Push(Reg64.RAX);
+            X64Emitter.Push(ref _code, VReg.R0);
             PushStackType(StackType_Int);
         }
         return true;
@@ -2089,26 +2091,26 @@ public unsafe struct ILCompiler
     {
         // Remainder: dividend % divisor
         // IL stack: [..., dividend, divisor] -> [..., remainder]
-        _emit.Pop(Reg64.RCX);  // Divisor to RCX
-        _emit.Pop(Reg64.RAX);  // Dividend to RAX
+        X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX
+        X64Emitter.Pop(ref _code, VReg.R0);  // Dividend to RAX
         _evalStackDepth -= 2;
 
         if (signed)
         {
-            _emit.Cqo();
-            _emit.Idiv(Reg64.RCX);
+            X64Emitter.Cqo(ref _code);
+            X64Emitter.IdivR(ref _code, VReg.R1);
         }
         else
         {
             // For unsigned 32-bit remainder, zero-extend operands
-            _emit.ZeroExtend32(Reg64.RAX);
-            _emit.ZeroExtend32(Reg64.RCX);
-            _emit.XorRR(Reg64.RDX, Reg64.RDX);
-            _emit.Div(Reg64.RCX);
+            X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+            X64Emitter.ZeroExtend32(ref _code, VReg.R1);
+            X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
+            X64Emitter.DivR(ref _code, VReg.R1);
         }
 
         // Remainder is in RDX
-        _emit.Push(Reg64.RDX);
+        X64Emitter.Push(ref _code, VReg.R2);
         _evalStackDepth++;
         return true;
     }
@@ -2117,11 +2119,11 @@ public unsafe struct ILCompiler
     {
         // Shift left: value << shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
-        _emit.Pop(Reg64.RCX);  // Shift amount to CL
-        _emit.Pop(Reg64.RAX);  // Value to shift
+        X64Emitter.Pop(ref _code, VReg.R1);  // Shift amount to CL
+        X64Emitter.Pop(ref _code, VReg.R0);  // Value to shift
         _evalStackDepth -= 2;
-        _emit.ShlCL(Reg64.RAX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.ShlCL(ref _code, VReg.R0);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2129,23 +2131,23 @@ public unsafe struct ILCompiler
     private bool CompileShr(bool signed)
     {
         // Shift right: value >> shiftAmount
-        _emit.Pop(Reg64.RCX);  // Shift amount to CL
-        _emit.Pop(Reg64.RAX);  // Value to shift
+        X64Emitter.Pop(ref _code, VReg.R1);  // Shift amount to CL
+        X64Emitter.Pop(ref _code, VReg.R0);  // Value to shift
         _evalStackDepth -= 2;
 
         if (signed)
         {
-            _emit.SarCL(Reg64.RAX);  // Arithmetic shift (preserves sign)
+            X64Emitter.SarCL(ref _code, VReg.R0);  // Arithmetic shift (preserves sign)
         }
         else
         {
             // For unsigned 32-bit shift, zero-extend the value first
             // so logical shift fills with zeros from the correct upper bit
-            _emit.ZeroExtend32(Reg64.RAX);
-            _emit.ShrCL(Reg64.RAX);  // Logical shift (zero-fill)
+            X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+            X64Emitter.ShrCL(ref _code, VReg.R0);  // Logical shift (zero-fill)
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2154,7 +2156,7 @@ public unsafe struct ILCompiler
     {
         // Convert top of stack to different size
         // For naive JIT, we just mask/sign-extend as needed
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
 
         switch (targetBytes)
         {
@@ -2162,17 +2164,17 @@ public unsafe struct ILCompiler
                 if (signed)
                 {
                     // MOVSX RAX, AL - sign-extend byte to qword
-                    _emit.Code.EmitByte(0x48);  // REX.W
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xBE);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: RAX, AL
+                    _code.EmitByte(0x48);  // REX.W
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xBE);
+                    _code.EmitByte(0xC0);  // ModRM: RAX, AL
                 }
                 else
                 {
                     // MOVZX EAX, AL - zero-extend byte (clears upper bits)
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xB6);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: EAX, AL
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xB6);
+                    _code.EmitByte(0xC0);  // ModRM: EAX, AL
                 }
                 break;
 
@@ -2180,17 +2182,17 @@ public unsafe struct ILCompiler
                 if (signed)
                 {
                     // MOVSX RAX, AX - sign-extend word to qword
-                    _emit.Code.EmitByte(0x48);  // REX.W
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xBF);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: RAX, AX
+                    _code.EmitByte(0x48);  // REX.W
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xBF);
+                    _code.EmitByte(0xC0);  // ModRM: RAX, AX
                 }
                 else
                 {
                     // MOVZX EAX, AX - zero-extend word
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xB7);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: EAX, AX
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xB7);
+                    _code.EmitByte(0xC0);  // ModRM: EAX, AX
                 }
                 break;
 
@@ -2198,32 +2200,40 @@ public unsafe struct ILCompiler
                 if (signed)
                 {
                     // MOVSXD RAX, EAX - sign-extend dword to qword
-                    _emit.Code.EmitByte(0x48);  // REX.W
-                    _emit.Code.EmitByte(0x63);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                    _code.EmitByte(0x48);  // REX.W
+                    _code.EmitByte(0x63);
+                    _code.EmitByte(0xC0);  // ModRM: RAX, EAX
                 }
                 else
                 {
                     // MOV EAX, EAX - writing to 32-bit reg zeros upper 32 bits
-                    _emit.Code.EmitByte(0x89);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: EAX, EAX
+                    _code.EmitByte(0x89);
+                    _code.EmitByte(0xC0);  // ModRM: EAX, EAX
                 }
                 break;
 
             case 8:
-                // For conv.i (signed), nothing to do - values are already sign-extended
-                // For conv.u (unsigned), need to zero-extend the low 32 bits
-                // because ldc.i4 sign-extends to 64-bit, so we need to mask
-                if (!signed)
+                // conv.i (signed): sign-extend from 32-bit to 64-bit
+                // conv.u (unsigned): zero-extend from 32-bit to 64-bit
+                // Note: ldc.i4 uses MOV r32, imm32 which zero-extends, so we need
+                // to explicitly sign-extend for conv.i
+                if (signed)
+                {
+                    // MOVSXD RAX, EAX - sign-extend dword to qword
+                    _code.EmitByte(0x48);  // REX.W
+                    _code.EmitByte(0x63);
+                    _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                }
+                else
                 {
                     // MOV EAX, EAX - writing to 32-bit reg zeros upper 32 bits
-                    _emit.Code.EmitByte(0x89);
-                    _emit.Code.EmitByte(0xC0);  // ModRM: EAX, EAX
+                    _code.EmitByte(0x89);
+                    _code.EmitByte(0xC0);  // ModRM: EAX, EAX
                 }
                 break;
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         return true;
     }
 
@@ -2234,7 +2244,7 @@ public unsafe struct ILCompiler
     private bool CompileConvOvf(int targetBytes, bool targetSigned, bool sourceUnsigned)
     {
         // Pop value from stack
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
 
         // We need to check if the value fits in the target range
         // then do the conversion.
@@ -2263,16 +2273,16 @@ public unsafe struct ILCompiler
                     // conv.ovf.i1: range -128..127
                     // Check: cmp rax, -128; jl overflow
                     // Check: cmp rax, 127; jg overflow
-                    _emit.CmpRI(Reg64.RAX, -128);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, -128);
                     EmitJccToInt3(0x7C);  // JL overflow
-                    _emit.CmpRI(Reg64.RAX, 127);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, 127);
                     EmitJccToInt3(0x7F);  // JG overflow
 
                     // Sign-extend AL to RAX
-                    _emit.Code.EmitByte(0x48);
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xBE);
-                    _emit.Code.EmitByte(0xC0);
+                    _code.EmitByte(0x48);
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xBE);
+                    _code.EmitByte(0xC0);
                 }
                 else
                 {
@@ -2280,19 +2290,19 @@ public unsafe struct ILCompiler
                     if (!sourceUnsigned)
                     {
                         // Check for negative: test rax, rax; js overflow
-                        _emit.Code.EmitByte(0x48);
-                        _emit.Code.EmitByte(0x85);
-                        _emit.Code.EmitByte(0xC0);  // TEST RAX, RAX
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x85);
+                        _code.EmitByte(0xC0);  // TEST RAX, RAX
                         EmitJccToInt3(0x78);  // JS overflow
                     }
                     // Check: cmp rax, 255; ja overflow
-                    _emit.CmpRI(Reg64.RAX, 255);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, 255);
                     EmitJccToInt3(0x77);  // JA overflow
 
                     // Zero-extend AL to RAX
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xB6);
-                    _emit.Code.EmitByte(0xC0);
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xB6);
+                    _code.EmitByte(0xC0);
                 }
                 break;
 
@@ -2300,16 +2310,16 @@ public unsafe struct ILCompiler
                 if (targetSigned)
                 {
                     // conv.ovf.i2: range -32768..32767
-                    _emit.CmpRI(Reg64.RAX, -32768);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, -32768);
                     EmitJccToInt3(0x7C);  // JL overflow
-                    _emit.CmpRI(Reg64.RAX, 32767);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, 32767);
                     EmitJccToInt3(0x7F);  // JG overflow
 
                     // Sign-extend AX to RAX
-                    _emit.Code.EmitByte(0x48);
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xBF);
-                    _emit.Code.EmitByte(0xC0);
+                    _code.EmitByte(0x48);
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xBF);
+                    _code.EmitByte(0xC0);
                 }
                 else
                 {
@@ -2317,18 +2327,18 @@ public unsafe struct ILCompiler
                     if (!sourceUnsigned)
                     {
                         // Check for negative
-                        _emit.Code.EmitByte(0x48);
-                        _emit.Code.EmitByte(0x85);
-                        _emit.Code.EmitByte(0xC0);
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x85);
+                        _code.EmitByte(0xC0);
                         EmitJccToInt3(0x78);  // JS overflow
                     }
-                    _emit.CmpRI(Reg64.RAX, 65535);
+                    X64Emitter.CmpRI(ref _code, VReg.R0, 65535);
                     EmitJccToInt3(0x77);  // JA overflow
 
                     // Zero-extend AX to RAX
-                    _emit.Code.EmitByte(0x0F);
-                    _emit.Code.EmitByte(0xB7);
-                    _emit.Code.EmitByte(0xC0);
+                    _code.EmitByte(0x0F);
+                    _code.EmitByte(0xB7);
+                    _code.EmitByte(0xC0);
                 }
                 break;
 
@@ -2338,11 +2348,11 @@ public unsafe struct ILCompiler
                     // conv.ovf.i4: value must fit in int32
                     // Use MOVSXD to sign-extend, then compare back
                     // If original != sign-extended, overflow
-                    _emit.MovRR(Reg64.RDX, Reg64.RAX);  // Save original
-                    _emit.Code.EmitByte(0x48);
-                    _emit.Code.EmitByte(0x63);
-                    _emit.Code.EmitByte(0xC0);  // MOVSXD RAX, EAX
-                    _emit.CmpRR(Reg64.RAX, Reg64.RDX);
+                    X64Emitter.MovRR(ref _code, VReg.R2, VReg.R0);  // Save original
+                    _code.EmitByte(0x48);
+                    _code.EmitByte(0x63);
+                    _code.EmitByte(0xC0);  // MOVSXD RAX, EAX
+                    X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
                     EmitJccToInt3(0x75);  // JNE overflow
                 }
                 else
@@ -2351,21 +2361,21 @@ public unsafe struct ILCompiler
                     if (!sourceUnsigned)
                     {
                         // Check for negative
-                        _emit.Code.EmitByte(0x48);
-                        _emit.Code.EmitByte(0x85);
-                        _emit.Code.EmitByte(0xC0);
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x85);
+                        _code.EmitByte(0xC0);
                         EmitJccToInt3(0x78);  // JS overflow
                     }
                     // Check upper 32 bits are zero
-                    _emit.MovRI64(Reg64.RDX, 0xFFFFFFFF00000000);
-                    _emit.Code.EmitByte(0x48);
-                    _emit.Code.EmitByte(0x85);
-                    _emit.Code.EmitByte(0xD0);  // TEST RAX, RDX
+                    X64Emitter.MovRI64(ref _code, VReg.R2, 0xFFFFFFFF00000000);
+                    _code.EmitByte(0x48);
+                    _code.EmitByte(0x85);
+                    _code.EmitByte(0xD0);  // TEST RAX, RDX
                     EmitJccToInt3(0x75);  // JNE overflow
 
                     // Zero-extend EAX
-                    _emit.Code.EmitByte(0x89);
-                    _emit.Code.EmitByte(0xC0);
+                    _code.EmitByte(0x89);
+                    _code.EmitByte(0xC0);
                 }
                 break;
 
@@ -2375,9 +2385,9 @@ public unsafe struct ILCompiler
                     // conv.ovf.i8: if source is unsigned, it must be < 2^63
                     if (sourceUnsigned)
                     {
-                        _emit.Code.EmitByte(0x48);
-                        _emit.Code.EmitByte(0x85);
-                        _emit.Code.EmitByte(0xC0);  // TEST RAX, RAX
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x85);
+                        _code.EmitByte(0xC0);  // TEST RAX, RAX
                         EmitJccToInt3(0x78);  // JS overflow (sign bit set means >= 2^63)
                     }
                     // Otherwise no overflow possible
@@ -2387,9 +2397,9 @@ public unsafe struct ILCompiler
                     // conv.ovf.u8: value must be >= 0
                     if (!sourceUnsigned)
                     {
-                        _emit.Code.EmitByte(0x48);
-                        _emit.Code.EmitByte(0x85);
-                        _emit.Code.EmitByte(0xC0);  // TEST RAX, RAX
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x85);
+                        _code.EmitByte(0xC0);  // TEST RAX, RAX
                         EmitJccToInt3(0x78);  // JS overflow
                     }
                     // Otherwise no overflow possible from unsigned source
@@ -2397,7 +2407,7 @@ public unsafe struct ILCompiler
                 break;
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         return true;
     }
 
@@ -2456,16 +2466,16 @@ public unsafe struct ILCompiler
         // The pattern: toggle the low bit of the opcode
 
         byte invertedJcc = (byte)(jccOpcode ^ 1);
-        _emit.Code.EmitByte(invertedJcc);  // Jcc_not (skip INT3)
-        _emit.Code.EmitByte(1);            // rel8 = +1 (skip 1 byte)
-        _emit.Code.EmitByte(0xCC);         // INT3
+        _code.EmitByte(invertedJcc);  // Jcc_not (skip INT3)
+        _code.EmitByte(1);            // rel8 = +1 (skip 1 byte)
+        _code.EmitByte(0xCC);         // INT3
     }
 
     private bool CompileLdcI8(long value)
     {
         // Load 64-bit constant
-        _emit.MovRI64(Reg64.RAX, (ulong)value);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2474,8 +2484,8 @@ public unsafe struct ILCompiler
     {
         // Load float constant - store bit pattern and push to stack
         // Float is 4 bytes, but we push 8 bytes (zero-extended)
-        _emit.MovRI32(Reg64.RAX, (int)bits);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI32(ref _code, VReg.R0, (int)bits);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Float32);
         return true;
     }
@@ -2483,8 +2493,8 @@ public unsafe struct ILCompiler
     private bool CompileLdcR8(ulong bits)
     {
         // Load double constant - push 64-bit pattern to stack
-        _emit.MovRI64(Reg64.RAX, bits);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, bits);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Float64);
         return true;
     }
@@ -2493,14 +2503,14 @@ public unsafe struct ILCompiler
     {
         // Convert integer to float (single precision)
         // Pop value, convert to float, push back as 32-bit pattern (zero-extended)
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();  // Pop whatever type was there
         // Use 32-bit source for proper signed int32 semantics
         // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
-        _emit.Cvtsi2ssXmmR32(RegXMM.XMM0, Reg64.RAX);
+        X64Emitter.Cvtsi2ssXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
         // MOVD eax, xmm0 - move float bits to integer reg
-        _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Float32);
         return true;
     }
@@ -2509,14 +2519,14 @@ public unsafe struct ILCompiler
     {
         // Convert integer to double precision
         // Pop value, convert to double, push back as 64-bit pattern
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();  // Pop whatever type was there
         // Use 32-bit source for proper signed int32 semantics
         // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
-        _emit.Cvtsi2sdXmmR32(RegXMM.XMM0, Reg64.RAX);
+        X64Emitter.Cvtsi2sdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
         // MOVQ rax, xmm0 - move double bits to integer reg
-        _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Float64);
         return true;
     }
@@ -2536,46 +2546,46 @@ public unsafe struct ILCompiler
         //   If (value >= 0 as signed): CVTSI2SD directly
         //   Else: Convert as (value >> 1) | (value & 1), multiply by 2
         //
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
         // TEST rax, rax (check sign bit)
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
 
         // JS label_negative (jump if sign bit set)
-        int patchNeg = _emit.JccRel32(X64Emitter.CC_S);
+        int patchNeg = X64Emitter.JccRel32(ref _code, X64Emitter.CC_S);
 
         // Positive path: simple convert
-        _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
+        X64Emitter.Cvtsi2sdXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
         // JMP done
-        int patchDone = _emit.JmpRel32();
+        int patchDone = X64Emitter.JmpRel32(ref _code);
 
         // Patch jump to negative path
-        _emit.PatchRel32(patchNeg);
+        X64Emitter.PatchRel32(ref _code, patchNeg);
 
         // Negative path (high bit set):
         // Save lowest bit in RCX: mov rcx, rax; and rcx, 1
-        _emit.MovRR(Reg64.RCX, Reg64.RAX);
-        _emit.AndRI(Reg64.RCX, 1);
+        X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);
+        X64Emitter.AndImm(ref _code, VReg.R1, 1);
 
         // Shift right by 1: shr rax, 1
-        _emit.ShrImm8(Reg64.RAX, 1);
+        X64Emitter.ShrImm8(ref _code, VReg.R0, 1);
 
         // OR in the lowest bit to avoid losing precision: or rax, rcx
-        _emit.OrRR(Reg64.RAX, Reg64.RCX);
+        X64Emitter.OrRR(ref _code, VReg.R0, VReg.R1);
 
         // Convert shifted value
-        _emit.Cvtsi2sdXmmR64(RegXMM.XMM0, Reg64.RAX);
+        X64Emitter.Cvtsi2sdXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
 
         // Double the result: addsd xmm0, xmm0
-        _emit.AddsdXmmXmm(RegXMM.XMM0, RegXMM.XMM0);
+        X64Emitter.AddsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM0);
 
         // Patch done label
-        _emit.PatchRel32(patchDone);
+        X64Emitter.PatchRel32(ref _code, patchDone);
 
         // Move result to integer register for stack
-        _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Float64);
         return true;
     }
@@ -2583,8 +2593,8 @@ public unsafe struct ILCompiler
     private bool CompileLdnull()
     {
         // Load null reference (0)
-        _emit.XorRR(Reg64.RAX, Reg64.RAX);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2592,10 +2602,10 @@ public unsafe struct ILCompiler
     private bool CompileStarg(int index)
     {
         // Pop from eval stack, store to argument home location
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
         int offset = 16 + index * 8;  // Shadow space offset
-        _emit.MovMR(Reg64.RBP, offset, Reg64.RAX);
+        X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
         return true;
     }
 
@@ -2603,8 +2613,8 @@ public unsafe struct ILCompiler
     {
         // Load address of argument
         int offset = 16 + index * 8;
-        _emit.Lea(Reg64.RAX, Reg64.RBP, offset);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2613,8 +2623,8 @@ public unsafe struct ILCompiler
     {
         // Load address of local variable
         int offset = X64Emitter.GetLocalOffset(index);
-        _emit.Lea(Reg64.RAX, Reg64.RBP, offset);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2624,18 +2634,18 @@ public unsafe struct ILCompiler
         // If there's a return value, it should be on eval stack
         if (_evalStackDepth > 0)
         {
-            _emit.Pop(Reg64.RAX);  // Return value in RAX
+            X64Emitter.Pop(ref _code, VReg.R0);  // Return value in RAX
             _evalStackDepth--;
         }
 
         // Emit epilogue
-        _emit.EmitEpilogue(_stackAdjust, false);
+        X64Emitter.EmitEpilogue(ref _code, _stackAdjust);
         return true;
     }
 
     private bool CompileBr(int targetIL)
     {
-        int patchOffset = _emit.JmpRel32();
+        int patchOffset = X64Emitter.JmpRel32(ref _code);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
     }
@@ -2643,10 +2653,10 @@ public unsafe struct ILCompiler
     private bool CompileBrfalse(int targetIL)
     {
         // Pop value, branch if zero
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
-        int patchOffset = _emit.Je();  // Jump if equal (to zero)
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+        int patchOffset = X64Emitter.Je(ref _code);  // Jump if equal (to zero)
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
     }
@@ -2654,10 +2664,10 @@ public unsafe struct ILCompiler
     private bool CompileBrtrue(int targetIL)
     {
         // Pop value, branch if non-zero
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
-        int patchOffset = _emit.Jne();  // Jump if not equal (to zero)
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+        int patchOffset = X64Emitter.Jne(ref _code);  // Jump if not equal (to zero)
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
     }
@@ -2665,13 +2675,13 @@ public unsafe struct ILCompiler
     private bool CompileBranchCmp(byte cc, int targetIL)
     {
         // Pop two values, compare, branch based on condition
-        _emit.Pop(Reg64.RDX);  // Second operand
-        _emit.Pop(Reg64.RAX);  // First operand
+        X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
+        X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         _evalStackDepth -= 2;
         // Use 32-bit comparison for proper signed int32 semantics
         // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
-        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
-        int patchOffset = _emit.JccRel32(cc);
+        X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+        int patchOffset = X64Emitter.JccRel32(ref _code, cc);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
     }
@@ -2679,72 +2689,72 @@ public unsafe struct ILCompiler
     private bool CompileCeq()
     {
         // Compare equal: pop two values, push 1 if equal, 0 otherwise
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
-        _emit.CmpRR(Reg64.RAX, Reg64.RDX);
+        X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
 
         // SETE sets AL to 1 if equal, 0 otherwise
         // setcc r/m8: 0F 94 /0 (mod=11, reg=0, r/m=AL)
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(0x94);
-        _emit.Code.EmitByte(0xC0);  // ModRM: mod=11, reg=0, r/m=0 (AL)
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0x94);
+        _code.EmitByte(0xC0);  // ModRM: mod=11, reg=0, r/m=0 (AL)
 
         // Zero-extend AL to RAX using MOVZX RAX, AL (REX.W + 0F B6 /r)
-        _emit.Code.EmitByte(0x48);  // REX.W
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(0xB6);
-        _emit.Code.EmitByte(0xC0);  // ModRM: mod=11, reg=RAX, r/m=AL
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0xB6);
+        _code.EmitByte(0xC0);  // ModRM: mod=11, reg=RAX, r/m=AL
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileCgt(bool signed)
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
         // Use 32-bit comparison for proper signed int32 semantics
-        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
+        X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
 
         // SETG (signed) or SETA (unsigned)
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(signed ? (byte)0x9F : (byte)0x97);  // SETG / SETA
-        _emit.Code.EmitByte(0xC0);  // AL
+        _code.EmitByte(0x0F);
+        _code.EmitByte(signed ? (byte)0x9F : (byte)0x97);  // SETG / SETA
+        _code.EmitByte(0xC0);  // AL
 
         // Zero-extend AL to RAX using MOVZX RAX, AL (REX.W + 0F B6 /r)
-        _emit.Code.EmitByte(0x48);
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(0xB6);
-        _emit.Code.EmitByte(0xC0);
+        _code.EmitByte(0x48);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0xB6);
+        _code.EmitByte(0xC0);
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
 
     private bool CompileClt(bool signed)
     {
-        _emit.Pop(Reg64.RDX);
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R2);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth -= 2;
         // Use 32-bit comparison for proper signed int32 semantics
-        _emit.CmpRR32(Reg64.RAX, Reg64.RDX);
+        X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
 
         // SETL (signed) or SETB (unsigned)
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(signed ? (byte)0x9C : (byte)0x92);  // SETL / SETB
-        _emit.Code.EmitByte(0xC0);  // AL
+        _code.EmitByte(0x0F);
+        _code.EmitByte(signed ? (byte)0x9C : (byte)0x92);  // SETL / SETB
+        _code.EmitByte(0xC0);  // AL
 
         // Zero-extend AL to RAX using MOVZX RAX, AL (REX.W + 0F B6 /r)
-        _emit.Code.EmitByte(0x48);
-        _emit.Code.EmitByte(0x0F);
-        _emit.Code.EmitByte(0xB6);
-        _emit.Code.EmitByte(0xC0);
+        _code.EmitByte(0x48);
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0xB6);
+        _code.EmitByte(0xC0);
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -2767,12 +2777,12 @@ public unsafe struct ILCompiler
         int switchEndIL = _ilOffset + (int)(n * 4);
 
         // Pop value into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Compare value with n: if value >= n, fall through (jump past all cases)
-        _emit.CmpRI(Reg64.RAX, (int)n);
-        int fallThroughPatch = _emit.JccRel32(X64Emitter.CC_AE);  // JAE (unsigned >=)
+        X64Emitter.CmpRI(ref _code, VReg.R0, (int)n);
+        int fallThroughPatch = X64Emitter.JccRel32(ref _code, X64Emitter.CC_AE);  // JAE (unsigned >=)
 
         // For each target, emit: cmp rax, i; je target[i]
         // This is naive but correct; a jump table would be faster
@@ -2784,15 +2794,15 @@ public unsafe struct ILCompiler
             int targetIL = switchEndIL + targetOffset;
 
             // Compare RAX with case index i
-            _emit.CmpRI(Reg64.RAX, (int)i);
+            X64Emitter.CmpRI(ref _code, VReg.R0, (int)i);
 
             // Jump if equal to this case
-            int patchOffset = _emit.JccRel32(X64Emitter.CC_E);
+            int patchOffset = X64Emitter.JccRel32(ref _code, X64Emitter.CC_E);
             RecordBranch(_ilOffset, targetIL, patchOffset);
         }
 
         // Fall-through case: patch the fall-through jump to here
-        _emit.Code.PatchRelative32(fallThroughPatch);
+        _code.PatchRelative32(fallThroughPatch);
 
         return true;
     }
@@ -2804,7 +2814,7 @@ public unsafe struct ILCompiler
     private bool CompileLdind(int size, bool signExtend)
     {
         // Pop address from stack into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Load value from [RAX] into RAX
@@ -2815,12 +2825,12 @@ public unsafe struct ILCompiler
                 if (signExtend)
                 {
                     // movsx rax, byte [rax] - sign extend byte to 64-bit
-                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 else
                 {
                     // movzx eax, byte [rax] - zero extend byte (clears upper 32 bits)
-                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 break;
 
@@ -2828,12 +2838,12 @@ public unsafe struct ILCompiler
                 if (signExtend)
                 {
                     // movsx rax, word [rax] - sign extend word to 64-bit
-                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 else
                 {
                     // movzx eax, word [rax] - zero extend word (clears upper 32 bits)
-                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 break;
 
@@ -2841,18 +2851,18 @@ public unsafe struct ILCompiler
                 if (signExtend)
                 {
                     // movsxd rax, dword [rax] - sign extend dword to 64-bit
-                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 else
                 {
                     // mov eax, [rax] - zero extend dword (clears upper 32 bits)
-                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);
                 }
                 break;
 
             case 8:
                 // mov rax, [rax] - full 64-bit load
-                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
                 break;
 
             default:
@@ -2860,7 +2870,7 @@ public unsafe struct ILCompiler
         }
 
         // Push result back onto stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
 
         return true;
@@ -2873,11 +2883,11 @@ public unsafe struct ILCompiler
     private bool CompileStind(int size)
     {
         // Pop value into RDX
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop address into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Store value to [RAX] with appropriate size
@@ -2885,22 +2895,22 @@ public unsafe struct ILCompiler
         {
             case 1:
                 // mov byte [rax], dl
-                _emit.MovMR8(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 0, VReg.R2);
                 break;
 
             case 2:
                 // mov word [rax], dx
-                _emit.MovMR16(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 0, VReg.R2);
                 break;
 
             case 4:
                 // mov dword [rax], edx
-                _emit.MovMR32(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 0, VReg.R2);
                 break;
 
             case 8:
                 // mov qword [rax], rdx
-                _emit.MovMR(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
                 break;
 
             default:
@@ -2917,27 +2927,27 @@ public unsafe struct ILCompiler
     private bool CompileLdindFloat(int size)
     {
         // Pop address from stack into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Load float value from [RAX] into XMM0
         if (size == 4)
         {
             // movss xmm0, [rax] - load float32
-            _emit.MovssRM(RegXMM.XMM0, Reg64.RAX, 0);
+            X64Emitter.MovssRM(ref _code, RegXMM.XMM0, VReg.R0, 0);
             // movd eax, xmm0 - move 32 bits to integer register
-            _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+            X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         }
         else // size == 8
         {
             // movsd xmm0, [rax] - load float64
-            _emit.MovsdRM(RegXMM.XMM0, Reg64.RAX, 0);
+            X64Emitter.MovsdRM(ref _code, RegXMM.XMM0, VReg.R0, 0);
             // movq rax, xmm0 - move 64 bits to integer register
-            _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+            X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         }
 
         // Push result back onto stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
 
         return true;
@@ -2950,27 +2960,27 @@ public unsafe struct ILCompiler
     private bool CompileStindFloat(int size)
     {
         // Pop value into RDX
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop address into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Move value to XMM0 and store to memory
         if (size == 4)
         {
             // movd xmm0, edx - move 32 bits to XMM
-            _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RDX);
+            X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R2);
             // movss [rax], xmm0 - store float32
-            _emit.MovssMR(Reg64.RAX, 0, RegXMM.XMM0);
+            X64Emitter.MovssMR(ref _code, VReg.R0, 0, RegXMM.XMM0);
         }
         else // size == 8
         {
             // movq xmm0, rdx - move 64 bits to XMM
-            _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RDX);
+            X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R2);
             // movsd [rax], xmm0 - store float64
-            _emit.MovsdMR(Reg64.RAX, 0, RegXMM.XMM0);
+            X64Emitter.MovsdMR(ref _code, VReg.R0, 0, RegXMM.XMM0);
         }
 
         return true;
@@ -3077,31 +3087,31 @@ public unsafe struct ILCompiler
         else if (totalArgs == 1)
         {
             // Single arg: pop to RCX
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth--;
         }
         else if (totalArgs == 2)
         {
             // Two args: pop to RDX (arg1), then RCX (arg0)
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 2;
         }
         else if (totalArgs == 3)
         {
             // Three args: pop to R8, RDX, RCX
-            _emit.Pop(Reg64.R8);    // arg2
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 3;
         }
         else if (totalArgs == 4)
         {
             // Four args: pop to R9, R8, RDX, RCX
-            _emit.Pop(Reg64.R9);    // arg3
-            _emit.Pop(Reg64.R8);    // arg2
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R4);    // arg3
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 4;
         }
         else
@@ -3129,10 +3139,10 @@ public unsafe struct ILCompiler
 
             // Load register args from eval stack (before RSP changes)
             // arg0 at [RSP + (totalArgs-1)*8], arg1 at [RSP + (totalArgs-2)*8], etc.
-            _emit.MovRM(Reg64.RCX, Reg64.RSP, (totalArgs - 1) * 8);  // arg0
-            _emit.MovRM(Reg64.RDX, Reg64.RSP, (totalArgs - 2) * 8);  // arg1
-            _emit.MovRM(Reg64.R8, Reg64.RSP, (totalArgs - 3) * 8);   // arg2
-            _emit.MovRM(Reg64.R9, Reg64.RSP, (totalArgs - 4) * 8);   // arg3
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);  // arg0
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);  // arg1
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);   // arg2
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);   // arg3
 
             // WORKING APPROACH:
             // 1. Compute final RSP position and work backwards
@@ -3151,8 +3161,8 @@ public unsafe struct ILCompiler
                 // arg(4+i) dest: [RSP + totalArgs*8 - extraStackSpace + 32 + i*8]
                 int srcOffset = (stackArgs - 1 - i) * 8;
                 int dstOffset = totalArgs * 8 - extraStackSpace + 32 + i * 8;
-                _emit.MovRM(Reg64.R10, Reg64.RSP, srcOffset);
-                _emit.MovMR(Reg64.RSP, dstOffset, Reg64.R10);
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
             }
 
             // Now adjust RSP to point to the call frame
@@ -3160,11 +3170,11 @@ public unsafe struct ILCompiler
             int rspAdjust = totalArgs * 8 - extraStackSpace;
             if (rspAdjust > 0)
             {
-                _emit.AddRI(Reg64.RSP, rspAdjust);
+                X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
             }
             else if (rspAdjust < 0)
             {
-                _emit.SubRI(Reg64.RSP, -rspAdjust);
+                X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
             }
 
             _evalStackDepth -= totalArgs;
@@ -3172,8 +3182,8 @@ public unsafe struct ILCompiler
 
         // Load target address and call
         // We use an indirect call through RAX to support any address
-        _emit.MovRI64(Reg64.RAX, (ulong)method.NativeCode);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during callee execution)
         RecordSafePoint();
@@ -3182,7 +3192,7 @@ public unsafe struct ILCompiler
         if (stackArgs > 0)
         {
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            _emit.AddRI(Reg64.RSP, extraStackSpace);
+            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }
 
         // Handle return value
@@ -3196,39 +3206,39 @@ public unsafe struct ILCompiler
                 // Return value in EAX (zero-extended in RAX)
                 // Sign-extend to maintain IL semantics for signed int32
                 // movsxd rax, eax
-                _emit.Code.EmitByte(0x48);  // REX.W
-                _emit.Code.EmitByte(0x63);  // MOVSXD
-                _emit.Code.EmitByte(0xC0);  // ModRM: RAX, EAX
-                _emit.Push(Reg64.RAX);
+                _code.EmitByte(0x48);  // REX.W
+                _code.EmitByte(0x63);  // MOVSXD
+                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
                 // Return value in RAX - push directly
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float32:
                 // Return value in XMM0 - move to RAX and push
                 // movd eax, xmm0
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float64:
                 // Return value in XMM0 - move to RAX and push
                 // movq rax, xmm0
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Struct:
                 // Struct returns are complex - for now, treat as pointer in RAX
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
         }
@@ -3297,31 +3307,31 @@ public unsafe struct ILCompiler
         else if (totalArgs == 1)
         {
             // Single arg (this): pop to RCX
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth--;
         }
         else if (totalArgs == 2)
         {
             // Two args: pop to RDX (arg1), then RCX (this)
-            _emit.Pop(Reg64.RDX);
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth -= 2;
         }
         else if (totalArgs == 3)
         {
             // Three args: pop to R8, RDX, RCX
-            _emit.Pop(Reg64.R8);
-            _emit.Pop(Reg64.RDX);
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R3);
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth -= 3;
         }
         else if (totalArgs == 4)
         {
             // Four args: pop to R9, R8, RDX, RCX
-            _emit.Pop(Reg64.R9);
-            _emit.Pop(Reg64.R8);
-            _emit.Pop(Reg64.RDX);
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R4);
+            X64Emitter.Pop(ref _code, VReg.R3);
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth -= 4;
         }
         else
@@ -3329,27 +3339,27 @@ public unsafe struct ILCompiler
             // More than 4 args - handle stack args (same as CompileCall)
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
 
-            _emit.MovRM(Reg64.RCX, Reg64.RSP, (totalArgs - 1) * 8);
-            _emit.MovRM(Reg64.RDX, Reg64.RSP, (totalArgs - 2) * 8);
-            _emit.MovRM(Reg64.R8, Reg64.RSP, (totalArgs - 3) * 8);
-            _emit.MovRM(Reg64.R9, Reg64.RSP, (totalArgs - 4) * 8);
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);
 
             for (int i = 0; i < stackArgs; i++)
             {
                 int srcOffset = (stackArgs - 1 - i) * 8;
                 int dstOffset = totalArgs * 8 - extraStackSpace + 32 + i * 8;
-                _emit.MovRM(Reg64.R10, Reg64.RSP, srcOffset);
-                _emit.MovMR(Reg64.RSP, dstOffset, Reg64.R10);
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
             }
 
             int rspAdjust = totalArgs * 8 - extraStackSpace;
             if (rspAdjust > 0)
             {
-                _emit.AddRI(Reg64.RSP, rspAdjust);
+                X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
             }
             else if (rspAdjust < 0)
             {
-                _emit.SubRI(Reg64.RSP, -rspAdjust);
+                X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
             }
 
             _evalStackDepth -= totalArgs;
@@ -3376,61 +3386,61 @@ public unsafe struct ILCompiler
 
             // Save args to callee-saved registers (R12-R15)
             // We only need to save what we'll overwrite
-            _emit.MovRR(Reg64.R12, Reg64.RCX);  // Save this
+            X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);  // Save this
             if (totalArgs >= 2)
-                _emit.MovRR(Reg64.R13, Reg64.RDX);  // Save arg1
+                X64Emitter.MovRR(ref _code, VReg.R9, VReg.R2);  // Save arg1
             if (totalArgs >= 3)
-                _emit.MovRR(Reg64.R14, Reg64.R8);   // Save arg2
+                X64Emitter.MovRR(ref _code, VReg.R10, VReg.R3);   // Save arg2
             if (totalArgs >= 4)
-                _emit.MovRR(Reg64.R15, Reg64.R9);   // Save arg3
+                X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);   // Save arg3
 
             // Set up call to GetInterfaceMethod(obj, interfaceMT, methodIndex)
             // RCX already has 'this' (obj), no change needed
-            _emit.MovRI64(Reg64.RDX, (ulong)method.InterfaceMT);  // interfaceMT
-            _emit.MovRI32(Reg64.R8, method.InterfaceMethodSlot);  // methodIndex
+            X64Emitter.MovRI64(ref _code, VReg.R2, (ulong)method.InterfaceMT);  // interfaceMT
+            X64Emitter.MovRI32(ref _code, VReg.R3, method.InterfaceMethodSlot);  // methodIndex
 
             // Call GetInterfaceMethod
-            _emit.SubRI(Reg64.RSP, 32);  // Shadow space
-            _emit.MovRI64(Reg64.RAX, (ulong)_getInterfaceMethod);
-            _emit.CallR(Reg64.RAX);
-            _emit.AddRI(Reg64.RSP, 32);
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);  // Shadow space
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_getInterfaceMethod);
+            X64Emitter.CallR(ref _code, VReg.R0);
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
             // RAX now contains the function pointer
             // Save it to R10 (caller-saved but we control this)
-            _emit.MovRR(Reg64.R10, Reg64.RAX);
+            X64Emitter.MovRR(ref _code, VReg.R5, VReg.R0);
 
             // Restore args from callee-saved registers
-            _emit.MovRR(Reg64.RCX, Reg64.R12);  // Restore this
+            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // Restore this
             if (totalArgs >= 2)
-                _emit.MovRR(Reg64.RDX, Reg64.R13);  // Restore arg1
+                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);  // Restore arg1
             if (totalArgs >= 3)
-                _emit.MovRR(Reg64.R8, Reg64.R14);   // Restore arg2
+                X64Emitter.MovRR(ref _code, VReg.R3, VReg.R10);   // Restore arg2
             if (totalArgs >= 4)
-                _emit.MovRR(Reg64.R9, Reg64.R15);   // Restore arg3
+                X64Emitter.MovRR(ref _code, VReg.R4, VReg.R11);   // Restore arg3
 
             // Call through the resolved function pointer
-            _emit.CallR(Reg64.R10);
+            X64Emitter.CallR(ref _code, VReg.R5);
         }
         else if (method.IsVirtual && method.VtableSlot >= 0)
         {
             // Virtual dispatch: load function pointer from vtable
             // RCX contains 'this' at this point
             // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
-            _emit.MovRM(Reg64.RAX, Reg64.RCX, 0);  // RAX = *this = MethodTable*
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = *this = MethodTable*
 
             // 2. Load vtable slot at offset HeaderSize + slot*8
             // MethodTable.HeaderSize = 24 bytes, each vtable slot is 8 bytes
             int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (method.VtableSlot * 8);
-            _emit.MovRM(Reg64.RAX, Reg64.RAX, vtableOffset);  // RAX = vtable[slot]
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, vtableOffset);  // RAX = vtable[slot]
 
             // 3. Call through the vtable slot
-            _emit.CallR(Reg64.RAX);
+            X64Emitter.CallR(ref _code, VReg.R0);
         }
         else
         {
             // Direct call (devirtualized or non-virtual)
-            _emit.MovRI64(Reg64.RAX, (ulong)method.NativeCode);
-            _emit.CallR(Reg64.RAX);
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+            X64Emitter.CallR(ref _code, VReg.R0);
         }
 
         // Record safe point after call
@@ -3440,7 +3450,7 @@ public unsafe struct ILCompiler
         if (stackArgs > 0)
         {
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            _emit.AddRI(Reg64.RSP, extraStackSpace);
+            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }
 
         // Handle return value (same as CompileCall)
@@ -3450,33 +3460,33 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Int32:
-                _emit.Code.EmitByte(0x48);  // REX.W
-                _emit.Code.EmitByte(0x63);  // MOVSXD
-                _emit.Code.EmitByte(0xC0);  // ModRM: RAX, EAX
-                _emit.Push(Reg64.RAX);
+                _code.EmitByte(0x48);  // REX.W
+                _code.EmitByte(0x63);  // MOVSXD
+                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float32:
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float64:
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Struct:
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
         }
@@ -3518,7 +3528,7 @@ public unsafe struct ILCompiler
 
         // First, pop the function pointer from the top of the stack into a safe register
         // We'll use R11 since it's caller-saved and won't be clobbered by arg setup
-        _emit.Pop(Reg64.R11);  // ftnPtr
+        X64Emitter.Pop(ref _code, VReg.R6);  // ftnPtr
         _evalStackDepth--;
 
         // Calculate stack args needed (args beyond the first 4 go on stack)
@@ -3531,28 +3541,28 @@ public unsafe struct ILCompiler
         }
         else if (argCount == 1)
         {
-            _emit.Pop(Reg64.RCX);
+            X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth--;
         }
         else if (argCount == 2)
         {
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 2;
         }
         else if (argCount == 3)
         {
-            _emit.Pop(Reg64.R8);    // arg2
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 3;
         }
         else if (argCount == 4)
         {
-            _emit.Pop(Reg64.R9);    // arg3
-            _emit.Pop(Reg64.R8);    // arg2
-            _emit.Pop(Reg64.RDX);   // arg1
-            _emit.Pop(Reg64.RCX);   // arg0
+            X64Emitter.Pop(ref _code, VReg.R4);    // arg3
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 4;
         }
         else
@@ -3574,10 +3584,10 @@ public unsafe struct ILCompiler
 
             // Load register args from eval stack (before RSP changes)
             // arg0 at [RSP + (argCount-1)*8], arg1 at [RSP + (argCount-2)*8], etc.
-            _emit.MovRM(Reg64.RCX, Reg64.RSP, (argCount - 1) * 8);  // arg0
-            _emit.MovRM(Reg64.RDX, Reg64.RSP, (argCount - 2) * 8);  // arg1
-            _emit.MovRM(Reg64.R8, Reg64.RSP, (argCount - 3) * 8);   // arg2
-            _emit.MovRM(Reg64.R9, Reg64.RSP, (argCount - 4) * 8);   // arg3
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (argCount - 1) * 8);  // arg0
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (argCount - 2) * 8);  // arg1
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (argCount - 3) * 8);   // arg2
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (argCount - 4) * 8);   // arg3
 
             // Copy stack args to their final locations (relative to current RSP)
             // arg(4+i) source: [RSP + (stackArgs-1-i)*8]
@@ -3586,8 +3596,8 @@ public unsafe struct ILCompiler
             {
                 int srcOffset = (stackArgs - 1 - i) * 8;
                 int dstOffset = argCount * 8 - extraStackSpace + 32 + i * 8;
-                _emit.MovRM(Reg64.R10, Reg64.RSP, srcOffset);
-                _emit.MovMR(Reg64.RSP, dstOffset, Reg64.R10);
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
             }
 
             // Now adjust RSP to point to the call frame
@@ -3595,18 +3605,18 @@ public unsafe struct ILCompiler
             int rspAdjust = argCount * 8 - extraStackSpace;
             if (rspAdjust > 0)
             {
-                _emit.AddRI(Reg64.RSP, rspAdjust);
+                X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
             }
             else if (rspAdjust < 0)
             {
-                _emit.SubRI(Reg64.RSP, -rspAdjust);
+                X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
             }
 
             _evalStackDepth -= argCount;
         }
 
         // Call through the function pointer in R11
-        _emit.CallR(Reg64.R11);
+        X64Emitter.CallR(ref _code, VReg.R6);
 
         // Record safe point after call (GC can happen during callee execution)
         RecordSafePoint();
@@ -3615,7 +3625,7 @@ public unsafe struct ILCompiler
         if (stackArgs > 0)
         {
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            _emit.AddRI(Reg64.RSP, extraStackSpace);
+            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }
 
         // Handle return value (same as CompileCall)
@@ -3627,33 +3637,33 @@ public unsafe struct ILCompiler
 
             case ReturnKind.Int32:
                 // Sign-extend EAX to RAX
-                _emit.Code.EmitByte(0x48);  // REX.W
-                _emit.Code.EmitByte(0x63);  // MOVSXD
-                _emit.Code.EmitByte(0xC0);  // ModRM: RAX, EAX
-                _emit.Push(Reg64.RAX);
+                _code.EmitByte(0x48);  // REX.W
+                _code.EmitByte(0x63);  // MOVSXD
+                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float32:
-                _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Float64:
-                _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
-                _emit.Push(Reg64.RAX);
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
 
             case ReturnKind.Struct:
-                _emit.Push(Reg64.RAX);
+                X64Emitter.Push(ref _code, VReg.R0);
                 _evalStackDepth++;
                 break;
         }
@@ -3675,21 +3685,21 @@ public unsafe struct ILCompiler
         }
 
         // Pop size into R8 (third arg)
-        _emit.Pop(Reg64.R8);
+        X64Emitter.Pop(ref _code, VReg.R3);
         _evalStackDepth--;
 
         // Pop srcAddr into RDX (second arg)
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop destAddr into RCX (first arg)
-        _emit.Pop(Reg64.RCX);
+        X64Emitter.Pop(ref _code, VReg.R1);
         _evalStackDepth--;
 
         // Call CPU.MemCopy(dest, src, count)
         delegate*<void*, void*, ulong, void*> memcopyFn = &CPU.MemCopy;
-        _emit.MovRI64(Reg64.RAX, (ulong)memcopyFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)memcopyFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Return value (dest pointer) is discarded - cpblk has no return on IL stack
 
@@ -3710,22 +3720,22 @@ public unsafe struct ILCompiler
         }
 
         // Pop size into R8 (third arg)
-        _emit.Pop(Reg64.R8);
+        X64Emitter.Pop(ref _code, VReg.R3);
         _evalStackDepth--;
 
         // Pop value into RDX (second arg) - note: IL has int32, MemSet takes byte
         // We just pass it through - the native function will use the low byte
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop addr into RCX (first arg)
-        _emit.Pop(Reg64.RCX);
+        X64Emitter.Pop(ref _code, VReg.R1);
         _evalStackDepth--;
 
         // Call CPU.MemSet(dest, value, count)
         delegate*<void*, byte, ulong, void*> memsetFn = &CPU.MemSet;
-        _emit.MovRI64(Reg64.RAX, (ulong)memsetFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)memsetFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Return value (dest pointer) is discarded - initblk has no return on IL stack
 
@@ -3762,19 +3772,19 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Pop addr into RCX (first arg for MemSet)
-        _emit.Pop(Reg64.RCX);
+        X64Emitter.Pop(ref _code, VReg.R1);
         _evalStackDepth--;
 
         // Value = 0 (second arg)
-        _emit.XorRR(Reg64.RDX, Reg64.RDX);
+        X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
 
         // Size in R8 (third arg)
-        _emit.MovRI64(Reg64.R8, (ulong)size);
+        X64Emitter.MovRI64(ref _code, VReg.R3, (ulong)size);
 
         // Call CPU.MemSet(addr, 0, size)
         delegate*<void*, byte, ulong, void*> memsetFn = &CPU.MemSet;
-        _emit.MovRI64(Reg64.RAX, (ulong)memsetFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)memsetFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         return true;
     }
@@ -3788,8 +3798,8 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Push size as int32 constant
-        _emit.MovRI32(Reg64.RAX, size);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI32(ref _code, VReg.R0, size);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
 
         return true;
@@ -3812,23 +3822,23 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Pop addr into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Load value based on size
         switch (size)
         {
             case 1:
-                _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 2:
-                _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 4:
-                _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 8:
-                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             default:
                 // For larger structs, we'd need to copy to stack
@@ -3839,7 +3849,7 @@ public unsafe struct ILCompiler
                 return false;
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
     }
@@ -3859,27 +3869,27 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Pop value into RDX
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop addr into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
         // Store value based on size
         switch (size)
         {
             case 1:
-                _emit.MovMR8(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 2:
-                _emit.MovMR16(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 4:
-                _emit.MovMR32(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 8:
-                _emit.MovMR(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             default:
                 DebugConsole.Write("[JIT] stobj: unsupported size ");
@@ -3906,20 +3916,20 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Pop srcAddr into RDX (second arg for MemCopy)
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
         // Pop destAddr into RCX (first arg for MemCopy)
-        _emit.Pop(Reg64.RCX);
+        X64Emitter.Pop(ref _code, VReg.R1);
         _evalStackDepth--;
 
         // Size in R8 (third arg)
-        _emit.MovRI64(Reg64.R8, (ulong)size);
+        X64Emitter.MovRI64(ref _code, VReg.R3, (ulong)size);
 
         // Call CPU.MemCopy(dest, src, size)
         delegate*<void*, void*, ulong, void*> memcopyFn = &CPU.MemCopy;
-        _emit.MovRI64(Reg64.RAX, (ulong)memcopyFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)memcopyFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         return true;
     }
@@ -3941,7 +3951,7 @@ public unsafe struct ILCompiler
 
         // Emit unconditional jump to target
         // This is the same as br but conceptually different - it's for exiting protected regions
-        int patchOffset = _emit.JmpRel32();
+        int patchOffset = X64Emitter.JmpRel32(ref _code);
         RecordBranch(_ilOffset, targetIL, patchOffset);
 
         return true;
@@ -3962,18 +3972,18 @@ public unsafe struct ILCompiler
         }
 
         // Pop exception object into RCX (first arg for RhpThrowEx)
-        _emit.Pop(Reg64.RCX);
+        X64Emitter.Pop(ref _code, VReg.R1);
         _evalStackDepth--;
 
         // Call RhpThrowEx (defined in native.asm)
         // This captures context and dispatches the exception
         // It does not return normally - it unwinds to a handler
         var throwFn = CPU.GetThrowExFuncPtr();
-        _emit.MovRI64(Reg64.RAX, (ulong)throwFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)throwFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // RhpThrowEx does not return, but we add int3 for safety
-        _emit.Int3();
+        X64Emitter.Int3(ref _code);
 
         return true;
     }
@@ -3988,11 +3998,11 @@ public unsafe struct ILCompiler
         // Call RhpRethrow (defined in native.asm)
         // This rethrows the current exception that's being handled
         var rethrowFn = CPU.GetRethrowFuncPtr();
-        _emit.MovRI64(Reg64.RAX, (ulong)rethrowFn);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)rethrowFn);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // RhpRethrow does not return
-        _emit.Int3();
+        X64Emitter.Int3(ref _code);
 
         return true;
     }
@@ -4027,11 +4037,11 @@ public unsafe struct ILCompiler
         if (_compilingFunclet)
         {
             // Funclet epilog: pop rbp (0x5D), ret (0xC3)
-            _emit.Code.EmitByte(0x5D);  // pop rbp
+            _code.EmitByte(0x5D);  // pop rbp
         }
 
         // Emit ret - either as part of funclet epilog or for inline handler
-        _emit.Ret();
+        X64Emitter.Ret(ref _code);
 
         return true;
     }
@@ -4078,7 +4088,7 @@ public unsafe struct ILCompiler
         }
 
         // Pop object reference
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
         // Load field at obj + offset
@@ -4087,30 +4097,30 @@ public unsafe struct ILCompiler
         {
             case 1:
                 if (signed)
-                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, offset);
+                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, offset);
                 else
-                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, offset);
+                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, offset);
                 break;
             case 2:
                 if (signed)
-                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, offset);
+                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, offset);
                 else
-                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, offset);
+                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, offset);
                 break;
             case 4:
                 if (signed)
-                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, offset);
+                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, offset);
                 else
-                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, offset); // Zero-extends to 64-bit
+                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, offset); // Zero-extends to 64-bit
                 break;
             case 8:
             default:
-                _emit.MovRM(Reg64.RAX, Reg64.RAX, offset);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
                 break;
         }
 
         // Push result
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
 
         return true;
@@ -4135,17 +4145,17 @@ public unsafe struct ILCompiler
         }
 
         // Pop object reference
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
         // Compute field address: obj + offset
         if (offset != 0)
         {
-            _emit.AddRI(Reg64.RAX, offset);
+            X64Emitter.AddRI(ref _code, VReg.R0, offset);
         }
 
         // Push address
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
 
         return true;
@@ -4172,8 +4182,8 @@ public unsafe struct ILCompiler
         }
 
         // Pop value and object reference
-        _emit.Pop(Reg64.RDX);  // value
-        _emit.Pop(Reg64.RAX);  // obj
+        X64Emitter.Pop(ref _code, VReg.R2);  // value
+        X64Emitter.Pop(ref _code, VReg.R0);  // obj
         PopStackType();
         PopStackType();
 
@@ -4181,17 +4191,17 @@ public unsafe struct ILCompiler
         switch (size)
         {
             case 1:
-                _emit.MovMR8(Reg64.RAX, offset, Reg64.RDX);
+                X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R2);
                 break;
             case 2:
-                _emit.MovMR16(Reg64.RAX, offset, Reg64.RDX);
+                X64Emitter.MovMR16(ref _code, VReg.R0, offset, VReg.R2);
                 break;
             case 4:
-                _emit.MovMR32(Reg64.RAX, offset, Reg64.RDX);
+                X64Emitter.MovMR32(ref _code, VReg.R0, offset, VReg.R2);
                 break;
             case 8:
             default:
-                _emit.MovMR(Reg64.RAX, offset, Reg64.RDX);
+                X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R2);
                 break;
         }
 
@@ -4225,36 +4235,36 @@ public unsafe struct ILCompiler
         }
 
         // Load static address
-        _emit.MovRI64(Reg64.RAX, staticAddr);
+        X64Emitter.MovRI64(ref _code, VReg.R0, staticAddr);
 
         // Load value based on size
         switch (size)
         {
             case 1:
                 if (signed)
-                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 2:
                 if (signed)
-                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 4:
                 if (signed)
-                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 8:
             default:
-                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
                 break;
         }
 
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
         return true;
     }
@@ -4279,8 +4289,8 @@ public unsafe struct ILCompiler
             staticAddr = token;
         }
 
-        _emit.MovRI64(Reg64.RAX, staticAddr);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, staticAddr);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
         return true;
     }
@@ -4309,26 +4319,26 @@ public unsafe struct ILCompiler
         }
 
         // Pop value
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
         // Load static address and store
-        _emit.MovRI64(Reg64.RDX, staticAddr);
+        X64Emitter.MovRI64(ref _code, VReg.R2, staticAddr);
 
         switch (size)
         {
             case 1:
-                _emit.MovMR8(Reg64.RDX, 0, Reg64.RAX);
+                X64Emitter.MovMR8(ref _code, VReg.R2, 0, VReg.R0);
                 break;
             case 2:
-                _emit.MovMR16(Reg64.RDX, 0, Reg64.RAX);
+                X64Emitter.MovMR16(ref _code, VReg.R2, 0, VReg.R0);
                 break;
             case 4:
-                _emit.MovMR32(Reg64.RDX, 0, Reg64.RAX);
+                X64Emitter.MovMR32(ref _code, VReg.R2, 0, VReg.R0);
                 break;
             case 8:
             default:
-                _emit.MovMR(Reg64.RDX, 0, Reg64.RAX);
+                X64Emitter.MovMR(ref _code, VReg.R2, 0, VReg.R0);
                 break;
         }
 
@@ -4352,14 +4362,14 @@ public unsafe struct ILCompiler
     private bool CompileLdlen()
     {
         // Pop array reference
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
         // Load length from array+8
-        _emit.MovRM(Reg64.RAX, Reg64.RAX, ArrayLengthOffset);
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, ArrayLengthOffset);
 
         // Push length
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
 
         return true;
@@ -4372,8 +4382,8 @@ public unsafe struct ILCompiler
     private bool CompileLdelem(int elemSize, bool signed)
     {
         // Pop index and array
-        _emit.Pop(Reg64.RCX);  // index
-        _emit.Pop(Reg64.RAX);  // array
+        X64Emitter.Pop(ref _code, VReg.R1);  // index
+        X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopStackType();
         PopStackType();
 
@@ -4383,45 +4393,45 @@ public unsafe struct ILCompiler
         {
             case 1:
                 // RAX = array + 16 + index
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
                 if (signed)
-                    _emit.MovsxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovzxByte(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 2:
                 // RAX = array + 16 + index * 2
-                _emit.ShlImm(Reg64.RCX, 1);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 1);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
                 if (signed)
-                    _emit.MovsxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovzxWord(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 4:
                 // RAX = array + 16 + index * 4
-                _emit.ShlImm(Reg64.RCX, 2);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
                 if (signed)
-                    _emit.MovsxdRM(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, 0);
                 else
-                    _emit.MovRM32(Reg64.RAX, Reg64.RAX, 0);
+                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);
                 break;
             case 8:
             default:
                 // RAX = array + 16 + index * 8
-                _emit.ShlImm(Reg64.RCX, 3);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
-                _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
                 break;
         }
 
         // Push value
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
 
         return true;
@@ -4434,9 +4444,9 @@ public unsafe struct ILCompiler
     private bool CompileStelem(int elemSize)
     {
         // Pop value, index, array
-        _emit.Pop(Reg64.RDX);  // value
-        _emit.Pop(Reg64.RCX);  // index
-        _emit.Pop(Reg64.RAX);  // array
+        X64Emitter.Pop(ref _code, VReg.R2);  // value
+        X64Emitter.Pop(ref _code, VReg.R1);  // index
+        X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopStackType();
         PopStackType();
         PopStackType();
@@ -4445,28 +4455,28 @@ public unsafe struct ILCompiler
         switch (elemSize)
         {
             case 1:
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
-                _emit.MovMR8(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 2:
-                _emit.ShlImm(Reg64.RCX, 1);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
-                _emit.MovMR16(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 1);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 4:
-                _emit.ShlImm(Reg64.RCX, 2);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
-                _emit.MovMR32(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             case 8:
             default:
-                _emit.ShlImm(Reg64.RCX, 3);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
-                _emit.AddRI(Reg64.RAX, ArrayDataOffset);
-                _emit.MovMR(Reg64.RAX, 0, Reg64.RDX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+                X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
+                X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
                 break;
         }
 
@@ -4480,8 +4490,8 @@ public unsafe struct ILCompiler
     private bool CompileLdelemFloat(int elemSize)
     {
         // Pop index and array
-        _emit.Pop(Reg64.RCX);  // index
-        _emit.Pop(Reg64.RAX);  // array
+        X64Emitter.Pop(ref _code, VReg.R1);  // index
+        X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopStackType();
         PopStackType();
 
@@ -4489,28 +4499,28 @@ public unsafe struct ILCompiler
         if (elemSize == 4)
         {
             // RAX = array + 16 + index * 4
-            _emit.ShlImm(Reg64.RCX, 2);
-            _emit.AddRR(Reg64.RAX, Reg64.RCX);
-            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+            X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
             // Load float into XMM0, then move to RAX for push
-            _emit.MovssRM(RegXMM.XMM0, Reg64.RAX, 0);
+            X64Emitter.MovssRM(ref _code, RegXMM.XMM0, VReg.R0, 0);
             // Move XMM0 to RAX (as 32-bit, zero-extended)
-            _emit.MovdR32Xmm(Reg64.RAX, RegXMM.XMM0);
+            X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         }
         else
         {
             // RAX = array + 16 + index * 8
-            _emit.ShlImm(Reg64.RCX, 3);
-            _emit.AddRR(Reg64.RAX, Reg64.RCX);
-            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+            X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
             // Load double into XMM0, then move to RAX for push
-            _emit.MovsdRM(RegXMM.XMM0, Reg64.RAX, 0);
+            X64Emitter.MovsdRM(ref _code, RegXMM.XMM0, VReg.R0, 0);
             // Move XMM0 to RAX (as 64-bit)
-            _emit.MovqR64Xmm(Reg64.RAX, RegXMM.XMM0);
+            X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         }
 
         // Push value
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(elemSize == 4 ? StackType_Float32 : StackType_Float64);
 
         return true;
@@ -4523,9 +4533,9 @@ public unsafe struct ILCompiler
     private bool CompileStelemFloat(int elemSize)
     {
         // Pop value, index, array
-        _emit.Pop(Reg64.RDX);  // value (float/double bit pattern)
-        _emit.Pop(Reg64.RCX);  // index
-        _emit.Pop(Reg64.RAX);  // array
+        X64Emitter.Pop(ref _code, VReg.R2);  // value (float/double bit pattern)
+        X64Emitter.Pop(ref _code, VReg.R1);  // index
+        X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopStackType();
         PopStackType();
         PopStackType();
@@ -4534,22 +4544,22 @@ public unsafe struct ILCompiler
         if (elemSize == 4)
         {
             // RAX = array + 16 + index * 4
-            _emit.ShlImm(Reg64.RCX, 2);
-            _emit.AddRR(Reg64.RAX, Reg64.RCX);
-            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+            X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
             // Move RDX to XMM0, then store as float
-            _emit.MovdXmmR32(RegXMM.XMM0, Reg64.RDX);
-            _emit.MovssMR(Reg64.RAX, 0, RegXMM.XMM0);
+            X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R2);
+            X64Emitter.MovssMR(ref _code, VReg.R0, 0, RegXMM.XMM0);
         }
         else
         {
             // RAX = array + 16 + index * 8
-            _emit.ShlImm(Reg64.RCX, 3);
-            _emit.AddRR(Reg64.RAX, Reg64.RCX);
-            _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+            X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+            X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
             // Move RDX to XMM0, then store as double
-            _emit.MovqXmmR64(RegXMM.XMM0, Reg64.RDX);
-            _emit.MovsdMR(Reg64.RAX, 0, RegXMM.XMM0);
+            X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R2);
+            X64Emitter.MovsdMR(ref _code, VReg.R0, 0, RegXMM.XMM0);
         }
 
         return true;
@@ -4566,8 +4576,8 @@ public unsafe struct ILCompiler
         if (elemSize == 0) elemSize = 8; // Default to pointer size
 
         // Pop index and array
-        _emit.Pop(Reg64.RCX);  // index
-        _emit.Pop(Reg64.RAX);  // array
+        X64Emitter.Pop(ref _code, VReg.R1);  // index
+        X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopStackType();
         PopStackType();
 
@@ -4575,26 +4585,26 @@ public unsafe struct ILCompiler
         switch (elemSize)
         {
             case 1:
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
                 break;
             case 2:
-                _emit.ShlImm(Reg64.RCX, 1);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 1);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
                 break;
             case 4:
-                _emit.ShlImm(Reg64.RCX, 2);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
                 break;
             case 8:
             default:
-                _emit.ShlImm(Reg64.RCX, 3);
-                _emit.AddRR(Reg64.RAX, Reg64.RCX);
+                X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
                 break;
         }
-        _emit.AddRI(Reg64.RAX, ArrayDataOffset);
+        X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
 
         // Push address
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);
 
         return true;
@@ -4641,28 +4651,28 @@ public unsafe struct ILCompiler
 
             // Pop args into temp registers (in reverse order since last arg is on top)
             // Args will go: arg0->RBX, arg1->R12, arg2->R13, arg3->R14
-            Reg64[] tempRegs = { Reg64.RBX, Reg64.R12, Reg64.R13, Reg64.R14 };
+            VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10 };
             for (int i = ctorArgs - 1; i >= 0; i--)
             {
-                _emit.Pop(tempRegs[i]);
+                X64Emitter.Pop(ref _code, tempRegs[i]);
                 PopStackType();
                 _evalStackDepth--;
             }
 
             // Step 2: Allocate the object via RhpNewFast
-            _emit.MovRI64(Reg64.RCX, (ulong)ctor.MethodTable);
-            _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
-            _emit.CallR(Reg64.RAX);
+            X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)ctor.MethodTable);
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+            X64Emitter.CallR(ref _code, VReg.R0);
             RecordSafePoint();
 
             // RAX now contains the new object pointer
             // Save it to R15 (callee-saved) so constructor call doesn't clobber it
-            _emit.MovRR(Reg64.R15, Reg64.RAX);
+            X64Emitter.MovRR(ref _code, VReg.R11, VReg.R0);
 
             // Step 3: Call the constructor with 'this' = new object
             // x64 calling convention: RCX=this, RDX=arg0, R8=arg1, R9=arg2, stack=arg3+
             // Move 'this' (R15) to RCX
-            _emit.MovRR(Reg64.RCX, Reg64.R15);
+            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R11);
 
             // Move saved args to their calling convention positions
             // arg0 in RBX -> RDX
@@ -4670,27 +4680,27 @@ public unsafe struct ILCompiler
             // arg2 in R13 -> R9
             // arg3 in R14 -> stack (push before call)
             if (ctorArgs >= 1)
-                _emit.MovRR(Reg64.RDX, Reg64.RBX);
+                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R7);
             if (ctorArgs >= 2)
-                _emit.MovRR(Reg64.R8, Reg64.R12);
+                X64Emitter.MovRR(ref _code, VReg.R3, VReg.R8);
             if (ctorArgs >= 3)
-                _emit.MovRR(Reg64.R9, Reg64.R13);
+                X64Emitter.MovRR(ref _code, VReg.R4, VReg.R9);
             if (ctorArgs >= 4)
             {
                 // Push 4th arg to stack (shadow space slot)
                 // Actually for x64, we use stack slot at RSP+32 for 5th arg
                 // But since constructor has 'this' as hidden first arg,
                 // arg3 is the 5th param, goes to stack
-                _emit.MovMR(Reg64.RSP, 32, Reg64.R14);  // shadow space [rsp+32]
+                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R10);  // shadow space [rsp+32]
             }
 
             // Call the constructor
-            _emit.MovRI64(Reg64.RAX, (ulong)ctor.NativeCode);
-            _emit.CallR(Reg64.RAX);
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctor.NativeCode);
+            X64Emitter.CallR(ref _code, VReg.R0);
             RecordSafePoint();
 
             // Push the object reference (from R15) onto eval stack
-            _emit.Push(Reg64.R15);
+            X64Emitter.Push(ref _code, VReg.R11);
             PushStackType(StackType_Int);
             _evalStackDepth++;
 
@@ -4701,18 +4711,18 @@ public unsafe struct ILCompiler
         ulong mtAddress = token;
 
         // Load MethodTable* into RCX (first arg for RhpNewFast)
-        _emit.MovRI64(Reg64.RCX, mtAddress);
+        X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
 
         // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
         // RhpNewFast allocates the object and sets the MT pointer
-        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
 
         // Push the allocated object reference onto eval stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Objects are 64-bit pointers
         _evalStackDepth++;
 
@@ -4745,22 +4755,22 @@ public unsafe struct ILCompiler
         }
 
         // Pop numElements from stack into RDX (second arg)
-        _emit.Pop(Reg64.RDX);
+        X64Emitter.Pop(ref _code, VReg.R2);
         PopStackType();
         _evalStackDepth--;
 
         // Load MethodTable* into RCX (first arg for RhpNewArray)
-        _emit.MovRI64(Reg64.RCX, mtAddress);
+        X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
 
         // Call RhpNewArray(MethodTable* pMT, int numElements) -> returns array pointer in RAX
-        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewArray);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewArray);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
 
         // Push the allocated array reference onto eval stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Arrays are 64-bit pointers
         _evalStackDepth++;
 
@@ -4798,19 +4808,19 @@ public unsafe struct ILCompiler
 
         // Pop value from stack into R8 (save it temporarily)
         // For simplicity, we assume 64-bit value on stack
-        _emit.Pop(Reg64.R8);
+        X64Emitter.Pop(ref _code, VReg.R3);
         PopStackType();
         _evalStackDepth--;
 
         // Load MethodTable* into RCX (first arg for RhpNewFast)
-        _emit.MovRI64(Reg64.RCX, mtAddress);
+        X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
 
         // Save RCX (MT address) in R9 for later use
-        _emit.MovRR(Reg64.R9, Reg64.RCX);
+        X64Emitter.MovRR(ref _code, VReg.R4, VReg.R1);
 
         // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
-        _emit.MovRI64(Reg64.RAX, (ulong)_rhpNewFast);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
@@ -4818,10 +4828,10 @@ public unsafe struct ILCompiler
         // Now RAX = pointer to boxed object
         // Copy the value (in R8) to offset 8 in the object (after MT pointer)
         // mov [RAX + 8], R8
-        _emit.MovMR(Reg64.RAX, 8, Reg64.R8);
+        X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
 
         // Push the boxed object reference onto eval stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Objects are 64-bit pointers
         _evalStackDepth++;
 
@@ -4857,16 +4867,16 @@ public unsafe struct ILCompiler
         _ = expectedMT;  // Currently unused - type validation not implemented
 
         // Pop object reference from stack
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
         _evalStackDepth--;
 
         // Calculate pointer to value: obj + 8 (skip MT pointer)
         // lea RAX, [RAX + 8]
-        _emit.Lea(Reg64.RAX, Reg64.RAX, 8);
+        X64Emitter.Lea(ref _code, VReg.R0, VReg.R0, 8);
 
         // Push the value pointer onto eval stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Managed pointers are 64-bit
         _evalStackDepth++;
 
@@ -4903,15 +4913,15 @@ public unsafe struct ILCompiler
         _ = expectedMT;  // Currently unused - type validation not implemented
 
         // Pop object reference from stack
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
         _evalStackDepth--;
 
         // Load value from offset 8: mov RAX, [RAX + 8]
-        _emit.MovRM(Reg64.RAX, Reg64.RAX, 8);
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);
 
         // Push the value onto eval stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Assuming 64-bit value
         _evalStackDepth++;
 
@@ -4947,40 +4957,40 @@ public unsafe struct ILCompiler
         }
 
         // Peek at object on stack (don't pop - result is same object)
-        _emit.MovRM(Reg64.RAX, Reg64.RSP, 0);  // Load obj from stack top
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);  // Load obj from stack top
 
         // Check for null - null passes castclass
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
-        int skipNullCheckPatch = _emit.Je();  // Jump if null (ZF=1)
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+        int skipNullCheckPatch = X64Emitter.Je(ref _code);  // Jump if null (ZF=1)
 
         // Load object's MethodTable (at offset 0) into RCX (arg1)
-        _emit.MovRM(Reg64.RCX, Reg64.RAX, 0);  // obj->MT
+        X64Emitter.MovRM(ref _code, VReg.R1, VReg.R0, 0);  // obj->MT
 
         // Load target MT into RDX (arg2)
-        _emit.MovRI64(Reg64.RDX, targetMT);
+        X64Emitter.MovRI64(ref _code, VReg.R2, targetMT);
 
         // Call IsAssignableTo(objectMT, targetMT) -> bool in RAX
         // First: allocate shadow space
-        _emit.SubRI(Reg64.RSP, 32);
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
         // Call the helper
-        _emit.MovRI64(Reg64.RAX, (ulong)_isAssignableTo);
-        _emit.CallR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_isAssignableTo);
+        X64Emitter.CallR(ref _code, VReg.R0);
 
         // Deallocate shadow space
-        _emit.AddRI(Reg64.RSP, 32);
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
         // Check result - AL contains bool (0 = false, 1 = true)
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
-        int skipThrowPatch = _emit.Jne();  // Jump if result != 0 (cast succeeds)
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+        int skipThrowPatch = X64Emitter.Jne(ref _code);  // Jump if result != 0 (cast succeeds)
 
         // Cast failed - throw InvalidCastException
         // For now, just trap (INT3)
-        _emit.Int3();  // Debug break on cast failure
+        X64Emitter.Int3(ref _code);  // Debug break on cast failure
 
         // Patch the jumps to current position
-        _emit.PatchRel32(skipNullCheckPatch);
-        _emit.PatchRel32(skipThrowPatch);
+        X64Emitter.PatchRel32(ref _code, skipNullCheckPatch);
+        X64Emitter.PatchRel32(ref _code, skipThrowPatch);
 
         // Object remains on stack unchanged
         return true;
@@ -5010,42 +5020,42 @@ public unsafe struct ILCompiler
         }
 
         // Pop object from stack into R12 (callee-saved, survives call)
-        _emit.Pop(Reg64.RAX);  // Load obj
+        X64Emitter.Pop(ref _code, VReg.R0);  // Load obj
         PopStackType();
-        _emit.MovRR(Reg64.R12, Reg64.RAX);  // Save obj in R12
+        X64Emitter.MovRR(ref _code, VReg.R8, VReg.R0);  // Save obj in R12
 
         // Result in R13, start with null
-        _emit.XorRR(Reg64.R13, Reg64.R13);
+        X64Emitter.XorRR(ref _code, VReg.R9, VReg.R9);
 
         // Check for null - null returns null
-        _emit.TestRR(Reg64.R12, Reg64.R12);
-        int skipCheckPatch = _emit.Je();  // Jump if null (ZF=1)
+        X64Emitter.TestRR(ref _code, VReg.R8, VReg.R8);
+        int skipCheckPatch = X64Emitter.Je(ref _code);  // Jump if null (ZF=1)
 
         // Load object's MethodTable (at offset 0) into RCX (arg1)
-        _emit.MovRM(Reg64.RCX, Reg64.R12, 0);  // obj->MT
+        X64Emitter.MovRM(ref _code, VReg.R1, VReg.R8, 0);  // obj->MT
 
         // Load target MT into RDX (arg2)
-        _emit.MovRI64(Reg64.RDX, targetMT);
+        X64Emitter.MovRI64(ref _code, VReg.R2, targetMT);
 
         // Call IsAssignableTo(objectMT, targetMT) -> bool in RAX
-        _emit.SubRI(Reg64.RSP, 32);  // Shadow space
-        _emit.MovRI64(Reg64.RAX, (ulong)_isAssignableTo);
-        _emit.CallR(Reg64.RAX);
-        _emit.AddRI(Reg64.RSP, 32);  // Pop shadow space
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);  // Shadow space
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_isAssignableTo);
+        X64Emitter.CallR(ref _code, VReg.R0);
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);  // Pop shadow space
 
         // Check result - AL contains bool (0 = false, 1 = true)
-        _emit.TestRR(Reg64.RAX, Reg64.RAX);
-        int skipSetPatch = _emit.Je();  // Jump if result == 0 (not assignable)
+        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+        int skipSetPatch = X64Emitter.Je(ref _code);  // Jump if result == 0 (not assignable)
 
         // Assignable - result is obj
-        _emit.MovRR(Reg64.R13, Reg64.R12);
+        X64Emitter.MovRR(ref _code, VReg.R9, VReg.R8);
 
         // Patch jumps to current position
-        _emit.PatchRel32(skipCheckPatch);
-        _emit.PatchRel32(skipSetPatch);
+        X64Emitter.PatchRel32(ref _code, skipCheckPatch);
+        X64Emitter.PatchRel32(ref _code, skipSetPatch);
 
         // Push result (obj or null in R13)
-        _emit.Push(Reg64.R13);
+        X64Emitter.Push(ref _code, VReg.R9);
         PushStackType(StackType_Int);  // Objects are 64-bit pointers
 
         return true;
@@ -5079,8 +5089,8 @@ public unsafe struct ILCompiler
         }
 
         // Push the function pointer onto the stack
-        _emit.MovRI64(Reg64.RAX, fnPtr);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Function pointers are native int
         _evalStackDepth++;
 
@@ -5113,7 +5123,7 @@ public unsafe struct ILCompiler
         }
 
         // Pop the object reference into RAX
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
         PopStackType();
 
@@ -5146,23 +5156,23 @@ public unsafe struct ILCompiler
             DebugConsole.WriteDecimal((uint)vtableSlot);
 
             // 1. Load MethodTable* from [RAX] (object header is the MT pointer)
-            _emit.MovRM(Reg64.RAX, Reg64.RAX, 0);  // RAX = *obj = MethodTable*
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);  // RAX = *obj = MethodTable*
 
             // 2. Load vtable slot at offset HeaderSize + slot*8
             int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (vtableSlot * 8);
             DebugConsole.Write(" offset=");
             DebugConsole.WriteDecimal((uint)vtableOffset);
             DebugConsole.WriteLine();
-            _emit.MovRM(Reg64.RAX, Reg64.RAX, vtableOffset);  // RAX = vtable[slot]
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, vtableOffset);  // RAX = vtable[slot]
         }
         else
         {
             // Devirtualized: use direct address
-            _emit.MovRI64(Reg64.RAX, fnPtr);
+            X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
         }
 
         // Push the function pointer onto the stack
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Function pointers are native int
         _evalStackDepth++;
 
@@ -5192,26 +5202,26 @@ public unsafe struct ILCompiler
     private bool CompileLocalloc()
     {
         // Pop the size from the evaluation stack
-        _emit.Pop(Reg64.RCX);  // RCX = size in bytes
+        X64Emitter.Pop(ref _code, VReg.R1);  // RCX = size in bytes
         PopStackType();
         _evalStackDepth--;
 
         // Add 8 for the result pointer we need to push, then align to 16
         // RCX = ((RCX + 8) + 15) & ~15 = (RCX + 23) & ~15
-        _emit.AddRI(Reg64.RCX, 23);
-        _emit.AndRI(Reg64.RCX, unchecked((int)0xFFFFFFF0));
+        X64Emitter.AddRI(ref _code, VReg.R1, 23);
+        X64Emitter.AndImm(ref _code, VReg.R1, unchecked((int)0xFFFFFFF0));
 
         // Subtract from RSP to allocate space (includes room for the push)
-        _emit.SubRR(Reg64.RSP, Reg64.RCX);
+        X64Emitter.SubRR(ref _code, VReg.SP, VReg.R1);
 
         // Compute the result pointer = RSP + 8 (skipping space for the push)
         // lea rax, [rsp+8]
-        _emit.MovRR(Reg64.RAX, Reg64.RSP);
-        _emit.AddRI(Reg64.RAX, 8);
+        X64Emitter.MovRR(ref _code, VReg.R0, VReg.SP);
+        X64Emitter.AddRI(ref _code, VReg.R0, 8);
 
         // Push the result pointer - this writes to [RSP-8] then decrements RSP
         // So the allocated buffer starts at what was RSP+8, now at RSP+16
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         PushStackType(StackType_Int);  // Pointer type
         _evalStackDepth++;
 
@@ -5272,8 +5282,8 @@ public unsafe struct ILCompiler
         }
 
         // Push the string object reference (or null if unresolved)
-        _emit.MovRI64(Reg64.RAX, stringPtr);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, stringPtr);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
 
         return true;
@@ -5315,8 +5325,8 @@ public unsafe struct ILCompiler
         }
 
         // Push the handle onto the stack
-        _emit.MovRI64(Reg64.RAX, handleValue);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, handleValue);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
 
         return true;
@@ -5377,12 +5387,12 @@ public unsafe struct ILCompiler
         }
 
         // Pop the filter result into RAX (return value)
-        _emit.Pop(Reg64.RAX);
+        X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
         PopStackType();
 
         // Return from the filter funclet
-        _emit.EmitEpilogue(_stackAdjust);
+        X64Emitter.EmitEpilogue(ref _code, _stackAdjust);
 
         return true;
     }
@@ -5443,12 +5453,12 @@ public unsafe struct ILCompiler
 
         // Emit epilogue but use JMP instead of RET
         // First, restore RSP from RBP (undo stack allocation)
-        _emit.MovRR(Reg64.RSP, Reg64.RBP);
+        X64Emitter.MovRR(ref _code, VReg.SP, VReg.FP);
         // Pop saved RBP
-        _emit.Pop(Reg64.RBP);
+        X64Emitter.Pop(ref _code, VReg.FP);
         // Jump to target (this reuses the return address already on stack)
-        _emit.MovRI64(Reg64.RAX, targetAddr);
-        _emit.JmpR(Reg64.RAX);
+        X64Emitter.MovRI64(ref _code, VReg.R0, targetAddr);
+        X64Emitter.JumpReg(ref _code, VReg.R0);
 
         return true;
     }
@@ -5480,7 +5490,7 @@ public unsafe struct ILCompiler
         }
 
         // Pop the pointer value
-        _emit.Pop(Reg64.RAX);  // RAX = value pointer
+        X64Emitter.Pop(ref _code, VReg.R0);  // RAX = value pointer
         _evalStackDepth--;
         PopStackType();
 
@@ -5489,10 +5499,10 @@ public unsafe struct ILCompiler
         // We push Type first (higher address), then Value (lower address)
 
         // Push type pointer
-        _emit.MovRI64(Reg64.RCX, typePtr);
-        _emit.Push(Reg64.RCX);
+        X64Emitter.MovRI64(ref _code, VReg.R1, typePtr);
+        X64Emitter.Push(ref _code, VReg.R1);
         // Push value pointer (already in RAX)
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
 
         // TypedReference takes 2 stack slots
         _evalStackDepth += 2;
@@ -5519,15 +5529,15 @@ public unsafe struct ILCompiler
         // TypedReference is 16 bytes (2 stack slots)
         // mkrefany pushed: Type first, Value second (Value is TOS)
         // So we pop: Value first, then Type
-        _emit.Pop(Reg64.RAX);  // RAX = value pointer (TOS)
+        X64Emitter.Pop(ref _code, VReg.R0);  // RAX = value pointer (TOS)
         _evalStackDepth--;
         PopStackType();
-        _emit.Pop(Reg64.RCX);  // RCX = type pointer (currently unused for validation)
+        X64Emitter.Pop(ref _code, VReg.R1);  // RCX = type pointer (currently unused for validation)
         _evalStackDepth--;
         PopStackType();
 
         // Push just the value pointer
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         PushStackType(StackType_Int);
 
@@ -5555,15 +5565,15 @@ public unsafe struct ILCompiler
         // TypedReference is 16 bytes (2 stack slots)
         // mkrefany pushed: Type first, Value second (Value is TOS)
         // So we pop: Value first (discard), then Type
-        _emit.Pop(Reg64.RCX);  // RCX = value pointer (discarded, TOS)
+        X64Emitter.Pop(ref _code, VReg.R1);  // RCX = value pointer (discarded, TOS)
         _evalStackDepth--;
         PopStackType();
-        _emit.Pop(Reg64.RAX);  // RAX = type pointer
+        X64Emitter.Pop(ref _code, VReg.R0);  // RAX = type pointer
         _evalStackDepth--;
         PopStackType();
 
         // Push the type pointer as RuntimeTypeHandle
-        _emit.Push(Reg64.RAX);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         PushStackType(StackType_Int);
 
@@ -5592,9 +5602,9 @@ public unsafe struct ILCompiler
         // (RBP points to saved RBP, +8 is return address, +16 is start of shadow space/args)
         int varargOffset = 16 + (_argCount * 8);
 
-        _emit.MovRR(Reg64.RAX, Reg64.RBP);
-        _emit.AddRI(Reg64.RAX, varargOffset);
-        _emit.Push(Reg64.RAX);
+        X64Emitter.MovRR(ref _code, VReg.R0, VReg.FP);
+        X64Emitter.AddRI(ref _code, VReg.R0, varargOffset);
+        X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         PushStackType(StackType_Int);
 
@@ -5726,10 +5736,10 @@ public unsafe struct ILCompiler
 
         // Emit main method prologue
         int localBytes = _localCount * 8 + 64;
-        _stackAdjust = _emit.EmitPrologue(localBytes, false);
+        _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes);
 
         if (_argCount > 0)
-            _emit.HomeArguments(_argCount);
+            X64Emitter.HomeArguments(ref _code, _argCount);
 
         // Process IL, skipping handler regions
         while (_ilOffset < _ilLength)
@@ -5739,13 +5749,13 @@ public unsafe struct ILCompiler
             if (skipTo >= 0)
             {
                 // Record a label for the handler start (needed for leave instructions)
-                RecordLabel(_ilOffset, _emit.Position);
+                RecordLabel(_ilOffset, _code.Position);
                 // Skip to end of handler
                 _ilOffset = skipTo;
                 continue;
             }
 
-            RecordLabel(_ilOffset, _emit.Position);
+            RecordLabel(_ilOffset, _code.Position);
             byte opcode = _il[_ilOffset++];
 
             if (!CompileOpcode(opcode))
@@ -5763,7 +5773,7 @@ public unsafe struct ILCompiler
         PatchBranches();
 
         // Record main method size
-        int mainCodeSize = _emit.Position;
+        int mainCodeSize = _code.Position;
         byte mainPrologSize = PrologSize;
 
         // ========== Pass 2: Compile funclets ==========
@@ -5781,15 +5791,15 @@ public unsafe struct ILCompiler
                 int flags = ehData[idx + 0];
 
                 // Record funclet start
-                int funcletCodeStart = _emit.Position;
+                int funcletCodeStart = _code.Position;
 
                 // Emit funclet prolog (4 bytes):
                 // push rbp       (0x55)
                 // mov rbp, rdx   (0x48 0x89 0xD5) - RDX contains parent frame pointer
-                _emit.Code.EmitByte(0x55);       // push rbp
-                _emit.Code.EmitByte(0x48);       // REX.W
-                _emit.Code.EmitByte(0x89);       // mov r/m64, r64
-                _emit.Code.EmitByte(0xD5);       // rbp, rdx
+                _code.EmitByte(0x55);       // push rbp
+                _code.EmitByte(0x48);       // REX.W
+                _code.EmitByte(0x89);       // mov r/m64, r64
+                _code.EmitByte(0xD5);       // rbp, rdx
 
                 // Reset label tracking for funclet
                 // (branches within funclet are relative to funclet)
@@ -5802,7 +5812,7 @@ public unsafe struct ILCompiler
                 _ilOffset = handlerStart;
                 while (_ilOffset < handlerEnd)
                 {
-                    RecordLabel(_ilOffset, _emit.Position);
+                    RecordLabel(_ilOffset, _code.Position);
                     byte opcode = _il[_ilOffset++];
 
                     if (!CompileOpcode(opcode))
@@ -5822,10 +5832,10 @@ public unsafe struct ILCompiler
                 // ret      (0xC3)
                 // Note: endfinally/ret in handler should have already emitted appropriate code
                 // We add a safety epilog in case control falls through
-                _emit.Code.EmitByte(0x5D);  // pop rbp
-                _emit.Code.EmitByte(0xC3);  // ret
+                _code.EmitByte(0x5D);  // pop rbp
+                _code.EmitByte(0xC3);  // ret
 
-                int funcletCodeEnd = _emit.Position;
+                int funcletCodeEnd = _code.Position;
                 int funcletCodeSize = funcletCodeEnd - funcletCodeStart;
 
                 // Store funclet info
@@ -5842,7 +5852,7 @@ public unsafe struct ILCompiler
         }
 
         // ========== Build results ==========
-        void* code = _emit.Code.GetFunctionPointer();
+        void* code = _code.GetFunctionPointer();
         if (code == null) return null;
 
         ulong codeBase = (ulong)code;

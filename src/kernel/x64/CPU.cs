@@ -9,9 +9,12 @@ using ProtonOS.Threading;
 namespace ProtonOS.X64;
 
 /// <summary>
-/// CPU intrinsics for x64 - all native function imports in one place
+/// CPU intrinsics for x64 - all native function imports in one place.
+/// Implements ICpu interface for architecture abstraction.
+/// Note: This is a struct (not static class) to enable static abstract interface implementation,
+/// but all members remain static. Use CPU.Method() syntax as before.
 /// </summary>
-public static unsafe class CPU
+public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
 {
     // ==================== Native Imports ====================
 
@@ -614,4 +617,10 @@ public static unsafe class CPU
     /// Used for stack bounds detection.
     /// </summary>
     public static ulong GetRsp() => get_rsp();
+
+    /// <summary>
+    /// Get the current stack pointer value (alias for GetRsp).
+    /// Implements ICpu interface method.
+    /// </summary>
+    public static ulong GetStackPointer() => get_rsp();
 }

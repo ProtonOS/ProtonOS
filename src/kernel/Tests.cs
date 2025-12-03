@@ -8621,8 +8621,8 @@ public static unsafe class Tests
         }
 
         // Get code address and size
-        ulong codeBase = (ulong)compiler.Emitter.Code.GetFunctionPointer();
-        uint codeSize = (uint)compiler.Emitter.Position;
+        ulong codeBase = (ulong)compiler.Code.GetFunctionPointer();
+        uint codeSize = (uint)compiler.Code.Position;
 
         // Create synthetic IL EH clauses
         Runtime.JIT.ILExceptionClauses ilClauses = default;
@@ -8728,8 +8728,8 @@ public static unsafe class Tests
             return;
         }
 
-        ulong codeBase = (ulong)compiler.Emitter.Code.GetFunctionPointer();
-        uint codeSize = (uint)compiler.Emitter.Position;
+        ulong codeBase = (ulong)compiler.Code.GetFunctionPointer();
+        uint codeSize = (uint)compiler.Code.Position;
 
         // Create IL EH clause: try 0-4, handler 4-6 (catch Exception)
         Runtime.JIT.ILExceptionClauses ilClauses = default;
@@ -8839,10 +8839,12 @@ public static unsafe class Tests
             return;
         }
 
-        // Try to find matching clause at offset 10 (should be in try region)
+        // Try to find matching clause at an offset within the try region
+        // Get the native try offset from the converted clause
         X64.NativeAotEHClause clause;
         uint foundClauseIndex;
-        uint offsetInFunc = 10;  // Should be in try region
+        uint nativeTryStart = nc.TryStartOffset;  // Use the actual native try start
+        uint offsetInFunc = nativeTryStart + 2;  // Pick an offset within the try region
         bool found = X64.ExceptionHandling.FindMatchingEHClause(
             ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex);
 

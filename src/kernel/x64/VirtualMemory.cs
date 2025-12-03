@@ -6,6 +6,8 @@ using ProtonOS.Platform;
 using ProtonOS.Memory;
 using ProtonOS.Threading;
 
+using ArchPageFlags = ProtonOS.Arch.PageFlags;
+
 namespace ProtonOS.X64;
 
 /// <summary>
@@ -38,13 +40,25 @@ public static class PageFlags
 /// <summary>
 /// x64 Virtual Memory Manager
 /// Manages page tables and virtual-to-physical mappings.
+/// Implements IVirtualMemory interface for architecture abstraction.
+/// Note: This is a struct (not static class) to enable static abstract interface implementation,
+/// but all members remain static. Use VirtualMemory.Method() syntax as before.
 /// </summary>
-public static unsafe class VirtualMemory
+public unsafe struct VirtualMemory : ProtonOS.Arch.IVirtualMemory<VirtualMemory>
 {
-    // Page sizes
-    public const ulong PageSize = 4096;           // 4KB
-    public const ulong LargePageSize = 2097152;   // 2MB
-    public const ulong HugePageSize = 1073741824; // 1GB
+    // Page sizes (const for internal use)
+    private const ulong _pageSize = 4096;           // 4KB
+    private const ulong _largePageSize = 2097152;   // 2MB
+    private const ulong _hugePageSize = 1073741824; // 1GB
+
+    // Interface properties (expose as static properties for IVirtualMemory)
+    public static ulong PageSize => _pageSize;
+    public static ulong LargePageSize => _largePageSize;
+    public static ulong HugePageSize => _hugePageSize;
+
+    // Page shift constant
+    private const int _pageShift = 12;
+    public static int PageShift => _pageShift;
 
     // Memory layout:
     // 0x0000_0000_0000_0000 - 0x0000_0000_0000_0FFF : Null guard page (unmapped)
@@ -62,7 +76,8 @@ public static unsafe class VirtualMemory
     public const ulong UserEnd = 0x0000_8000_0000_0000;     // End of lower canonical half
 
     // Physical memory map in higher half (for kernel to access any physical address)
-    public const ulong PhysicalMapBase = 0xFFFF_8000_0000_0000;
+    private const ulong _physicalMapBase = 0xFFFF_8000_0000_0000;
+    public static ulong PhysicalMapBase => _physicalMapBase;
 
     // Size of physical memory to map (4GB covers most systems)
     public const ulong PhysicalMapSize = 4UL * 1024 * 1024 * 1024;
@@ -75,7 +90,6 @@ public static unsafe class VirtualMemory
     // Bits 39-47: PML4 index (9 bits)
     // Bits 48-63: Sign extension of bit 47
 
-    private const int PageShift = 12;
     private const int EntriesPerTable = 512;
     private const ulong IndexMask = 0x1FF;  // 9 bits
 
@@ -721,6 +735,149 @@ public static unsafe class VirtualMemory
 
         _allocLock.Release();
         return 0;
+    }
+
+    // ==================== IVirtualMemory Interface Implementation ====================
+
+    /// <summary>
+    /// Convert architecture-neutral PageFlags to x64 page table flags.
+    /// </summary>
+    private static ulong ConvertFlags(ArchPageFlags flags)
+    {
+        ulong result = 0;
+        if ((flags & ArchPageFlags.Present) != 0) result |= PageFlags.Present;
+        if ((flags & ArchPageFlags.Writable) != 0) result |= PageFlags.Writable;
+        if ((flags & ArchPageFlags.User) != 0) result |= PageFlags.User;
+        if ((flags & ArchPageFlags.WriteThrough) != 0) result |= PageFlags.WriteThrough;
+        if ((flags & ArchPageFlags.NoCache) != 0) result |= PageFlags.CacheDisable;
+        if ((flags & ArchPageFlags.Accessed) != 0) result |= PageFlags.Accessed;
+        if ((flags & ArchPageFlags.Dirty) != 0) result |= PageFlags.Dirty;
+        if ((flags & ArchPageFlags.LargePage) != 0) result |= PageFlags.HugePage;
+        if ((flags & ArchPageFlags.Global) != 0) result |= PageFlags.Global;
+        if ((flags & ArchPageFlags.NoExecute) != 0) result |= PageFlags.NoExecute;
+        return result;
+    }
+
+    /// <summary>
+    /// Convert x64 page table flags to architecture-neutral PageFlags.
+    /// </summary>
+    private static ArchPageFlags ConvertToArchFlags(ulong flags)
+    {
+        ArchPageFlags result = ArchPageFlags.None;
+        if ((flags & PageFlags.Present) != 0) result |= ArchPageFlags.Present;
+        if ((flags & PageFlags.Writable) != 0) result |= ArchPageFlags.Writable;
+        if ((flags & PageFlags.User) != 0) result |= ArchPageFlags.User;
+        if ((flags & PageFlags.WriteThrough) != 0) result |= ArchPageFlags.WriteThrough;
+        if ((flags & PageFlags.CacheDisable) != 0) result |= ArchPageFlags.NoCache;
+        if ((flags & PageFlags.Accessed) != 0) result |= ArchPageFlags.Accessed;
+        if ((flags & PageFlags.Dirty) != 0) result |= ArchPageFlags.Dirty;
+        if ((flags & PageFlags.HugePage) != 0) result |= ArchPageFlags.LargePage;
+        if ((flags & PageFlags.Global) != 0) result |= ArchPageFlags.Global;
+        if ((flags & PageFlags.NoExecute) != 0) result |= ArchPageFlags.NoExecute;
+        return result;
+    }
+
+    /// <summary>
+    /// Map a 4KB page (IVirtualMemory interface).
+    /// </summary>
+    public static bool MapPage(ulong virtAddr, ulong physAddr, ArchPageFlags flags)
+    {
+        return MapPage(virtAddr, physAddr, ConvertFlags(flags));
+    }
+
+    /// <summary>
+    /// Map a 2MB large page (IVirtualMemory interface).
+    /// </summary>
+    public static bool MapLargePage(ulong virtAddr, ulong physAddr, ArchPageFlags flags)
+    {
+        return MapLargePage(virtAddr, physAddr, ConvertFlags(flags));
+    }
+
+    /// <summary>
+    /// Unmap a page at the given virtual address.
+    /// </summary>
+    public static bool UnmapPage(ulong virtAddr)
+    {
+        if (_pml4PhysAddr == 0)
+            return false;
+
+        // Get table indices
+        int pml4Index = (int)((virtAddr >> 39) & IndexMask);
+        int pdptIndex = (int)((virtAddr >> 30) & IndexMask);
+        int pdIndex = (int)((virtAddr >> 21) & IndexMask);
+        int ptIndex = (int)((virtAddr >> 12) & IndexMask);
+
+        // Walk to PT
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pml4Entry = pml4[pml4Index];
+        if ((pml4Entry & PageFlags.Present) == 0)
+            return false;
+
+        ulong* pdpt = (ulong*)(pml4Entry & PageFlags.AddressMask);
+        ulong pdptEntry = pdpt[pdptIndex];
+        if ((pdptEntry & PageFlags.Present) == 0)
+            return false;
+
+        // 1GB page - can't unmap individual 4KB page within it
+        if ((pdptEntry & PageFlags.HugePage) != 0)
+            return false;
+
+        ulong* pd = (ulong*)(pdptEntry & PageFlags.AddressMask);
+        ulong pdEntry = pd[pdIndex];
+        if ((pdEntry & PageFlags.Present) == 0)
+            return false;
+
+        // 2MB page - can't unmap individual 4KB page within it
+        if ((pdEntry & PageFlags.HugePage) != 0)
+            return false;
+
+        // Clear the PT entry
+        ulong* pt = (ulong*)(pdEntry & PageFlags.AddressMask);
+        pt[ptIndex] = 0;
+
+        InvalidatePage(virtAddr);
+        return true;
+    }
+
+    /// <summary>
+    /// Change protection flags for an existing page (IVirtualMemory interface).
+    /// </summary>
+    public static ArchPageFlags ChangeProtection(ulong virtAddr, ArchPageFlags newFlags)
+    {
+        ulong oldFlags = ChangePageProtection(virtAddr, ConvertFlags(newFlags));
+        return ConvertToArchFlags(oldFlags);
+    }
+
+    /// <summary>
+    /// Flush the entire TLB.
+    /// </summary>
+    public static void FlushTlb()
+    {
+        CPU.FlushTlb();
+    }
+
+    /// <summary>
+    /// Check if an address is page-aligned.
+    /// </summary>
+    public static bool IsPageAligned(ulong addr)
+    {
+        return (addr & (_pageSize - 1)) == 0;
+    }
+
+    /// <summary>
+    /// Round address down to page boundary.
+    /// </summary>
+    public static ulong PageAlignDown(ulong addr)
+    {
+        return addr & ~(_pageSize - 1);
+    }
+
+    /// <summary>
+    /// Round address up to page boundary.
+    /// </summary>
+    public static ulong PageAlignUp(ulong addr)
+    {
+        return (addr + _pageSize - 1) & ~(_pageSize - 1);
     }
 }
 

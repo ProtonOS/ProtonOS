@@ -1,5 +1,6 @@
 // ProtonOS kernel - x64 Architecture Initialization
 // Static initialization to avoid 'new' keyword issues in stdlib:zero
+// Implements IArchitecture for architecture-neutral kernel code.
 
 using System.Runtime.InteropServices;
 using ProtonOS.Platform;
@@ -20,24 +21,51 @@ internal unsafe struct HandlerStorage
 
 /// <summary>
 /// x64 architecture initialization.
-/// Uses static methods instead of instance methods because stdlib:zero
-/// doesn't support 'new' for reference types.
+/// Implements IArchitecture for architecture abstraction.
+/// Note: This is a struct (not static class) to enable static abstract interface implementation,
+/// but all members remain static. Use Arch.Method() syntax as before.
 /// </summary>
-public static unsafe class Arch
+public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
 {
-    private static bool _initialized;
+    private static bool _stage1Complete;
+    private static bool _stage2Complete;
 
     // Handler storage - function pointers for interrupt handlers (static, no heap allocation)
     private const int VectorCount = 256;
     private static HandlerStorage _handlerStorage;
     private static bool _interruptsEnabled;
 
+    // ==================== IArchitecture Properties ====================
+
     /// <summary>
-    /// Initialize x64 architecture
+    /// Check if Stage 1 initialization is complete.
     /// </summary>
-    public static void Init()
+    public static bool IsStage1Complete => _stage1Complete;
+
+    /// <summary>
+    /// Check if Stage 2 initialization is complete.
+    /// </summary>
+    public static bool IsStage2Complete => _stage2Complete;
+
+    /// <summary>
+    /// Size of CPU context structure in bytes (CPUContext struct).
+    /// </summary>
+    public static int ContextSize => sizeof(CPUContext);
+
+    /// <summary>
+    /// Size of extended state (FPU/SSE/AVX) in bytes.
+    /// Uses XSAVE area size if available, otherwise FXSAVE (512 bytes).
+    /// </summary>
+    public static int ExtendedStateSize => CPUFeatures.ExtendedStateSize > 0 ? (int)CPUFeatures.ExtendedStateSize : 512;
+
+    // ==================== Initialization ====================
+
+    /// <summary>
+    /// Stage 1 initialization - Initialize x64 architecture (before heap)
+    /// </summary>
+    public static void InitStage1()
     {
-        if (_initialized) return;
+        if (_stage1Complete) return;
 
         DebugConsole.WriteLine("[x64] Initializing architecture...");
 
@@ -57,12 +85,17 @@ public static unsafe class Arch
         // Initialize virtual memory (our own page tables)
         VirtualMemory.Init();
 
-        _initialized = true;
+        _stage1Complete = true;
         DebugConsole.WriteLine("[x64] Architecture initialized");
     }
 
     /// <summary>
-    /// Register an interrupt handler
+    /// Legacy alias for InitStage1() - maintained for backward compatibility.
+    /// </summary>
+    public static void Init() => InitStage1();
+
+    /// <summary>
+    /// Register an interrupt handler (x64-specific signature with InterruptFrame)
     /// </summary>
     public static void RegisterHandler(int vector, delegate*<InterruptFrame*, void> handler)
     {
@@ -74,6 +107,15 @@ public static unsafe class Arch
                 handlers[vector] = handler;
             }
         }
+    }
+
+    /// <summary>
+    /// Register an interrupt handler (IArchitecture interface - generic void* signature)
+    /// </summary>
+    public static void RegisterInterruptHandler(int vector, delegate*<void*, void> handler)
+    {
+        // Cast void* handler to InterruptFrame* handler (same memory layout)
+        RegisterHandler(vector, (delegate*<InterruptFrame*, void>)handler);
     }
 
     /// <summary>
@@ -90,6 +132,11 @@ public static unsafe class Arch
             }
         }
     }
+
+    /// <summary>
+    /// Unregister an interrupt handler (IArchitecture interface)
+    /// </summary>
+    public static void UnregisterInterruptHandler(int vector) => UnregisterHandler(vector);
 
     /// <summary>
     /// Enable interrupts
@@ -174,11 +221,76 @@ public static unsafe class Arch
         // Enable interrupts
         EnableInterrupts();
 
+        _stage2Complete = true;
         DebugConsole.WriteLine("[x64] Stage 2 complete, interrupts enabled");
     }
 
+    // ==================== IArchitecture Timer Methods ====================
+
     /// <summary>
-    /// Entry point from nernel ISR stubs
+    /// Get the current timer tick count (from APIC timer).
+    /// </summary>
+    public static ulong GetTickCount()
+    {
+        return APIC.TickCount;
+    }
+
+    /// <summary>
+    /// Get the timer frequency in Hz (APIC timer frequency).
+    /// </summary>
+    public static ulong GetTimerFrequency()
+    {
+        return APIC.TimerFrequency;
+    }
+
+    /// <summary>
+    /// Busy-wait for the specified number of nanoseconds.
+    /// </summary>
+    public static void BusyWaitNs(ulong nanoseconds)
+    {
+        if (HPET.IsInitialized)
+        {
+            HPET.BusyWaitNs(nanoseconds);
+        }
+        else
+        {
+            // Fallback: rough spin loop (very inaccurate)
+            ulong loops = nanoseconds / 10;  // Rough estimate
+            for (ulong i = 0; i < loops; i++)
+                CPU.Pause();
+        }
+    }
+
+    /// <summary>
+    /// Busy-wait for the specified number of milliseconds.
+    /// </summary>
+    public static void BusyWaitMs(ulong milliseconds)
+    {
+        BusyWaitNs(milliseconds * 1_000_000);
+    }
+
+    // ==================== IArchitecture Exception Handling ====================
+
+    /// <summary>
+    /// Get function pointer to the throw exception routine.
+    /// </summary>
+    public static delegate*<void*, void> GetThrowExceptionFuncPtr()
+    {
+        return CPU.GetThrowExFuncPtr();
+    }
+
+    /// <summary>
+    /// Get function pointer to the rethrow routine.
+    /// </summary>
+    public static delegate*<void> GetRethrowFuncPtr()
+    {
+        return CPU.GetRethrowFuncPtr();
+    }
+
+    // ==================== Interrupt Dispatch ====================
+
+    /// <summary>
+    /// Entry point from kernel ISR stubs
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "InterruptDispatch")]
     public static void DispatchInterrupt(InterruptFrame* frame)
