@@ -109,11 +109,7 @@ public static unsafe class Kernel
         UEFIBoot.ExitBootServices();
 
         // Initialize architecture-specific code (GDT, IDT, virtual memory)
-#if ARCH_X64
-        ProtonOS.X64.Arch.Init();
-#elif ARCH_ARM64
-        // TODO: ProtonOS.Arm64.Arch.Init();
-#endif
+        CurrentArch.InitStage1();
 
         // Initialize kernel heap
         HeapAllocator.Init();
@@ -141,9 +137,7 @@ public static unsafe class Kernel
         PAL.Memory.Init();
 
         // Second-stage arch init (timers, enable interrupts)
-#if ARCH_X64
-        ProtonOS.X64.Arch.InitStage2();
-#endif
+        CurrentArch.InitStage2();
 
         // Tests disabled for clean logs - call Tests.Run() to enable
         // Tests.Run();
@@ -156,6 +150,9 @@ public static unsafe class Kernel
 
         // Initialize runtime helpers for JIT (allocation, MD array, etc.)
         Runtime.RuntimeHelpers.Init();
+
+        // Initialize string pool for interning and ldstr caching (requires HeapAllocator)
+        Runtime.StringPool.Init();
 
         // Initialize assembly loader (requires HeapAllocator)
         AssemblyLoader.Initialize();

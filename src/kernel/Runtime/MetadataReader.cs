@@ -4194,6 +4194,7 @@ public static unsafe class MetadataReader
     /// Resolve a user string token to a String object pointer.
     /// This is the StringResolver implementation for ILCompiler.
     /// Uses the cached MetadataRoot set by SetMetadataRoot.
+    /// Uses StringPool for caching if available.
     /// </summary>
     public static bool ResolveUserString(uint token, out void* stringPtr)
     {
@@ -4202,7 +4203,17 @@ public static unsafe class MetadataReader
         if (_cachedMetadataRoot == null)
             return false;
 
-        stringPtr = AllocateUserString(ref *_cachedMetadataRoot, token);
+        // Use StringPool for caching if initialized
+        if (StringPool.IsInitialized)
+        {
+            stringPtr = StringPool.GetOrCreateFromToken(token, ref *_cachedMetadataRoot);
+        }
+        else
+        {
+            // Fallback: allocate without caching
+            stringPtr = AllocateUserString(ref *_cachedMetadataRoot, token);
+        }
+
         return stringPtr != null;
     }
 }

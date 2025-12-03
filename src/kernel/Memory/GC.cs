@@ -395,15 +395,46 @@ public static unsafe class GC
     }
 
     /// <summary>
-    /// Enumerate and mark all roots (static + stack).
+    /// Enumerate and mark all roots (static + stack + string pool).
     /// </summary>
     private static void MarkRoots()
     {
         // Mark static roots
         MarkStaticRoots();
 
+        // Mark interned strings (string pool acts as root)
+        MarkStringPoolRoots();
+
         // Mark stack roots from all threads
         MarkStackRootsAllThreads();
+    }
+
+    /// <summary>
+    /// Mark all interned strings in the string pool.
+    /// </summary>
+    private static void MarkStringPoolRoots()
+    {
+        if (!StringPool.IsInitialized)
+            return;
+
+        int count = 0;
+        StringPool.EnumerateRoots(&StringPoolRootCallback);
+
+        // Note: count tracking would require modifying the callback signature
+        // For now, we rely on the global _rootsFound counter
+    }
+
+    /// <summary>
+    /// Callback for string pool root enumeration.
+    /// </summary>
+    private static void StringPoolRootCallback(void** objRefSlot)
+    {
+        void* obj = *objRefSlot;
+        if (obj != null && GCHeap.IsInHeap(obj))
+        {
+            MarkAndPush(obj);
+            _rootsFound++;
+        }
     }
 
     /// <summary>

@@ -86,23 +86,28 @@ public static unsafe class SystemApi
     {
         lpSystemInfo = new SystemInfo();
 
-        // Processor architecture
-#if ARCH_X64
-        lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_AMD64;
-        lpSystemInfo.dwProcessorType = PROCESSOR_AMD_X8664;
-        lpSystemInfo.wProcessorLevel = 6;  // Typical for modern x64
-        lpSystemInfo.wProcessorRevision = 0;
-#elif ARCH_ARM64
-        lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_ARM64;
-        lpSystemInfo.dwProcessorType = 0;
-        lpSystemInfo.wProcessorLevel = 0;
-        lpSystemInfo.wProcessorRevision = 0;
-#else
-        lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_UNKNOWN;
-        lpSystemInfo.dwProcessorType = 0;
-        lpSystemInfo.wProcessorLevel = 0;
-        lpSystemInfo.wProcessorRevision = 0;
-#endif
+        // Processor architecture (using ArchInfo compile-time constants)
+        if (Arch.ArchInfo.IsX64)
+        {
+            lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_AMD64;
+            lpSystemInfo.dwProcessorType = PROCESSOR_AMD_X8664;
+            lpSystemInfo.wProcessorLevel = 6;  // Typical for modern x64
+            lpSystemInfo.wProcessorRevision = 0;
+        }
+        else if (Arch.ArchInfo.IsArm64)
+        {
+            lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_ARM64;
+            lpSystemInfo.dwProcessorType = 0;
+            lpSystemInfo.wProcessorLevel = 0;
+            lpSystemInfo.wProcessorRevision = 0;
+        }
+        else
+        {
+            lpSystemInfo.wProcessorArchitecture = ProcessorArchitecture.PROCESSOR_ARCHITECTURE_UNKNOWN;
+            lpSystemInfo.dwProcessorType = 0;
+            lpSystemInfo.wProcessorLevel = 0;
+            lpSystemInfo.wProcessorRevision = 0;
+        }
 
         // Page size
         lpSystemInfo.dwPageSize = (uint)VirtualMemory.PageSize;
@@ -413,13 +418,9 @@ public static unsafe class VersionApi
         ushort* pProcessMachine,
         ushort* pNativeMachine)
     {
-#if ARCH_X64
-        ushort nativeMachine = IMAGE_FILE_MACHINE_AMD64;
-#elif ARCH_ARM64
-        ushort nativeMachine = IMAGE_FILE_MACHINE_ARM64;
-#else
-        ushort nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
-#endif
+        ushort nativeMachine = Arch.ArchInfo.IsX64 ? IMAGE_FILE_MACHINE_AMD64 :
+                               Arch.ArchInfo.IsArm64 ? IMAGE_FILE_MACHINE_ARM64 :
+                               IMAGE_FILE_MACHINE_UNKNOWN;
 
         if (pProcessMachine != null)
             *pProcessMachine = IMAGE_FILE_MACHINE_UNKNOWN;  // Not WOW64 (native process)

@@ -15,8 +15,7 @@
 global using CurrentArch = ProtonOS.X64.Arch;
 global using CurrentCpu = ProtonOS.X64.CPU;
 global using CurrentVMem = ProtonOS.X64.VirtualMemory;
-// Note: X64Emitter will implement ICodeEmitter<X64Emitter>
-// global using CurrentEmitter = ProtonOS.X64.X64Emitter;  // Uncomment when X64Emitter implements interface
+global using CurrentEmitter = ProtonOS.Runtime.JIT.X64Emitter;
 
 #elif ARCH_ARM64
 
