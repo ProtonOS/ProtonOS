@@ -1717,6 +1717,8 @@ public static unsafe class ExceptionHandling
     /// <param name="clause">Receives the matching clause if found</param>
     /// <param name="foundClauseIndex">Receives the index of the found clause</param>
     /// <param name="startClause">Start searching from this clause index (for rethrow)</param>
+    /// <param name="framePointer">Frame pointer for filter evaluation (0 to skip filter clauses)</param>
+    /// <param name="exceptionObject">Exception object for filter evaluation (0 to skip filter clauses)</param>
     /// <returns>True if a matching clause was found</returns>
     public static bool FindMatchingEHClause(
         byte* ehInfo,
@@ -1726,7 +1728,9 @@ public static unsafe class ExceptionHandling
         ulong exceptionTypeRva,
         out NativeAotEHClause clause,
         out uint foundClauseIndex,
-        uint startClause = 0)
+        uint startClause = 0,
+        ulong framePointer = 0,
+        ulong exceptionObject = 0)
     {
         clause = default;
         foundClauseIndex = 0;
@@ -1821,7 +1825,7 @@ public static unsafe class ExceptionHandling
             // Check if the exception offset falls within this try region
             if (offsetInFunction >= tryStart && offsetInFunction < tryEnd)
             {
-                // Only match catch (Typed) clauses for Pass 1
+                // Only match catch (Typed) and Filter clauses for Pass 1
                 // Finally/Fault handlers are executed in Pass 2
                 if (kind == (byte)EHClauseKind.Typed)
                 {
@@ -1835,6 +1839,48 @@ public static unsafe class ExceptionHandling
 
                     DebugConsole.WriteLine("[EH] Found matching catch clause!");
                     return true;
+                }
+                else if (kind == (byte)EHClauseKind.Filter)
+                {
+                    // Filter clause: need to execute the filter funclet to see if it handles the exception
+                    // Skip if we don't have the required context for filter evaluation
+                    if (framePointer == 0 || exceptionObject == 0)
+                    {
+                        DebugConsole.WriteLine("[EH] Filter clause found but no context for evaluation, skipping");
+                        continue;
+                    }
+
+                    // Calculate the filter funclet address
+                    ulong filterAddr = imageBase + functionRva + filterOffset;
+
+                    DebugConsole.Write("[EH] Evaluating filter clause ");
+                    DebugConsole.WriteDecimal(i);
+                    DebugConsole.Write(" at offset 0x");
+                    DebugConsole.WriteHex(filterOffset);
+                    DebugConsole.WriteLine();
+
+                    // Execute the filter funclet
+                    bool filterResult = ExecuteFilterFunclet(filterAddr, framePointer, exceptionObject);
+
+                    if (filterResult)
+                    {
+                        // Filter returned 1 (EXCEPTION_EXECUTE_HANDLER) - this clause handles the exception
+                        clause.Kind = EHClauseKind.Filter;
+                        clause.TryStartOffset = tryStart;
+                        clause.TryEndOffset = tryEnd;
+                        clause.HandlerOffset = handlerOffset;
+                        clause.FilterOffset = filterOffset;
+                        clause.CatchTypeRva = 0;  // Filter clauses don't have a type
+                        foundClauseIndex = i;
+
+                        DebugConsole.WriteLine("[EH] Filter matched! Using this handler.");
+                        return true;
+                    }
+                    else
+                    {
+                        // Filter returned 0 (EXCEPTION_CONTINUE_SEARCH) - continue looking
+                        DebugConsole.WriteLine("[EH] Filter did not match, continuing search");
+                    }
                 }
             }
         }
@@ -1946,6 +1992,45 @@ public static unsafe class ExceptionHandling
     private static extern void CallFinallyHandler(ulong handlerAddress, ulong framePointer);
 
     /// <summary>
+    /// Execute a filter funclet to evaluate a "catch when (condition)" expression.
+    /// </summary>
+    /// <param name="filterAddress">Address of the filter funclet code</param>
+    /// <param name="framePointer">RBP value for the function containing the filter</param>
+    /// <param name="exceptionObject">The exception object being filtered</param>
+    /// <returns>true if filter returns 1 (handle), false if returns 0 (don't handle)</returns>
+    private static bool ExecuteFilterFunclet(ulong filterAddress, ulong framePointer, ulong exceptionObject)
+    {
+        DebugConsole.Write("[EH] Executing filter funclet at 0x");
+        DebugConsole.WriteHex(filterAddress);
+        DebugConsole.Write(" with RBP=0x");
+        DebugConsole.WriteHex(framePointer);
+        DebugConsole.Write(" exception=0x");
+        DebugConsole.WriteHex(exceptionObject);
+        DebugConsole.WriteLine();
+
+        // Call the filter funclet
+        // Returns 0 = don't handle, 1 = handle
+        int result = CallFilterFunclet(filterAddress, framePointer, exceptionObject);
+
+        DebugConsole.Write("[EH] Filter funclet returned ");
+        DebugConsole.WriteDecimal((uint)result);
+        DebugConsole.WriteLine(result == 1 ? " (HANDLE)" : " (PASS)");
+
+        return result == 1;
+    }
+
+    /// <summary>
+    /// Assembly helper to call a filter funclet with proper frame setup.
+    /// Implemented in native.asm
+    /// </summary>
+    /// <param name="filterAddress">Address of the filter funclet</param>
+    /// <param name="framePointer">Parent frame pointer (passed in RDX for funclet prolog)</param>
+    /// <param name="exceptionObject">Exception object (passed in RCX as first parameter)</param>
+    /// <returns>Filter result: 0 = don't handle, 1 = handle</returns>
+    [DllImport("*", EntryPoint = "call_filter_funclet")]
+    private static extern int CallFilterFunclet(ulong filterAddress, ulong framePointer, ulong exceptionObject);
+
+    /// <summary>
     /// Dispatch a .NET exception using NativeAOT EH tables.
     /// This performs the two-pass exception handling:
     /// Pass 1: Search for a matching catch handler
@@ -2049,10 +2134,12 @@ public static unsafe class ExceptionHandling
                 // Calculate offset within function
                 uint offsetInFunc = (uint)(searchContext.Rip - (imageBase + funcEntry->BeginAddress));
 
-                // Look for matching catch clause (Pass 1 only finds catch, not finally)
+                // Look for matching catch clause (Pass 1 finds catch and filter clauses)
+                // Pass frame pointer and exception object for filter funclet evaluation
                 NativeAotEHClause clause;
                 uint foundClauseIndex;
-                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex))
+                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0,
+                    out clause, out foundClauseIndex, 0, searchContext.Rbp, (ulong)exceptionObject))
                 {
                     // Found a catch handler!
                     DebugConsole.Write("[EH] Pass 1: Found catch handler in frame ");
@@ -2273,7 +2360,9 @@ public static unsafe class ExceptionHandling
                 uint foundClauseIndex;
                 // For frame 0, use startClause; for subsequent frames, search from 0
                 uint searchFrom = (frame == 0) ? startClause : 0;
-                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0, out clause, out foundClauseIndex, searchFrom))
+                // Pass frame pointer and exception object for filter funclet evaluation
+                if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0,
+                    out clause, out foundClauseIndex, searchFrom, walkContext.Rbp, (ulong)exceptionObject))
                 {
                     DebugConsole.Write("[EH] Rethrow: Found handler at offset 0x");
                     DebugConsole.WriteHex(clause.HandlerOffset);

@@ -1172,3 +1172,54 @@ call_finally_handler:
     pop rbp
 
     ret
+
+;; =============================================================================
+;; call_filter_funclet - Call a filter funclet during exception handling
+;; =============================================================================
+;; Filter funclets evaluate the condition in "catch when (condition)".
+;; The filter receives the exception object and returns:
+;;   0 = EXCEPTION_CONTINUE_SEARCH (don't handle)
+;;   1 = EXCEPTION_EXECUTE_HANDLER (handle this exception)
+;;
+;; The funclet prolog is: push rbp; mov rbp, rdx (rdx = parent frame pointer)
+;; So we pass: rcx = exception object, rdx = parent frame pointer
+
+; int call_filter_funclet(ulong filterAddress, ulong framePointer, ulong exceptionObject)
+; Windows x64 ABI: filterAddress in rcx, framePointer in rdx, exceptionObject in r8
+; Returns: filter result in eax (0 or 1)
+global call_filter_funclet
+call_filter_funclet:
+    ; Save callee-saved registers we'll modify
+    push rbp
+    push rbx
+    push rdi
+
+    ; Save arguments
+    mov rax, rcx        ; filter address
+    mov rbx, rdx        ; frame pointer
+    mov rdi, r8         ; exception object
+
+    ; Set up arguments for the filter funclet call:
+    ; The funclet prolog does: push rbp; mov rbp, rdx
+    ; So rdx must contain the parent frame pointer
+    ; rcx should contain the exception object (first param to filter)
+    mov rdx, rbx        ; rdx = parent frame pointer for funclet prolog
+    mov rcx, rdi        ; rcx = exception object (first parameter)
+
+    ; Call the filter funclet
+    ; The filter code does:
+    ;   push rbp
+    ;   mov rbp, rdx        ; parent frame pointer
+    ;   ... evaluate condition using exception in rcx ...
+    ;   ... stores result in eax (0 or 1) ...
+    ;   endfilter (pops rbp and returns)
+    call rax
+
+    ; Result is in eax (filter funclet returns 0 or 1)
+
+    ; Restore callee-saved registers
+    pop rdi
+    pop rbx
+    pop rbp
+
+    ret

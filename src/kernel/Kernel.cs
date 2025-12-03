@@ -8,17 +8,29 @@ using ProtonOS.Memory;
 using ProtonOS.Threading;
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
+using ProtonOS.Runtime.JIT;
 
 namespace ProtonOS;
 
 public static unsafe class Kernel
 {
-    // Loaded test assembly (persists after ExitBootServices)
-    private static byte* _testAssembly;
+    // Loaded test assembly binary (persists after ExitBootServices)
+    // Note: PE bytes are loaded via UEFI before ExitBootServices,
+    // then registered with AssemblyLoader after HeapAllocator.Init
+    private static byte* _testAssemblyBytes;
     private static ulong _testAssemblySize;
 
+    // Assembly ID from AssemblyLoader (assigned after registration)
+    private static uint _testAssemblyId;
+
     // Cached MetadataRoot for the test assembly (for string resolution)
+    // TODO: Migrate to use LoadedAssembly.Metadata instead
     private static Runtime.MetadataRoot _testMetadataRoot;
+
+    // Cached TablesHeader and TableSizes for the test assembly (for token resolution)
+    // TODO: Migrate to use LoadedAssembly.Tables/Sizes instead
+    private static Runtime.TablesHeader _testTablesHeader;
+    private static Runtime.TableSizes _testTableSizes;
 
     /// <summary>
     /// Get a pointer to the test assembly's MetadataRoot.
@@ -29,6 +41,28 @@ public static unsafe class Kernel
         // Static fields have fixed addresses in the managed heap
         // This is safe because _testMetadataRoot is a static field
         fixed (Runtime.MetadataRoot* ptr = &_testMetadataRoot)
+        {
+            return ptr;
+        }
+    }
+
+    /// <summary>
+    /// Get a pointer to the test assembly's TablesHeader.
+    /// </summary>
+    public static Runtime.TablesHeader* GetTestTablesHeader()
+    {
+        fixed (Runtime.TablesHeader* ptr = &_testTablesHeader)
+        {
+            return ptr;
+        }
+    }
+
+    /// <summary>
+    /// Get a pointer to the test assembly's TableSizes.
+    /// </summary>
+    public static Runtime.TableSizes* GetTestTableSizes()
+    {
+        fixed (Runtime.TableSizes* ptr = &_testTableSizes)
         {
             return ptr;
         }
@@ -123,6 +157,34 @@ public static unsafe class Kernel
         // Initialize runtime helpers for JIT (allocation, MD array, etc.)
         Runtime.RuntimeHelpers.Init();
 
+        // Initialize assembly loader (requires HeapAllocator)
+        AssemblyLoader.Initialize();
+
+        // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
+        if (_testAssemblyBytes != null)
+        {
+            _testAssemblyId = AssemblyLoader.Load(_testAssemblyBytes, _testAssemblySize);
+            if (_testAssemblyId != AssemblyLoader.InvalidAssemblyId)
+            {
+                DebugConsole.Write("[Kernel] Test assembly registered with ID ");
+                DebugConsole.WriteDecimal(_testAssemblyId);
+                DebugConsole.WriteLine();
+            }
+        }
+
+        // Initialize metadata integration layer (requires HeapAllocator)
+        MetadataIntegration.Initialize();
+
+        // Wire up metadata context for token resolution (backward compatibility)
+        // TODO: Migrate to use AssemblyLoader.GetAssembly(_testAssemblyId) instead
+        MetadataIntegration.SetMetadataContext(
+            GetTestMetadataRoot(),
+            GetTestTablesHeader(),
+            GetTestTableSizes());
+
+        // Register well-known AOT types (System.String, etc.)
+        MetadataIntegration.RegisterWellKnownTypes();
+
         // Test CPU features and dynamic code execution (JIT prerequisites)
         Tests.TestCPUFeatures();
         Tests.TestDynamicCodeExecution();
@@ -150,28 +212,28 @@ public static unsafe class Kernel
     /// </summary>
     private static void LoadTestAssembly()
     {
-        DebugConsole.WriteLine("[Kernel] Loading test assembly...");
+        DebugConsole.WriteLine("[Kernel] Loading test assembly from UEFI FS...");
 
-        _testAssembly = UEFIFS.ReadFileAscii("\\MetadataTest.dll", out _testAssemblySize);
+        _testAssemblyBytes = UEFIFS.ReadFileAscii("\\MetadataTest.dll", out _testAssemblySize);
 
-        if (_testAssembly == null)
+        if (_testAssemblyBytes == null)
         {
             DebugConsole.WriteLine("[Kernel] Failed to load test assembly");
             return;
         }
 
         DebugConsole.Write("[Kernel] Test assembly loaded at 0x");
-        DebugConsole.WriteHex((ulong)_testAssembly);
+        DebugConsole.WriteHex((ulong)_testAssemblyBytes);
         DebugConsole.Write(", size ");
         DebugConsole.WriteHex(_testAssemblySize);
         DebugConsole.WriteLine();
 
         // Verify it looks like a PE file (MZ header)
-        if (_testAssemblySize >= 2 && _testAssembly[0] == 'M' && _testAssembly[1] == 'Z')
+        if (_testAssemblySize >= 2 && _testAssemblyBytes[0] == 'M' && _testAssemblyBytes[1] == 'Z')
         {
             DebugConsole.WriteLine("[Kernel] PE signature verified (MZ)");
 
-            // Parse CLI header and metadata
+            // Parse CLI header and metadata (still needed before ExitBootServices for dump output)
             ParseAssemblyMetadata();
         }
         else
@@ -187,7 +249,7 @@ public static unsafe class Kernel
     private static void ParseAssemblyMetadata()
     {
         // Get CLI header (using file-based RVA translation)
-        var corHeader = PEHelper.GetCorHeaderFromFile(_testAssembly);
+        var corHeader = PEHelper.GetCorHeaderFromFile(_testAssemblyBytes);
         if (corHeader == null)
         {
             DebugConsole.WriteLine("[Kernel] No CLI header found");
@@ -209,7 +271,7 @@ public static unsafe class Kernel
         DebugConsole.WriteLine();
 
         // Get metadata root (using file-based RVA translation)
-        var metadataRoot = (byte*)PEHelper.GetMetadataRootFromFile(_testAssembly);
+        var metadataRoot = (byte*)PEHelper.GetMetadataRootFromFile(_testAssemblyBytes);
         if (metadataRoot == null)
         {
             DebugConsole.WriteLine("[Kernel] Failed to locate metadata");
@@ -241,6 +303,10 @@ public static unsafe class Kernel
             // Parse #~ (tables) stream header
             if (MetadataReader.ParseTablesHeader(ref mdRoot, out var tablesHeader))
             {
+                // Save for later use (token resolution)
+                _testTablesHeader = tablesHeader;
+                _testTableSizes = TableSizes.Calculate(ref tablesHeader);
+
                 MetadataReader.DumpTablesHeader(ref tablesHeader);
 
                 // Test heap access by reading Module and TypeDef tables
@@ -257,11 +323,10 @@ public static unsafe class Kernel
                 DumpMethodBodies(ref mdRoot, ref tablesHeader);
 
                 // Test type resolution (Phase 5.9)
-                var sizes = TableSizes.Calculate(ref tablesHeader);
-                MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref sizes);
+                MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref _testTableSizes);
 
                 // Test assembly identity (Phase 5.10)
-                MetadataReader.TestAssemblyIdentity(ref mdRoot, ref tablesHeader, ref sizes);
+                MetadataReader.TestAssemblyIdentity(ref mdRoot, ref tablesHeader, ref _testTableSizes);
             }
             else
             {
@@ -322,7 +387,7 @@ public static unsafe class Kernel
             }
 
             // Convert RVA to file pointer
-            byte* methodBodyPtr = (byte*)PEHelper.RvaToFilePointer(_testAssembly, rva);
+            byte* methodBodyPtr = (byte*)PEHelper.RvaToFilePointer(_testAssemblyBytes, rva);
             if (methodBodyPtr == null)
             {
                 DebugConsole.WriteLine("[Kernel]     failed to resolve RVA");

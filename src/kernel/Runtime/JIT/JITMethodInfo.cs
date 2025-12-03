@@ -23,11 +23,11 @@ public unsafe struct JITMethodInfo
     /// <summary>Maximum EH clauses per JIT method.</summary>
     public const int MaxEHClauses = 16;
 
-    /// <summary>Maximum funclets (exception handlers) per JIT method.</summary>
-    public const int MaxFunclets = 16;
-
     /// <summary>Size of UNWIND_INFO per funclet (smaller than main method).</summary>
     public const int FuncletUnwindInfoSize = 16;
+
+    /// <summary>Size of each FuncletEntry structure.</summary>
+    public const int FuncletEntrySize = 12 + FuncletUnwindInfoSize + 4;  // RuntimeFunction + UnwindInfo + metadata
 
     /// <summary>Base address of the code region (same for all methods in same code heap chunk).</summary>
     public ulong CodeBase;
@@ -89,37 +89,27 @@ public unsafe struct JITMethodInfo
     public int GCInfoSize;
 
     // ==================== Funclet Support ====================
+    // Funclet data is allocated from CodeHeap on demand to save space in JITMethodInfo.
+    // Most methods have no exception handlers, so no funclet allocation is needed.
 
     /// <summary>Number of funclets (exception handlers) for this method.</summary>
     public byte FuncletCount;
 
+    /// <summary>Capacity of funclet array (how many were allocated).</summary>
+    public byte FuncletCapacity;
+
     /// <summary>Reserved for alignment.</summary>
-    private byte _funcletReserved1;
-    private byte _funcletReserved2;
-    private byte _funcletReserved3;
+    private ushort _funcletReserved;
 
     /// <summary>
-    /// RUNTIME_FUNCTION entries for funclets.
-    /// Each funclet needs its own RUNTIME_FUNCTION for proper stack unwinding.
-    /// Layout: RuntimeFunction[MaxFunclets] = 12 bytes each * 16 = 192 bytes
+    /// Pointer to funclet data array in CodeHeap.
+    /// Each entry is FuncletEntrySize bytes containing:
+    /// - RuntimeFunction (12 bytes)
+    /// - UNWIND_INFO (FuncletUnwindInfoSize bytes)
+    /// - Metadata: 4 bytes (kind, ehClauseIndex, padding)
+    /// Allocated from CodeHeap when funclets are added.
     /// </summary>
-    private fixed byte _funcletFunctions[MaxFunclets * 12];
-
-    /// <summary>
-    /// UNWIND_INFO for each funclet.
-    /// Funclets have simpler unwind info than the main method:
-    /// - push rbp (1 code)
-    /// - set frame pointer
-    /// Layout: 16 bytes per funclet * 16 = 256 bytes
-    /// </summary>
-    private fixed byte _funcletUnwindInfo[MaxFunclets * FuncletUnwindInfoSize];
-
-    /// <summary>
-    /// Funclet metadata: kind and EH clause index.
-    /// Bits 0-1: Kind (0=handler, 1=filter)
-    /// Bits 2-7: EH clause index
-    /// </summary>
-    private fixed byte _funcletMeta[MaxFunclets];
+    public byte* FuncletData;
 
     /// <summary>
     /// Create JITMethodInfo for a compiled method.
@@ -446,37 +436,75 @@ public unsafe struct JITMethodInfo
     // ==================== Funclet Management Methods ====================
 
     /// <summary>
+    /// Allocate storage for funclets from CodeHeap.
+    /// Call this before AddFunclet if you know how many funclets you need.
+    /// </summary>
+    /// <param name="count">Number of funclets to allocate space for</param>
+    /// <returns>True if allocation succeeded</returns>
+    public bool AllocateFunclets(int count)
+    {
+        if (count <= 0)
+            return true;
+
+        if (FuncletData != null)
+        {
+            // Already allocated - check if we have enough capacity
+            if (count <= FuncletCapacity)
+                return true;
+            // Would need reallocation - not supported (preallocate correctly!)
+            return false;
+        }
+
+        ulong size = (ulong)(count * FuncletEntrySize);
+        FuncletData = CodeHeap.Alloc(size);
+        if (FuncletData == null)
+            return false;
+
+        FuncletCapacity = (byte)count;
+        return true;
+    }
+
+    /// <summary>
     /// Add a funclet to this method.
+    /// Will allocate from CodeHeap if needed (single funclet at a time).
+    /// For better efficiency, call AllocateFunclets first if you know the count.
     /// </summary>
     /// <param name="codeStart">Start address of the funclet code</param>
     /// <param name="codeSize">Size of funclet code in bytes</param>
     /// <param name="isFilter">True if this is a filter funclet, false for handler</param>
     /// <param name="ehClauseIndex">Index of the EH clause this funclet belongs to</param>
-    /// <returns>Funclet index, or -1 if max funclets reached</returns>
+    /// <returns>Funclet index, or -1 if allocation failed or capacity exceeded</returns>
     public int AddFunclet(ulong codeStart, uint codeSize, bool isFilter, int ehClauseIndex)
     {
-        if (FuncletCount >= MaxFunclets)
-            return -1;
+        // Ensure we have storage
+        if (FuncletData == null)
+        {
+            // Allocate space for 1 funclet (caller should have used AllocateFunclets for efficiency)
+            if (!AllocateFunclets(1))
+                return -1;
+        }
+        else if (FuncletCount >= FuncletCapacity)
+        {
+            return -1;  // No room
+        }
 
         int index = FuncletCount;
 
-        // Set up RUNTIME_FUNCTION for this funclet
-        uint beginRva = (uint)(codeStart - CodeBase);
-        fixed (byte* p = _funcletFunctions)
-        {
-            RuntimeFunction* func = (RuntimeFunction*)(p + index * 12);
-            func->BeginAddress = beginRva;
-            func->EndAddress = beginRva + codeSize;
-            // UnwindInfoAddress will be set during finalization
-        }
+        // Calculate offset into funclet data array
+        byte* entry = FuncletData + (index * FuncletEntrySize);
 
-        // Set up funclet metadata
-        fixed (byte* p = _funcletMeta)
-        {
-            byte meta = (byte)(isFilter ? 1 : 0);
-            meta |= (byte)((ehClauseIndex & 0x3F) << 2);
-            p[index] = meta;
-        }
+        // Set up RUNTIME_FUNCTION for this funclet (first 12 bytes of entry)
+        RuntimeFunction* func = (RuntimeFunction*)entry;
+        uint beginRva = (uint)(codeStart - CodeBase);
+        func->BeginAddress = beginRva;
+        func->EndAddress = beginRva + codeSize;
+        // UnwindInfoAddress will be set during finalization
+
+        // Set up funclet metadata (last 4 bytes of entry)
+        byte* metaPtr = entry + 12 + FuncletUnwindInfoSize;
+        byte meta = (byte)(isFilter ? 1 : 0);
+        meta |= (byte)((ehClauseIndex & 0x3F) << 2);
+        *metaPtr = meta;
 
         FuncletCount++;
         return index;
@@ -490,59 +518,55 @@ public unsafe struct JITMethodInfo
     /// <param name="prologSize">Size of funclet prolog (typically 4 bytes)</param>
     public void FinalizeFuncletUnwindInfo(int funcletIndex, byte prologSize)
     {
-        if (funcletIndex < 0 || funcletIndex >= FuncletCount)
+        if (funcletIndex < 0 || funcletIndex >= FuncletCount || FuncletData == null)
             return;
 
-        fixed (byte* funcUnwind = _funcletUnwindInfo)
-        fixed (byte* funcFunctions = _funcletFunctions)
-        {
-            byte* p = funcUnwind + funcletIndex * FuncletUnwindInfoSize;
+        // FuncletEntry layout:
+        //   Offset 0:  RuntimeFunction (12 bytes)
+        //   Offset 12: UNWIND_INFO (FuncletUnwindInfoSize bytes = 16)
+        //   Offset 28: Metadata (4 bytes)
+        byte* entry = FuncletData + (funcletIndex * FuncletEntrySize);
+        RuntimeFunction* func = (RuntimeFunction*)entry;
+        byte* p = entry + 12;  // UNWIND_INFO starts after RuntimeFunction
+        byte* metaPtr = entry + 12 + FuncletUnwindInfoSize;
 
-            // UNWIND_INFO header (4 bytes)
-            // Flags = 0 (funclets don't have their own handlers)
-            p[0] = 1;  // Version 1, no flags
+        // UNWIND_INFO header (4 bytes)
+        // Flags = 0 (funclets don't have their own handlers)
+        p[0] = 1;  // Version 1, no flags
 
-            // Prolog size
-            p[1] = prologSize;
+        // Prolog size
+        p[1] = prologSize;
 
-            // Count of unwind codes = 2 (SET_FPREG + PUSH_NONVOL)
-            p[2] = 2;
+        // Count of unwind codes = 2 (SET_FPREG + PUSH_NONVOL)
+        p[2] = 2;
 
-            // Frame register = RBP (5), frame offset = 0
-            p[3] = 5;
+        // Frame register = RBP (5), frame offset = 0
+        p[3] = 5;
 
-            // Unwind codes (reverse order of operations):
-            // 1. UWOP_SET_FPREG at offset 4 (after push rbp + mov rbp, rdx)
-            // 2. UWOP_PUSH_NONVOL(RBP) at offset 1
-            var codes = (UnwindCode*)(p + 4);
+        // Unwind codes (reverse order of operations):
+        // 1. UWOP_SET_FPREG at offset 4 (after push rbp + mov rbp, rdx)
+        // 2. UWOP_PUSH_NONVOL(RBP) at offset 1
+        var codes = (UnwindCode*)(p + 4);
 
-            // SET_FPREG at offset 4
-            codes[0].CodeOffset = 4;
-            codes[0].OpAndInfo = (byte)UnwindOpCodes.UWOP_SET_FPREG;
+        // SET_FPREG at offset 4
+        codes[0].CodeOffset = 4;
+        codes[0].OpAndInfo = (byte)UnwindOpCodes.UWOP_SET_FPREG;
 
-            // PUSH_NONVOL(RBP) at offset 1
-            codes[1].CodeOffset = 1;
-            codes[1].OpAndInfo = (byte)(UnwindOpCodes.UWOP_PUSH_NONVOL | (UnwindRegister.RBP << 4));
+        // PUSH_NONVOL(RBP) at offset 1
+        codes[1].CodeOffset = 1;
+        codes[1].OpAndInfo = (byte)(UnwindOpCodes.UWOP_PUSH_NONVOL | (UnwindRegister.RBP << 4));
 
-            // After unwind codes: NativeAOT unwind block flags (1 byte)
-            // Offset = 4 (header) + 2 * 2 (codes) = 8
-            byte* flagsPtr = p + 8;
+        // After unwind codes: NativeAOT unwind block flags (1 byte)
+        // Offset = 4 (header) + 2 * 2 (codes) = 8
+        byte* flagsPtr = p + 8;
 
-            // Get funclet kind from metadata
-            fixed (byte* meta = _funcletMeta)
-            {
-                bool isFilter = (meta[funcletIndex] & 0x01) != 0;
-                *flagsPtr = isFilter ? UBF_FUNC_KIND_FILTER : UBF_FUNC_KIND_HANDLER;
-            }
+        // Get funclet kind from metadata
+        bool isFilter = (*metaPtr & 0x01) != 0;
+        *flagsPtr = isFilter ? UBF_FUNC_KIND_FILTER : UBF_FUNC_KIND_HANDLER;
 
-            // Calculate UNWIND_INFO RVA and patch into RUNTIME_FUNCTION
-            RuntimeFunction* func = (RuntimeFunction*)(funcFunctions + funcletIndex * 12);
-            fixed (JITMethodInfo* self = &this)
-            {
-                uint unwindInfoRva = (uint)((ulong)p - CodeBase);
-                func->UnwindInfoAddress = unwindInfoRva;
-            }
-        }
+        // Calculate UNWIND_INFO RVA and patch into RUNTIME_FUNCTION
+        uint unwindInfoRva = (uint)((ulong)p - CodeBase);
+        func->UnwindInfoAddress = unwindInfoRva;
     }
 
     /// <summary>
@@ -550,13 +574,11 @@ public unsafe struct JITMethodInfo
     /// </summary>
     public RuntimeFunction* GetFuncletRuntimeFunction(int index)
     {
-        if (index < 0 || index >= FuncletCount)
+        if (index < 0 || index >= FuncletCount || FuncletData == null)
             return null;
 
-        fixed (byte* p = _funcletFunctions)
-        {
-            return (RuntimeFunction*)(p + index * 12);
-        }
+        byte* entry = FuncletData + (index * FuncletEntrySize);
+        return (RuntimeFunction*)entry;
     }
 
     /// <summary>
@@ -564,13 +586,11 @@ public unsafe struct JITMethodInfo
     /// </summary>
     public byte* GetFuncletUnwindInfoPtr(int index)
     {
-        if (index < 0 || index >= FuncletCount)
+        if (index < 0 || index >= FuncletCount || FuncletData == null)
             return null;
 
-        fixed (byte* p = _funcletUnwindInfo)
-        {
-            return p + index * FuncletUnwindInfoSize;
-        }
+        byte* entry = FuncletData + (index * FuncletEntrySize);
+        return entry + 12;  // UNWIND_INFO is at offset 12 (after RuntimeFunction)
     }
 
     /// <summary>
@@ -881,10 +901,44 @@ public static unsafe class JITMethodRegistry
             *(uint*)(unwindInfoInCodeHeap + offset) = ehInfoRva;
         }
 
-        // Register with ExceptionHandling
+        // Build RUNTIME_FUNCTION array: main method + funclets
+        // IMPORTANT: This array must be persistent (not stack-allocated) because
+        // ExceptionHandling.AddFunctionTable stores the pointer
+        int totalFunctions = 1 + info.FuncletCount;
+
+        // Allocate persistent RUNTIME_FUNCTION array from CodeHeap
+        ulong functionArraySize = (ulong)(totalFunctions * sizeof(RuntimeFunction));
+        RuntimeFunction* functions = (RuntimeFunction*)CodeHeap.Alloc(functionArraySize);
+        if (functions == null)
+        {
+            _methodCount--;
+            _lock.Release();
+            DebugConsole.WriteLine("[JITRegistry] Failed to allocate function table from CodeHeap");
+            return false;
+        }
+
+        // First entry is the main method
+        functions[0] = _methods[index].Function;
+
+        // Finalize and add funclet RUNTIME_FUNCTIONs
+        // Note: FuncletData is already allocated from CodeHeap, so UNWIND_INFO has valid RVAs
+        for (int i = 0; i < info.FuncletCount; i++)
+        {
+            // Finalize funclet unwind info - this sets up the UNWIND_INFO in FuncletData
+            // and patches the UnwindInfoAddress RVA in the RUNTIME_FUNCTION
+            _methods[index].FinalizeFuncletUnwindInfo(i, 4); // 4-byte prolog: push rbp; mov rbp, rdx
+
+            // Get funclet RUNTIME_FUNCTION (already has correct UnwindInfoAddress from finalize)
+            RuntimeFunction* funcletFunc = _methods[index].GetFuncletRuntimeFunction(i);
+
+            // Add to function array
+            functions[1 + i] = *funcletFunc;
+        }
+
+        // Register all functions (main + funclets) with ExceptionHandling
         bool success = ExceptionHandling.AddFunctionTable(
-            &_methods[index].Function,
-            1,
+            functions,
+            (uint)totalFunctions,
             info.CodeBase);
 
         _lock.Release();
@@ -902,6 +956,12 @@ public static unsafe class JITMethodRegistry
                 DebugConsole.Write(" with ");
                 DebugConsole.WriteDecimal(info.EHClauseCount);
                 DebugConsole.Write(" EH clause(s)");
+            }
+            if (info.FuncletCount > 0)
+            {
+                DebugConsole.Write(" + ");
+                DebugConsole.WriteDecimal(info.FuncletCount);
+                DebugConsole.Write(" funclet(s)");
             }
             DebugConsole.WriteLine();
         }

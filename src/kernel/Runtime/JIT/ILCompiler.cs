@@ -509,6 +509,11 @@ public unsafe struct ILCompiler
         compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
 
+        // Initialize funclet support
+        compiler._ehClauseCount = 0;
+        compiler._funcletCount = 0;
+        compiler._compilingFunclet = false;
+
         // Create code buffer (4KB should be plenty for simple methods)
         var code = CodeBuffer.Create(4096);
         compiler._emit = X64Emitter.Create(ref code);
@@ -4016,8 +4021,16 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // Just emit 'ret' - the EH runtime sets up the call so ret returns to it.
-        // For normal execution, this code is skipped (leave jumps over it).
+        // When compiling a funclet, we need to emit the full funclet epilog:
+        // pop rbp; ret - to restore the saved rbp and return to EH runtime.
+        // When compiling inline handler, just emit 'ret'.
+        if (_compilingFunclet)
+        {
+            // Funclet epilog: pop rbp (0x5D), ret (0xC3)
+            _emit.Code.EmitByte(0x5D);  // pop rbp
+        }
+
+        // Emit ret - either as part of funclet epilog or for inline handler
         _emit.Ret();
 
         return true;
@@ -4718,8 +4731,18 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileNewarr(uint token)
     {
-        // For testing: token is directly the array MethodTable* address
-        ulong mtAddress = token;
+        // Resolve token to MethodTable* address
+        ulong mtAddress = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                mtAddress = (ulong)resolved;
+            }
+        }
 
         // Pop numElements from stack into RDX (second arg)
         _emit.Pop(Reg64.RDX);
@@ -4759,9 +4782,19 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileBox(uint token)
     {
-        // For testing: token is directly the boxed MethodTable* address
+        // Resolve token to MethodTable* address
         // The value type size is derived from BaseSize - 8 (minus MT pointer)
-        ulong mtAddress = token;
+        ulong mtAddress = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                mtAddress = (ulong)resolved;
+            }
+        }
 
         // Pop value from stack into R8 (save it temporarily)
         // For simplicity, we assume 64-bit value on stack
@@ -4807,8 +4840,21 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileUnbox(uint token)
     {
-        // For testing: token is directly the expected MethodTable* address
-        // In a full implementation, we'd verify obj->MT matches token
+        // Resolve token to MethodTable* address for type validation
+        ulong expectedMT = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                expectedMT = (ulong)resolved;
+            }
+        }
+
+        // Note: In a full implementation, we'd verify obj->MT matches expectedMT
+        _ = expectedMT;  // Currently unused - type validation not implemented
 
         // Pop object reference from stack
         _emit.Pop(Reg64.RAX);
@@ -4840,8 +4886,21 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileUnboxAny(uint token)
     {
-        // For testing: token is directly the expected MethodTable* address
-        // In a full implementation, we'd verify obj->MT matches token
+        // Resolve token to MethodTable* address for type validation
+        ulong expectedMT = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                expectedMT = (ulong)resolved;
+            }
+        }
+
+        // Note: In a full implementation, we'd verify obj->MT matches expectedMT
+        _ = expectedMT;  // Currently unused - type validation not implemented
 
         // Pop object reference from stack
         _emit.Pop(Reg64.RAX);
@@ -4874,8 +4933,18 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCastclass(uint token)
     {
-        // For testing: token is directly the target MethodTable* address
-        ulong targetMT = token;
+        // Resolve token to MethodTable* address
+        ulong targetMT = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                targetMT = (ulong)resolved;
+            }
+        }
 
         // Peek at object on stack (don't pop - result is same object)
         _emit.MovRM(Reg64.RAX, Reg64.RSP, 0);  // Load obj from stack top
@@ -4927,8 +4996,18 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileIsinst(uint token)
     {
-        // For testing: token is directly the target MethodTable* address
-        ulong targetMT = token;
+        // Resolve token to MethodTable* address
+        ulong targetMT = token;  // Fallback: use token directly (for testing)
+
+        // If we have a type resolver, use it to get the real MethodTable
+        if (_typeResolver != null)
+        {
+            void* resolved;
+            if (_typeResolver(token, out resolved) && resolved != null)
+            {
+                targetMT = (ulong)resolved;
+            }
+        }
 
         // Pop object from stack into R12 (callee-saved, survives call)
         _emit.Pop(Reg64.RAX);  // Load obj
@@ -5527,6 +5606,328 @@ public unsafe struct ILCompiler
     private void* _rhpNewArray;
     private void* _isAssignableTo;
     private void* _getInterfaceMethod;
+
+    // ==================== Funclet Compilation Support ====================
+    // EH clause storage for funclet-based exception handling
+    private const int MaxEHClauses = 16;
+    private int _ehClauseCount;
+
+    // Each clause uses 5 ints: flags, tryStart, tryEnd, handlerStart, handlerEnd (IL offsets)
+    private fixed int _ehClauseData[MaxEHClauses * 5];
+
+    // Funclet compilation results (filled by CompileWithFunclets)
+    // Each funclet has: nativeStart (code offset), nativeSize, clauseIndex
+    private fixed int _funcletInfo[MaxEHClauses * 3];
+    private int _funcletCount;
+
+    // Flag to indicate we're compiling a funclet (not main method)
+    private bool _compilingFunclet;
+
+    /// <summary>
+    /// Set EH clauses for funclet compilation.
+    /// Must be called before CompileWithFunclets().
+    /// </summary>
+    /// <param name="clauses">IL-offset based EH clauses</param>
+    public void SetILEHClauses(ref ILExceptionClauses clauses)
+    {
+        _ehClauseCount = 0;
+        int count = clauses.Count;
+        if (count > MaxEHClauses) count = MaxEHClauses;
+
+        fixed (int* data = _ehClauseData)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var clause = clauses.GetClause(i);
+                int idx = i * 5;
+                data[idx + 0] = (int)clause.Flags;
+                data[idx + 1] = (int)clause.TryOffset;
+                data[idx + 2] = (int)(clause.TryOffset + clause.TryLength);
+                data[idx + 3] = (int)clause.HandlerOffset;
+                data[idx + 4] = (int)(clause.HandlerOffset + clause.HandlerLength);
+                _ehClauseCount++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Check if an IL offset is inside a handler region (for skipping during main method compilation).
+    /// </summary>
+    private bool IsInsideHandler(int ilOffset)
+    {
+        fixed (int* data = _ehClauseData)
+        {
+            for (int i = 0; i < _ehClauseCount; i++)
+            {
+                int idx = i * 5;
+                int handlerStart = data[idx + 3];
+                int handlerEnd = data[idx + 4];
+                if (ilOffset >= handlerStart && ilOffset < handlerEnd)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get the next IL offset after skipping all handler regions starting at current offset.
+    /// Returns the IL offset just past the handler(s), or -1 if not in a handler.
+    /// </summary>
+    private int SkipHandler(int ilOffset)
+    {
+        fixed (int* data = _ehClauseData)
+        {
+            for (int i = 0; i < _ehClauseCount; i++)
+            {
+                int idx = i * 5;
+                int handlerStart = data[idx + 3];
+                int handlerEnd = data[idx + 4];
+                if (ilOffset == handlerStart)
+                    return handlerEnd;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Compile with funclet support.
+    /// Main method body is compiled first (skipping handler regions).
+    /// Each handler is then compiled as a separate funclet.
+    /// </summary>
+    /// <param name="methodInfo">Output: JITMethodInfo for the method with funclets</param>
+    /// <param name="nativeClauses">Output: Native EH clauses with updated offsets</param>
+    /// <returns>Function pointer to main method, or null on failure</returns>
+    public void* CompileWithFunclets(out JITMethodInfo methodInfo, out JITExceptionClauses nativeClauses)
+    {
+        methodInfo = default;
+        nativeClauses = default;
+
+        if (_ehClauseCount == 0)
+        {
+            // No EH clauses - just do regular compilation
+            var result = Compile();
+            if (result == null) return null;
+
+            // Create basic method info
+            ulong codeStart = (ulong)result;
+            methodInfo = JITMethodInfo.Create(
+                codeStart,
+                codeStart,
+                CodeSize,
+                PrologSize,
+                5, // RBP
+                0
+            );
+            return result;
+        }
+
+        // ========== Pass 1: Compile main method body (skip handlers) ==========
+        _compilingFunclet = false;
+
+        // Emit main method prologue
+        int localBytes = _localCount * 8 + 64;
+        _stackAdjust = _emit.EmitPrologue(localBytes, false);
+
+        if (_argCount > 0)
+            _emit.HomeArguments(_argCount);
+
+        // Process IL, skipping handler regions
+        while (_ilOffset < _ilLength)
+        {
+            // Check if we're entering a handler region
+            int skipTo = SkipHandler(_ilOffset);
+            if (skipTo >= 0)
+            {
+                // Record a label for the handler start (needed for leave instructions)
+                RecordLabel(_ilOffset, _emit.Position);
+                // Skip to end of handler
+                _ilOffset = skipTo;
+                continue;
+            }
+
+            RecordLabel(_ilOffset, _emit.Position);
+            byte opcode = _il[_ilOffset++];
+
+            if (!CompileOpcode(opcode))
+            {
+                DebugConsole.Write("[JIT] Unknown opcode 0x");
+                DebugConsole.WriteHex(opcode);
+                DebugConsole.Write(" at IL offset ");
+                DebugConsole.WriteDecimal((uint)(_ilOffset - 1));
+                DebugConsole.WriteLine();
+                return null;
+            }
+        }
+
+        // Patch forward branches for main method
+        PatchBranches();
+
+        // Record main method size
+        int mainCodeSize = _emit.Position;
+        byte mainPrologSize = PrologSize;
+
+        // ========== Pass 2: Compile funclets ==========
+        _compilingFunclet = true;
+        _funcletCount = 0;
+
+        fixed (int* ehData = _ehClauseData)
+        fixed (int* funcletData = _funcletInfo)
+        {
+            for (int i = 0; i < _ehClauseCount; i++)
+            {
+                int idx = i * 5;
+                int handlerStart = ehData[idx + 3];
+                int handlerEnd = ehData[idx + 4];
+                int flags = ehData[idx + 0];
+
+                // Record funclet start
+                int funcletCodeStart = _emit.Position;
+
+                // Emit funclet prolog (4 bytes):
+                // push rbp       (0x55)
+                // mov rbp, rdx   (0x48 0x89 0xD5) - RDX contains parent frame pointer
+                _emit.Code.EmitByte(0x55);       // push rbp
+                _emit.Code.EmitByte(0x48);       // REX.W
+                _emit.Code.EmitByte(0x89);       // mov r/m64, r64
+                _emit.Code.EmitByte(0xD5);       // rbp, rdx
+
+                // Reset label tracking for funclet
+                // (branches within funclet are relative to funclet)
+                int saveLabelCount = _labelCount;
+                _labelCount = 0;
+                int saveBranchCount = _branchCount;
+                _branchCount = 0;
+
+                // Compile handler IL
+                _ilOffset = handlerStart;
+                while (_ilOffset < handlerEnd)
+                {
+                    RecordLabel(_ilOffset, _emit.Position);
+                    byte opcode = _il[_ilOffset++];
+
+                    if (!CompileOpcode(opcode))
+                    {
+                        DebugConsole.Write("[JIT] Funclet opcode error at ");
+                        DebugConsole.WriteHex((uint)(_ilOffset - 1));
+                        DebugConsole.WriteLine();
+                        return null;
+                    }
+                }
+
+                // Patch branches within funclet
+                PatchBranches();
+
+                // Emit funclet epilog:
+                // pop rbp  (0x5D)
+                // ret      (0xC3)
+                // Note: endfinally/ret in handler should have already emitted appropriate code
+                // We add a safety epilog in case control falls through
+                _emit.Code.EmitByte(0x5D);  // pop rbp
+                _emit.Code.EmitByte(0xC3);  // ret
+
+                int funcletCodeEnd = _emit.Position;
+                int funcletCodeSize = funcletCodeEnd - funcletCodeStart;
+
+                // Store funclet info
+                int funcIdx = _funcletCount * 3;
+                funcletData[funcIdx + 0] = funcletCodeStart;
+                funcletData[funcIdx + 1] = funcletCodeSize;
+                funcletData[funcIdx + 2] = i;  // clause index
+                _funcletCount++;
+
+                // Restore label/branch tracking
+                _labelCount = saveLabelCount;
+                _branchCount = saveBranchCount;
+            }
+        }
+
+        // ========== Build results ==========
+        void* code = _emit.Code.GetFunctionPointer();
+        if (code == null) return null;
+
+        ulong codeBase = (ulong)code;
+
+        // Create method info
+        methodInfo = JITMethodInfo.Create(
+            codeBase,
+            codeBase,
+            (uint)mainCodeSize,
+            mainPrologSize,
+            5, // RBP
+            0
+        );
+
+        // Allocate funclets in method info
+        if (_funcletCount > 0)
+        {
+            methodInfo.AllocateFunclets(_funcletCount);
+
+            fixed (int* funcletData = _funcletInfo)
+            fixed (int* ehData = _ehClauseData)
+            {
+                for (int i = 0; i < _funcletCount; i++)
+                {
+                    int funcIdx = i * 3;
+                    int funcletCodeStart = funcletData[funcIdx + 0];
+                    int funcletCodeSize = funcletData[funcIdx + 1];
+                    int clauseIdx = funcletData[funcIdx + 2];
+
+                    int ehIdx = clauseIdx * 5;
+                    int flags = ehData[ehIdx + 0];
+                    bool isFilter = (flags == (int)ILExceptionClauseFlags.Filter);
+
+                    ulong funcletAddr = codeBase + (ulong)funcletCodeStart;
+                    methodInfo.AddFunclet(funcletAddr, (uint)funcletCodeSize, isFilter, clauseIdx);
+                }
+            }
+        }
+
+        // Build native EH clauses
+        fixed (int* ehData = _ehClauseData)
+        fixed (int* funcletData = _funcletInfo)
+        {
+            for (int i = 0; i < _ehClauseCount; i++)
+            {
+                int ehIdx = i * 5;
+                int flags = ehData[ehIdx + 0];
+                int tryStartIL = ehData[ehIdx + 1];
+                int tryEndIL = ehData[ehIdx + 2];
+
+                // Get native try offsets
+                uint nativeTryStart = (uint)GetNativeOffset(tryStartIL);
+                uint nativeTryEnd = (uint)GetNativeOffset(tryEndIL);
+
+                // Handler offset is the funclet's code offset
+                uint nativeHandlerStart = 0;
+                uint nativeHandlerEnd = 0;
+
+                // Find the funclet for this clause
+                for (int f = 0; f < _funcletCount; f++)
+                {
+                    int funcIdx = f * 3;
+                    if (funcletData[funcIdx + 2] == i)
+                    {
+                        nativeHandlerStart = (uint)funcletData[funcIdx + 0];
+                        nativeHandlerEnd = nativeHandlerStart + (uint)funcletData[funcIdx + 1];
+                        break;
+                    }
+                }
+
+                JITExceptionClause clause;
+                clause.Flags = (ILExceptionClauseFlags)flags;
+                clause.TryStartOffset = nativeTryStart;
+                clause.TryEndOffset = nativeTryEnd;
+                clause.HandlerStartOffset = nativeHandlerStart;
+                clause.HandlerEndOffset = nativeHandlerEnd;
+                clause.ClassTokenOrFilterOffset = 0;
+                clause.IsValid = true;
+
+                nativeClauses.AddClause(clause);
+            }
+        }
+
+        return code;
+    }
 
     /// <summary>
     /// Set runtime helper function pointers for object allocation.

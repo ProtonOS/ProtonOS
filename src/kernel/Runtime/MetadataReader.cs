@@ -2746,6 +2746,18 @@ public static unsafe class MetadataReader
         return ReadIndex(row + 16, sizes.BlobIndexSize);
     }
 
+    /// <summary>
+    /// Get all four version components for an Assembly row.
+    /// </summary>
+    public static void GetAssemblyVersion(ref TablesHeader tables, ref TableSizes sizes, uint rowId,
+        out ushort major, out ushort minor, out ushort build, out ushort revision)
+    {
+        major = GetAssemblyMajorVersion(ref tables, ref sizes, rowId);
+        minor = GetAssemblyMinorVersion(ref tables, ref sizes, rowId);
+        build = GetAssemblyBuildNumber(ref tables, ref sizes, rowId);
+        revision = GetAssemblyRevisionNumber(ref tables, ref sizes, rowId);
+    }
+
     // ============================================================================
     // EventMap Table (0x12)
     // Layout: Parent (TypeDef index) + EventList (Event index)

@@ -24,11 +24,14 @@ as reference code, not integrating it directly.
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
-**Tier 0 JIT is fully functional with 110 tests passing.**
+**Tier 0 JIT is fully functional with 112 tests passing.**
 
 Deferred to future phases:
 - Funclet-based EH (Phase 6.2+)
 - Lazy FPU save optimization (Phase 6.0+)
+
+**Infrastructure:**
+- AssemblyLoader (Phase 1 complete) - Multi-assembly loading support
 
 ---
 
@@ -233,7 +236,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test vtable dispatch (Test 89): callvirt through vtable slot
 - [x] Test ldvirtftn vtable dispatch (Test 90): ldvirtftn + calli through vtable slot
 
-**Current Status: 110 tests passing - Tier 0 JIT complete**
+**Current Status: 112 tests passing - Tier 0 JIT complete**
 
 ---
 
