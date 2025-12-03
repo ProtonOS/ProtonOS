@@ -198,6 +198,45 @@ public unsafe struct MethodTable
         return _relatedType;
     }
 
+    /// <summary>
+    /// Get the array element type's MethodTable.
+    /// Only valid for array types - returns null for non-arrays.
+    /// </summary>
+    public MethodTable* GetArrayElementType()
+    {
+        if (!IsArray)
+            return null;
+        return _relatedType;
+    }
+
+    /// <summary>
+    /// Check if this type is a reference type (class, interface, array, string).
+    /// Value types have ComponentSize == 0 and are not arrays/interfaces.
+    /// </summary>
+    public bool IsReferenceType
+    {
+        get
+        {
+            // Arrays are reference types
+            if (IsArray)
+                return true;
+            // Interfaces are reference types
+            if (IsInterface)
+                return true;
+            // Strings have ComponentSize=2 (char size) and HasComponentSize flag
+            if (HasComponentSize && _usComponentSize > 0)
+                return true;
+            // Classes have pointers (GC tracked) - this indicates reference type
+            if (HasPointers)
+                return true;
+            // Classes have a parent type (except System.Object which is the root)
+            // Value types are sealed with no parent (except ValueType itself)
+            if (_relatedType != null)
+                return true;
+            return false;
+        }
+    }
+
     /// <summary>Whether this is an interface type.</summary>
     public bool IsInterface => (CombinedFlags & MTFlags.IsInterface) != 0;
 
@@ -306,7 +345,22 @@ public unsafe struct MethodTable
                 current = current->GetParentType();
             }
 
-            // TODO: Array covariance - T[] is assignable to U[] if T is assignable to U (for reference types)
+            // Array covariance: T[] is assignable to U[] if T is assignable to U (for reference types only)
+            // This allows string[] to be assigned to object[], for example.
+            if (IsArray && targetType->IsArray)
+            {
+                MethodTable* sourceElem = GetArrayElementType();
+                MethodTable* targetElem = targetType->GetArrayElementType();
+
+                // Both element types must be reference types for covariance
+                // (int[] is NOT assignable to object[] - value type arrays are invariant)
+                if (sourceElem != null && targetElem != null &&
+                    sourceElem->IsReferenceType && targetElem->IsReferenceType)
+                {
+                    // Recursive check: is source element assignable to target element?
+                    return sourceElem->IsAssignableTo(targetElem);
+                }
+            }
 
             return false;
         }

@@ -4292,6 +4292,9 @@ public static unsafe class Tests
         // Test 109: nested try/finally blocks with exception
         TestILNestedTryFinally();
 
+        // Test 110: array covariance (derived[] is assignable to base[])
+        TestILArrayCovariance();
+
         DebugConsole.WriteLine("========== IL JIT Tests Complete ==========");
     }
 
@@ -12744,6 +12747,147 @@ public static unsafe class Tests
             DebugConsole.Write(" counter=");
             DebugConsole.WriteDecimal((uint)counter);
             DebugConsole.WriteLine(" expected 11 FAILED");
+        }
+    }
+
+    /// <summary>
+    /// Test 110: Array covariance
+    /// Tests that derived[] is assignable to base[] for reference types.
+    /// This is CLR array covariance: string[] is assignable to object[].
+    /// </summary>
+    private static unsafe void TestILArrayCovariance()
+    {
+        DebugConsole.Write("[IL JIT 110] array covariance: ");
+
+        // Create fake MethodTable structures to test type hierarchy with arrays
+        // MethodTable layout (24 bytes header):
+        // [0]  ushort _usComponentSize
+        // [2]  ushort _usFlags
+        // [4]  uint   _uBaseSize
+        // [8]  MT*    _relatedType
+        // [16] ushort _usNumVtableSlots
+        // [18] ushort _usNumInterfaces
+        // [20] uint   _uHashCode
+
+        // Flags: IsArray = 0x0008 in _usFlags (becomes 0x00080000 in CombinedFlags)
+        // HasComponentSize = 0x8000 in _usFlags (becomes 0x80000000 in CombinedFlags)
+        // HasPointers = 0x0100 in _usFlags (becomes 0x01000000 in CombinedFlags)
+        const ushort ArrayFlags = 0x8008;  // IsArray | HasComponentSize
+        const ushort RefClassFlags = 0x0100;  // HasPointers - marks as reference type
+
+        // Create base class MT (like "object") - no parent, but IS a reference type
+        byte* baseMT = stackalloc byte[24];
+        *(ushort*)(baseMT + 0) = 0;            // ComponentSize = 0 (not an array)
+        *(ushort*)(baseMT + 2) = RefClassFlags; // Flags - HasPointers marks as reference type
+        *(uint*)(baseMT + 4) = 24;             // BaseSize
+        *(ulong*)(baseMT + 8) = 0;             // _relatedType = null (no parent - this IS object)
+        *(ushort*)(baseMT + 16) = 0;           // NumVtableSlots
+        *(ushort*)(baseMT + 18) = 0;           // NumInterfaces
+        *(uint*)(baseMT + 20) = 0x1111;        // HashCode
+
+        // Create derived class MT (like "string") - parent is baseMT
+        byte* derivedMT = stackalloc byte[24];
+        *(ushort*)(derivedMT + 0) = 0;            // ComponentSize = 0
+        *(ushort*)(derivedMT + 2) = RefClassFlags; // Flags (reference class)
+        *(uint*)(derivedMT + 4) = 24;             // BaseSize
+        *(ulong*)(derivedMT + 8) = (ulong)baseMT; // _relatedType = parent (baseMT)
+        *(ushort*)(derivedMT + 16) = 0;           // NumVtableSlots
+        *(ushort*)(derivedMT + 18) = 0;           // NumInterfaces
+        *(uint*)(derivedMT + 20) = 0x2222;        // HashCode
+
+        // Create "derived[]" array MT - element type is derivedMT
+        byte* derivedArrayMT = stackalloc byte[24];
+        *(ushort*)(derivedArrayMT + 0) = 8;       // ComponentSize = 8 (pointer size)
+        *(ushort*)(derivedArrayMT + 2) = ArrayFlags; // Flags (array)
+        *(uint*)(derivedArrayMT + 4) = 24;        // BaseSize
+        *(ulong*)(derivedArrayMT + 8) = (ulong)derivedMT; // _relatedType = element type
+        *(ushort*)(derivedArrayMT + 16) = 0;      // NumVtableSlots
+        *(ushort*)(derivedArrayMT + 18) = 0;      // NumInterfaces
+        *(uint*)(derivedArrayMT + 20) = 0x3333;   // HashCode
+
+        // Create "base[]" array MT - element type is baseMT
+        byte* baseArrayMT = stackalloc byte[24];
+        *(ushort*)(baseArrayMT + 0) = 8;        // ComponentSize = 8
+        *(ushort*)(baseArrayMT + 2) = ArrayFlags; // Flags (array)
+        *(uint*)(baseArrayMT + 4) = 24;         // BaseSize
+        *(ulong*)(baseArrayMT + 8) = (ulong)baseMT; // _relatedType = element type
+        *(ushort*)(baseArrayMT + 16) = 0;       // NumVtableSlots
+        *(ushort*)(baseArrayMT + 18) = 0;       // NumInterfaces
+        *(uint*)(baseArrayMT + 20) = 0x4444;    // HashCode
+
+        // Create "int[]" array MT - element type is a value type (no HasPointers, no parent)
+        byte* intMT = stackalloc byte[24];
+        *(ushort*)(intMT + 0) = 0;   // ComponentSize = 0
+        *(ushort*)(intMT + 2) = 0;   // Flags = 0 (value type - no HasPointers)
+        *(uint*)(intMT + 4) = 4;     // BaseSize = 4
+        *(ulong*)(intMT + 8) = 0;    // _relatedType = null (no parent, value type)
+        *(ushort*)(intMT + 16) = 0;
+        *(ushort*)(intMT + 18) = 0;
+        *(uint*)(intMT + 20) = 0x5555;
+
+        byte* intArrayMT = stackalloc byte[24];
+        *(ushort*)(intArrayMT + 0) = 4;        // ComponentSize = 4 (int size)
+        *(ushort*)(intArrayMT + 2) = ArrayFlags;
+        *(uint*)(intArrayMT + 4) = 24;
+        *(ulong*)(intArrayMT + 8) = (ulong)intMT; // Element type is int
+        *(ushort*)(intArrayMT + 16) = 0;
+        *(ushort*)(intArrayMT + 18) = 0;
+        *(uint*)(intArrayMT + 20) = 0x6666;
+
+        // Create fake array objects (just MT pointer)
+        ulong* derivedArrayObj = stackalloc ulong[2];
+        derivedArrayObj[0] = (ulong)derivedArrayMT;
+        derivedArrayObj[1] = 0;
+
+        ulong* intArrayObj = stackalloc ulong[2];
+        intArrayObj[0] = (ulong)intArrayMT;
+        intArrayObj[1] = 0;
+
+        // IL: ldarg.0; isinst <baseArrayMT>; ret
+        // Tests if derived[] is assignable to base[]
+        byte* il = stackalloc byte[8];
+        il[0] = 0x02;  // ldarg.0
+        il[1] = 0x75;  // isinst
+        // Token = baseArrayMT address (cast to fit in 32 bits for test)
+        // Note: For real use, tokens would go through TypeResolver
+        *(uint*)(il + 2) = (uint)(ulong)baseArrayMT;
+        il[6] = 0x2A;  // ret
+
+        var compiler = Runtime.JIT.ILCompiler.Create(il, 7, 1, 0);
+        void* code = compiler.Compile();
+
+        if (code == null)
+        {
+            DebugConsole.WriteLine("compile FAILED");
+            return;
+        }
+
+        var fn = (delegate* unmanaged<ulong*, ulong*>)code;
+
+        // Test 1: derived[] should be assignable to base[] (array covariance)
+        ulong* result1 = fn(derivedArrayObj);
+        bool covariance = (result1 == derivedArrayObj);
+
+        // Test 2: int[] should NOT be assignable to base[] (value type arrays are invariant)
+        // Create another isinst test for int[] -> base[]
+        *(uint*)(il + 2) = (uint)(ulong)baseArrayMT;
+        var compiler2 = Runtime.JIT.ILCompiler.Create(il, 7, 1, 0);
+        void* code2 = compiler2.Compile();
+        var fn2 = (delegate* unmanaged<ulong*, ulong*>)code2;
+        ulong* result2 = fn2(intArrayObj);
+        bool invariance = (result2 == null);  // Should be null - no covariance for value types
+
+        if (covariance && invariance)
+        {
+            DebugConsole.WriteLine("derived[]->base[] OK, int[]->base[] null OK PASSED");
+        }
+        else
+        {
+            DebugConsole.Write("covariance=");
+            DebugConsole.Write(covariance ? "OK" : "FAIL");
+            DebugConsole.Write(" invariance=");
+            DebugConsole.Write(invariance ? "OK" : "FAIL");
+            DebugConsole.WriteLine(" FAILED");
         }
     }
 }

@@ -24,7 +24,7 @@ as reference code, not integrating it directly.
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
-**Tier 0 JIT is fully functional with 109 tests passing.**
+**Tier 0 JIT is fully functional with 110 tests passing.**
 
 Deferred to future phases:
 - Funclet-based EH (Phase 6.2+)
@@ -233,7 +233,7 @@ Goal: Generate correct code with no optimization. Simple 1:1 IL to x64 translati
 - [x] Test vtable dispatch (Test 89): callvirt through vtable slot
 - [x] Test ldvirtftn vtable dispatch (Test 90): ldvirtftn + calli through vtable slot
 
-**Current Status: 109 tests passing - Tier 0 JIT complete**
+**Current Status: 110 tests passing - Tier 0 JIT complete**
 
 ---
 
@@ -392,10 +392,10 @@ JIT'd code needs to work with objects, fields, arrays, and type casts.
 - [x] `ldelema` - Load array element address
 - [x] Array bounds checking (throws IndexOutOfRangeException)
 
-#### 6.4.4 Type Operations (Partial)
+#### 6.4.4 Type Operations (DONE)
 - [x] `castclass` - Cast with exception on failure (Test 79)
 - [x] `isinst` - Cast returning null on failure (Test 78)
-- [ ] Type hierarchy lookup (IsAssignableFrom)
+- [x] Type hierarchy lookup (IsAssignableTo) - parent chain, interface check, array covariance
 - [x] `box` - Box value type to object (Test 84)
 - [x] `unbox` - Unbox to pointer (implemented)
 - [x] `unbox.any` - Unbox and copy value (Test 85)
