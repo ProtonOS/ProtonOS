@@ -275,7 +275,7 @@ src/kernel/Runtime/
 
 ## Migration Plan
 
-### Phase 1: Extract Assembly Context
+### Phase 1: Extract Assembly Context ✅ COMPLETE
 
 1. Create `LoadedAssembly` struct
 2. Create `AssemblyLoader` with `Load()` returning assemblyId
@@ -283,30 +283,34 @@ src/kernel/Runtime/
 4. Kernel.cs calls `AssemblyLoader.Load()` for test assembly
 5. All tests continue to pass
 
-### Phase 2: Per-Assembly Registries
+### Phase 2: Per-Assembly Registries ✅ COMPLETE
 
 1. Create `TypeRegistry` struct with per-assembly storage
 2. Create `StaticFieldStorage` struct with per-assembly storage
 3. Migrate `MetadataIntegration` to use `LoadedAssembly.Types`
 4. Update resolvers to take assemblyId parameter
+5. Add `SetCurrentAssembly()` for assembly context switching
 
-### Phase 3: Cross-Assembly Resolution
+### Phase 3: Cross-Assembly Resolution ✅ COMPLETE
 
 1. Implement `ResolveAssemblyRef()` - name matching
 2. Implement `ResolveTypeRef()` - cross-assembly type lookup
-3. Implement `ResolveMemberRef()` - cross-assembly method/field lookup
+3. Implement `ResolveMemberRefField()` - cross-assembly field lookup
 
-### Phase 4: Unloading
+### Phase 4: Unloading ✅ COMPLETE
 
-1. Track all allocations per-assembly
-2. Implement `AssemblyLoader.Unload()`
-3. Add dependency checking
+1. Track all allocations per-assembly (AssemblyId in CompiledMethodInfo)
+2. Implement `AssemblyLoader.Unload()` with JIT code cleanup
+3. Add dependency checking (cannot unload if depended upon)
+4. Implement `CompiledMethodRegistry.RemoveByAssembly()`
 
-### Phase 5: Multiple Driver Loading
+### Phase 5: Multiple Driver Loading (DEFERRED)
 
-1. Load multiple assemblies from UEFI FS
-2. Driver discovery/enumeration
-3. Driver initialization order based on dependencies
+Deferred to post-JIT driver interface design. Requires:
+1. Driver interface specification (IDriver, entry points)
+2. Multiple assembly loading from UEFI FS
+3. Driver discovery/enumeration
+4. Dependency-ordered initialization
 
 ## Testing Strategy
 

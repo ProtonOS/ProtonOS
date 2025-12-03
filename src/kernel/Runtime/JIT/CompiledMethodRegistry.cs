@@ -75,6 +75,9 @@ public unsafe struct CompiledMethodInfo
     /// <summary>True if this is an interface method requiring interface dispatch.</summary>
     public bool IsInterfaceMethod;
 
+    /// <summary>Assembly ID that owns this method (for unloading).</summary>
+    public uint AssemblyId;
+
     /// <summary>
     /// MethodTable pointer for the interface (only valid if IsInterfaceMethod).
     /// Used for interface dispatch to look up the correct vtable slot.
@@ -631,6 +634,65 @@ public static unsafe class CompiledMethodRegistry
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Remove all methods belonging to a specific assembly.
+    /// Used when unloading an assembly.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID to remove methods for.</param>
+    /// <returns>Number of methods removed.</returns>
+    public static int RemoveByAssembly(uint assemblyId)
+    {
+        if (!_initialized || assemblyId == 0)
+            return 0;
+
+        int removedCount = 0;
+
+        // Scan all blocks and remove methods belonging to this assembly
+        for (int b = 0; b < _blockCount; b++)
+        {
+            MethodBlock* block = _blocks[b];
+            if (block == null || block->IsEmpty)
+                continue;
+
+            CompiledMethodInfo* entries = block->GetEntries();
+            for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
+            {
+                if (entries[i].IsUsed && entries[i].AssemblyId == assemblyId)
+                {
+                    // Clear the entry
+                    entries[i] = default;
+
+                    // Update block header
+                    block->Header.UsedCount--;
+
+                    // If this slot is before NextFreeIndex, update it
+                    if (i < block->Header.NextFreeIndex || block->Header.NextFreeIndex == 0xFF)
+                    {
+                        block->Header.NextFreeIndex = (byte)i;
+                    }
+
+                    _totalCount--;
+                    removedCount++;
+                }
+            }
+        }
+
+        return removedCount;
+    }
+
+    /// <summary>
+    /// Set the assembly ID for a method (call after Register).
+    /// </summary>
+    public static bool SetAssemblyId(uint token, uint assemblyId)
+    {
+        CompiledMethodInfo* entry = Lookup(token);
+        if (entry == null)
+            return false;
+
+        entry->AssemblyId = assemblyId;
+        return true;
     }
 
     /// <summary>

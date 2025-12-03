@@ -31,7 +31,8 @@ Deferred to future phases:
 - Lazy FPU save optimization (Phase 6.0+)
 
 **Infrastructure:**
-- AssemblyLoader (Phase 1 complete) - Multi-assembly loading support
+- AssemblyLoader (Phases 1-4 complete) - Multi-assembly loading, per-assembly registries, cross-assembly resolution, unloading support
+- Multiple driver loading (Phase 5) deferred to post-JIT driver interface design
 
 ---
 

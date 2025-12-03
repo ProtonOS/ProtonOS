@@ -890,6 +890,140 @@ public static unsafe class AssemblyLoader
     }
 
     // ============================================================================
+    // MemberRef Resolution
+    // ============================================================================
+
+    /// <summary>
+    /// Resolve a MemberRef token to find field information in another assembly.
+    /// MemberRef can reference either a field or a method. This is for fields.
+    /// Returns true if it's a field and populates fieldToken/targetAsmId.
+    /// </summary>
+    public static bool ResolveMemberRefField(uint sourceAsmId, uint memberRefToken,
+                                              out uint fieldToken, out uint targetAsmId)
+    {
+        fieldToken = 0;
+        targetAsmId = InvalidAssemblyId;
+
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+            return false;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        // Get member name and signature
+        uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        uint sigIdx = MetadataReader.GetMemberRefSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        byte* sig = MetadataReader.GetBlob(ref sourceAsm->Metadata, sigIdx, out uint sigLen);
+
+        if (memberName == null || sig == null || sigLen == 0)
+            return false;
+
+        // Check if this is a field signature (0x06 = FIELD calling convention)
+        if (sig[0] != 0x06)
+            return false;  // Not a field, it's a method
+
+        // Resolve the containing type
+        LoadedAssembly* targetAsm = null;
+        uint typeDefToken = 0;
+
+        if (classRef.Table == MetadataTableId.TypeRef)
+        {
+            // MemberRef in another assembly via TypeRef
+            uint typeRefToken = 0x01000000 | classRef.RowId;
+            MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
+            if (mt == null)
+                return false;
+
+            // Find which assembly this MethodTable belongs to
+            // We need to search all assemblies' type registries
+            for (int i = 0; i < MaxAssemblies; i++)
+            {
+                if (!_assemblies[i].IsLoaded)
+                    continue;
+
+                // Check if this assembly owns the MethodTable
+                for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                {
+                    if (_assemblies[i].Types.Entries[j].MT == mt)
+                    {
+                        targetAsm = &_assemblies[i];
+                        typeDefToken = _assemblies[i].Types.Entries[j].Token;
+                        break;
+                    }
+                }
+                if (targetAsm != null)
+                    break;
+            }
+        }
+        else if (classRef.Table == MetadataTableId.TypeDef)
+        {
+            // MemberRef in same assembly (unusual but possible)
+            targetAsm = sourceAsm;
+            typeDefToken = 0x02000000 | classRef.RowId;
+        }
+        else
+        {
+            // Other class types (ModuleRef, MethodDef, TypeSpec) not implemented
+            return false;
+        }
+
+        if (targetAsm == null || typeDefToken == 0)
+            return false;
+
+        targetAsmId = targetAsm->AssemblyId;
+
+        // Now find the matching FieldDef in the target type
+        fieldToken = FindFieldDefByName(targetAsm, typeDefToken, memberName);
+        return fieldToken != 0;
+    }
+
+    /// <summary>
+    /// Find a FieldDef token by name within a specific type.
+    /// </summary>
+    private static uint FindFieldDefByName(LoadedAssembly* asm, uint typeDefToken, byte* fieldName)
+    {
+        uint typeRow = typeDefToken & 0x00FFFFFF;
+        if (typeRow == 0)
+            return 0;
+
+        // Get field range for this type
+        uint fieldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint fieldEnd;
+
+        if (typeRow < typeDefCount)
+        {
+            fieldEnd = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+        }
+        else
+        {
+            fieldEnd = asm->Tables.RowCounts[(int)MetadataTableId.Field] + 1;
+        }
+
+        // Search fields in range
+        for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
+        {
+            uint nameIdx = MetadataReader.GetFieldName(ref asm->Tables, ref asm->Sizes, fieldRow);
+            byte* defName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (StringsEqual(fieldName, defName))
+            {
+                return 0x04000000 | fieldRow;  // FieldDef token
+            }
+        }
+
+        return 0;
+    }
+
+    // ============================================================================
     // Unloading
     // ============================================================================
 
@@ -934,7 +1068,13 @@ public static unsafe class AssemblyLoader
         asm->PrintName();
         DebugConsole.WriteLine();
 
-        // Free resources
+        // Remove all JIT'd methods for this assembly
+        int removedMethods = CompiledMethodRegistry.RemoveByAssembly(assemblyId);
+        DebugConsole.Write("[AsmLoader] Removed ");
+        DebugConsole.WriteDecimal((uint)removedMethods);
+        DebugConsole.WriteLine(" JIT'd methods");
+
+        // Free resources (types, statics, etc.)
         asm->Free();
         _assemblyCount--;
 

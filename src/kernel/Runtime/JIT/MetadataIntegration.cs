@@ -1,9 +1,12 @@
 // ProtonOS JIT - Metadata Integration Layer
 // Connects metadata tokens to runtime artifacts (MethodTable pointers, field addresses, etc.)
 // This is the "glue" between MetadataReader and the JIT compiler's resolver interfaces.
+//
+// Phase 2: Routes type/field resolution through AssemblyLoader's per-assembly registries.
 
 using ProtonOS.Memory;
 using ProtonOS.Platform;
+using ProtonOS.Runtime;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -79,33 +82,40 @@ public unsafe struct FieldLayoutEntry
 /// <summary>
 /// Metadata Integration Layer - connects JIT resolvers to metadata and runtime.
 /// Provides TypeResolver, FieldResolver, and StringResolver implementations.
+///
+/// Phase 2: Uses AssemblyLoader's per-assembly registries for type/field resolution.
+/// The global registries here are for backward compatibility with well-known AOT types.
 /// </summary>
 public static unsafe class MetadataIntegration
 {
-    // Type registry: maps TypeDef/TypeRef/TypeSpec tokens to MethodTable pointers
+    // Global type registry for well-known AOT types (System.String, etc.)
+    // These are registered without an assembly context.
     private const int MaxTypeEntries = 512;
     private static TypeRegistryEntry* _typeRegistry;
     private static int _typeCount;
 
-    // Static field storage: tracks allocated static fields
+    // Global static field storage (legacy - used for AOT statics)
     private const int MaxStaticFields = 256;
     private static StaticFieldEntry* _staticFields;
     private static int _staticFieldCount;
 
-    // Static field storage block (allocated on demand)
+    // Global static storage block (legacy - for AOT statics)
     private const int StaticStorageBlockSize = 64 * 1024;  // 64KB per block
     private static byte* _staticStorageBase;
     private static int _staticStorageUsed;
 
-    // Field layout cache
+    // Field layout cache (shared across assemblies for now)
     private const int MaxFieldLayoutEntries = 512;
     private static FieldLayoutEntry* _fieldLayoutCache;
     private static int _fieldLayoutCount;
 
-    // Metadata context
+    // Default metadata context (for backward compatibility with single-assembly mode)
     private static MetadataRoot* _metadataRoot;
     private static TablesHeader* _tablesHeader;
     private static TableSizes* _tableSizes;
+
+    // Current assembly ID for resolution context
+    private static uint _currentAssemblyId;
 
     private static bool _initialized;
 
@@ -166,6 +176,32 @@ public static unsafe class MetadataIntegration
 
         DebugConsole.WriteLine("[MetaInt] Metadata context set");
     }
+
+    /// <summary>
+    /// Set the current assembly ID for resolution.
+    /// Call this before compiling methods from a specific assembly.
+    /// </summary>
+    public static void SetCurrentAssembly(uint assemblyId)
+    {
+        _currentAssemblyId = assemblyId;
+
+        // Also update the metadata context from the assembly
+        // Note: asm is already a pointer, so we get field addresses directly
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm != null)
+        {
+            // Get pointers to the assembly's metadata structures
+            // These are stable since LoadedAssembly lives in the kernel heap
+            _metadataRoot = &asm->Metadata;
+            _tablesHeader = &asm->Tables;
+            _tableSizes = &asm->Sizes;
+        }
+    }
+
+    /// <summary>
+    /// Get the current assembly ID.
+    /// </summary>
+    public static uint GetCurrentAssemblyId() => _currentAssemblyId;
 
     /// <summary>
     /// Well-known type tokens for System.Runtime/mscorlib types.
@@ -273,6 +309,7 @@ public static unsafe class MetadataIntegration
     /// <summary>
     /// TypeResolver implementation for ILCompiler.
     /// Resolves type tokens (TypeDef, TypeRef, TypeSpec) to MethodTable pointers.
+    /// Uses the current assembly context set via SetCurrentAssembly().
     /// </summary>
     public static bool ResolveType(uint token, out void* methodTablePtr)
     {
@@ -283,51 +320,94 @@ public static unsafe class MetadataIntegration
 
         // Extract table type from token
         byte tableId = (byte)(token >> 24);
-        uint rowId = token & 0x00FFFFFF;
 
-        // Check cache first
-        MethodTable* mt = LookupType(token);
-        if (mt != null)
+        // Check global well-known type cache first (0xF0xxxxxx tokens)
+        if ((token & 0xFF000000) == 0xF0000000)
         {
-            methodTablePtr = mt;
+            MethodTable* mt = LookupType(token);
+            if (mt != null)
+            {
+                methodTablePtr = mt;
+                return true;
+            }
+            return false;
+        }
+
+        // For assembly-specific tokens, use AssemblyLoader's per-assembly registry
+        if (_currentAssemblyId != 0)
+        {
+            MethodTable* mt = AssemblyLoader.ResolveType(_currentAssemblyId, token);
+            if (mt != null)
+            {
+                methodTablePtr = mt;
+                return true;
+            }
+        }
+
+        // Fallback: check global registry (for backward compatibility)
+        MethodTable* globalMt = LookupType(token);
+        if (globalMt != null)
+        {
+            methodTablePtr = globalMt;
             return true;
         }
 
-        // Not in cache - try to resolve from metadata
-        if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
-            return false;
-
+        // Not found - log for debugging
         switch (tableId)
         {
             case 0x02:  // TypeDef
-                // For TypeDef, we need to find the corresponding MethodTable
-                // This requires the type to already be loaded (AOT or JIT'd)
-                // For now, return false - caller should register types first
                 DebugConsole.Write("[MetaInt] TypeDef 0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.WriteLine(" not in registry");
-                return false;
+                break;
 
             case 0x01:  // TypeRef
-                // TypeRef needs to be resolved to a TypeDef in another assembly
-                // Then look up that type's MethodTable
-                // For now, not implemented - requires cross-assembly resolution
                 DebugConsole.Write("[MetaInt] TypeRef 0x");
                 DebugConsole.WriteHex(token);
-                DebugConsole.WriteLine(" resolution not implemented");
-                return false;
+                DebugConsole.WriteLine(" not resolved");
+                break;
 
             case 0x1B:  // TypeSpec
-                // TypeSpec is for generic instantiations
-                // Not implemented yet
                 DebugConsole.Write("[MetaInt] TypeSpec 0x");
                 DebugConsole.WriteHex(token);
-                DebugConsole.WriteLine(" resolution not implemented");
-                return false;
-
-            default:
-                return false;
+                DebugConsole.WriteLine(" not resolved");
+                break;
         }
+
+        return false;
+    }
+
+    /// <summary>
+    /// TypeResolver with explicit assembly ID (for cross-assembly calls).
+    /// </summary>
+    public static bool ResolveTypeInAssembly(uint assemblyId, uint token, out void* methodTablePtr)
+    {
+        methodTablePtr = null;
+
+        if (!_initialized)
+            return false;
+
+        // Well-known types don't need assembly context
+        if ((token & 0xFF000000) == 0xF0000000)
+        {
+            MethodTable* mt = LookupType(token);
+            if (mt != null)
+            {
+                methodTablePtr = mt;
+                return true;
+            }
+            return false;
+        }
+
+        // Use AssemblyLoader for assembly-specific resolution
+        MethodTable* mt2 = AssemblyLoader.ResolveType(assemblyId, token);
+        if (mt2 != null)
+        {
+            methodTablePtr = mt2;
+            return true;
+        }
+
+        return false;
     }
 
     // ============================================================================
@@ -610,11 +690,7 @@ public static unsafe class MetadataIntegration
 
             case 0x0A:  // MemberRef
                 // MemberRef can reference fields in other assemblies
-                // Not implemented yet
-                DebugConsole.Write("[MetaInt] MemberRef field 0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.WriteLine(" resolution not implemented");
-                return false;
+                return ResolveMemberRefField(token, out result);
 
             default:
                 return false;
@@ -672,14 +748,34 @@ public static unsafe class MetadataIntegration
 
         if (isStatic)
         {
-            // Static field - allocate or look up storage
-            void* addr = LookupStaticField(token);
+            // Static field - allocate or look up storage from per-assembly storage
+            void* addr = null;
+
+            // Try per-assembly storage first if we have an assembly context
+            if (_currentAssemblyId != 0)
+            {
+                var asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+                if (asm != null)
+                {
+                    addr = asm->Statics.Lookup(token);
+                    if (addr == null)
+                    {
+                        // Allocate in per-assembly storage
+                        uint typeToken = FindContainingType(rowId);
+                        addr = asm->Statics.Register(token, typeToken, size, isGCRef);
+                    }
+                }
+            }
+
+            // Fallback to global storage (legacy/AOT compatibility)
             if (addr == null)
             {
-                // Find the containing type to get the type token
-                // This requires walking TypeDef table to find which type contains this field
-                uint typeToken = FindContainingType(rowId);
-                addr = RegisterStaticField(token, typeToken, size, isGCRef);
+                addr = LookupStaticField(token);
+                if (addr == null)
+                {
+                    uint typeToken = FindContainingType(rowId);
+                    addr = RegisterStaticField(token, typeToken, size, isGCRef);
+                }
             }
 
             if (addr == null)
@@ -717,6 +813,47 @@ public static unsafe class MetadataIntegration
                         result.IsStatic, result.IsGCRef, result.StaticAddress);
 
         return true;
+    }
+
+    /// <summary>
+    /// Resolve a MemberRef field token to field information.
+    /// This handles cross-assembly field references.
+    /// </summary>
+    private static bool ResolveMemberRefField(uint token, out ResolvedField result)
+    {
+        result = default;
+
+        // Use AssemblyLoader to resolve the MemberRef to a FieldDef in another assembly
+        if (!AssemblyLoader.ResolveMemberRefField(_currentAssemblyId, token,
+                                                   out uint fieldToken, out uint targetAsmId))
+        {
+            DebugConsole.Write("[MetaInt] Failed to resolve MemberRef field 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Now resolve the FieldDef in the target assembly context
+        // Save current context
+        uint savedAsmId = _currentAssemblyId;
+        MetadataRoot* savedMdRoot = _metadataRoot;
+        TablesHeader* savedTables = _tablesHeader;
+        TableSizes* savedSizes = _tableSizes;
+
+        // Switch to target assembly context
+        SetCurrentAssembly(targetAsmId);
+
+        // Resolve the field in the target assembly
+        uint fieldRowId = fieldToken & 0x00FFFFFF;
+        bool success = ResolveFieldDef(fieldRowId, fieldToken, out result);
+
+        // Restore original context
+        _currentAssemblyId = savedAsmId;
+        _metadataRoot = savedMdRoot;
+        _tablesHeader = savedTables;
+        _tableSizes = savedSizes;
+
+        return success;
     }
 
     /// <summary>
