@@ -17,12 +17,22 @@ logs/
 *.img
 *.iso
 
+# .NET build artifacts
+obj/
+bin/
+*.deps.json
+*.runtimeconfig.json
+*.pdb
+
 # Editor/IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# Claude Code local settings
+.claude/settings.local.json
 
 # Logs
 *.log
