@@ -14,6 +14,7 @@ public struct CpuInfo
     public uint CpuIndex;              // Kernel-assigned CPU index (0, 1, 2...)
     public uint ApicId;                // Hardware APIC ID
     public byte AcpiProcessorId;       // ACPI-assigned processor ID
+    public uint NumaNode;              // NUMA node (proximity domain)
     public bool IsBsp;                 // Is Bootstrap Processor
     public bool IsOnline;              // Currently running
     public bool IsEnabled;             // Enabled in MADT (can be started)
@@ -432,5 +433,32 @@ public static unsafe class CPUTopology
                 count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// Update NUMA node assignments for all CPUs.
+    /// Must be called after NumaTopology.Init().
+    /// </summary>
+    public static void UpdateNumaInfo()
+    {
+        if (!_initialized || !NumaTopology.IsInitialized)
+            return;
+
+        for (int i = 0; i < _cpuCount; i++)
+        {
+            _cpus[i].NumaNode = NumaTopology.GetNodeForApicId(_cpus[i].ApicId);
+        }
+
+        DebugConsole.WriteLine("[CPUTopology] Updated NUMA node assignments:");
+        for (int i = 0; i < _cpuCount; i++)
+        {
+            DebugConsole.Write("[CPUTopology]   CPU ");
+            DebugConsole.WriteDecimal(i);
+            DebugConsole.Write(" (APIC ");
+            DebugConsole.WriteDecimal((int)_cpus[i].ApicId);
+            DebugConsole.Write(") -> Node ");
+            DebugConsole.WriteDecimal((int)_cpus[i].NumaNode);
+            DebugConsole.WriteLine();
+        }
     }
 }

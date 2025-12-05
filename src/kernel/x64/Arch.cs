@@ -215,6 +215,15 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
         // Initialize CPU topology from MADT (requires heap, so done here not in Stage1)
         CPUTopology.Init();
 
+        // Initialize NUMA topology from SRAT/SLIT (requires CPU topology)
+        NumaTopology.Init();
+
+        // Update CPU info with NUMA node assignments
+        CPUTopology.UpdateNumaInfo();
+
+        // Initialize NUMA-aware page allocation
+        PageAllocator.InitNumaInfo();
+
         // Initialize exception handling
         ExceptionHandling.Init();
 

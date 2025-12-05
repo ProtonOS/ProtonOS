@@ -137,6 +137,7 @@ public static unsafe class SMP
             {
                 state->CpuIndex = cpuInfo->CpuIndex;
                 state->ApicId = cpuInfo->ApicId;
+                state->NumaNode = cpuInfo->NumaNode;
                 state->IsBsp = cpuInfo->IsBsp;
             }
 

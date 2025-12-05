@@ -93,6 +93,7 @@ public unsafe struct Thread
     public ulong CpuAffinity;          // Bitmask of allowed CPUs (0 = any CPU)
     public uint LastCpu;               // Last CPU this thread ran on
     public uint PreferredCpu;          // Preferred CPU for cache affinity
+    public uint PreferredNumaNode;     // Preferred NUMA node for memory allocation
 
     // Linked list for general purpose (e.g., wait queues)
     public Thread* Next;

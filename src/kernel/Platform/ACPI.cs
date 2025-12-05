@@ -259,6 +259,127 @@ public struct MADTLocalX2Apic
 }
 
 // ============================================================================
+// SRAT (System Resource Affinity Table) Structures - for NUMA support
+// ============================================================================
+
+/// <summary>
+/// SRAT entry types
+/// </summary>
+public static class SRATEntryType
+{
+    public const byte ProcessorLocalApicAffinity = 0;
+    public const byte MemoryAffinity = 1;
+    public const byte ProcessorX2ApicAffinity = 2;
+}
+
+/// <summary>
+/// SRAT flags for affinity entries
+/// </summary>
+public static class SRATAffinityFlags
+{
+    public const uint Enabled = 1 << 0;          // Entry is valid
+    public const uint HotPluggable = 1 << 1;     // Memory can be hot-plugged (memory only)
+    public const uint NonVolatile = 1 << 2;      // Persistent memory/NVDIMM (memory only)
+}
+
+/// <summary>
+/// ACPI SRAT (System Resource Affinity Table) header
+/// Signature: "SRAT"
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct ACPISRAT
+{
+    public ACPITableHeader Header;
+    public uint Reserved1;             // Must be 1
+    public ulong Reserved2;            // Reserved
+    // Followed by variable-length SRAT entries
+}
+
+/// <summary>
+/// SRAT Type 0: Processor Local APIC Affinity
+/// Maps a CPU (by APIC ID) to a proximity domain (NUMA node)
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct SRATProcessorAffinity
+{
+    public byte Type;                  // 0
+    public byte Length;                // 16
+    public byte ProximityDomainLo;     // Bits 0-7 of proximity domain
+    public byte ApicId;                // Local APIC ID
+    public uint Flags;                 // Bit 0: Enabled
+    public byte LocalSapicEid;         // Local SAPIC EID (Itanium)
+    public byte ProximityDomainHi0;    // Bits 8-15
+    public byte ProximityDomainHi1;    // Bits 16-23
+    public byte ProximityDomainHi2;    // Bits 24-31
+    public uint ClockDomain;           // Reserved
+
+    /// <summary>
+    /// Get the full 32-bit proximity domain from split fields
+    /// </summary>
+    public uint GetProximityDomain()
+    {
+        return (uint)ProximityDomainLo |
+               ((uint)ProximityDomainHi0 << 8) |
+               ((uint)ProximityDomainHi1 << 16) |
+               ((uint)ProximityDomainHi2 << 24);
+    }
+}
+
+/// <summary>
+/// SRAT Type 1: Memory Affinity
+/// Maps a physical memory range to a proximity domain (NUMA node)
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct SRATMemoryAffinity
+{
+    public byte Type;                  // 1
+    public byte Length;                // 40
+    public uint ProximityDomain;       // Proximity domain
+    public ushort Reserved1;
+    public ulong BaseAddress;          // Physical base address
+    public ulong MemoryLength;         // Length in bytes
+    public uint Reserved2;
+    public uint Flags;                 // Bit 0: Enabled, Bit 1: Hot-pluggable, Bit 2: Non-volatile
+    public ulong Reserved3;
+}
+
+/// <summary>
+/// SRAT Type 2: Processor x2APIC Affinity
+/// Maps a CPU (by x2APIC ID) to a proximity domain, for >255 CPUs
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct SRATx2ApicAffinity
+{
+    public byte Type;                  // 2
+    public byte Length;                // 24
+    public ushort Reserved1;
+    public uint ProximityDomain;       // Proximity domain
+    public uint X2ApicId;              // x2APIC ID
+    public uint Flags;                 // Bit 0: Enabled
+    public uint ClockDomain;           // Reserved
+    public uint Reserved2;
+}
+
+// ============================================================================
+// SLIT (System Locality Information Table) Structure - NUMA distances
+// ============================================================================
+
+/// <summary>
+/// ACPI SLIT (System Locality Information Table) header
+/// Signature: "SLIT"
+/// Contains an NxN matrix of relative distances between NUMA nodes
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct ACPISLIT
+{
+    public ACPITableHeader Header;
+    public ulong NumberOfSystemLocalities;  // N = number of NUMA nodes
+    // Followed by N*N byte matrix of distances
+    // Distance 10 = local (same node)
+    // Distance 20 = typical remote (1 hop)
+}
+
+// ============================================================================
 // ACPI Parser
 // ============================================================================
 
@@ -449,5 +570,23 @@ public static unsafe class ACPI
     public static ACPIMADT* FindMadt()
     {
         return (ACPIMADT*)FindTable((byte)'A', (byte)'P', (byte)'I', (byte)'C');
+    }
+
+    /// <summary>
+    /// Find the SRAT (System Resource Affinity Table)
+    /// Signature: "SRAT"
+    /// </summary>
+    public static ACPISRAT* FindSrat()
+    {
+        return (ACPISRAT*)FindTable((byte)'S', (byte)'R', (byte)'A', (byte)'T');
+    }
+
+    /// <summary>
+    /// Find the SLIT (System Locality Information Table)
+    /// Signature: "SLIT"
+    /// </summary>
+    public static ACPISLIT* FindSlit()
+    {
+        return (ACPISLIT*)FindTable((byte)'S', (byte)'L', (byte)'I', (byte)'T');
     }
 }

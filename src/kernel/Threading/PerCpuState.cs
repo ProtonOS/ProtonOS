@@ -38,6 +38,11 @@ public unsafe struct PerCpuState
     public uint ApicId;
 
     /// <summary>
+    /// NUMA node this CPU belongs to
+    /// </summary>
+    public uint NumaNode;
+
+    /// <summary>
     /// Whether this is the Bootstrap Processor
     /// </summary>
     public bool IsBsp;
@@ -201,6 +206,15 @@ public static unsafe class PerCpu
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get => Current->IsBsp;
+    }
+
+    /// <summary>
+    /// Get the current CPU's NUMA node
+    /// </summary>
+    public static uint NumaNode
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => Current->NumaNode;
     }
 
     /// <summary>
