@@ -132,6 +132,133 @@ public unsafe struct ACPIHPET
 }
 
 // ============================================================================
+// MADT (Multiple APIC Description Table) Structures - for SMP support
+// ============================================================================
+
+/// <summary>
+/// MADT entry types
+/// </summary>
+public static class MADTEntryType
+{
+    public const byte LocalApic = 0;                    // Processor Local APIC
+    public const byte IOApic = 1;                       // I/O APIC
+    public const byte InterruptSourceOverride = 2;     // Interrupt Source Override
+    public const byte NmiSource = 3;                    // NMI Source
+    public const byte LocalApicNmi = 4;                 // Local APIC NMI
+    public const byte LocalApicAddressOverride = 5;    // Local APIC Address Override
+    public const byte IOSapic = 6;                      // I/O SAPIC (Itanium)
+    public const byte LocalSapic = 7;                   // Local SAPIC (Itanium)
+    public const byte PlatformInterruptSources = 8;    // Platform Interrupt Sources
+    public const byte LocalX2Apic = 9;                  // Processor Local x2APIC
+    public const byte LocalX2ApicNmi = 10;             // Local x2APIC NMI
+    public const byte GicCpu = 11;                      // GIC CPU Interface (ARM)
+    public const byte GicDistributor = 12;             // GIC Distributor (ARM)
+    public const byte GicMsiFrame = 13;                // GIC MSI Frame (ARM)
+    public const byte GicRedistributor = 14;           // GIC Redistributor (ARM)
+    public const byte GicIts = 15;                      // GIC ITS (ARM)
+}
+
+/// <summary>
+/// MADT flags for Local APIC entries
+/// </summary>
+public static class MADTLocalApicFlags
+{
+    public const uint Enabled = 1 << 0;                 // Processor is enabled
+    public const uint OnlineCapable = 1 << 1;          // Can be enabled at runtime
+}
+
+/// <summary>
+/// ACPI MADT (Multiple APIC Description Table) header
+/// Signature: "APIC"
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public unsafe struct ACPIMADT
+{
+    public ACPITableHeader Header;
+    public uint LocalApicAddress;      // Physical address of Local APIC (may be overridden)
+    public uint Flags;                 // Bit 0: dual 8259 legacy PICs installed
+    // Followed by variable-length MADT entries
+}
+
+/// <summary>
+/// Common header for all MADT entries
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTEntryHeader
+{
+    public byte Type;                  // Entry type (see MADTEntryType)
+    public byte Length;                // Total length of this entry including header
+}
+
+/// <summary>
+/// MADT Type 0: Processor Local APIC
+/// One entry per logical processor
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTLocalApic
+{
+    public MADTEntryHeader Header;     // Type = 0, Length = 8
+    public byte AcpiProcessorId;       // ACPI Processor UID
+    public byte ApicId;                // Local APIC ID
+    public uint Flags;                 // See MADTLocalApicFlags
+}
+
+/// <summary>
+/// MADT Type 1: I/O APIC
+/// One entry per I/O APIC in the system
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTIOApic
+{
+    public MADTEntryHeader Header;     // Type = 1, Length = 12
+    public byte IOApicId;              // I/O APIC ID
+    public byte Reserved;
+    public uint IOApicAddress;         // Physical address of I/O APIC
+    public uint GlobalSystemInterruptBase;  // First GSI this I/O APIC handles
+}
+
+/// <summary>
+/// MADT Type 2: Interrupt Source Override
+/// Maps ISA IRQs to Global System Interrupts (GSIs)
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTInterruptSourceOverride
+{
+    public MADTEntryHeader Header;     // Type = 2, Length = 10
+    public byte Bus;                   // Always 0 (ISA)
+    public byte Source;                // ISA IRQ number (0-15)
+    public uint GlobalSystemInterrupt; // GSI this IRQ maps to
+    public ushort Flags;               // MPS INTI flags (polarity, trigger mode)
+}
+
+/// <summary>
+/// MADT Type 4: Local APIC NMI
+/// Specifies which LINT pin is connected to NMI
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTLocalApicNmi
+{
+    public MADTEntryHeader Header;     // Type = 4, Length = 6
+    public byte AcpiProcessorId;       // 0xFF means all processors
+    public ushort Flags;               // MPS INTI flags
+    public byte LintPin;               // LINT# (0 or 1)
+}
+
+/// <summary>
+/// MADT Type 9: Processor Local x2APIC
+/// Extended APIC for systems with more than 255 processors
+/// </summary>
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct MADTLocalX2Apic
+{
+    public MADTEntryHeader Header;     // Type = 9, Length = 16
+    public ushort Reserved;
+    public uint X2ApicId;              // Processor's x2APIC ID
+    public uint Flags;                 // See MADTLocalApicFlags
+    public uint AcpiProcessorUid;      // ACPI Processor UID
+}
+
+// ============================================================================
 // ACPI Parser
 // ============================================================================
 
@@ -313,5 +440,14 @@ public static unsafe class ACPI
     public static ACPIHPET* FindHpet()
     {
         return (ACPIHPET*)FindTable((byte)'H', (byte)'P', (byte)'E', (byte)'T');
+    }
+
+    /// <summary>
+    /// Find the MADT (Multiple APIC Description Table)
+    /// Signature: "APIC"
+    /// </summary>
+    public static ACPIMADT* FindMadt()
+    {
+        return (ACPIMADT*)FindTable((byte)'A', (byte)'P', (byte)'I', (byte)'C');
     }
 }

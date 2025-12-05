@@ -89,6 +89,11 @@ public unsafe struct Thread
     public ulong WakeTime;             // For Sleep() - tick count when thread should wake
     public int SuspendCount;           // Suspend count (>0 means suspended)
 
+    // SMP support
+    public ulong CpuAffinity;          // Bitmask of allowed CPUs (0 = any CPU)
+    public uint LastCpu;               // Last CPU this thread ran on
+    public uint PreferredCpu;          // Preferred CPU for cache affinity
+
     // Linked list for general purpose (e.g., wait queues)
     public Thread* Next;
     public Thread* Prev;

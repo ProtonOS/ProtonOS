@@ -56,6 +56,25 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void write_cr4(ulong value);
 
+    // I/O Port Access
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern byte inb(ushort port);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void outb(ushort port, byte value);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ushort inw(ushort port);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void outw(ushort port, ushort value);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint ind(ushort port);
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void outd(ushort port, uint value);
+
     // CPUID
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void cpuid_ex(uint leaf, uint subleaf, uint* eax, uint* ebx, uint* ecx, uint* edx);
@@ -241,6 +260,38 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     /// </summary>
     public static void WriteCr4(ulong value) => write_cr4(value);
 
+    // --- I/O Port Access ---
+
+    /// <summary>
+    /// Read a byte from an I/O port
+    /// </summary>
+    public static byte InByte(ushort port) => inb(port);
+
+    /// <summary>
+    /// Write a byte to an I/O port
+    /// </summary>
+    public static void OutByte(ushort port, byte value) => outb(port, value);
+
+    /// <summary>
+    /// Read a word from an I/O port
+    /// </summary>
+    public static ushort InWord(ushort port) => inw(port);
+
+    /// <summary>
+    /// Write a word to an I/O port
+    /// </summary>
+    public static void OutWord(ushort port, ushort value) => outw(port, value);
+
+    /// <summary>
+    /// Read a dword from an I/O port
+    /// </summary>
+    public static uint InDword(ushort port) => ind(port);
+
+    /// <summary>
+    /// Write a dword to an I/O port
+    /// </summary>
+    public static void OutDword(ushort port, uint value) => outd(port, value);
+
     // --- CPUID ---
 
     /// <summary>
@@ -385,6 +436,58 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     /// Write a Model Specific Register
     /// </summary>
     public static void WriteMsr(uint msr, ulong value) => wrmsr(msr, value);
+
+    // --- MSR Constants ---
+
+    /// <summary>
+    /// IA32_GS_BASE MSR - GS segment base address (used by kernel)
+    /// </summary>
+    public const uint MSR_GS_BASE = 0xC0000101;
+
+    /// <summary>
+    /// IA32_KERNEL_GS_BASE MSR - GS base swapped by SWAPGS (for user mode)
+    /// </summary>
+    public const uint MSR_KERNEL_GS_BASE = 0xC0000102;
+
+    /// <summary>
+    /// IA32_FS_BASE MSR - FS segment base address
+    /// </summary>
+    public const uint MSR_FS_BASE = 0xC0000100;
+
+    // --- Per-CPU State Access (GS Base) ---
+
+    /// <summary>
+    /// Get the current GS segment base address.
+    /// Used for per-CPU state access.
+    /// </summary>
+    public static ulong GetGsBase() => rdmsr(MSR_GS_BASE);
+
+    /// <summary>
+    /// Set the GS segment base address.
+    /// Used during CPU initialization to point to per-CPU state.
+    /// </summary>
+    public static void SetGsBase(ulong value) => wrmsr(MSR_GS_BASE, value);
+
+    /// <summary>
+    /// Get the kernel GS base (used by SWAPGS).
+    /// </summary>
+    public static ulong GetKernelGsBase() => rdmsr(MSR_KERNEL_GS_BASE);
+
+    /// <summary>
+    /// Set the kernel GS base (used by SWAPGS).
+    /// This is the value GS will be swapped to when entering kernel from user mode.
+    /// </summary>
+    public static void SetKernelGsBase(ulong value) => wrmsr(MSR_KERNEL_GS_BASE, value);
+
+    /// <summary>
+    /// Get the current FS segment base address.
+    /// </summary>
+    public static ulong GetFsBase() => rdmsr(MSR_FS_BASE);
+
+    /// <summary>
+    /// Set the FS segment base address.
+    /// </summary>
+    public static void SetFsBase(ulong value) => wrmsr(MSR_FS_BASE, value);
 
     // --- Context Switching ---
 
@@ -623,4 +726,18 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     /// Implements ICpu interface method.
     /// </summary>
     public static ulong GetStackPointer() => get_rsp();
+
+    // --- Per-CPU State Base (ICpu interface) ---
+
+    /// <summary>
+    /// Get the per-CPU state base address.
+    /// Returns the GS base MSR value.
+    /// </summary>
+    public static ulong GetPerCpuStateBase() => GetGsBase();
+
+    /// <summary>
+    /// Set the per-CPU state base address.
+    /// Sets the GS base MSR to the specified address.
+    /// </summary>
+    public static void SetPerCpuStateBase(ulong address) => SetGsBase(address);
 }

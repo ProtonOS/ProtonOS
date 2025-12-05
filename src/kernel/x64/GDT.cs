@@ -304,4 +304,23 @@ public static unsafe class GDT
             ist[index - 1] = stackPointer;
         }
     }
+
+    /// <summary>
+    /// Get a pointer to the GDT pointer structure for AP startup
+    /// </summary>
+    public static GDTPointer* GetGdtPointer()
+    {
+        fixed (GDTPointer* ptr = &_gdtPointer)
+        {
+            return ptr;
+        }
+    }
+
+    /// <summary>
+    /// Get the base address of the GDT
+    /// </summary>
+    public static ulong GetGdtBase()
+    {
+        return _gdtPointer.Base;
+    }
 }

@@ -192,3 +192,13 @@ public class StackOverflowException : Exception
     public StackOverflowException(string? message) : base(message) { }
     public StackOverflowException(string? message, Exception? innerException) : base(message, innerException) { }
 }
+
+/// <summary>
+/// Exception thrown when a program contains invalid metadata or IL.
+/// </summary>
+public class InvalidProgramException : Exception
+{
+    public InvalidProgramException() : base() { }
+    public InvalidProgramException(string? message) : base(message) { }
+    public InvalidProgramException(string? message, Exception? innerException) : base(message, innerException) { }
+}

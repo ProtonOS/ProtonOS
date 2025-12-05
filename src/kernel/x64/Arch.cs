@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using ProtonOS.Platform;
 using ProtonOS.Memory;
 using ProtonOS.Threading;
+using ProtonOS.X64;
 
 namespace ProtonOS.X64;
 
@@ -57,6 +58,24 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
     /// Uses XSAVE area size if available, otherwise FXSAVE (512 bytes).
     /// </summary>
     public static int ExtendedStateSize => CPUFeatures.ExtendedStateSize > 0 ? (int)CPUFeatures.ExtendedStateSize : 512;
+
+    // ==================== IArchitecture SMP Properties ====================
+
+    /// <summary>
+    /// Number of CPUs detected in the system.
+    /// </summary>
+    public static int CpuCount => CPUTopology.IsInitialized ? CPUTopology.CpuCount : 1;
+
+    /// <summary>
+    /// Index of the current CPU (0 to CpuCount-1).
+    /// Uses per-CPU state via GS segment base.
+    /// </summary>
+    public static int CurrentCpuIndex => PerCpu.IsInitialized ? (int)PerCpu.CpuIndex : 0;
+
+    /// <summary>
+    /// Whether the current CPU is the Bootstrap Processor.
+    /// </summary>
+    public static bool IsBsp => !PerCpu.IsInitialized || PerCpu.IsBsp;
 
     // ==================== Initialization ====================
 
@@ -193,6 +212,9 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
     {
         DebugConsole.WriteLine("[x64] Stage 2 initialization...");
 
+        // Initialize CPU topology from MADT (requires heap, so done here not in Stage1)
+        CPUTopology.Init();
+
         // Initialize exception handling
         ExceptionHandling.Init();
 
@@ -216,6 +238,24 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
 
             // Start periodic timer (1ms period = 1000Hz)
             APIC.StartTimer(1);
+        }
+
+        // Initialize I/O APIC for external interrupt routing
+        if (CPUTopology.IOApicCount > 0)
+        {
+            if (IOAPIC.Init())
+            {
+                // Set up standard ISA IRQ routing to BSP
+                IOAPIC.SetupIsaIrqs();
+            }
+        }
+
+        // Start Application Processors (SMP)
+        if (CPUTopology.CpuCount > 1)
+        {
+            SMP.Init();
+            // Enable SMP mode in scheduler after APs are running
+            Scheduler.EnableSmp();
         }
 
         // Enable interrupts
@@ -393,5 +433,57 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
             21 => "Control Protection",
             _ => "Unknown Exception",
         };
+    }
+
+    // ==================== IArchitecture SMP Methods ====================
+
+    /// <summary>
+    /// Initialize a secondary CPU after it has been started.
+    /// Called by each AP after startup to complete initialization.
+    /// </summary>
+    /// <param name="cpuIndex">The CPU index being initialized</param>
+    public static void InitSecondaryCpu(int cpuIndex)
+    {
+        // Called by SMP.ApEntry after AP completes trampoline
+        // The per-CPU state and GS base are already set by SMP
+        // Scheduler.InitSecondaryCpu creates the idle thread for this CPU
+        Scheduler.InitSecondaryCpu();
+    }
+
+    /// <summary>
+    /// Start all secondary CPUs.
+    /// Uses INIT-SIPI-SIPI sequence via SMP.Init().
+    /// </summary>
+    public static void StartSecondaryCpus()
+    {
+        if (CPUTopology.CpuCount > 1)
+        {
+            SMP.Init();
+            Scheduler.EnableSmp();
+        }
+    }
+
+    /// <summary>
+    /// Send an IPI (Inter-Processor Interrupt) to a specific CPU.
+    /// </summary>
+    /// <param name="targetCpu">CPU index to send to</param>
+    /// <param name="vector">Interrupt vector number</param>
+    public static void SendIpi(int targetCpu, int vector)
+    {
+        // Convert CPU index to APIC ID
+        var cpuInfo = CPUTopology.GetCpu(targetCpu);
+        if (cpuInfo != null)
+        {
+            APIC.SendIpi(cpuInfo->ApicId, (uint)vector);
+        }
+    }
+
+    /// <summary>
+    /// Broadcast an IPI to all CPUs except the current one.
+    /// </summary>
+    /// <param name="vector">Interrupt vector number</param>
+    public static void BroadcastIpi(int vector)
+    {
+        APIC.BroadcastIpi((uint)vector);
     }
 }

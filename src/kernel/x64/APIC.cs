@@ -77,6 +77,53 @@ public static class APICMSR
 }
 
 /// <summary>
+/// Interrupt Command Register (ICR) constants for IPI
+/// </summary>
+public static class APICICR
+{
+    // Delivery Mode (bits 8-10)
+    public const uint DeliveryFixed = 0 << 8;       // Fixed interrupt
+    public const uint DeliveryLowest = 1 << 8;      // Lowest priority
+    public const uint DeliverySmi = 2 << 8;         // SMI
+    public const uint DeliveryNmi = 4 << 8;         // NMI
+    public const uint DeliveryInit = 5 << 8;        // INIT
+    public const uint DeliveryStartup = 6 << 8;     // Startup IPI (SIPI)
+
+    // Destination Mode (bit 11)
+    public const uint DestPhysical = 0 << 11;       // Physical APIC ID
+    public const uint DestLogical = 1 << 11;        // Logical APIC ID
+
+    // Delivery Status (bit 12) - read only
+    public const uint StatusIdle = 0 << 12;
+    public const uint StatusPending = 1 << 12;
+
+    // Level (bit 14)
+    public const uint LevelDeassert = 0 << 14;
+    public const uint LevelAssert = 1 << 14;
+
+    // Trigger Mode (bit 15)
+    public const uint TriggerEdge = 0 << 15;
+    public const uint TriggerLevel = 1 << 15;
+
+    // Destination Shorthand (bits 18-19)
+    public const uint DestNoShorthand = 0 << 18;    // Use destination field
+    public const uint DestSelf = 1 << 18;           // Send to self
+    public const uint DestAllIncludingSelf = 2 << 18;  // Broadcast including self
+    public const uint DestAllExcludingSelf = 3 << 18;  // Broadcast excluding self
+}
+
+/// <summary>
+/// Standard IPI vector numbers
+/// </summary>
+public static class IPIVector
+{
+    public const int Reschedule = 0xFD;             // Reschedule IPI
+    public const int TlbShootdown = 0xFC;           // TLB shootdown
+    public const int StopCpu = 0xFB;                // Stop/halt CPU
+    public const int CallFunction = 0xFA;           // Call function on remote CPU
+}
+
+/// <summary>
 /// Local APIC driver
 /// </summary>
 public static unsafe class APIC
@@ -299,6 +346,203 @@ public static unsafe class APIC
         if (!_initialized)
             return;
         WriteRegister(APICRegisters.Eoi, 0);
+    }
+
+    // ==================== IPI (Inter-Processor Interrupt) ====================
+
+    /// <summary>
+    /// Wait for IPI delivery to complete.
+    /// Polls the ICR delivery status bit until idle.
+    /// </summary>
+    private static void WaitForIpiDelivery()
+    {
+        // Wait for delivery status to become idle (bit 12 = 0)
+        int timeout = 100000; // iterations
+        while ((ReadRegister(APICRegisters.InterruptCommand) & APICICR.StatusPending) != 0)
+        {
+            CPU.Pause();
+            if (--timeout <= 0)
+            {
+                DebugConsole.WriteChar('T'); // Timeout waiting for IPI
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Send an IPI (Inter-Processor Interrupt) to a specific CPU.
+    /// </summary>
+    /// <param name="apicId">Destination APIC ID</param>
+    /// <param name="vector">Interrupt vector to send</param>
+    public static void SendIpi(uint apicId, uint vector)
+    {
+        if (!_initialized)
+            return;
+
+        // Write destination APIC ID to high dword (bits 24-31)
+        WriteRegister(APICRegisters.InterruptCommandHigh, apicId << 24);
+
+        // Write vector and delivery mode to low dword - this triggers the IPI
+        WriteRegister(APICRegisters.InterruptCommand,
+            vector |
+            APICICR.DeliveryFixed |
+            APICICR.DestPhysical |
+            APICICR.LevelAssert |
+            APICICR.TriggerEdge |
+            APICICR.DestNoShorthand);
+
+        WaitForIpiDelivery();
+    }
+
+    /// <summary>
+    /// Send an INIT IPI to reset an Application Processor.
+    /// This is the first step in starting an AP.
+    /// </summary>
+    /// <param name="apicId">Destination APIC ID</param>
+    public static void SendInitIpi(uint apicId)
+    {
+        if (!_initialized)
+            return;
+
+        // Write destination APIC ID
+        WriteRegister(APICRegisters.InterruptCommandHigh, apicId << 24);
+
+        // Send INIT IPI: level-triggered, assert
+        WriteRegister(APICRegisters.InterruptCommand,
+            APICICR.DeliveryInit |
+            APICICR.DestPhysical |
+            APICICR.LevelAssert |
+            APICICR.TriggerLevel |
+            APICICR.DestNoShorthand);
+
+        WaitForIpiDelivery();
+
+        // Some systems require deassert for INIT
+        WriteRegister(APICRegisters.InterruptCommand,
+            APICICR.DeliveryInit |
+            APICICR.DestPhysical |
+            APICICR.LevelDeassert |
+            APICICR.TriggerLevel |
+            APICICR.DestNoShorthand);
+
+        WaitForIpiDelivery();
+    }
+
+    /// <summary>
+    /// Send a Startup IPI (SIPI) to start an Application Processor.
+    /// The vector specifies the page number (address >> 12) of the startup code.
+    /// For example, vector 0x08 means startup code is at physical address 0x8000.
+    /// </summary>
+    /// <param name="apicId">Destination APIC ID</param>
+    /// <param name="vector">Startup code page number (address >> 12)</param>
+    public static void SendStartupIpi(uint apicId, byte vector)
+    {
+        if (!_initialized)
+            return;
+
+        // Write destination APIC ID
+        WriteRegister(APICRegisters.InterruptCommandHigh, apicId << 24);
+
+        // Send SIPI with startup vector
+        WriteRegister(APICRegisters.InterruptCommand,
+            vector |
+            APICICR.DeliveryStartup |
+            APICICR.DestPhysical |
+            APICICR.LevelAssert |
+            APICICR.TriggerEdge |
+            APICICR.DestNoShorthand);
+
+        WaitForIpiDelivery();
+    }
+
+    /// <summary>
+    /// Broadcast an IPI to all CPUs except self.
+    /// </summary>
+    /// <param name="vector">Interrupt vector to send</param>
+    public static void BroadcastIpi(uint vector)
+    {
+        if (!_initialized)
+            return;
+
+        // Use shorthand to send to all except self
+        WriteRegister(APICRegisters.InterruptCommand,
+            vector |
+            APICICR.DeliveryFixed |
+            APICICR.DestPhysical |
+            APICICR.LevelAssert |
+            APICICR.TriggerEdge |
+            APICICR.DestAllExcludingSelf);
+
+        WaitForIpiDelivery();
+    }
+
+    /// <summary>
+    /// Send a reschedule IPI to a specific CPU to wake it up for scheduling.
+    /// </summary>
+    /// <param name="apicId">Destination APIC ID</param>
+    public static void SendRescheduleIpi(uint apicId)
+    {
+        SendIpi(apicId, (uint)IPIVector.Reschedule);
+    }
+
+    /// <summary>
+    /// Get the current CPU's Local APIC ID.
+    /// </summary>
+    public static uint GetApicId()
+    {
+        if (!_initialized)
+            return 0;
+        return ReadRegister(APICRegisters.Id) >> 24;
+    }
+
+    /// <summary>
+    /// Initialize the Local APIC on an Application Processor.
+    /// Called by each AP after startup. Uses the same APIC base as BSP.
+    /// </summary>
+    public static void InitAp()
+    {
+        // APs use the same APIC base address as BSP (already in _apicBase)
+        // Just need to enable the local APIC on this CPU
+
+        // Read APIC base from MSR and ensure it's enabled
+        ulong apicBaseMsr = CPU.ReadMsr(APICMSR.APICBase);
+        if ((apicBaseMsr & (1 << 11)) == 0)
+        {
+            // Enable APIC globally
+            apicBaseMsr |= (1UL << 11);
+            CPU.WriteMsr(APICMSR.APICBase, apicBaseMsr);
+        }
+
+        // Enable APIC via Spurious Interrupt Vector Register
+        // Set spurious vector to 0xFF and set bit 8 (APIC software enable)
+        WriteRegister(APICRegisters.SpuriousInterrupt, 0xFF | (1 << 8));
+
+        // Mask all LVT entries initially on this AP
+        WriteRegister(APICRegisters.LvtTimer, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtLint0, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtLint1, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtError, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtPerformance, APICLVT.Masked);
+        WriteRegister(APICRegisters.LvtThermal, APICLVT.Masked);
+
+        // Clear any pending errors
+        WriteRegister(APICRegisters.ErrorStatus, 0);
+
+        // Set up the timer on this AP (same settings as BSP)
+        if (_ticksPerMs > 0)
+        {
+            // Configure timer divider
+            WriteRegister(APICRegisters.TimerDivideConfig, APICTimerDivide.By16);
+
+            // Configure LVT Timer: periodic mode, timer vector
+            WriteRegister(APICRegisters.LvtTimer, APICTimerMode.Periodic | TimerVector);
+
+            // Set initial count for 1ms periods
+            WriteRegister(APICRegisters.TimerInitialCount, (uint)_ticksPerMs);
+        }
+
+        // Set task priority to 0 to receive all interrupts
+        WriteRegister(APICRegisters.TaskPriority, 0);
     }
 
     /// <summary>

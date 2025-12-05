@@ -165,4 +165,15 @@ public static unsafe class IDT
             DebugConsole.WriteLine();
         }
     }
+
+    /// <summary>
+    /// Get pointer to the IDT descriptor (for loading on APs)
+    /// </summary>
+    public static IDTPointer* GetIdtPointer()
+    {
+        fixed (IDTPointer* ptr = &_idtPointer)
+        {
+            return ptr;
+        }
+    }
 }

@@ -455,6 +455,20 @@ public static unsafe class Kernel
         // JIT compile the method
         DebugConsole.WriteLine("[FullTest] JIT compiling RunAllTests...");
 
+        // Diagnostic: dump page table walk for the crash address
+        DebugConsole.WriteLine("[FullTest] Checking page table before JIT...");
+        X64.VirtualMemory.DumpPageTableWalk(0xFFFF800000100020);
+
+        // Try to read from the address to verify mapping
+        unsafe
+        {
+            DebugConsole.Write("[FullTest] Reading from 0xFFFF800000100020: ");
+            byte* ptr = (byte*)0xFFFF800000100020;
+            byte val = *ptr;
+            DebugConsole.WriteHex(val);
+            DebugConsole.WriteLine(" (OK)");
+        }
+
         var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_testAssemblyId, runAllTestsToken);
         if (jitResult.Success)
         {

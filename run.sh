@@ -50,10 +50,17 @@ echo "Serial output below (Ctrl+A, X to exit QEMU):"
 echo "=============================================="
 
 # Use tee to write serial output to both stdout and log file
+# NUMA configuration: 2 nodes, 256MB each, CPUs 0-1 on node 0, CPUs 2-3 on node 1
 qemu-system-x86_64 \
     -machine q35 \
     -cpu max \
-    -m 256M \
+    -smp 4,sockets=2,cores=2,threads=1 \
+    -m 512M \
+    -object memory-backend-ram,id=mem0,size=256M \
+    -object memory-backend-ram,id=mem1,size=256M \
+    -numa node,nodeid=0,cpus=0-1,memdev=mem0 \
+    -numa node,nodeid=1,cpus=2-3,memdev=mem1 \
+    -numa dist,src=0,dst=1,val=20 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF" \
     -drive format=raw,file="$IMG_FILE" \
     -serial mon:stdio \

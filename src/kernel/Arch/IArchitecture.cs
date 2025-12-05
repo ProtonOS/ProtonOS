@@ -112,4 +112,52 @@ public unsafe interface IArchitecture<TSelf> where TSelf : IArchitecture<TSelf>
     /// Size of extended state (FPU/SSE/AVX) in bytes.
     /// </summary>
     static abstract int ExtendedStateSize { get; }
+
+    // ==================== SMP Support ====================
+
+    /// <summary>
+    /// Number of CPUs detected in the system.
+    /// </summary>
+    static abstract int CpuCount { get; }
+
+    /// <summary>
+    /// Index of the current CPU (0 to CpuCount-1).
+    /// x64: Read from per-CPU state via GS base
+    /// ARM64: Read from TPIDR_EL1 or similar
+    /// </summary>
+    static abstract int CurrentCpuIndex { get; }
+
+    /// <summary>
+    /// Whether the current CPU is the Bootstrap Processor.
+    /// </summary>
+    static abstract bool IsBsp { get; }
+
+    /// <summary>
+    /// Initialize a secondary CPU after it has been started.
+    /// Called by each AP after startup to complete initialization.
+    /// </summary>
+    /// <param name="cpuIndex">The CPU index being initialized</param>
+    static abstract void InitSecondaryCpu(int cpuIndex);
+
+    /// <summary>
+    /// Start all secondary CPUs.
+    /// x64: Uses INIT-SIPI-SIPI sequence
+    /// ARM64: Uses PSCI or spin-tables
+    /// </summary>
+    static abstract void StartSecondaryCpus();
+
+    // ==================== Inter-Processor Interrupts ====================
+
+    /// <summary>
+    /// Send an IPI (Inter-Processor Interrupt) to a specific CPU.
+    /// </summary>
+    /// <param name="targetCpu">CPU index to send to</param>
+    /// <param name="vector">Interrupt vector number</param>
+    static abstract void SendIpi(int targetCpu, int vector);
+
+    /// <summary>
+    /// Broadcast an IPI to all CPUs except the current one.
+    /// </summary>
+    /// <param name="vector">Interrupt vector number</param>
+    static abstract void BroadcastIpi(int vector);
 }

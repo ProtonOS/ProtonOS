@@ -170,4 +170,21 @@ public unsafe interface ICpu<TSelf> where TSelf : ICpu<TSelf>
     /// Used for stack bounds detection.
     /// </summary>
     static abstract ulong GetStackPointer();
+
+    // ==================== Per-CPU State ====================
+
+    /// <summary>
+    /// Get the per-CPU state base address.
+    /// x64: Returns GS base MSR value
+    /// ARM64: Returns TPIDR_EL1 value
+    /// </summary>
+    static abstract ulong GetPerCpuStateBase();
+
+    /// <summary>
+    /// Set the per-CPU state base address.
+    /// x64: Sets GS base MSR
+    /// ARM64: Sets TPIDR_EL1
+    /// </summary>
+    /// <param name="address">Address of per-CPU state structure</param>
+    static abstract void SetPerCpuStateBase(ulong address);
 }

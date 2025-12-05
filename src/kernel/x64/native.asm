@@ -1223,3 +1223,398 @@ call_filter_funclet:
     pop rbp
 
     ret
+
+;; ==================== SMP AP Trampoline ====================
+;; Real mode trampoline code for Application Processor startup.
+;; This code is copied to low memory (0x90000 = 576KB) by the BSP before sending SIPI.
+;; APs execute this code in real mode, transition through protected mode to long mode,
+;; and finally call the C# AP entry point.
+;;
+;; IMPORTANT: All data access uses ABSOLUTE addresses (0x90000 + offset) because
+;; RIP-relative addressing doesn't work after copying to 0x90000.
+;; The startup data is embedded within the trampoline at a known offset.
+;;
+;; Address choice: Must be below 1MB for SIPI (8-bit vector = page number).
+;; Page allocator uses ~0x1000-0xC000 for page tables, so 0x90000 is safe.
+
+;; Constants for trampoline memory layout
+AP_TRAMPOLINE_BASE equ 0x90000
+
+section .text
+
+;; Export symbols for trampoline boundaries
+global ap_trampoline_start, ap_trampoline_end
+
+;; The trampoline code itself - will be copied to 0x7000
+;; Note: This is 64-bit code section but we switch to 16-bit for the trampoline
+BITS 16
+align 4096  ; Align to page boundary for easier copying
+
+ap_trampoline_start:
+    ; ---- Real Mode (16-bit) ----
+    ; We start here after SIPI. CS:IP = 0x9000:0x0000 = 0x90000
+    cli
+    cld
+
+    ; Set up segments for addressing trampoline at 0x90000
+    ; DS = 0x9000 so that DS:offset = 0x90000 + offset
+    ; This is necessary because 16-bit offsets can't reach 0x90000 directly
+    mov ax, 0x9000
+    mov ds, ax
+    mov es, ax
+    ; Set up stack just below trampoline at 0x90000
+    ; SS=0x8000, SP=0xFFF0 -> effective address = 0x80000 + 0xFFF0 = 0x8FFF0
+    mov ax, 0x8000
+    mov ss, ax
+    mov sp, 0xFFF0
+
+    ; DEBUG: Output '1' to serial port to show we started
+    mov dx, 0x3F8
+    mov al, '1'
+    out dx, al
+
+    ; Data is at fixed offset from trampoline start
+    ; With DS = 0x9000, DS:offset addresses 0x90000 + offset
+    ; So we just use the offset from trampoline start
+    mov ebx, (ap_trampoline_data - ap_trampoline_start)
+
+    ; DEBUG: Output '2' to show we calculated data address
+    mov dx, 0x3F8
+    mov al, '2'
+    out dx, al
+
+    ; Load CR3 from startup data (page tables set up by BSP)
+    ; ebx contains offset, DS:ebx gives us the actual data
+    mov eax, [ebx]          ; Load low 32 bits of CR3
+    mov cr3, eax
+
+    ; DEBUG: Output '3' to show CR3 loaded
+    mov dx, 0x3F8
+    mov al, '3'
+    out dx, al
+
+    ; Enable PAE (bit 5 of CR4)
+    mov eax, cr4
+    or eax, (1 << 5)        ; PAE
+    mov cr4, eax
+
+    ; DEBUG: Output '4' to show PAE enabled
+    mov dx, 0x3F8
+    mov al, '4'
+    out dx, al
+
+    ; Load temporary GDT for protected mode
+    ; DS = 0x9000, so DS:offset addresses 0x90000 + offset
+    lgdt [(ap_trampoline_gdt_ptr - ap_trampoline_start)]
+
+    ; DEBUG: Output '5' to show GDT loaded
+    mov dx, 0x3F8
+    mov al, '5'
+    out dx, al
+
+    ; Enable protected mode (bit 0 of CR0)
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+
+    ; DEBUG: Output '6' to show protected mode enabled
+    mov dx, 0x3F8
+    mov al, '6'
+    out dx, al
+
+    ; Far jump to 32-bit protected mode code
+    jmp dword 0x18:(AP_TRAMPOLINE_BASE + (ap_trampoline_32 - ap_trampoline_start))
+
+BITS 32
+ap_trampoline_32:
+    ; ---- Protected Mode (32-bit) ----
+
+    ; DEBUG: Output '7' to show we're in protected mode
+    mov dx, 0x3F8
+    mov al, '7'
+    out dx, al
+
+    ; Set up 32-bit data segments
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+    ; DEBUG: Output '8' to show segments loaded
+    mov dx, 0x3F8
+    mov al, '8'
+    out dx, al
+
+    ; Enable long mode in IA32_EFER MSR (bit 8 = LME)
+    mov ecx, 0xC0000080     ; IA32_EFER MSR
+    rdmsr
+    or eax, (1 << 8)        ; LME (Long Mode Enable)
+    wrmsr
+
+    ; DEBUG: Output '9' to show LME set
+    mov dx, 0x3F8
+    mov al, '9'
+    out dx, al
+
+    ; Enable paging (bit 31 of CR0) - this activates long mode
+    mov eax, cr0
+    or eax, (1 << 31)
+    mov cr0, eax
+
+    ; DEBUG: Output 'A' to show paging enabled
+    mov dx, 0x3F8
+    mov al, 'A'
+    out dx, al
+
+    ; Far jump to 64-bit long mode code
+    jmp dword 0x08:(AP_TRAMPOLINE_BASE + (ap_trampoline_64 - ap_trampoline_start))
+
+BITS 64
+ap_trampoline_64:
+    ; ---- Long Mode (64-bit) ----
+    ; Use absolute addresses - RIP-relative won't work from 0x90000
+
+    ; DEBUG: Output 'B' to show we're in long mode
+    mov dx, 0x3F8
+    mov al, 'B'
+    out dx, al
+
+    ; Calculate data base address
+    mov rbx, AP_TRAMPOLINE_BASE + (ap_trampoline_data - ap_trampoline_start)
+
+    ; Reload data segments with 64-bit selectors
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov ss, ax
+    xor ax, ax
+    mov gs, ax  ; Will set GS base via MSR
+
+    ; DEBUG: Output 'C' to show segments reloaded
+    mov dx, 0x3F8
+    mov al, 'C'
+    out dx, al
+
+    ; Load the real 64-bit GDT (pointer from startup data at offset 8)
+    mov rax, [rbx + 8]      ; gdt_ptr
+    lgdt [rax]
+
+    ; DEBUG: Output 'D' to show real GDT loaded
+    mov dx, 0x3F8
+    mov al, 'D'
+    out dx, al
+
+    ; Reload code segment by far return
+    push qword 0x08         ; Code selector
+    mov rax, AP_TRAMPOLINE_BASE + (ap_trampoline_64.reload_cs - ap_trampoline_start)
+    push rax
+    retfq
+.reload_cs:
+
+    ; DEBUG: Output 'E' to show CS reloaded
+    mov dx, 0x3F8
+    mov al, 'E'
+    out dx, al
+
+    ; Recalculate data address (registers may have been clobbered)
+    mov rbx, AP_TRAMPOLINE_BASE + (ap_trampoline_data - ap_trampoline_start)
+
+    ; Load the real IDT (pointer from startup data at offset 48)
+    mov rax, [rbx + 48]     ; idt_ptr
+    lidt [rax]
+
+    ; DEBUG: Output 'e' to show IDT loaded
+    mov dx, 0x3F8
+    mov al, 'e'
+    out dx, al
+
+    ; Set up stack from startup data (offset 16)
+    mov rsp, [rbx + 16]
+
+    ; DEBUG: Output 'F' to show stack set up
+    mov dx, 0x3F8
+    mov al, 'F'
+    out dx, al
+
+    ; Set GS base to per-CPU state pointer (offset 24)
+    mov ecx, 0xC0000101     ; IA32_GS_BASE MSR
+    mov rax, [rbx + 24]
+    mov rdx, rax
+    shr rdx, 32
+    wrmsr
+
+    ; DEBUG: Output 'G' to show GS base set
+    mov dx, 0x3F8
+    mov al, 'G'
+    out dx, al
+
+    ; Signal that we're running (offset 40 = ap_running)
+    mov dword [rbx + 40], 1
+    mfence                      ; Ensure store is visible to other CPUs
+
+    ; DEBUG: Output 'H' to show we signaled running
+    mov dx, 0x3F8
+    mov al, 'H'
+    out dx, al
+
+    ; Call the C# AP entry point
+    ; First argument (rcx) = per-CPU state pointer
+    mov rcx, [rbx + 24]     ; percpu (offset 24)
+    mov rax, [rbx + 32]     ; entry (offset 32)
+
+    ; DEBUG: Output data base address (rbx) and entry address (rax)
+    push rax
+    push rcx
+    push rbx
+    mov dx, 0x3F8
+
+    ; Print "[" then rbx (data base)
+    mov al, '['
+    out dx, al
+    mov rcx, rbx            ; Print rbx
+    mov r8, 16
+.print_rbx:
+    rol rcx, 4
+    mov al, cl
+    and al, 0x0F
+    cmp al, 10
+    jb .digit_rbx
+    add al, 'A' - 10
+    jmp .out_rbx
+.digit_rbx:
+    add al, '0'
+.out_rbx:
+    out dx, al
+    dec r8
+    jnz .print_rbx
+
+    ; Print "]@" then rax (entry)
+    mov al, ']'
+    out dx, al
+    mov al, '@'
+    out dx, al
+
+    pop rbx
+    mov rcx, [rbx + 32]     ; Re-read entry to print
+    mov r8, 16
+.print_addr:
+    rol rcx, 4
+    mov al, cl
+    and al, 0x0F
+    cmp al, 10
+    jb .digit
+    add al, 'A' - 10
+    jmp .output
+.digit:
+    add al, '0'
+.output:
+    out dx, al
+    dec r8
+    jnz .print_addr
+    mov al, '>'
+    out dx, al
+    pop rcx
+    pop rax
+
+    ; Align stack to 16-byte boundary before call (required by x64 ABI)
+    and rsp, ~0xF
+    sub rsp, 0x20           ; Shadow space (32 bytes), keeps 16-byte alignment
+
+    call rax
+
+    ; DEBUG: If we reach here, function returned unexpectedly
+    mov dx, 0x3F8
+    mov al, 'R'     ; 'R' for Returned
+    out dx, al
+
+    ; Should never return, but if it does, halt
+.halt_loop:
+    cli
+    hlt
+    jmp .halt_loop
+
+;; Temporary GDT for trampoline - minimal entries for transition
+align 16
+ap_trampoline_gdt:
+    ; Null descriptor (index 0 = 0x00)
+    dq 0
+
+    ; 64-bit Code segment (index 1 = 0x08) - for long mode
+    ; Base=0, Limit=0xFFFFF, Access=0x9A (present, ring 0, code, exec/read)
+    ; Flags=0xA (L=1 for 64-bit, D=0, 4KB granularity)
+    dw 0xFFFF       ; Limit low
+    dw 0x0000       ; Base low
+    db 0x00         ; Base middle
+    db 0x9A         ; Access: Present, Ring 0, Code segment, Executable, Readable
+    db 0xAF         ; Flags: G=1, L=1, D=0, AVL=0 + Limit high (0xF)
+    db 0x00         ; Base high
+
+    ; Data segment (index 2 = 0x10) - 32/64-bit data
+    ; Base=0, Limit=0xFFFFF, Access=0x92 (present, ring 0, data, read/write)
+    dw 0xFFFF       ; Limit low
+    dw 0x0000       ; Base low
+    db 0x00         ; Base middle
+    db 0x92         ; Access: Present, Ring 0, Data segment, Writable
+    db 0xCF         ; Flags: G=1, D/B=1 (32-bit) + Limit high
+    db 0x00         ; Base high
+
+    ; 32-bit Code segment (index 3 = 0x18) - for protected mode transition
+    ; Base=0, Limit=0xFFFFF, Access=0x9A (present, ring 0, code, exec/read)
+    ; Flags=0xC (L=0 for 32-bit, D=1, 4KB granularity)
+    dw 0xFFFF       ; Limit low
+    dw 0x0000       ; Base low
+    db 0x00         ; Base middle
+    db 0x9A         ; Access: Present, Ring 0, Code segment, Executable, Readable
+    db 0xCF         ; Flags: G=1, D=1 (32-bit), L=0, AVL=0 + Limit high (0xF)
+    db 0x00         ; Base high
+
+ap_trampoline_gdt_ptr:
+    dw (ap_trampoline_gdt_ptr - ap_trampoline_gdt) - 1  ; Limit (31 bytes = 4 entries - 1)
+    dd AP_TRAMPOLINE_BASE + (ap_trampoline_gdt - ap_trampoline_start) ; Base (32-bit absolute)
+
+;; AP startup data structure - embedded in trampoline, filled by BSP
+;; Layout must match ApStartupData struct in SMP.cs:
+;;   offset 0:  cr3 (8 bytes)
+;;   offset 8:  gdt_ptr (8 bytes)
+;;   offset 16: stack (8 bytes)
+;;   offset 24: percpu (8 bytes)
+;;   offset 32: entry (8 bytes)
+;;   offset 40: ap_running (4 bytes)
+;;   offset 44: ap_id (4 bytes)
+;;   offset 48: idt_ptr (8 bytes)
+align 8
+ap_trampoline_data:
+    dq 0            ; offset 0: cr3
+    dq 0            ; offset 8: gdt_ptr
+    dq 0            ; offset 16: stack
+    dq 0            ; offset 24: percpu
+    dq 0            ; offset 32: entry
+    dd 0            ; offset 40: ap_running
+    dd 0            ; offset 44: ap_id
+    dq 0            ; offset 48: idt_ptr
+
+ap_trampoline_end:
+
+BITS 64  ; Back to 64-bit for helper functions
+
+;; Helper to get trampoline size
+global get_ap_trampoline_size
+get_ap_trampoline_size:
+    mov rax, ap_trampoline_end - ap_trampoline_start
+    ret
+
+;; Helper to get trampoline start address (in kernel memory, before copy)
+global get_ap_trampoline_start
+get_ap_trampoline_start:
+    lea rax, [rel ap_trampoline_start]
+    ret
+
+;; Helper to get pointer to ap_startup_data at destination (0x90000)
+;; Returns pointer to the data area IN THE COPIED TRAMPOLINE at 0x90000
+global get_ap_startup_data
+get_ap_startup_data:
+    mov rax, AP_TRAMPOLINE_BASE + (ap_trampoline_data - ap_trampoline_start)
+    ret

@@ -60,6 +60,8 @@ namespace Internal.Runtime.CompilerHelpers
         static void ThrowNullReferenceException() => throw new NullReferenceException();
         static void ThrowInvalidCastException() => throw new InvalidCastException();
         static void ThrowArrayTypeMismatchException() => throw new ArrayTypeMismatchException();
+        static void ThrowInvalidProgramException() => throw new InvalidProgramException();
+        static void ThrowInvalidProgramExceptionWithArgument(string? message) => throw new InvalidProgramException(message);
     }
 
     // A class that the compiler looks for that has helpers to initialize the

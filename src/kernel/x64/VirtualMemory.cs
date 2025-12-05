@@ -392,8 +392,8 @@ public unsafe struct VirtualMemory : ProtonOS.Arch.IVirtualMemory<VirtualMemory>
         // Remove HugePage flag since we're now using a page table
         pd[0] = ptPhys | PageFlags.Present | PageFlags.Writable;
 
-        // Flush TLB for the affected range
-        CPU.WriteCr3(_pml4PhysAddr);
+        // Note: Don't call WriteCr3 here - we're still using UEFI's page tables.
+        // The TLB will be flushed when we call WriteCr3 at the end of Init().
     }
 
     /// <summary>
@@ -878,6 +878,142 @@ public unsafe struct VirtualMemory : ProtonOS.Arch.IVirtualMemory<VirtualMemory>
     public static ulong PageAlignUp(ulong addr)
     {
         return (addr + _pageSize - 1) & ~(_pageSize - 1);
+    }
+
+    /// <summary>
+    /// Dump page table walk for debugging.
+    /// Shows each level of the page table hierarchy for a virtual address.
+    /// </summary>
+    public static void DumpPageTableWalk(ulong virtAddr)
+    {
+        DebugConsole.Write("[VMem] Page table walk for 0x");
+        DebugConsole.WriteHex(virtAddr);
+        DebugConsole.WriteLine();
+
+        if (_pml4PhysAddr == 0)
+        {
+            DebugConsole.WriteLine("  ERROR: PML4 not initialized!");
+            return;
+        }
+
+        // Calculate indices
+        int pml4Index = (int)((virtAddr >> 39) & IndexMask);
+        int pdptIndex = (int)((virtAddr >> 30) & IndexMask);
+        int pdIndex = (int)((virtAddr >> 21) & IndexMask);
+        int ptIndex = (int)((virtAddr >> 12) & IndexMask);
+
+        DebugConsole.Write("  Indices: PML4=");
+        DebugConsole.WriteDecimal(pml4Index);
+        DebugConsole.Write(" PDPT=");
+        DebugConsole.WriteDecimal(pdptIndex);
+        DebugConsole.Write(" PD=");
+        DebugConsole.WriteDecimal(pdIndex);
+        DebugConsole.Write(" PT=");
+        DebugConsole.WriteDecimal(ptIndex);
+        DebugConsole.WriteLine();
+
+        // Walk PML4
+        DebugConsole.Write("  PML4 at 0x");
+        DebugConsole.WriteHex(_pml4PhysAddr);
+        DebugConsole.WriteLine();
+
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pml4Entry = pml4[pml4Index];
+        DebugConsole.Write("  PML4[");
+        DebugConsole.WriteDecimal(pml4Index);
+        DebugConsole.Write("] = 0x");
+        DebugConsole.WriteHex(pml4Entry);
+        DebugConsole.WriteLine();
+
+        if ((pml4Entry & PageFlags.Present) == 0)
+        {
+            DebugConsole.WriteLine("  -> NOT PRESENT (page fault expected)");
+            return;
+        }
+
+        // Walk PDPT
+        ulong pdptPhys = pml4Entry & PageFlags.AddressMask;
+        DebugConsole.Write("  PDPT at 0x");
+        DebugConsole.WriteHex(pdptPhys);
+        DebugConsole.WriteLine();
+
+        ulong* pdpt = (ulong*)pdptPhys;
+        ulong pdptEntry = pdpt[pdptIndex];
+        DebugConsole.Write("  PDPT[");
+        DebugConsole.WriteDecimal(pdptIndex);
+        DebugConsole.Write("] = 0x");
+        DebugConsole.WriteHex(pdptEntry);
+        DebugConsole.WriteLine();
+
+        if ((pdptEntry & PageFlags.Present) == 0)
+        {
+            DebugConsole.WriteLine("  -> NOT PRESENT (page fault expected)");
+            return;
+        }
+
+        if ((pdptEntry & PageFlags.HugePage) != 0)
+        {
+            ulong physBase = pdptEntry & PageFlags.AddressMask;
+            DebugConsole.Write("  -> 1GB page at phys 0x");
+            DebugConsole.WriteHex(physBase);
+            DebugConsole.WriteLine();
+            return;
+        }
+
+        // Walk PD
+        ulong pdPhys = pdptEntry & PageFlags.AddressMask;
+        DebugConsole.Write("  PD at 0x");
+        DebugConsole.WriteHex(pdPhys);
+        DebugConsole.WriteLine();
+
+        ulong* pd = (ulong*)pdPhys;
+        ulong pdEntry = pd[pdIndex];
+        DebugConsole.Write("  PD[");
+        DebugConsole.WriteDecimal(pdIndex);
+        DebugConsole.Write("] = 0x");
+        DebugConsole.WriteHex(pdEntry);
+        DebugConsole.WriteLine();
+
+        if ((pdEntry & PageFlags.Present) == 0)
+        {
+            DebugConsole.WriteLine("  -> NOT PRESENT (page fault expected)");
+            return;
+        }
+
+        if ((pdEntry & PageFlags.HugePage) != 0)
+        {
+            ulong physBase = pdEntry & PageFlags.AddressMask;
+            DebugConsole.Write("  -> 2MB page at phys 0x");
+            DebugConsole.WriteHex(physBase);
+            DebugConsole.WriteLine(" (MAPPED OK)");
+            return;
+        }
+
+        // Walk PT (4KB pages)
+        ulong ptPhys = pdEntry & PageFlags.AddressMask;
+        DebugConsole.Write("  PT at 0x");
+        DebugConsole.WriteHex(ptPhys);
+        DebugConsole.WriteLine();
+
+        ulong* pt = (ulong*)ptPhys;
+        ulong ptEntry = pt[ptIndex];
+        DebugConsole.Write("  PT[");
+        DebugConsole.WriteDecimal(ptIndex);
+        DebugConsole.Write("] = 0x");
+        DebugConsole.WriteHex(ptEntry);
+        DebugConsole.WriteLine();
+
+        if ((ptEntry & PageFlags.Present) == 0)
+        {
+            DebugConsole.WriteLine("  -> NOT PRESENT (page fault expected)");
+        }
+        else
+        {
+            ulong physBase = ptEntry & PageFlags.AddressMask;
+            DebugConsole.Write("  -> 4KB page at phys 0x");
+            DebugConsole.WriteHex(physBase);
+            DebugConsole.WriteLine(" (MAPPED OK)");
+        }
     }
 }
 

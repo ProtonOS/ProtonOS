@@ -1,5 +1,40 @@
 # ProtonOS Driver Development Kit (DDK) Plan
 
+## Status
+
+**Last Updated**: December 2024
+
+### Completed AOT Work
+
+The following subsystems are implemented in the AOT kernel and expose DDK exports:
+
+| Subsystem | Status | Kernel Exports | Notes |
+|-----------|--------|----------------|-------|
+| **SMP** | ✅ Complete | `src/kernel/Exports/CPU.cs` | 4 CPUs tested |
+| CPU Topology | ✅ Complete | GetCpuCount, GetCpuInfo | MADT parsing |
+| Per-CPU State | ✅ Complete | GetCurrentCpu | GS-based access |
+| Thread Affinity | ✅ Complete | Get/SetThreadAffinity | Bitmask per thread |
+| AP Startup | ✅ Complete | (internal) | INIT-SIPI-SIPI |
+| I/O APIC | ✅ Complete | (internal) | ISA IRQ routing |
+| IPI | ✅ Complete | (internal) | Cross-CPU messaging |
+| Per-CPU Scheduler | ✅ Complete | (internal) | Work stealing queues |
+
+### Available CPU Exports (for JIT DDK)
+
+```csharp
+// src/kernel/Exports/CPU.cs - Already implemented
+Kernel_GetCpuCount()           // Number of CPUs
+Kernel_GetCurrentCpu()         // Current CPU index
+Kernel_GetCpuInfo(index, info) // CPU details (APIC ID, online status)
+Kernel_SetThreadAffinity(mask) // Pin thread to CPUs
+Kernel_GetThreadAffinity()     // Get current affinity
+Kernel_IsCpuOnline(index)      // Check if CPU is running
+Kernel_GetBspIndex()           // Bootstrap processor index
+Kernel_GetSystemAffinityMask() // All-CPUs bitmask
+```
+
+---
+
 ## Architecture Overview
 
 **JIT-First Driver Model**: Drivers are JIT-compiled assemblies, NOT AOT.
@@ -231,19 +266,20 @@ Everything else - which is most of the work:
 - [ ] **src/kernel/Exports/Interrupts.cs** - Export RegisterHandler, SendEOI
 - [ ] **src/kernel/Exports/ACPI.cs** - Export ACPI table access
 - [ ] **src/kernel/Exports/Timer.cs** - Export HPET.GetTicks, APIC.SendEoi
+- [x] **src/kernel/Exports/CPU.cs** - Export CPU topology/affinity ✅ Complete
 - [ ] **src/ddk/DDK.csproj** - Create DDK project (ProtonOS.DDK namespace)
 - [ ] **src/ddk/Kernel/*.cs** - DllImport wrappers for kernel exports
 - [ ] **Build integration** - Update build.sh to compile DDK + drivers
 
 ### Phase 1: Core Platform (in DDK, JIT)
 
-- [ ] **ddk/Platform/IOAPIC.cs** - I/O APIC configuration (MMIO)
+- [x] ~~**ddk/Platform/IOAPIC.cs**~~ - Done in AOT (`src/kernel/x64/IOAPIC.cs`)
 - [ ] **ddk/Platform/DMA.cs** - DMA buffer allocation helpers
 - [ ] **drivers/platform/pci/** - PCI enumeration (ECAM=MMIO, legacy=x64 port I/O shim)
 
-**Note**: PCI is in drivers/platform/ because it's loaded early during bootstrap,
-but it's mostly arch-independent (ECAM is pure MMIO). Legacy config space access
-on x64 uses port I/O which requires a small arch shim.
+**Note**: I/O APIC is now in AOT kernel as part of SMP implementation. PCI enumeration
+remains a DDK/driver task (loaded early during bootstrap). ECAM is pure MMIO, legacy
+config space access on x64 uses port I/O which requires a small arch shim.
 
 ### Phase 2: Driver Model (in DDK, JIT)
 
@@ -353,7 +389,7 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 - [ ] **ddk/CPU/TSC.cs** - Time Stamp Counter (x64)
 - [ ] **ddk/CPU/PerformanceCounters.cs** - PMC support
 - [ ] **ddk/CPU/DebugRegisters.cs** - Hardware breakpoints
-- [ ] **ddk/CPU/Topology.cs** - CPU topology detection
+- [x] ~~**ddk/CPU/Topology.cs**~~ - Done in AOT (use `Kernel_GetCpu*` exports)
 
 ### Phase 15: Advanced Features
 
@@ -362,6 +398,20 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 - [ ] **Driver hot-loading** - Load/unload at runtime
 - [ ] **SYSCALL/SYSRET** - User-mode transitions
 
+### Phase 16: NUMA Support (AOT with DDK Exports)
+
+**See: [`docs/NUMA_PLAN.md`](NUMA_PLAN.md) for detailed implementation plan.**
+
+NUMA will be implemented in AOT following the SMP pattern (ACPI parsing, PageAllocator
+integration, DDK exports). Summary of phases:
+
+- [ ] **Phase 1**: SRAT/SLIT structures in ACPI.cs
+- [ ] **Phase 2**: NumaTopology.cs module
+- [ ] **Phase 3**: Add NumaNode to CpuInfo
+- [ ] **Phase 4**: NUMA-aware PageAllocator
+- [ ] **Phase 5**: Per-CPU/Thread NUMA preference
+- [ ] **Phase 6**: DDK exports (NUMA.cs)
+
 ---
 
 ## Project Structure
@@ -369,13 +419,15 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 ```
 src/
 ├── kernel/                    # AOT compiled kernel (existing)
-│   ├── Exports/               # NEW: UnmanagedCallersOnly exports for JIT
-│   │   ├── PortIO.cs
-│   │   ├── MSR.cs
-│   │   ├── Memory.cs
-│   │   ├── Interrupts.cs
-│   │   ├── ACPI.cs
-│   │   └── Timer.cs
+│   ├── Exports/               # UnmanagedCallersOnly exports for JIT
+│   │   ├── CPU.cs             # ✅ Complete - CPU topology, affinity
+│   │   ├── PortIO.cs          # TODO - inb/outb/inw/outw/ind/outd
+│   │   ├── MSR.cs             # TODO - rdmsr/wrmsr
+│   │   ├── Memory.cs          # TODO - PageAllocator, PhysToVirt
+│   │   ├── Interrupts.cs      # TODO - RegisterHandler, SendEOI
+│   │   ├── ACPI.cs            # TODO - ACPI table access
+│   │   ├── Timer.cs           # TODO - HPET.GetTicks, APIC.SendEoi
+│   │   └── NUMA.cs            # Future - NUMA topology
 │   └── ... (existing code)
 │
 ├── korlib/                    # AOT compiled runtime (existing)
@@ -392,7 +444,7 @@ src/
 │   ├── Graphics/              # IFramebuffer, IDisplayDevice
 │   ├── Audio/                 # IAudioDevice
 │   ├── Serial/                # ISerialPort
-│   └── CPU/                   # TSC, PMC, Topology
+│   └── CPU/                   # TSC, PMC (Topology via Kernel exports)
 │
 └── drivers/                   # NEW: Driver assemblies (JIT)
     │
@@ -538,6 +590,45 @@ public static unsafe class Memory
     {
         physAddress = AllocatePage();
         return (void*)PhysToVirt(physAddress);
+    }
+}
+```
+
+### src/ddk/Kernel/CPU.cs (wraps kernel exports)
+```csharp
+namespace ProtonOS.DDK.Kernel;
+
+public static unsafe class CPU
+{
+    [DllImport("*", EntryPoint = "Kernel_GetCpuCount")]
+    public static extern int GetCpuCount();
+
+    [DllImport("*", EntryPoint = "Kernel_GetCurrentCpu")]
+    public static extern int GetCurrentCpu();
+
+    [DllImport("*", EntryPoint = "Kernel_GetCpuInfo")]
+    public static extern bool GetCpuInfo(int index, CpuInfo* info);
+
+    [DllImport("*", EntryPoint = "Kernel_SetThreadAffinity")]
+    public static extern ulong SetThreadAffinity(ulong mask);
+
+    [DllImport("*", EntryPoint = "Kernel_GetThreadAffinity")]
+    public static extern ulong GetThreadAffinity();
+
+    [DllImport("*", EntryPoint = "Kernel_IsCpuOnline")]
+    public static extern bool IsCpuOnline(int index);
+
+    [DllImport("*", EntryPoint = "Kernel_GetBspIndex")]
+    public static extern int GetBspIndex();
+
+    [DllImport("*", EntryPoint = "Kernel_GetSystemAffinityMask")]
+    public static extern ulong GetSystemAffinityMask();
+
+    // Convenience: Pin current thread to a specific CPU
+    public static void PinToCurrentCpu()
+    {
+        int cpu = GetCurrentCpu();
+        SetThreadAffinity(1UL << cpu);
     }
 }
 ```

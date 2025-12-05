@@ -13,21 +13,27 @@ namespace ProtonOS.Threading;
 /// <summary>
 /// Kernel thread scheduler - manages thread lifecycle and context switching.
 /// Thread structures are heap-allocated for unlimited thread count.
+/// Supports per-CPU queues with work stealing for SMP systems.
 /// </summary>
 public static unsafe class Scheduler
 {
     private const nuint DefaultStackSize = 64 * 1024;  // 64KB default stack
 
-    private static SpinLock _lock;
+    // Global lock for thread list and creation
+    private static SpinLock _globalLock;
 
-    private static Thread* _currentThread;        // Currently running thread
-    private static Thread* _readyQueueHead;       // Head of ready queue
-    private static Thread* _readyQueueTail;       // Tail of ready queue
+    // Legacy single-CPU mode (used before SMP init)
+    private static Thread* _bspCurrentThread;     // BSP's current thread (before SMP)
+    private static Thread* _bspReadyQueueHead;    // BSP ready queue head (before SMP)
+    private static Thread* _bspReadyQueueTail;    // BSP ready queue tail (before SMP)
+
+    // Global thread tracking
     private static Thread* _allThreadsHead;       // All threads (for iteration)
-    private static uint _nextThreadId;                  // Next thread ID to assign
-    private static int _threadCount;                    // Number of active threads
+    private static uint _nextThreadId;            // Next thread ID to assign
+    private static int _threadCount;              // Number of active threads
     private static bool _initialized;
     private static bool _schedulingEnabled;
+    private static bool _smpEnabled;              // Using per-CPU queues
 
     /// <summary>
     /// Whether the scheduler is initialized
@@ -40,9 +46,23 @@ public static unsafe class Scheduler
     public static bool IsSchedulingEnabled => _schedulingEnabled;
 
     /// <summary>
-    /// Current thread (null if none)
+    /// Whether SMP mode is active (using per-CPU queues)
     /// </summary>
-    public static Thread* CurrentThread => _currentThread;
+    public static bool IsSmpEnabled => _smpEnabled;
+
+    /// <summary>
+    /// Current thread (null if none)
+    /// Uses per-CPU state when SMP is enabled, otherwise global BSP thread.
+    /// </summary>
+    public static Thread* CurrentThread
+    {
+        get
+        {
+            if (_smpEnabled && PerCpu.IsInitialized)
+                return PerCpu.CurrentThread;
+            return _bspCurrentThread;
+        }
+    }
 
     /// <summary>
     /// Initialize the scheduler.
@@ -55,13 +75,14 @@ public static unsafe class Scheduler
 
         DebugConsole.WriteLine("[Sched] Initializing scheduler...");
 
-        _currentThread = null;
-        _readyQueueHead = null;
-        _readyQueueTail = null;
+        _bspCurrentThread = null;
+        _bspReadyQueueHead = null;
+        _bspReadyQueueTail = null;
         _allThreadsHead = null;
         _nextThreadId = 1;
         _threadCount = 0;
         _schedulingEnabled = false;
+        _smpEnabled = false;
 
         // Create thread 0 for the boot/idle thread (current execution context)
         // This thread doesn't need a separate stack - it uses the boot stack
@@ -75,6 +96,9 @@ public static unsafe class Scheduler
         bootThread->Id = _nextThreadId++;
         bootThread->State = ThreadState.Running;
         bootThread->Priority = ThreadPriority.Normal;
+        bootThread->CpuAffinity = 0;  // Can run on any CPU
+        bootThread->LastCpu = 0;
+        bootThread->PreferredCpu = 0;
         bootThread->Next = null;
         bootThread->Prev = null;
         bootThread->NextReady = null;
@@ -87,13 +111,90 @@ public static unsafe class Scheduler
         // Add to all-threads list
         _allThreadsHead = bootThread;
 
-        _currentThread = bootThread;
+        _bspCurrentThread = bootThread;
         _threadCount = 1;
 
         _initialized = true;
         DebugConsole.Write("[Sched] Initialized, boot thread ID: ");
         DebugConsole.WriteHex((ushort)bootThread->Id);
         DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Enable SMP mode - switch to per-CPU queues.
+    /// Called after SMP.Init() has set up per-CPU state.
+    /// </summary>
+    public static void EnableSmp()
+    {
+        if (!_initialized || _smpEnabled)
+            return;
+
+        // Move boot thread to BSP's per-CPU state
+        if (PerCpu.IsInitialized)
+        {
+            var perCpu = PerCpu.Current;
+            perCpu->CurrentThread = _bspCurrentThread;
+            perCpu->ReadyQueueHead = _bspReadyQueueHead;
+            perCpu->ReadyQueueTail = _bspReadyQueueTail;
+
+            // Count threads in ready queue
+            int count = 0;
+            for (var t = perCpu->ReadyQueueHead; t != null; t = t->NextReady)
+                count++;
+            perCpu->ReadyQueueCount = count;
+
+            _smpEnabled = true;
+            DebugConsole.WriteLine("[Sched] SMP mode enabled (per-CPU queues active)");
+        }
+    }
+
+    /// <summary>
+    /// Initialize scheduler on a secondary CPU (AP).
+    /// Creates idle thread for this CPU.
+    /// </summary>
+    public static void InitSecondaryCpu()
+    {
+        if (!_smpEnabled || !PerCpu.IsInitialized)
+            return;
+
+        var perCpu = PerCpu.Current;
+
+        // Create idle thread for this CPU
+        uint idleThreadId;
+        var idleThread = CreateIdleThread(out idleThreadId);
+        if (idleThread != null)
+        {
+            perCpu->IdleThread = idleThread;
+            perCpu->CurrentThread = idleThread;
+            idleThread->State = ThreadState.Running;
+            idleThread->LastCpu = perCpu->CpuIndex;
+        }
+    }
+
+    /// <summary>
+    /// Create an idle thread for a CPU.
+    /// </summary>
+    private static Thread* CreateIdleThread(out uint threadId)
+    {
+        return CreateThread(
+            (delegate* unmanaged<void*, uint>)&IdleThreadEntry,
+            null,
+            8192, // Small stack for idle thread
+            0,
+            out threadId);
+    }
+
+    /// <summary>
+    /// Idle thread entry point - runs when no other threads are ready.
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static uint IdleThreadEntry(void* param)
+    {
+        while (true)
+        {
+            // Halt until interrupt
+            CPU.Halt();
+        }
     }
 
     /// <summary>
@@ -139,13 +240,13 @@ public static unsafe class Scheduler
         if (stackSize == 0)
             stackSize = DefaultStackSize;
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         // Allocate thread structure
         var thread = (Thread*)HeapAllocator.AllocZeroed((ulong)sizeof(Thread));
         if (thread == null)
         {
-            _lock.Release();
+            _globalLock.Release();
             DebugConsole.WriteLine("[Sched] Failed to allocate thread structure!");
             return null;
         }
@@ -155,7 +256,7 @@ public static unsafe class Scheduler
         if (stackBase == 0)
         {
             HeapAllocator.Free(thread);
-            _lock.Release();
+            _globalLock.Release();
             DebugConsole.WriteLine("[Sched] Failed to allocate thread stack!");
             return null;
         }
@@ -182,6 +283,11 @@ public static unsafe class Scheduler
         thread->PrevReady = null;
         thread->WaitObject = null;
         thread->WaitResult = 0;
+
+        // SMP support - initialize affinity
+        thread->CpuAffinity = 0;  // Can run on any CPU
+        thread->LastCpu = _smpEnabled ? PerCpu.CpuIndex : 0;
+        thread->PreferredCpu = thread->LastCpu;
 
         // Set up initial context
         thread->Context = default;
@@ -212,7 +318,7 @@ public static unsafe class Scheduler
             AddToReadyQueue(thread);
         }
 
-        _lock.Release();
+        _globalLock.Release();
 
         DebugConsole.Write("[Sched] Created thread ");
         DebugConsole.WriteHex((ushort)threadId);
@@ -230,7 +336,7 @@ public static unsafe class Scheduler
     [UnmanagedCallersOnly]
     private static void ThreadEntryWrapper()
     {
-        var thread = _currentThread;
+        var thread = CurrentThread;
         if (thread == null)
         {
             CPU.HaltForever();
@@ -253,12 +359,12 @@ public static unsafe class Scheduler
     /// </summary>
     public static void ExitThread(uint exitCode)
     {
-        _lock.Acquire();
+        _globalLock.Acquire();
 
-        var thread = _currentThread;
+        var thread = CurrentThread;
         if (thread == null)
         {
-            _lock.Release();
+            _globalLock.Release();
             CPU.HaltForever();
             return;
         }
@@ -277,7 +383,7 @@ public static unsafe class Scheduler
         // TODO: Free thread structure (need to defer until after context switch)
 
         _threadCount--;
-        _lock.Release();
+        _globalLock.Release();
 
         // Schedule another thread
         Schedule();
@@ -317,7 +423,7 @@ public static unsafe class Scheduler
         if (!_initialized)
             return 0;
 
-        var thread = _currentThread;
+        var thread = CurrentThread;
         if (thread == null)
             return 0;
 
@@ -335,7 +441,7 @@ public static unsafe class Scheduler
             return 0;
         }
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         // Calculate wake time
         thread->WakeTime = APIC.TickCount + milliseconds;  // 1ms per tick
@@ -343,16 +449,16 @@ public static unsafe class Scheduler
         thread->Alertable = alertable;
         thread->WaitResult = 0;  // Will be set to IoCompletion if woken by APC
 
-        _lock.Release();
+        _globalLock.Release();
 
         Schedule();
 
         // We've been woken up - check why
-        _lock.Acquire();
+        _globalLock.Acquire();
         thread->Alertable = false;
         uint result = thread->WaitResult;
         thread->WaitResult = 0;
-        _lock.Release();
+        _globalLock.Release();
 
         // If woken by APC, deliver all pending APCs
         if (result == WaitResult.IoCompletion)
@@ -365,39 +471,88 @@ public static unsafe class Scheduler
 
     /// <summary>
     /// Add a thread to the ready queue.
-    /// Caller must hold the lock.
+    /// Uses per-CPU queue when SMP is enabled, otherwise BSP queue.
     /// </summary>
     private static void AddToReadyQueue(Thread* thread)
     {
         thread->NextReady = null;
-        thread->PrevReady = _readyQueueTail;
 
-        if (_readyQueueTail != null)
+        if (_smpEnabled && PerCpu.IsInitialized)
         {
-            _readyQueueTail->NextReady = thread;
+            // SMP mode: Add to current CPU's queue (or preferred CPU)
+            var perCpu = PerCpu.Current;
+            perCpu->SchedulerLock.Acquire();
+
+            thread->PrevReady = perCpu->ReadyQueueTail;
+
+            if (perCpu->ReadyQueueTail != null)
+            {
+                perCpu->ReadyQueueTail->NextReady = thread;
+            }
+            else
+            {
+                perCpu->ReadyQueueHead = thread;
+            }
+            perCpu->ReadyQueueTail = thread;
+            perCpu->ReadyQueueCount++;
+
+            perCpu->SchedulerLock.Release();
         }
         else
         {
-            _readyQueueHead = thread;
+            // BSP-only mode
+            thread->PrevReady = _bspReadyQueueTail;
+
+            if (_bspReadyQueueTail != null)
+            {
+                _bspReadyQueueTail->NextReady = thread;
+            }
+            else
+            {
+                _bspReadyQueueHead = thread;
+            }
+            _bspReadyQueueTail = thread;
         }
-        _readyQueueTail = thread;
     }
 
     /// <summary>
-    /// Remove a thread from the ready queue.
-    /// Caller must hold the lock.
+    /// Remove a thread from its current ready queue.
+    /// Handles both SMP and non-SMP modes.
     /// </summary>
     private static void RemoveFromReadyQueue(Thread* thread)
     {
-        if (thread->PrevReady != null)
-            thread->PrevReady->NextReady = thread->NextReady;
-        else
-            _readyQueueHead = thread->NextReady;
+        if (_smpEnabled && PerCpu.IsInitialized)
+        {
+            // SMP mode: Remove from per-CPU queue
+            var perCpu = PerCpu.Current;
+            perCpu->SchedulerLock.Acquire();
 
-        if (thread->NextReady != null)
-            thread->NextReady->PrevReady = thread->PrevReady;
+            if (thread->PrevReady != null)
+                thread->PrevReady->NextReady = thread->NextReady;
+            else
+                perCpu->ReadyQueueHead = thread->NextReady;
+
+            if (thread->NextReady != null)
+                thread->NextReady->PrevReady = thread->PrevReady;
+            else
+                perCpu->ReadyQueueTail = thread->PrevReady;
+
+            perCpu->ReadyQueueCount--;
+            perCpu->SchedulerLock.Release();
+        }
         else
-            _readyQueueTail = thread->PrevReady;
+        {
+            // BSP-only mode
+            if (thread->PrevReady != null)
+                thread->PrevReady->NextReady = thread->NextReady;
+            else
+                _bspReadyQueueHead = thread->NextReady;
+
+            if (thread->NextReady != null)
+                thread->NextReady->PrevReady = thread->PrevReady;
+            else
+                _bspReadyQueueTail = thread->PrevReady;
+        }
 
         thread->NextReady = null;
         thread->PrevReady = null;
@@ -447,9 +602,24 @@ public static unsafe class Scheduler
         if (!_initialized)
             return;
 
-        _lock.Acquire();
+        if (_smpEnabled && PerCpu.IsInitialized)
+        {
+            ScheduleSmp();
+        }
+        else
+        {
+            ScheduleBsp();
+        }
+    }
 
-        var current = _currentThread;
+    /// <summary>
+    /// Schedule for BSP-only mode (before SMP init)
+    /// </summary>
+    private static void ScheduleBsp()
+    {
+        _globalLock.Acquire();
+
+        var current = _bspCurrentThread;
 
         // Wake up any sleeping threads whose time has come
         ulong now = APIC.TickCount;
@@ -473,7 +643,7 @@ public static unsafe class Scheduler
         }
 
         // Pick next thread from ready queue
-        var next = _readyQueueHead;
+        var next = _bspReadyQueueHead;
         if (next == null)
         {
             // No ready threads - continue with current or idle
@@ -481,11 +651,11 @@ public static unsafe class Scheduler
             {
                 RemoveFromReadyQueue(current);
                 current->State = ThreadState.Running;
-                _lock.Release();
+                _globalLock.Release();
                 return;
             }
             // No runnable threads at all - this shouldn't happen
-            _lock.Release();
+            _globalLock.Release();
             return;
         }
 
@@ -497,41 +667,212 @@ public static unsafe class Scheduler
         if (next != current)
         {
             var oldThread = current;
-            _currentThread = next;
+            _bspCurrentThread = next;
 
-            _lock.Release();
+            _globalLock.Release();
 
             // Perform context switch with FPU/SSE/AVX state
             if (oldThread != null)
             {
-                // Save extended state of old thread
                 if (oldThread->ExtendedState != null)
-                {
                     CPU.SaveExtendedState(oldThread->ExtendedState);
-                }
 
-                // Restore extended state of new thread
                 if (next->ExtendedState != null)
-                {
                     CPU.RestoreExtendedState(next->ExtendedState);
-                }
 
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
             else
             {
-                // First switch - restore extended state and load new context
                 if (next->ExtendedState != null)
-                {
                     CPU.RestoreExtendedState(next->ExtendedState);
-                }
                 CPU.LoadContext(&next->Context);
             }
         }
         else
         {
-            _lock.Release();
+            _globalLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Schedule for SMP mode (per-CPU queues with work stealing)
+    /// </summary>
+    private static void ScheduleSmp()
+    {
+        var perCpu = PerCpu.Current;
+        perCpu->SchedulerLock.Acquire();
+
+        var current = perCpu->CurrentThread;
+
+        // Wake up any sleeping threads whose time has come (check global list)
+        _globalLock.Acquire();
+        ulong now = APIC.TickCount;
+        for (var t = _allThreadsHead; t != null; t = t->NextAll)
+        {
+            if (t->State == ThreadState.Blocked &&
+                t->WakeTime > 0 &&
+                t->WakeTime <= now)
+            {
+                t->WakeTime = 0;
+                t->State = ThreadState.Ready;
+                // Add to appropriate CPU's queue (prefer last CPU for cache)
+                // For now, add to current CPU's queue
+                t->PrevReady = perCpu->ReadyQueueTail;
+                t->NextReady = null;
+                if (perCpu->ReadyQueueTail != null)
+                    perCpu->ReadyQueueTail->NextReady = t;
+                else
+                    perCpu->ReadyQueueHead = t;
+                perCpu->ReadyQueueTail = t;
+                perCpu->ReadyQueueCount++;
+            }
+        }
+        _globalLock.Release();
+
+        // If current thread is still running, move it to ready queue
+        if (current != null && current->State == ThreadState.Running)
+        {
+            current->State = ThreadState.Ready;
+            current->PrevReady = perCpu->ReadyQueueTail;
+            current->NextReady = null;
+            if (perCpu->ReadyQueueTail != null)
+                perCpu->ReadyQueueTail->NextReady = current;
+            else
+                perCpu->ReadyQueueHead = current;
+            perCpu->ReadyQueueTail = current;
+            perCpu->ReadyQueueCount++;
+        }
+
+        // Pick next thread from local ready queue
+        var next = perCpu->ReadyQueueHead;
+
+        // Try work stealing if local queue is empty
+        if (next == null)
+        {
+            next = StealWork(perCpu);
+        }
+
+        // Fall back to idle thread
+        if (next == null)
+        {
+            next = perCpu->IdleThread;
+            if (next == null)
+            {
+                // No idle thread yet - continue with current
+                if (current != null && current->State == ThreadState.Ready)
+                {
+                    // Remove from queue and continue
+                    perCpu->ReadyQueueHead = current->NextReady;
+                    if (perCpu->ReadyQueueHead == null)
+                        perCpu->ReadyQueueTail = null;
+                    else
+                        perCpu->ReadyQueueHead->PrevReady = null;
+                    perCpu->ReadyQueueCount--;
+                    current->NextReady = null;
+                    current->PrevReady = null;
+                    current->State = ThreadState.Running;
+                }
+                perCpu->SchedulerLock.Release();
+                return;
+            }
+        }
+        else
+        {
+            // Remove from local queue
+            perCpu->ReadyQueueHead = next->NextReady;
+            if (perCpu->ReadyQueueHead == null)
+                perCpu->ReadyQueueTail = null;
+            else
+                perCpu->ReadyQueueHead->PrevReady = null;
+            perCpu->ReadyQueueCount--;
+            next->NextReady = null;
+            next->PrevReady = null;
+        }
+
+        next->State = ThreadState.Running;
+        next->LastCpu = perCpu->CpuIndex;
+
+        // Context switch if different thread
+        if (next != current)
+        {
+            var oldThread = current;
+            perCpu->CurrentThread = next;
+
+            PerCpu.IncrementContextSwitchCount();
+            perCpu->SchedulerLock.Release();
+
+            // Perform context switch with FPU/SSE/AVX state
+            if (oldThread != null)
+            {
+                if (oldThread->ExtendedState != null)
+                    CPU.SaveExtendedState(oldThread->ExtendedState);
+
+                if (next->ExtendedState != null)
+                    CPU.RestoreExtendedState(next->ExtendedState);
+
+                CPU.SwitchContext(&oldThread->Context, &next->Context);
+            }
+            else
+            {
+                if (next->ExtendedState != null)
+                    CPU.RestoreExtendedState(next->ExtendedState);
+                CPU.LoadContext(&next->Context);
+            }
+        }
+        else
+        {
+            perCpu->SchedulerLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Try to steal work from another CPU's queue
+    /// </summary>
+    private static Thread* StealWork(PerCpuState* thisCpu)
+    {
+        int cpuCount = PerCpu.CpuCount;
+        if (cpuCount <= 1)
+            return null;
+
+        // Round-robin through other CPUs
+        for (int i = 1; i < cpuCount; i++)
+        {
+            int targetIndex = ((int)thisCpu->CpuIndex + i) % cpuCount;
+            var targetCpu = PerCpu.GetCpu(targetIndex);
+            if (targetCpu == null)
+                continue;
+
+            // Try to acquire target's lock
+            if (!targetCpu->SchedulerLock.TryAcquire())
+                continue;
+
+            // Steal from tail (opposite end from local dequeue)
+            var stolen = targetCpu->ReadyQueueTail;
+            if (stolen != null)
+            {
+                // Remove from target queue
+                if (stolen->PrevReady != null)
+                    stolen->PrevReady->NextReady = null;
+                else
+                    targetCpu->ReadyQueueHead = null;
+                targetCpu->ReadyQueueTail = stolen->PrevReady;
+                targetCpu->ReadyQueueCount--;
+                targetCpu->WorkStolenCount++;
+
+                stolen->NextReady = null;
+                stolen->PrevReady = null;
+
+                targetCpu->SchedulerLock.Release();
+
+                thisCpu->WorkStealCount++;
+                return stolen;
+            }
+
+            targetCpu->SchedulerLock.Release();
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -559,19 +900,26 @@ public static unsafe class Scheduler
         if (thread == null)
             return;
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         if (thread->State == ThreadState.Ready)
         {
             // Already in ready queue
-            _lock.Release();
+            _globalLock.Release();
             return;
         }
 
         thread->State = ThreadState.Ready;
         AddToReadyQueue(thread);
 
-        _lock.Release();
+        // In SMP mode, send IPI to wake target CPU if it's idle
+        if (_smpEnabled && PerCpu.IsInitialized)
+        {
+            // Could send reschedule IPI here if thread has affinity to another CPU
+            // For now, we just add to local queue - work stealing handles load balancing
+        }
+
+        _globalLock.Release();
     }
 
     /// <summary>
@@ -584,9 +932,10 @@ public static unsafe class Scheduler
     /// </summary>
     public static uint GetCurrentThreadId()
     {
-        if (!_initialized || _currentThread == null)
+        var thread = CurrentThread;
+        if (!_initialized || thread == null)
             return 0;
-        return _currentThread->Id;
+        return thread->Id;
     }
 
     /// <summary>
@@ -610,12 +959,12 @@ public static unsafe class Scheduler
         apc->Parameter = parameter;
         apc->Next = null;
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         // Can't queue to terminated threads
         if (thread->State == ThreadState.Terminated)
         {
-            _lock.Release();
+            _globalLock.Release();
             HeapAllocator.Free(apc);
             return false;
         }
@@ -640,7 +989,7 @@ public static unsafe class Scheduler
             AddToReadyQueue(thread);
         }
 
-        _lock.Release();
+        _globalLock.Release();
         return true;
     }
 
@@ -661,21 +1010,21 @@ public static unsafe class Scheduler
     /// </summary>
     public static int DeliverApcs()
     {
-        if (!_initialized || _currentThread == null)
+        var thread = CurrentThread;
+        if (!_initialized || thread == null)
             return 0;
 
         int count = 0;
-        var thread = _currentThread;
 
         // Process APCs until queue is empty
         while (true)
         {
-            _lock.Acquire();
+            _globalLock.Acquire();
 
             var apc = thread->APCQueueHead;
             if (apc == null)
             {
-                _lock.Release();
+                _globalLock.Release();
                 break;
             }
 
@@ -690,7 +1039,7 @@ public static unsafe class Scheduler
             var function = apc->Function;
             var parameter = apc->Parameter;
 
-            _lock.Release();
+            _globalLock.Release();
 
             // Free the APC entry
             HeapAllocator.Free(apc);
@@ -708,14 +1057,19 @@ public static unsafe class Scheduler
 
     /// <summary>
     /// Get the head of the all-threads list for enumeration.
-    /// Caller should acquire SchedulerLock before iterating.
+    /// Caller should acquire GlobalLock before iterating.
     /// </summary>
     public static Thread* AllThreadsHead => _allThreadsHead;
 
     /// <summary>
-    /// Get the scheduler lock for safe thread enumeration.
+    /// Get the global scheduler lock for safe thread enumeration.
     /// </summary>
-    public static ref SpinLock SchedulerLock => ref _lock;
+    public static ref SpinLock GlobalLock => ref _globalLock;
+
+    /// <summary>
+    /// Get the global scheduler lock (legacy name for compatibility).
+    /// </summary>
+    public static ref SpinLock SchedulerLock => ref _globalLock;
 
     /// <summary>
     /// Suspend a thread.
@@ -728,12 +1082,12 @@ public static unsafe class Scheduler
         if (thread == null || !_initialized)
             return -1;
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         // Can't suspend terminated threads
         if (thread->State == ThreadState.Terminated)
         {
-            _lock.Release();
+            _globalLock.Release();
             return -1;
         }
 
@@ -751,15 +1105,15 @@ public static unsafe class Scheduler
             thread->State = ThreadState.Suspended;
 
             // If suspending the current thread, need to reschedule
-            if (thread == _currentThread)
+            if (thread == CurrentThread)
             {
-                _lock.Release();
+                _globalLock.Release();
                 Schedule();
                 return previousCount;
             }
         }
 
-        _lock.Release();
+        _globalLock.Release();
         return previousCount;
     }
 
@@ -774,19 +1128,19 @@ public static unsafe class Scheduler
         if (thread == null || !_initialized)
             return -1;
 
-        _lock.Acquire();
+        _globalLock.Acquire();
 
         // Can't resume terminated threads
         if (thread->State == ThreadState.Terminated)
         {
-            _lock.Release();
+            _globalLock.Release();
             return -1;
         }
 
         // Can't resume if not suspended
         if (thread->SuspendCount == 0)
         {
-            _lock.Release();
+            _globalLock.Release();
             return 0;  // Already not suspended
         }
 
@@ -800,7 +1154,7 @@ public static unsafe class Scheduler
             AddToReadyQueue(thread);
         }
 
-        _lock.Release();
+        _globalLock.Release();
         return previousCount;
     }
 }
