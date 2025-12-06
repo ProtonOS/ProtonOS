@@ -10,9 +10,11 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 - **UEFI Boot** - Native UEFI application, no legacy BIOS
 - **Custom Runtime (korlib)** - Minimal .NET runtime library forked from bflat's zerolib
-- **Mark-Sweep GC** - Full garbage collector with precise stack scanning
+- **Compacting GC** - Mark-sweep with Lisp-2 compaction, Large Object Heap (LOH)
 - **Exception Handling** - Complete try/catch/throw support
-- **Preemptive Scheduler** - Multi-threaded with APIC timer
+- **SMP Support** - Multi-processor boot with per-CPU scheduling
+- **NUMA Awareness** - Topology detection and NUMA-aware memory allocation
+- **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues
 - **Virtual Memory** - 4-level paging with higher-half kernel
 - **Tier 0 JIT** - Load and execute .NET assemblies at runtime
 
@@ -25,12 +27,16 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | Physical/virtual memory management | Complete |
 | Kernel heap allocator | Complete |
 | APIC timer, HPET, RTC | Complete |
-| Preemptive threading | Complete |
-| Mark-sweep garbage collector | Complete |
+| SMP boot (multi-processor) | Complete |
+| NUMA topology detection | Complete |
+| Preemptive threading (per-CPU queues) | Complete |
+| Compacting GC with LOH | Complete |
 | Exception handling (try/catch/throw) | Complete |
 | Tier 0 JIT compiler | Complete |
 | PE/Metadata reader | Complete |
-| Assembly loading and execution | In Progress |
+| Assembly loading and execution | Complete |
+| Reflection API | Complete |
+| Driver Development Kit (DDK) | In Progress |
 
 ## Building
 
@@ -67,16 +73,17 @@ build/x64/
 src/
 ├── korlib/              # Kernel runtime library (from bflat zerolib)
 │   ├── Internal/        # Runtime internals, startup
-│   └── System/          # Core types (Object, String, Span, etc.)
-└── kernel/              # Kernel implementation
-    ├── Kernel.cs        # Entry point
-    ├── Jit/             # JIT compiler
-    ├── Memory/          # Heap, page allocator, GC
-    ├── PAL/             # Platform Abstraction Layer
-    ├── Platform/        # UEFI, ACPI, console
-    ├── Runtime/         # PE loader, metadata reader
-    ├── Threading/       # Scheduler, threads
-    └── x64/             # x64-specific (GDT, IDT, APIC, assembly)
+│   └── System/          # Core types (Object, String, Array, Reflection, etc.)
+├── kernel/              # Kernel implementation
+│   ├── Kernel.cs        # Entry point
+│   ├── Exports/         # DDK and reflection exports for JIT code
+│   ├── Memory/          # Heap, page allocator, GC, compaction
+│   ├── PAL/             # Platform Abstraction Layer (Win32-style APIs)
+│   ├── Platform/        # UEFI, ACPI, NUMA, CPU topology
+│   ├── Runtime/         # PE loader, metadata reader, JIT compiler
+│   ├── Threading/       # Scheduler, threads, per-CPU state
+│   └── x64/             # x64-specific (GDT, IDT, APIC, SMP, assembly)
+└── FullTest/            # JIT test assembly (runs on boot)
 ```
 
 ## How It Works
