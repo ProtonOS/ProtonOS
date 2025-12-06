@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>ProtonOS.DDK</AssemblyName>
+    <RootNamespace>ProtonOS.DDK</RootNamespace>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Note: DDK compiles against standard .NET BCL for convenience.
+       At runtime, the kernel JIT resolves all types from korlib. -->
+
+</Project>

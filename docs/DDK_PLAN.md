@@ -2,7 +2,7 @@
 
 ## Status
 
-**Last Updated**: December 2024
+**Last Updated**: December 2025
 
 ### Completed AOT Work
 
@@ -260,22 +260,23 @@ Everything else - which is most of the work:
 
 ### Phase 0: Infrastructure
 
-- [ ] **src/kernel/Exports/PortIO.cs** - Export inb/outb/inw/outw/ind/outd
-- [ ] **src/kernel/Exports/MSR.cs** - Export rdmsr/wrmsr
-- [ ] **src/kernel/Exports/Memory.cs** - Export PageAllocator, PhysToVirt
-- [ ] **src/kernel/Exports/Interrupts.cs** - Export RegisterHandler, SendEOI
-- [ ] **src/kernel/Exports/ACPI.cs** - Export ACPI table access
-- [ ] **src/kernel/Exports/Timer.cs** - Export HPET.GetTicks, APIC.SendEoi
+- [x] **src/kernel/Exports/PortIO.cs** - Export inb/outb/inw/outw/ind/outd ✅ Complete
+- [x] **src/kernel/Exports/MSR.cs** - Export rdmsr/wrmsr ✅ Complete
+- [x] **src/kernel/Exports/Memory.cs** - Export PageAllocator, PhysToVirt ✅ Complete
+- [x] **src/kernel/Exports/Interrupts.cs** - Export RegisterHandler, SendEOI ✅ Complete
+- [x] **src/kernel/Exports/ACPI.cs** - Export ACPI table access ✅ Complete
+- [x] **src/kernel/Exports/Timer.cs** - Export HPET.GetTicks, APIC.SendEoi ✅ Complete
 - [x] **src/kernel/Exports/CPU.cs** - Export CPU topology/affinity ✅ Complete
-- [ ] **src/ddk/DDK.csproj** - Create DDK project (ProtonOS.DDK namespace)
-- [ ] **src/ddk/Kernel/*.cs** - DllImport wrappers for kernel exports
-- [ ] **Build integration** - Update build.sh to compile DDK + drivers
+- [x] **src/ddk/DDK.csproj** - Create DDK project (ProtonOS.DDK namespace) ✅ Complete
+- [x] **src/ddk/Kernel/*.cs** - DllImport wrappers for kernel exports ✅ Complete
+- [x] **Build integration** - Update Makefile to compile DDK ✅ Complete
 
 ### Phase 1: Core Platform (in DDK, JIT)
 
 - [x] ~~**ddk/Platform/IOAPIC.cs**~~ - Done in AOT (`src/kernel/x64/IOAPIC.cs`)
-- [ ] **ddk/Platform/DMA.cs** - DMA buffer allocation helpers
-- [ ] **drivers/platform/pci/** - PCI enumeration (ECAM=MMIO, legacy=x64 port I/O shim)
+- [x] **ddk/Platform/DMA.cs** - DMA buffer allocation helpers ✅ Complete
+- [x] **ddk/Platform/PCI.cs** - PCI config space access (ECAM + legacy) ✅ Complete
+- [x] **ddk/Platform/PCIEnumerator.cs** - PCI bus enumeration ✅ Complete
 
 **Note**: I/O APIC is now in AOT kernel as part of SMP implementation. PCI enumeration
 remains a DDK/driver task (loaded early during bootstrap). ECAM is pure MMIO, legacy
@@ -283,17 +284,20 @@ config space access on x64 uses port I/O which requires a small arch shim.
 
 ### Phase 2: Driver Model (in DDK, JIT)
 
-- [ ] **ddk/Drivers/IDriver.cs** - Base driver interface
-- [ ] **ddk/Drivers/DriverManager.cs** - Registration, PCI binding
-- [ ] **ddk/Drivers/DriverAttribute.cs** - PCI vendor/device matching
+- [x] **ddk/Drivers/IDriver.cs** - Base driver interface ✅ Complete
+- [x] **ddk/Drivers/DriverManager.cs** - Registration, PCI binding ✅ Complete
+- [x] **ddk/Drivers/DriverAttribute.cs** - PCI vendor/device matching ✅ Complete
+- [x] **ddk/Drivers/DriverType.cs** - Driver type enumerations ✅ Complete
+- [x] **ddk/Drivers/PciDeviceInfo.cs** - PCI device info structures ✅ Complete
+- [x] **ddk/DDKInit.cs** - DDK entry point and initialization ✅ Complete
 
 ### Phase 3: Bootstrap Storage & Filesystem
 
 These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
-- [ ] **ddk/Storage/IBlockDevice.cs** - Block device interface
-- [ ] **ddk/Storage/IFileSystem.cs** - Filesystem interface
-- [ ] **ddk/Storage/VFS.cs** - Virtual filesystem / mount management
+- [x] **ddk/Storage/IBlockDevice.cs** - Block device interface ✅ Complete
+- [x] **ddk/Storage/IFileSystem.cs** - Filesystem interface ✅ Complete
+- [x] **ddk/Storage/VFS.cs** - Virtual filesystem / mount management ✅ Complete
 - [ ] **drivers/shared/storage/virtio-blk/** - Virtio block driver (QEMU)
 - [ ] **drivers/shared/storage/ahci/** - AHCI/SATA driver
 - [ ] **drivers/shared/storage/nvme/** - NVMe driver
@@ -302,7 +306,7 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
 ### Phase 4: Network Stack (in DDK, JIT)
 
-- [ ] **ddk/Network/INetworkDevice.cs** - Network device interface
+- [x] **ddk/Network/INetworkDevice.cs** - Network device interface ✅ Complete
 - [ ] **ddk/Network/Stack/Ethernet.cs** - L2 frame parsing
 - [ ] **ddk/Network/Stack/ARP.cs** - Address resolution
 - [ ] **ddk/Network/Stack/IPv4.cs** - L3 packet routing
@@ -318,9 +322,9 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
 ### Phase 6: USB Core (in DDK, JIT)
 
-- [ ] **ddk/USB/IUSBHostController.cs** - Host controller interface
-- [ ] **ddk/USB/USBDevice.cs** - USB device model
-- [ ] **ddk/USB/USBDescriptors.cs** - Descriptor structures
+- [x] **ddk/USB/IUSBHostController.cs** - Host controller interface ✅ Complete
+- [x] **ddk/USB/USBTypes.cs** - USB types and descriptors ✅ Complete
+- [x] **ddk/USB/USBManager.cs** - USB device enumeration ✅ Complete
 - [ ] **ddk/USB/USBHub.cs** - Hub driver support
 
 ### Phase 7: USB Host Controllers (Shared)
@@ -340,8 +344,9 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
 ### Phase 9: Input (Mixed)
 
-- [ ] **ddk/Input/IInputDevice.cs** - Input device interface
-- [ ] **ddk/Input/InputManager.cs** - Event queue management
+- [x] **ddk/Input/IInputDevice.cs** - Input device interface ✅ Complete
+- [x] **ddk/Input/InputTypes.cs** - Input event types and scan codes ✅ Complete
+- [x] **ddk/Input/InputManager.cs** - Event queue management ✅ Complete
 - [ ] **drivers/x64/PS2/** - PS/2 keyboard/mouse (x64-specific, port I/O)
 - [ ] **USB HID integration** - Route to input system (shared)
 
@@ -350,22 +355,22 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
 ### Phase 10: Serial/Debug (Mixed)
 
-- [ ] **ddk/Serial/ISerialPort.cs** - Serial port interface
+- [x] **ddk/Serial/ISerialPort.cs** - Serial port interface ✅ Complete
 - [ ] **drivers/shared/serial/uart/** - UART 16550 driver (shared with arch shims)
 - [ ] **Kernel.log** - Serial backend, filesystem later
 
 ### Phase 11: Graphics (Shared)
 
-- [ ] **ddk/Graphics/IFramebuffer.cs** - Framebuffer interface
-- [ ] **ddk/Graphics/IDisplayDevice.cs** - Display device interface
-- [ ] **ddk/Graphics/DisplayManager.cs** - Multi-monitor support
+- [x] **ddk/Graphics/IFramebuffer.cs** - Framebuffer interface ✅ Complete
+- [x] **ddk/Graphics/IDisplayDevice.cs** - Display device interface ✅ Complete
+- [x] **ddk/Graphics/DisplayManager.cs** - Multi-monitor support ✅ Complete (in IDisplayDevice.cs)
 - [ ] **UEFI GOP wrapper** - Basic framebuffer from UEFI
 - [ ] **drivers/shared/graphics/virtio-gpu/** - Virtio GPU (QEMU)
 - [ ] **GPU command interface** - Abstract command buffer model
 
 ### Phase 12: Audio (Shared)
 
-- [ ] **ddk/Audio/IAudioDevice.cs** - Audio device interface
+- [x] **ddk/Audio/IAudioDevice.cs** - Audio device interface ✅ Complete
 - [ ] **drivers/shared/audio/hda/** - Intel HD Audio
 - [ ] **USB Audio integration** - Via USB class driver
 
@@ -420,14 +425,15 @@ integration, DDK exports). Summary of phases:
 src/
 ├── kernel/                    # AOT compiled kernel (existing)
 │   ├── Exports/               # UnmanagedCallersOnly exports for JIT
-│   │   ├── CPU.cs             # ✅ Complete - CPU topology, affinity
-│   │   ├── PortIO.cs          # TODO - inb/outb/inw/outw/ind/outd
-│   │   ├── MSR.cs             # TODO - rdmsr/wrmsr
-│   │   ├── Memory.cs          # TODO - PageAllocator, PhysToVirt
-│   │   ├── Interrupts.cs      # TODO - RegisterHandler, SendEOI
-│   │   ├── ACPI.cs            # TODO - ACPI table access
-│   │   ├── Timer.cs           # TODO - HPET.GetTicks, APIC.SendEoi
-│   │   └── NUMA.cs            # Future - NUMA topology
+│   │   └── DDK/               # DDK kernel exports (all ✅ Complete)
+│   │       ├── CPU.cs         # CPU topology, affinity
+│   │       ├── NUMA.cs        # NUMA topology
+│   │       ├── PortIO.cs      # inb/outb/inw/outw/ind/outd
+│   │       ├── MSR.cs         # rdmsr/wrmsr
+│   │       ├── Memory.cs      # PageAllocator, PhysToVirt
+│   │       ├── Interrupts.cs  # RegisterHandler, SendEOI
+│   │       ├── ACPI.cs        # ACPI table access
+│   │       └── Timer.cs       # HPET.GetTicks, APIC.SendEoi
 │   └── ... (existing code)
 │
 ├── korlib/                    # AOT compiled runtime (existing)

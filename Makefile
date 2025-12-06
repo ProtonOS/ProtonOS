@@ -65,8 +65,12 @@ TEST_DLL := $(BUILD_DIR)/FullTest.dll
 # System.Runtime assembly (JIT library)
 SYSTEM_RUNTIME_DLL := $(BUILD_DIR)/System.Runtime.dll
 
+# DDK assembly (JIT library)
+DDK_DIR := src/ddk
+DDK_DLL := $(BUILD_DIR)/ProtonOS.DDK.dll
+
 # Targets
-.PHONY: all clean native kernel test systemruntime image run
+.PHONY: all clean native kernel test systemruntime ddk image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -103,6 +107,14 @@ $(SYSTEM_RUNTIME_DLL): $(SYSTEMRUNTIME_SRC) $(SYSTEMRUNTIME_DIR)/System.Runtime.
 
 systemruntime: $(SYSTEM_RUNTIME_DLL)
 
+# Build DDK library (JIT-compiled at runtime)
+DDK_SRC := $(call rwildcard,$(DDK_DIR),*.cs)
+$(DDK_DLL): $(DDK_SRC) $(DDK_DIR)/DDK.csproj $(SYSTEM_RUNTIME_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.DDK"
+	dotnet build $(DDK_DIR)/DDK.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+ddk: $(DDK_DLL)
+
 # Link UEFI executable
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
@@ -110,7 +122,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL) $(DDK_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -119,6 +131,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL)
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(SYSTEM_RUNTIME_DLL) ::/System.Runtime.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

@@ -21,10 +21,13 @@ public static unsafe class Kernel
     private static ulong _testAssemblySize;
     private static byte* _systemRuntimeBytes;
     private static ulong _systemRuntimeSize;
+    private static byte* _ddkBytes;
+    private static ulong _ddkSize;
 
     // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
     private static uint _systemRuntimeId;
+    private static uint _ddkId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -175,6 +178,18 @@ public static unsafe class Kernel
             }
         }
 
+        // Register ProtonOS.DDK.dll (depends on System.Runtime)
+        if (_ddkBytes != null)
+        {
+            _ddkId = AssemblyLoader.Load(_ddkBytes, _ddkSize);
+            if (_ddkId != AssemblyLoader.InvalidAssemblyId)
+            {
+                DebugConsole.Write("[Kernel] ProtonOS.DDK registered with ID ");
+                DebugConsole.WriteDecimal(_ddkId);
+                DebugConsole.WriteLine();
+            }
+        }
+
         // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
         if (_testAssemblyBytes != null)
         {
@@ -235,7 +250,7 @@ public static unsafe class Kernel
     {
         DebugConsole.WriteLine("[Kernel] Loading assemblies from UEFI FS...");
 
-        // Load System.Runtime.dll first (dependency for FullTest)
+        // Load System.Runtime.dll first (dependency for all assemblies)
         _systemRuntimeBytes = UEFIFS.ReadFileAscii("\\System.Runtime.dll", out _systemRuntimeSize);
         if (_systemRuntimeBytes != null)
         {
@@ -246,6 +261,19 @@ public static unsafe class Kernel
         else
         {
             DebugConsole.WriteLine("[Kernel] System.Runtime.dll not found (optional)");
+        }
+
+        // Load ProtonOS.DDK.dll (Driver Development Kit)
+        _ddkBytes = UEFIFS.ReadFileAscii("\\ProtonOS.DDK.dll", out _ddkSize);
+        if (_ddkBytes != null)
+        {
+            DebugConsole.Write("[Kernel] ProtonOS.DDK.dll loaded, size ");
+            DebugConsole.WriteHex(_ddkSize);
+            DebugConsole.WriteLine();
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Kernel] ProtonOS.DDK.dll not found (optional)");
         }
 
         // Load FullTest.dll
