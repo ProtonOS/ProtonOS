@@ -65,8 +65,8 @@ public static class ObjectHeaderFlags
     /// <summary>Free block flag - block is in the free list, not a live object.</summary>
     public const ulong FreeBlock = 1UL << 2;
 
-    /// <summary>Reserved for future use (bit 3).</summary>
-    public const ulong Reserved3 = 1UL << 3;
+    /// <summary>HasForwardingPointer - object has been moved, forwarding address stored.</summary>
+    public const ulong HasForwardingPointer = 1UL << 3;
 
     /// <summary>Generation bit 0 - low bit of 2-bit generation field (bits 4-5).</summary>
     public const ulong Generation0 = 1UL << 4;
@@ -80,11 +80,11 @@ public static class ObjectHeaderFlags
     /// <summary>Shift to get/set generation value.</summary>
     public const int GenerationShift = 4;
 
-    /// <summary>Reserved for future use (bit 6).</summary>
-    public const ulong Reserved6 = 1UL << 6;
+    /// <summary>LOH flag - object is allocated on Large Object Heap (bit 6).</summary>
+    public const ulong LOHFlag = 1UL << 6;
 
-    /// <summary>Reserved for future use (bit 7).</summary>
-    public const ulong Reserved7 = 1UL << 7;
+    /// <summary>ForwardingInPlace - forwarding pointer stored at MethodTable* slot (bit 7).</summary>
+    public const ulong ForwardingInPlace = 1UL << 7;
 
     /// <summary>Sync block index mask (bits 8-31, 24 bits = 16M entries).</summary>
     public const ulong SyncBlockMask = 0xFFFFFF00UL;
@@ -110,6 +110,9 @@ public static unsafe class GCHeap
     private const ulong InitialRegionPages = 256;
     private const ulong InitialRegionSize = InitialRegionPages * PageAllocator.PageSize;
 
+    // LOH threshold: 85KB (matching .NET)
+    public const uint LOHThreshold = 85000;
+
     // Minimum object data size (MT pointer slot, which is reused for free list next pointer)
     // Actual minimum allocation = ObjectHeaderSize (16) + MinObjectSize (8) = 24 bytes
     private const uint MinObjectSize = 8;
@@ -130,7 +133,7 @@ public static unsafe class GCHeap
     // Track all regions for sweep phase (simple linked list using first 8 bytes of each region)
     private static byte* _firstRegion;
 
-    // Free list for reclaimed objects
+    // Free list for reclaimed objects (SOH)
     // Free block layout:
     //   -8: Header [Flags (32 bits) | Size (32 bits)] - size stored where hash code was
     //    0: Next pointer (8 bytes) - stored where MethodTable* was
@@ -138,6 +141,21 @@ public static unsafe class GCHeap
     private static void* _freeList;
     private static ulong _freeListBytes;
     private static ulong _freeListCount;
+
+    // LOH (Large Object Heap) region tracking
+    private static byte* _lohFirstRegion;
+    private static byte* _lohRegionStart;
+    private static byte* _lohRegionEnd;
+    private static byte* _lohAllocPtr;
+
+    // LOH statistics
+    private static ulong _lohTotalAllocated;
+    private static ulong _lohObjectCount;
+
+    // LOH free list
+    private static void* _lohFreeList;
+    private static ulong _lohFreeListBytes;
+    private static ulong _lohFreeListCount;
 
     private static bool _initialized;
 
@@ -189,6 +207,7 @@ public static unsafe class GCHeap
 
     /// <summary>
     /// Allocate a new object with proper header.
+    /// Objects >= LOHThreshold (85KB) are allocated on the Large Object Heap.
     /// </summary>
     /// <param name="size">Size requested (BaseSize from MethodTable, includes MT pointer).</param>
     /// <returns>Pointer to the MethodTable* slot (object reference), or null on failure.</returns>
@@ -199,6 +218,10 @@ public static unsafe class GCHeap
             DebugConsole.WriteLine("[GCHeap] ERROR: Not initialized!");
             return null;
         }
+
+        // Route large objects to LOH
+        if (size >= LOHThreshold)
+            return AllocLOH(size);
 
         // Enforce minimum size
         if (size < MinObjectSize)
@@ -622,4 +645,382 @@ public static unsafe class GCHeap
         _freeListBytes = 0;
         _freeListCount = 0;
     }
+
+    // ========================================================================
+    // Large Object Heap (LOH) Methods
+    // ========================================================================
+
+    /// <summary>
+    /// Allocate a large object on the LOH.
+    /// LOH objects are marked with bit 6 and are never compacted.
+    /// </summary>
+    public static void* AllocLOH(uint size)
+    {
+        // Enforce minimum size
+        if (size < MinObjectSize)
+            size = MinObjectSize;
+
+        // Align to 8 bytes
+        size = (size + 7) & ~7u;
+
+        // Total allocation includes headers
+        uint totalSize = size + ObjectHeaderSize;
+
+        // Try LOH free list first
+        void* fromFreeList = AllocFromLOHFreeList(totalSize);
+        if (fromFreeList != null)
+        {
+            if (_traceAllocs)
+            {
+                DebugConsole.Write("[GCHeap] LOH alloc from free list: ");
+                DebugConsole.WriteHex((ulong)fromFreeList);
+                DebugConsole.WriteLine();
+            }
+            _lohTotalAllocated += totalSize;
+            return fromFreeList;
+        }
+
+        // Check if we have space in current LOH region
+        if (_lohAllocPtr == null || _lohAllocPtr + totalSize > _lohRegionEnd)
+        {
+            // Need a new LOH region
+            if (!AllocateLOHRegion(totalSize))
+            {
+                DebugConsole.WriteLine("[GCHeap] LOH out of memory!");
+                return null;
+            }
+        }
+
+        // Bump allocate in LOH
+        byte* blockStart = _lohAllocPtr;
+        _lohAllocPtr += totalSize;
+
+        if (_traceAllocs)
+        {
+            DebugConsole.Write("[GCHeap] LOH bump alloc at ");
+            DebugConsole.WriteHex((ulong)(blockStart + ObjectHeaderSize));
+            DebugConsole.WriteLine();
+        }
+
+        // Initialize block size header
+        *(ulong*)blockStart = totalSize;
+
+        // Initialize object header with LOH flag
+        *(ulong*)(blockStart + 8) = ObjectHeaderFlags.LOHFlag;
+
+        void* objPtr = blockStart + ObjectHeaderSize;
+
+        _lohTotalAllocated += totalSize;
+        _lohObjectCount++;
+
+        return objPtr;
+    }
+
+    /// <summary>
+    /// Allocate a new LOH region.
+    /// LOH regions may be larger than SOH regions to accommodate large objects.
+    /// </summary>
+    private static bool AllocateLOHRegion(uint minSize)
+    {
+        // Calculate pages needed (at least 1MB, or enough for the object)
+        ulong bytesNeeded = minSize + 8; // +8 for region header
+        ulong pagesNeeded = (bytesNeeded + PageAllocator.PageSize - 1) / PageAllocator.PageSize;
+        if (pagesNeeded < InitialRegionPages)
+            pagesNeeded = InitialRegionPages;
+
+        ulong physAddr = PageAllocator.AllocatePages(pagesNeeded);
+        if (physAddr == 0)
+            return false;
+
+        byte* newRegion = (byte*)VirtualMemory.PhysToVirt(physAddr);
+        ulong regionSize = pagesNeeded * PageAllocator.PageSize;
+
+        // Zero the new region
+        for (ulong i = 0; i < regionSize; i++)
+            newRegion[i] = 0;
+
+        // Link into LOH region list
+        *(byte**)newRegion = _lohFirstRegion;
+        _lohFirstRegion = newRegion;
+
+        // Set up for allocation
+        _lohRegionStart = newRegion;
+        _lohRegionEnd = newRegion + regionSize;
+        _lohAllocPtr = newRegion + 8; // Skip region header
+
+        DebugConsole.Write("[GCHeap] New LOH region: ");
+        DebugConsole.WriteHex((ulong)newRegion);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)(regionSize / 1024));
+        DebugConsole.WriteLine(" KB)");
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if an object is on the LOH.
+    /// </summary>
+    public static bool IsLOHObject(void* obj)
+    {
+        if (obj == null) return false;
+        ulong* header = GetHeader(obj);
+        return (*header & ObjectHeaderFlags.LOHFlag) != 0;
+    }
+
+    /// <summary>
+    /// Set the LOH flag on an object.
+    /// </summary>
+    public static void SetLOHFlag(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+        *header |= ObjectHeaderFlags.LOHFlag;
+    }
+
+    /// <summary>
+    /// Try to allocate from the LOH free list.
+    /// </summary>
+    public static void* AllocFromLOHFreeList(uint totalNeeded)
+    {
+        if (_lohFreeList == null)
+            return null;
+
+        void* prev = null;
+        void* current = _lohFreeList;
+
+        while (current != null)
+        {
+            ulong* blockSizeHeader = GetBlockSizeHeader(current);
+            uint blockSize = (uint)(*blockSizeHeader & ObjectHeaderFlags.BlockSizeMask);
+            void* next = *(void**)current;
+
+            if (blockSize >= totalNeeded)
+            {
+                // Found a suitable block - use entire block (no splitting for LOH)
+                if (prev == null)
+                    _lohFreeList = next;
+                else
+                    *(void**)prev = next;
+
+                _lohFreeListBytes -= blockSize;
+                _lohFreeListCount--;
+
+                // Clear free flag, keep LOH flag
+                ulong* objHeader = GetHeader(current);
+                *objHeader = ObjectHeaderFlags.LOHFlag;
+
+                _lohObjectCount++;
+                return current;
+            }
+
+            prev = current;
+            current = next;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Add a block to the LOH free list.
+    /// </summary>
+    public static void AddToLOHFreeList(void* obj)
+    {
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+        uint blockSize = (uint)(*blockHeader & ObjectHeaderFlags.BlockSizeMask);
+
+        // Set free flag, keep LOH flag
+        ulong* objHeader = GetHeader(obj);
+        *objHeader = ObjectHeaderFlags.FreeBlock | ObjectHeaderFlags.LOHFlag;
+
+        // Store next pointer where MethodTable* was
+        *(void**)obj = _lohFreeList;
+        _lohFreeList = obj;
+
+        _lohFreeListBytes += blockSize;
+        _lohFreeListCount++;
+    }
+
+    /// <summary>
+    /// Clear the LOH free list.
+    /// </summary>
+    public static void ClearLOHFreeList()
+    {
+        _lohFreeList = null;
+        _lohFreeListBytes = 0;
+        _lohFreeListCount = 0;
+    }
+
+    /// <summary>
+    /// Get LOH statistics.
+    /// </summary>
+    public static void GetLOHStats(out ulong totalAllocated, out ulong objectCount)
+    {
+        totalAllocated = _lohTotalAllocated;
+        objectCount = _lohObjectCount;
+    }
+
+    /// <summary>
+    /// Get LOH free list statistics.
+    /// </summary>
+    public static void GetLOHFreeListStats(out ulong freeBytes, out ulong freeCount)
+    {
+        freeBytes = _lohFreeListBytes;
+        freeCount = _lohFreeListCount;
+    }
+
+    /// <summary>
+    /// Get the first LOH region (for heap walking).
+    /// </summary>
+    public static byte* LOHFirstRegion => _lohFirstRegion;
+
+    /// <summary>
+    /// Get the current LOH allocation pointer.
+    /// </summary>
+    public static byte* LOHAllocPtr => _lohAllocPtr;
+
+    /// <summary>
+    /// Check if an address is in the LOH.
+    /// </summary>
+    public static bool IsInLOH(void* ptr)
+    {
+        byte* p = (byte*)ptr;
+        byte* region = _lohFirstRegion;
+
+        while (region != null)
+        {
+            // LOH regions can be variable size, check using region header info
+            // For now, use InitialRegionSize as maximum check
+            if (p >= region && p < region + InitialRegionSize * 4) // Allow larger LOH regions
+            {
+                // More precise check using allocation bounds
+                if (region == _lohRegionStart && p < _lohAllocPtr)
+                    return true;
+                else if (region != _lohRegionStart)
+                    return true; // Older region, fully allocated
+            }
+            region = *(byte**)region;
+        }
+
+        return false;
+    }
+
+    // ========================================================================
+    // Forwarding Pointer Methods (for compaction)
+    // ========================================================================
+
+    /// <summary>
+    /// Check if an object has a forwarding pointer set.
+    /// </summary>
+    public static bool HasForwardingPointer(void* obj)
+    {
+        if (obj == null) return false;
+        ulong* header = GetHeader(obj);
+        return (*header & ObjectHeaderFlags.HasForwardingPointer) != 0;
+    }
+
+    /// <summary>
+    /// Set a forwarding address for an object.
+    /// The forwarding address is stored in the upper 32 bits of the block size header (as delta)
+    /// or at the MethodTable* slot if the delta is too large.
+    /// </summary>
+    public static void SetForwardingAddress(void* obj, void* newAddr)
+    {
+        ulong* header = GetHeader(obj);
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+
+        // Calculate delta (can be negative if compacting to lower address)
+        long delta = (long)((byte*)newAddr - (byte*)obj);
+
+        // Check if delta fits in 32 bits (signed)
+        if (delta >= int.MinValue && delta <= int.MaxValue)
+        {
+            // Store delta in upper 32 bits of block size header
+            uint blockSize = (uint)(*blockHeader & ObjectHeaderFlags.BlockSizeMask);
+            *blockHeader = blockSize | ((ulong)(uint)(int)delta << 32);
+            *header |= ObjectHeaderFlags.HasForwardingPointer;
+        }
+        else
+        {
+            // Delta too large, store full pointer at MethodTable* slot
+            *(void**)obj = newAddr;
+            *header |= ObjectHeaderFlags.HasForwardingPointer | ObjectHeaderFlags.ForwardingInPlace;
+        }
+    }
+
+    /// <summary>
+    /// Get the forwarding address for an object.
+    /// </summary>
+    public static void* GetForwardingAddress(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+
+        if ((*header & ObjectHeaderFlags.HasForwardingPointer) == 0)
+            return obj; // No forwarding, return original
+
+        if ((*header & ObjectHeaderFlags.ForwardingInPlace) != 0)
+        {
+            // Full pointer stored at MethodTable* slot
+            return *(void**)obj;
+        }
+        else
+        {
+            // Delta stored in upper 32 bits of block size header
+            ulong* blockHeader = GetBlockSizeHeader(obj);
+            int delta = (int)(*blockHeader >> 32);
+            return (byte*)obj + delta;
+        }
+    }
+
+    /// <summary>
+    /// Clear the forwarding pointer from an object (after move).
+    /// </summary>
+    public static void ClearForwardingPointer(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+        *header &= ~(ObjectHeaderFlags.HasForwardingPointer | ObjectHeaderFlags.ForwardingInPlace);
+
+        // Clear the upper 32 bits of block size header
+        ulong* blockHeader = GetBlockSizeHeader(obj);
+        *blockHeader &= ObjectHeaderFlags.BlockSizeMask;
+    }
+
+    /// <summary>
+    /// Check if an object is pinned (cannot be moved).
+    /// </summary>
+    public static bool IsPinned(void* obj)
+    {
+        if (obj == null) return false;
+        ulong* header = GetHeader(obj);
+        return (*header & ObjectHeaderFlags.Pinned) != 0;
+    }
+
+    /// <summary>
+    /// Pin an object (prevent it from being moved during compaction).
+    /// </summary>
+    public static void SetPinned(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+        *header |= ObjectHeaderFlags.Pinned;
+    }
+
+    /// <summary>
+    /// Unpin an object.
+    /// </summary>
+    public static void ClearPinned(void* obj)
+    {
+        ulong* header = GetHeader(obj);
+        *header &= ~ObjectHeaderFlags.Pinned;
+    }
+
+    /// <summary>
+    /// Reset the SOH allocation pointer (after compaction).
+    /// </summary>
+    public static void SetAllocPtr(byte* newPtr)
+    {
+        _allocPtr = newPtr;
+    }
+
+    /// <summary>
+    /// Get the current SOH region start.
+    /// </summary>
+    public static byte* RegionStart => _regionStart;
 }

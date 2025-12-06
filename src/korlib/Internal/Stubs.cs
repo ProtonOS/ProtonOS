@@ -44,6 +44,21 @@ namespace System.Runtime
     }
 }
 
+namespace Internal.Runtime
+{
+    // NativeAOT expects MethodTable in this namespace for ValueType field helpers
+    internal unsafe struct MethodTable
+    {
+        internal ushort _usComponentSize;
+        private ushort _usFlags;
+        internal uint _uBaseSize;
+        internal MethodTable* _relatedType;
+        private ushort _usNumVtableSlots;
+        private ushort _usNumInterfaces;
+        private uint _uHashCode;
+    }
+}
+
 namespace Internal.Runtime.CompilerHelpers
 {
     partial class ThrowHelpers
@@ -87,23 +102,30 @@ namespace Internal.Runtime.CompilerHelpers
         static void RhpFallbackFailFast() { Environment.FailFast(null); }
 
         [RuntimeExport("RhpNewFast")]
-        static unsafe void* RhpNewFast(MethodTable* pMT)
+        static unsafe void* RhpNewFast(System.Runtime.MethodTable* pMT)
         {
-            MethodTable** result = AllocObject(pMT->_uBaseSize);
+            System.Runtime.MethodTable** result = AllocObject(pMT->_uBaseSize);
             *result = pMT;
             return result;
         }
 
         [RuntimeExport("RhpNewArray")]
-        static unsafe void* RhpNewArray(MethodTable* pMT, int numElements)
+        static unsafe void* RhpNewArray(System.Runtime.MethodTable* pMT, int numElements)
         {
             if (numElements < 0)
                 Environment.FailFast(null);
 
-            MethodTable** result = AllocObject((uint)(pMT->_uBaseSize + numElements * pMT->_usComponentSize));
+            System.Runtime.MethodTable** result = AllocObject((uint)(pMT->_uBaseSize + numElements * pMT->_usComponentSize));
             *result = pMT;
             *(int*)(result + 1) = numElements;
             return result;
+        }
+
+        // Fast path alias for array allocation (same implementation)
+        [RuntimeExport("RhpNewArrayFast")]
+        static unsafe void* RhpNewArrayFast(System.Runtime.MethodTable* pMT, int numElements)
+        {
+            return RhpNewArray(pMT, numElements);
         }
 
         internal struct ArrayElement
@@ -116,7 +138,7 @@ namespace Internal.Runtime.CompilerHelpers
         {
             ref object element = ref Unsafe.As<ArrayElement[]>(array)[index].Value;
 
-            MethodTable* elementType = array.m_pMethodTable->_relatedType;
+            System.Runtime.MethodTable* elementType = array.m_pMethodTable->_relatedType;
 
             if (obj == null)
                 goto assigningNull;
@@ -147,12 +169,12 @@ assigningNull:
 
         // Import allocation from kernel PAL
         [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        static extern MethodTable** PalAllocObject(uint size);
+        static extern System.Runtime.MethodTable** PalAllocObject(uint size);
 
-        static unsafe MethodTable** AllocObject(uint size)
+        static unsafe System.Runtime.MethodTable** AllocObject(uint size)
         {
             // Use kernel's heap allocator (returns zeroed memory)
-            MethodTable** result = PalAllocObject(size);
+            System.Runtime.MethodTable** result = PalAllocObject(size);
 
             if (result == null)
                 Environment.FailFast(null);

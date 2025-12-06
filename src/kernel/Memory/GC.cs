@@ -88,8 +88,9 @@ public static unsafe class GC
     /// <summary>
     /// Perform a full garbage collection.
     /// </summary>
+    /// <param name="forceCompact">Force compaction of SOH even if fragmentation is low.</param>
     /// <returns>Number of objects marked as reachable.</returns>
-    public static int Collect()
+    public static int Collect(bool forceCompact = false)
     {
         if (!_initialized || !GCHeap.IsInitialized)
         {
@@ -108,13 +109,16 @@ public static unsafe class GC
 
         DebugConsole.Write("[GC] Starting collection #");
         DebugConsole.WriteDecimal((uint)_collectionsPerformed);
+        if (forceCompact)
+            DebugConsole.Write(" (compacting)");
         DebugConsole.WriteLine("...");
 
         // Phase 1: Stop the world
         StopTheWorld();
 
-        // Phase 2: Clear all mark bits
+        // Phase 2: Clear all mark bits (SOH and LOH)
         ClearAllMarks();
+        ClearAllMarksLOH();
 
         // Phase 3: Mark phase
         _markStackTop = 0;
@@ -133,8 +137,22 @@ public static unsafe class GC
         DebugConsole.WriteDecimal((uint)_objectsMarked);
         DebugConsole.WriteLine(" objects marked");
 
-        // Phase 4: Sweep phase - free unmarked objects
-        int freedCount = Sweep();
+        // Phase 4a: Sweep LOH (LOH is never compacted)
+        int lohFreed = SweepLOH();
+
+        // Phase 4b: SOH - either compact or sweep based on fragmentation
+        int sohFreed = 0;
+        if (forceCompact || ShouldCompact())
+        {
+            // Compaction mode - use GCCompact
+            GCCompact.Compact();
+            DebugConsole.WriteLine("[GC] SOH compacted");
+        }
+        else
+        {
+            // Sweep mode - rebuild free list
+            sohFreed = SweepSOH();
+        }
 
         // Phase 5: Resume the world
         ResumeTheWorld();
@@ -142,6 +160,40 @@ public static unsafe class GC
         _gcInProgress = false;
 
         return (int)_objectsMarked;
+    }
+
+    /// <summary>
+    /// Perform a compacting garbage collection.
+    /// Forces compaction of SOH regardless of fragmentation level.
+    /// </summary>
+    public static int Compact()
+    {
+        return Collect(forceCompact: true);
+    }
+
+    /// <summary>
+    /// Determine if compaction is needed based on heap fragmentation.
+    /// </summary>
+    private static bool ShouldCompact()
+    {
+        GCHeap.GetFreeListStats(out ulong freeBytes, out ulong freeCount);
+        GCHeap.GetStats(out ulong allocated, out _, out _);
+
+        if (allocated == 0)
+            return false;
+
+        // Compact if fragmentation > 25%
+        ulong fragmentationPercent = (freeBytes * 100) / allocated;
+
+        if (fragmentationPercent > 25)
+        {
+            DebugConsole.Write("[GC] High fragmentation: ");
+            DebugConsole.WriteDecimal((uint)fragmentationPercent);
+            DebugConsole.WriteLine("% - will compact");
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -312,16 +364,141 @@ public static unsafe class GC
         DebugConsole.WriteDecimal((uint)freeCount);
         DebugConsole.Write(" free) in ");
         DebugConsole.WriteDecimal((uint)regionCount);
-        DebugConsole.WriteLine(" region(s)");
+        DebugConsole.WriteLine(" SOH region(s)");
     }
 
     /// <summary>
-    /// Sweep phase: walk the heap and free unmarked objects.
+    /// Clear all mark bits on LOH objects.
+    /// </summary>
+    private static void ClearAllMarksLOH()
+    {
+        ulong regionSize = GCHeap.RegionSize;
+        byte* region = GCHeap.LOHFirstRegion;
+        int objectCount = 0;
+
+        while (region != null)
+        {
+            byte* current = region + 8; // Skip region header
+
+            // For current LOH region, scan up to AllocPtr
+            byte* regionEnd;
+            if (region == GCHeap.LOHFirstRegion && GCHeap.LOHAllocPtr != null)
+            {
+                regionEnd = GCHeap.LOHAllocPtr;
+            }
+            else
+            {
+                regionEnd = region + regionSize;
+            }
+
+            while (current + GCHeap.ObjectHeaderSize < regionEnd)
+            {
+                void* obj = current + GCHeap.ObjectHeaderSize;
+                uint blockSize = GCHeap.GetBlockSize(obj);
+                if (blockSize == 0)
+                    break;
+
+                if (!GCHeap.IsFreeBlock(obj))
+                {
+                    GCHeap.ClearMark(obj);
+                    objectCount++;
+                }
+
+                current += blockSize;
+            }
+
+            region = *(byte**)region;
+        }
+
+        if (objectCount > 0)
+        {
+            DebugConsole.Write("[GC] Cleared marks on ");
+            DebugConsole.WriteDecimal((uint)objectCount);
+            DebugConsole.WriteLine(" LOH objects");
+        }
+    }
+
+    /// <summary>
+    /// Sweep LOH: walk LOH regions and free unmarked objects.
+    /// LOH is never compacted, only swept.
+    /// </summary>
+    /// <returns>Number of LOH objects freed.</returns>
+    private static int SweepLOH()
+    {
+        // Clear existing LOH free list
+        GCHeap.ClearLOHFreeList();
+
+        ulong regionSize = GCHeap.RegionSize;
+        byte* region = GCHeap.LOHFirstRegion;
+        int freedCount = 0;
+        ulong freedBytes = 0;
+
+        while (region != null)
+        {
+            byte* current = region + 8;
+
+            // For current LOH region, scan up to AllocPtr
+            byte* regionEnd;
+            if (region == GCHeap.LOHFirstRegion && GCHeap.LOHAllocPtr != null)
+            {
+                regionEnd = GCHeap.LOHAllocPtr;
+            }
+            else
+            {
+                regionEnd = region + regionSize;
+            }
+
+            while (current + GCHeap.ObjectHeaderSize < regionEnd)
+            {
+                void* obj = current + GCHeap.ObjectHeaderSize;
+                uint blockSize = GCHeap.GetBlockSize(obj);
+                if (blockSize == 0)
+                    break;
+
+                if (GCHeap.IsFreeBlock(obj))
+                {
+                    // Already free - add back to LOH free list
+                    GCHeap.AddToLOHFreeList(obj);
+                    freedBytes += blockSize;
+                }
+                else if (GCHeap.IsMarked(obj))
+                {
+                    // Live object - clear mark for next cycle
+                    GCHeap.ClearMark(obj);
+                }
+                else
+                {
+                    // Garbage - add to LOH free list
+                    GCHeap.AddToLOHFreeList(obj);
+                    freedCount++;
+                    freedBytes += blockSize;
+                }
+
+                current += blockSize;
+            }
+
+            region = *(byte**)region;
+        }
+
+        if (freedCount > 0 || freedBytes > 0)
+        {
+            DebugConsole.Write("[GC] LOH sweep: freed ");
+            DebugConsole.WriteDecimal((uint)freedCount);
+            DebugConsole.Write(" objects (");
+            DebugConsole.WriteDecimal((uint)(freedBytes / 1024));
+            DebugConsole.WriteLine(" KB)");
+        }
+
+        return freedCount;
+    }
+
+    /// <summary>
+    /// Sweep SOH: walk the heap and free unmarked objects.
     /// Builds a new free list from all garbage objects.
     /// Uses block size from header to step through blocks.
     /// </summary>
     /// <returns>Number of objects freed.</returns>
-    private static int Sweep()
+    private static int SweepSOH()
     {
         // Clear existing free list - we'll rebuild it
         GCHeap.ClearFreeList();
@@ -385,7 +562,7 @@ public static unsafe class GC
             region = *(byte**)region;
         }
 
-        DebugConsole.Write("[GC] Sweep complete: freed ");
+        DebugConsole.Write("[GC] SOH sweep: freed ");
         DebugConsole.WriteDecimal((uint)freedCount);
         DebugConsole.Write(" objects (");
         DebugConsole.WriteDecimal((uint)(freedBytes / 1024));

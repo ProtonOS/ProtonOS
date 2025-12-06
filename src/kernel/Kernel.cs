@@ -142,8 +142,8 @@ public static unsafe class Kernel
         // Second-stage arch init (timers, enable interrupts)
         CurrentArch.InitStage2();
 
-        // Tests disabled for clean logs - call Tests.Run() to enable
-        // Tests.Run();
+        // Run kernel tests
+        Tests.Run();
 
         // Initialize String MethodTable for JIT ldstr support
         Runtime.MetadataReader.InitStringMethodTable();
@@ -209,6 +209,9 @@ public static unsafe class Kernel
 
         // Run FullTest assembly via JIT
         RunFullTestAssembly();
+
+        // Run GC tests (after runtime is fully initialized)
+        Tests.RunGCTests();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
