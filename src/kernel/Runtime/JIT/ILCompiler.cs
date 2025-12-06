@@ -461,6 +461,12 @@ public unsafe struct ILCompiler
     private bool _tosIsConst;
     private long _tosConstValue;
 
+    // Second constant slot (TOS-1) for full constant folding of binary ops
+    // When _tos2IsConst is true, the second-from-top is also a known constant
+    private bool _tos2IsConst;
+    private long _tos2ConstValue;
+    private byte _tos2Type;
+
     // Stack type tracking for float support (0=int, 1=float32, 2=float64)
     private const int MaxStackDepth = 32;
     private fixed byte _evalStackTypes[MaxStackDepth];
@@ -518,6 +524,9 @@ public unsafe struct ILCompiler
         compiler._tosType = 0;
         compiler._tosIsConst = false;
         compiler._tosConstValue = 0;
+        compiler._tos2IsConst = false;
+        compiler._tos2ConstValue = 0;
+        compiler._tos2Type = 0;
         compiler._branchCount = 0;
         compiler._labelCount = 0;
         compiler._resolver = null;
@@ -1837,9 +1846,31 @@ public unsafe struct ILCompiler
 
     /// <summary>
     /// Mark TOS as a compile-time constant (no code emitted yet).
+    /// Shifts current TOS to TOS2 for two-slot constant tracking.
     /// </summary>
     private void MarkConstAsTOS(long value, byte stackType = 0)
     {
+        // Shift current TOS to TOS2 (for constant folding of binary ops)
+        if (_tosIsConst)
+        {
+            // TOS was a constant - shift it to TOS2
+            _tos2IsConst = true;
+            _tos2ConstValue = _tosConstValue;
+            _tos2Type = _tosType;
+        }
+        else if (_tosCached)
+        {
+            // TOS was in R0 - need to push it to memory, TOS2 is not const
+            X64Emitter.Push(ref _code, VReg.R0);
+            _tosCached = false;
+            _tos2IsConst = false;
+        }
+        else
+        {
+            // TOS was on memory stack - TOS2 is not const
+            _tos2IsConst = false;
+        }
+
         _tosCached = false;   // Not in R0 yet
         _tosIsConst = true;
         _tosConstValue = value;
@@ -1849,10 +1880,12 @@ public unsafe struct ILCompiler
 
     /// <summary>
     /// Flush TOS to memory unconditionally (for branches/calls).
+    /// Also clears TOS2 since we can't track constants across control flow.
     /// </summary>
     private void FlushTOS()
     {
         SpillTOSIfCached();
+        _tos2IsConst = false;  // Can't track constants across branches/calls
     }
 
     /// <summary>
@@ -1877,6 +1910,24 @@ public unsafe struct ILCompiler
         {
             X64Emitter.Pop(ref _code, VReg.R0);
         }
+        // Promote TOS2 to TOS
+        PromoteTOS2();
+    }
+
+    /// <summary>
+    /// Promote TOS2 to TOS after a pop operation.
+    /// </summary>
+    private void PromoteTOS2()
+    {
+        if (_tos2IsConst)
+        {
+            _tosIsConst = true;
+            _tosConstValue = _tos2ConstValue;
+            _tosType = _tos2Type;
+            _tosCached = false;
+        }
+        // Clear TOS2 regardless
+        _tos2IsConst = false;
     }
 
     /// <summary>
@@ -1915,6 +1966,8 @@ public unsafe struct ILCompiler
         {
             X64Emitter.Pop(ref _code, dst);
         }
+        // Promote TOS2 to TOS
+        PromoteTOS2();
     }
 
     /// <summary>
@@ -1968,14 +2021,46 @@ public unsafe struct ILCompiler
         }
         else
         {
-            // Integer arithmetic with TOS caching
-            // Pop second operand (may be in TOS cache or memory)
+            // Integer arithmetic - check for constant folding opportunities
+
+            // Case 1: Both operands are constants - fold at compile time
+            if (_tosIsConst && _tos2IsConst)
+            {
+                long result = _tos2ConstValue + _tosConstValue;
+                // Consume both stack slots
+                PopStackType();
+                PopStackType();
+                _tosIsConst = false;
+                _tos2IsConst = false;
+                // Push folded result as new constant
+                MarkConstAsTOS(result, StackType_Int);
+                return true;
+            }
+
+            // Case 2: TOS is constant 0 - identity (x + 0 = x)
+            if (_tosIsConst && _tosConstValue == 0)
+            {
+                // Just drop the 0, leave TOS2 as result
+                PopStackType();  // Remove the 0's stack type
+                _tosIsConst = false;
+                PromoteTOS2();   // TOS2 becomes TOS
+                return true;
+            }
+
+            // Case 3: TOS2 is constant 0 - identity (0 + x = x)
+            if (_tos2IsConst && _tos2ConstValue == 0)
+            {
+                // TOS stays as result, just clear TOS2 and adjust stack
+                PopStackType();  // Remove one stack slot
+                _tos2IsConst = false;
+                // TOS is already the result (either const or cached/memory)
+                return true;
+            }
+
+            // General case: emit add instruction
             PopToReg(VReg.R2);  // Second operand -> R2
-            // Pop first operand
-            PopToR0();  // First operand -> R0
-            // Add
+            PopToR0();          // First operand -> R0
             X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
-            // Result is in R0, mark as TOS
             MarkR0AsTOS(StackType_Int);
         }
         return true;
@@ -2031,9 +2116,34 @@ public unsafe struct ILCompiler
         }
         else
         {
-            // Integer arithmetic with TOS caching
+            // Integer arithmetic - check for constant folding opportunities
+
+            // Case 1: Both operands are constants - fold at compile time
+            if (_tosIsConst && _tos2IsConst)
+            {
+                long result = _tos2ConstValue - _tosConstValue;
+                PopStackType();
+                PopStackType();
+                _tosIsConst = false;
+                _tos2IsConst = false;
+                MarkConstAsTOS(result, StackType_Int);
+                return true;
+            }
+
+            // Case 2: TOS is constant 0 - identity (x - 0 = x)
+            if (_tosIsConst && _tosConstValue == 0)
+            {
+                PopStackType();
+                _tosIsConst = false;
+                PromoteTOS2();
+                return true;
+            }
+
+            // Note: 0 - x = -x is NOT an identity, so we don't optimize TOS2 == 0
+
+            // General case: emit sub instruction
             PopToReg(VReg.R2);  // Second operand -> R2
-            PopToR0();  // First operand -> R0
+            PopToR0();          // First operand -> R0
             X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
             MarkR0AsTOS(StackType_Int);
         }
@@ -2074,13 +2184,145 @@ public unsafe struct ILCompiler
         }
         else
         {
-            // Integer arithmetic with TOS caching
+            // Integer arithmetic - check for constant folding opportunities
+
+            // Case 1: Both operands are constants - fold at compile time
+            if (_tosIsConst && _tos2IsConst)
+            {
+                long result = _tos2ConstValue * _tosConstValue;
+                PopStackType();
+                PopStackType();
+                _tosIsConst = false;
+                _tos2IsConst = false;
+                MarkConstAsTOS(result, StackType_Int);
+                return true;
+            }
+
+            // Case 2: TOS is constant 0 - result is 0
+            if (_tosIsConst && _tosConstValue == 0)
+            {
+                // Pop TOS2, result is 0
+                PopStackType();
+                _tosIsConst = false;
+                // Need to materialize TOS2 to discard it (side effect free)
+                if (_tos2IsConst)
+                {
+                    PopStackType();
+                    _tos2IsConst = false;
+                }
+                else
+                {
+                    PopToR0();  // Discard TOS2
+                }
+                MarkConstAsTOS(0, StackType_Int);
+                return true;
+            }
+
+            // Case 3: TOS2 is constant 0 - result is 0
+            if (_tos2IsConst && _tos2ConstValue == 0)
+            {
+                PopStackType();
+                if (_tosIsConst)
+                {
+                    _tosIsConst = false;
+                }
+                else if (_tosCached)
+                {
+                    _tosCached = false;  // Discard TOS
+                }
+                else
+                {
+                    X64Emitter.Pop(ref _code, VReg.R0);  // Discard TOS
+                }
+                PopStackType();
+                _tos2IsConst = false;
+                MarkConstAsTOS(0, StackType_Int);
+                return true;
+            }
+
+            // Case 4: TOS is constant 1 - identity (x * 1 = x)
+            if (_tosIsConst && _tosConstValue == 1)
+            {
+                PopStackType();
+                _tosIsConst = false;
+                PromoteTOS2();
+                return true;
+            }
+
+            // Case 5: TOS2 is constant 1 - identity (1 * x = x)
+            if (_tos2IsConst && _tos2ConstValue == 1)
+            {
+                PopStackType();
+                _tos2IsConst = false;
+                return true;
+            }
+
+            // Case 6: TOS is power of 2 - strength reduce to shift
+            if (_tosIsConst && _tosConstValue > 1 && IsPowerOf2((ulong)_tosConstValue))
+            {
+                int shift = Log2((ulong)_tosConstValue);
+                PopStackType();
+                _tosIsConst = false;
+                // Get TOS2 into R0 and shift
+                if (_tos2IsConst)
+                {
+                    // TOS2 is also constant - fold at compile time
+                    long result = _tos2ConstValue << shift;
+                    PopStackType();
+                    _tos2IsConst = false;
+                    MarkConstAsTOS(result, StackType_Int);
+                }
+                else
+                {
+                    PopToR0();
+                    X64Emitter.ShlRI(ref _code, VReg.R0, (byte)shift);
+                    MarkR0AsTOS(StackType_Int);
+                }
+                return true;
+            }
+
+            // Case 7: TOS2 is power of 2 - strength reduce to shift
+            if (_tos2IsConst && _tos2ConstValue > 1 && IsPowerOf2((ulong)_tos2ConstValue))
+            {
+                int shift = Log2((ulong)_tos2ConstValue);
+                // Get TOS into R0 and shift
+                PopToR0();
+                PopStackType();  // Remove TOS2's slot
+                _tos2IsConst = false;
+                X64Emitter.ShlRI(ref _code, VReg.R0, (byte)shift);
+                MarkR0AsTOS(StackType_Int);
+                return true;
+            }
+
+            // General case: emit imul instruction
             PopToReg(VReg.R2);  // Second operand -> R2
-            PopToR0();  // First operand -> R0
+            PopToR0();          // First operand -> R0
             X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
             MarkR0AsTOS(StackType_Int);
         }
         return true;
+    }
+
+    /// <summary>
+    /// Check if a value is a power of 2 (and > 0).
+    /// </summary>
+    private static bool IsPowerOf2(ulong value)
+    {
+        return value != 0 && (value & (value - 1)) == 0;
+    }
+
+    /// <summary>
+    /// Get the log base 2 of a power of 2 value (bit position).
+    /// </summary>
+    private static int Log2(ulong value)
+    {
+        int result = 0;
+        while (value > 1)
+        {
+            value >>= 1;
+            result++;
+        }
+        return result;
     }
 
     // Overflow-checking arithmetic
@@ -2219,6 +2461,79 @@ public unsafe struct ILCompiler
     private bool CompileAnd()
     {
         // Binary op: pop two, AND, push result
+
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst)
+        {
+            long result = _tos2ConstValue & _tosConstValue;
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: TOS is constant 0 - result is 0
+        if (_tosIsConst && _tosConstValue == 0)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            // Discard TOS2
+            if (_tos2IsConst)
+            {
+                PopStackType();
+                _tos2IsConst = false;
+            }
+            else
+            {
+                PopToR0();  // Discard
+            }
+            MarkConstAsTOS(0, StackType_Int);
+            return true;
+        }
+
+        // Case 3: TOS2 is constant 0 - result is 0
+        if (_tos2IsConst && _tos2ConstValue == 0)
+        {
+            // Discard TOS
+            PopStackType();
+            if (_tosIsConst)
+            {
+                _tosIsConst = false;
+            }
+            else if (_tosCached)
+            {
+                _tosCached = false;
+            }
+            else
+            {
+                X64Emitter.Pop(ref _code, VReg.R0);
+            }
+            PopStackType();
+            _tos2IsConst = false;
+            MarkConstAsTOS(0, StackType_Int);
+            return true;
+        }
+
+        // Case 4: TOS is constant -1 (all 1s) - identity (x & -1 = x)
+        if (_tosIsConst && _tosConstValue == -1)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            PromoteTOS2();
+            return true;
+        }
+
+        // Case 5: TOS2 is constant -1 (all 1s) - identity (-1 & x = x)
+        if (_tos2IsConst && _tos2ConstValue == -1)
+        {
+            PopStackType();
+            _tos2IsConst = false;
+            return true;
+        }
+
+        // General case
         PopToReg(VReg.R2);  // Second operand
         PopToR0();          // First operand
         X64Emitter.AndRR(ref _code, VReg.R0, VReg.R2);
@@ -2229,6 +2544,79 @@ public unsafe struct ILCompiler
     private bool CompileOr()
     {
         // Binary op: pop two, OR, push result
+
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst)
+        {
+            long result = _tos2ConstValue | _tosConstValue;
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: TOS is constant 0 - identity (x | 0 = x)
+        if (_tosIsConst && _tosConstValue == 0)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            PromoteTOS2();
+            return true;
+        }
+
+        // Case 3: TOS2 is constant 0 - identity (0 | x = x)
+        if (_tos2IsConst && _tos2ConstValue == 0)
+        {
+            PopStackType();
+            _tos2IsConst = false;
+            return true;
+        }
+
+        // Case 4: TOS is constant -1 (all 1s) - result is -1
+        if (_tosIsConst && _tosConstValue == -1)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            // Discard TOS2
+            if (_tos2IsConst)
+            {
+                PopStackType();
+                _tos2IsConst = false;
+            }
+            else
+            {
+                PopToR0();  // Discard
+            }
+            MarkConstAsTOS(-1, StackType_Int);
+            return true;
+        }
+
+        // Case 5: TOS2 is constant -1 - result is -1
+        if (_tos2IsConst && _tos2ConstValue == -1)
+        {
+            // Discard TOS
+            PopStackType();
+            if (_tosIsConst)
+            {
+                _tosIsConst = false;
+            }
+            else if (_tosCached)
+            {
+                _tosCached = false;
+            }
+            else
+            {
+                X64Emitter.Pop(ref _code, VReg.R0);
+            }
+            PopStackType();
+            _tos2IsConst = false;
+            MarkConstAsTOS(-1, StackType_Int);
+            return true;
+        }
+
+        // General case
         PopToReg(VReg.R2);  // Second operand
         PopToR0();          // First operand
         X64Emitter.OrRR(ref _code, VReg.R0, VReg.R2);
@@ -2239,6 +2627,37 @@ public unsafe struct ILCompiler
     private bool CompileXor()
     {
         // Binary op: pop two, XOR, push result
+
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst)
+        {
+            long result = _tos2ConstValue ^ _tosConstValue;
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: TOS is constant 0 - identity (x ^ 0 = x)
+        if (_tosIsConst && _tosConstValue == 0)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            PromoteTOS2();
+            return true;
+        }
+
+        // Case 3: TOS2 is constant 0 - identity (0 ^ x = x)
+        if (_tos2IsConst && _tos2ConstValue == 0)
+        {
+            PopStackType();
+            _tos2IsConst = false;
+            return true;
+        }
+
+        // General case
         PopToReg(VReg.R2);  // Second operand
         PopToR0();          // First operand
         X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
@@ -2267,11 +2686,55 @@ public unsafe struct ILCompiler
 
     private bool CompileDiv(bool signed)
     {
-        FlushTOS();  // Spill TOS to memory before direct pops
         // Division: dividend / divisor
         // IL stack: [..., dividend, divisor] -> [..., quotient]
-        byte type2 = PopStackType();
-        byte type1 = PopStackType();
+        byte type2 = PeekStackTypeAt(0);  // Top (divisor)
+        byte type1 = PeekStackTypeAt(1);  // Second from top (dividend)
+
+        // Check for integer constant folding opportunities BEFORE flushing
+        if (!IsFloatType(type1) && !IsFloatType(type2))
+        {
+            // Case 1: Both operands are constants - fold at compile time
+            if (_tosIsConst && _tos2IsConst && _tosConstValue != 0)
+            {
+                long result = signed
+                    ? (_tos2ConstValue / _tosConstValue)
+                    : (long)((ulong)_tos2ConstValue / (ulong)_tosConstValue);
+                PopStackType();
+                PopStackType();
+                _tosIsConst = false;
+                _tos2IsConst = false;
+                MarkConstAsTOS(result, StackType_Int);
+                return true;
+            }
+
+            // Case 2: TOS (divisor) is constant 1 - identity (x / 1 = x)
+            if (_tosIsConst && _tosConstValue == 1)
+            {
+                PopStackType();
+                _tosIsConst = false;
+                PromoteTOS2();
+                return true;
+            }
+
+            // Case 3: TOS2 (dividend) is constant 0 - result is 0 (if divisor != 0)
+            // Note: We can't optimize this without knowing divisor is non-zero at compile time
+            // Only fold if divisor is also a known non-zero constant
+            if (_tos2IsConst && _tos2ConstValue == 0 && _tosIsConst && _tosConstValue != 0)
+            {
+                PopStackType();
+                PopStackType();
+                _tosIsConst = false;
+                _tos2IsConst = false;
+                MarkConstAsTOS(0, StackType_Int);
+                return true;
+            }
+        }
+
+        // General case: flush TOS and use standard division
+        FlushTOS();
+        PopStackType();  // type2
+        PopStackType();  // type1
 
         if (IsFloatType(type1) || IsFloatType(type2))
         {
@@ -2334,9 +2797,45 @@ public unsafe struct ILCompiler
 
     private bool CompileRem(bool signed)
     {
-        FlushTOS();  // Spill TOS to memory before direct pops
         // Remainder: dividend % divisor
         // IL stack: [..., dividend, divisor] -> [..., remainder]
+
+        // Check for constant folding opportunities BEFORE flushing
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst && _tosConstValue != 0)
+        {
+            long result = signed
+                ? (_tos2ConstValue % _tosConstValue)
+                : (long)((ulong)_tos2ConstValue % (ulong)_tosConstValue);
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: TOS (divisor) is constant 1 - result is always 0
+        if (_tosIsConst && _tosConstValue == 1)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            // Discard TOS2
+            if (_tos2IsConst)
+            {
+                PopStackType();
+                _tos2IsConst = false;
+            }
+            else
+            {
+                PopToR0();  // Discard
+            }
+            MarkConstAsTOS(0, StackType_Int);
+            return true;
+        }
+
+        // General case
+        FlushTOS();
         X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX
         X64Emitter.Pop(ref _code, VReg.R0);  // Dividend to RAX
         _evalStackDepth -= 2;
@@ -2365,6 +2864,42 @@ public unsafe struct ILCompiler
     {
         // Shift left: value << shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
+
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst)
+        {
+            int shift = (int)(_tosConstValue & 0x3F);  // Mask to 6 bits for 64-bit
+            long result = _tos2ConstValue << shift;
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: Shift amount is constant 0 - identity
+        if (_tosIsConst && _tosConstValue == 0)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            PromoteTOS2();
+            return true;
+        }
+
+        // Case 3: Shift amount is constant - use immediate form
+        if (_tosIsConst)
+        {
+            int shift = (int)(_tosConstValue & 0x3F);
+            PopStackType();
+            _tosIsConst = false;
+            PopToR0();
+            X64Emitter.ShlRI(ref _code, VReg.R0, (byte)shift);
+            MarkR0AsTOS(StackType_Int);
+            return true;
+        }
+
+        // General case
         PopToReg(VReg.R1);  // Shift amount to CL (part of RCX)
         PopToR0();          // Value to shift
         X64Emitter.ShlCL(ref _code, VReg.R0);
@@ -2376,6 +2911,52 @@ public unsafe struct ILCompiler
     {
         // Shift right: value >> shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
+
+        // Case 1: Both operands are constants - fold at compile time
+        if (_tosIsConst && _tos2IsConst)
+        {
+            int shift = (int)(_tosConstValue & 0x3F);
+            long result = signed
+                ? (_tos2ConstValue >> shift)
+                : (long)((ulong)_tos2ConstValue >> shift);
+            PopStackType();
+            PopStackType();
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Case 2: Shift amount is constant 0 - identity
+        if (_tosIsConst && _tosConstValue == 0)
+        {
+            PopStackType();
+            _tosIsConst = false;
+            PromoteTOS2();
+            return true;
+        }
+
+        // Case 3: Shift amount is constant - use immediate form
+        if (_tosIsConst)
+        {
+            int shift = (int)(_tosConstValue & 0x3F);
+            PopStackType();
+            _tosIsConst = false;
+            PopToR0();
+            if (signed)
+            {
+                X64Emitter.SarRI(ref _code, VReg.R0, (byte)shift);
+            }
+            else
+            {
+                X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+                X64Emitter.ShrRI(ref _code, VReg.R0, (byte)shift);
+            }
+            MarkR0AsTOS(StackType_Int);
+            return true;
+        }
+
+        // General case
         PopToReg(VReg.R1);  // Shift amount to CL (part of RCX)
         PopToR0();          // Value to shift
 

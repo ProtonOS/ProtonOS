@@ -20,7 +20,7 @@ as reference code, not integrating it directly.
 | 6.2 | Exception Handling | **COMPLETE** |
 | 6.3 | GC Integration | **COMPLETE** |
 | 6.4 | Object Model & Type System | **COMPLETE** |
-| 6.5 | Tier 0 Optimizations | Future |
+| 6.5 | Tier 0 Optimizations | **COMPLETE** |
 | 6.6 | Tiered Compilation Infrastructure | Future |
 | 6.7-6.11 | Tier 1 Optimizing JIT | Future |
 
@@ -451,7 +451,7 @@ ProtonJIT uses a tiered compilation strategy similar to .NET's approach:
 │  - Stack-based execution model                                   │
 │  - Fast compile time, slower execution                           │
 │  - Used for first execution and cold methods                     │
-│  - Supports lightweight optimizations (constant folding)         │
+│  - Supports lightweight optimizations (TOS caching, const tracking) │
 ├─────────────────────────────────────────────────────────────────┤
 │  Tier 1: Optimizing JIT (Future - LinearIR/)                    │
 │  - IL → Linear IR → Optimization → x64                          │
@@ -473,27 +473,53 @@ ProtonJIT uses a tiered compilation strategy similar to .NET's approach:
 Lightweight optimizations that can be done during direct IL translation without an IR.
 These run in the existing ILCompiler and don't require SSA or control flow analysis.
 
-### 6.5.1 Constant Folding (During IL Scan)
-- [ ] Fold `ldc + ldc + add` → single constant
-- [ ] Fold `ldc + ldc + mul/sub/div` → single constant
-- [ ] Fold constant comparisons (`ldc + ldc + ceq` → `ldc.i4.0` or `ldc.i4.1`)
-- [ ] Track constant values on abstract stack during compilation
+**Status**: Complete - TOS caching, two-slot constant tracking, full constant folding, and strength reductions implemented.
 
-### 6.5.2 Dead Code Elimination (Basic)
-- [ ] Eliminate unreachable code after unconditional branch
-- [ ] Eliminate code after `ret`/`throw`
-- [ ] Skip generating code for `nop` sequences
+### 6.5.0 TOS (Top-of-Stack) Caching - DONE
+- [x] Keep top of evaluation stack in RAX register (`_tosCached`, `_tosType`)
+- [x] Reduce push/pop traffic by deferring stack operations
+- [x] `SpillTOSIfCached()` - push cached value only when needed
+- [x] `MarkR0AsTOS()` - mark RAX as containing TOS after operations
+- [x] `PopToR0()` - pop from stack or use cached value
+- [x] `PeekTOS()` - peek without consuming (uses cache if available)
 
-### 6.5.3 Peephole Optimizations (Post-Emission)
-- [ ] `push reg; pop same-reg` → eliminate both
-- [ ] `mov rax, [rbp-X]; push rax; pop rax; mov [rbp-X], rax` → eliminate
-- [ ] `add rax, 0` → eliminate
-- [ ] `mul rax, 1` → eliminate
-- [ ] `mul rax, 2` → `shl rax, 1` (strength reduction)
+### 6.5.1 Constant Folding (During IL Scan) - DONE
+- [x] Track constant values on abstract stack during compilation (`_tosIsConst`, `_tosConstValue`)
+- [x] Defer code generation for constants until value is consumed (`MarkConstAsTOS()`)
+- [x] `MaterializeConstToR0()` - generate code only when constant is needed
+- [x] Two-slot constant tracking (`_tos2IsConst`, `_tos2ConstValue`) for binary op folding
+- [x] `PromoteTOS2()` - promote TOS2 to TOS when TOS is popped
+- [x] Fold `ldc + ldc + add` → single constant (arithmetic folding)
+- [x] Fold `ldc + ldc + sub/mul/div/rem` → single constant
+- [x] Fold `ldc + ldc + and/or/xor` → single constant (bitwise folding)
+- [x] Fold `ldc + ldc + shl/shr` → single constant (shift folding)
+
+### 6.5.2 Identity Elimination - DONE
+- [x] `add 0` → identity (returns other operand unchanged)
+- [x] `sub 0` → identity (when subtracting zero)
+- [x] `mul 1` → identity (returns other operand)
+- [x] `mul 0` → zero (returns 0 immediately)
+- [x] `div 1` → identity (returns dividend)
+- [x] `and -1` → identity (returns other operand)
+- [x] `and 0` → zero (returns 0 immediately)
+- [x] `or 0` → identity (returns other operand)
+- [x] `or -1` → -1 (returns -1 immediately)
+- [x] `xor 0` → identity (returns other operand)
+- [x] `shl 0` / `shr 0` → identity (no shift)
+
+### 6.5.3 Strength Reduction - DONE
+- [x] `mul power-of-2` → `shl log2(n)` (e.g., mul 8 → shl 3)
+- [x] Constant shift amounts use immediate form (`shl rax, imm8`)
+- [x] `IsPowerOf2()` and `Log2()` helper methods
 
 ### 6.5.4 Simple Improvements
-- [ ] Use `xor reg, reg` instead of `mov reg, 0`
-- [ ] Use `test reg, reg` instead of `cmp reg, 0`
+- [x] Use `xor reg, reg` instead of `mov reg, 0` (`ZeroReg()` uses XOR)
+- [x] Use `test reg, reg` instead of `cmp reg, 0` (used in branch compilation)
+
+### 6.5.5 Future Optimizations (Deferred)
+- [ ] Dead code elimination after unconditional branches
+- [ ] Fold constant comparisons (`ldc + ldc + ceq` → `ldc.i4.0` or `ldc.i4.1`)
+- [ ] Peephole: `push reg; pop same-reg` → eliminate both
 - [ ] Combine `push imm; pop reg` → `mov reg, imm`
 
 ---

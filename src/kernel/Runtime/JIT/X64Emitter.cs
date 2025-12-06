@@ -1150,6 +1150,54 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// Shift left by immediate (alias for ShlImm).
+    /// </summary>
+    public static void ShlRI(ref CodeBuffer code, VReg reg, byte imm)
+    {
+        ShiftLeftImm(ref code, reg, imm);
+    }
+
+    /// <summary>
+    /// Shift right (arithmetic/signed) by immediate.
+    /// </summary>
+    public static void SarRI(ref CodeBuffer code, VReg reg, byte imm)
+    {
+        var v = Map(reg);
+        EmitRexSingle(ref code, true, v);
+        if (imm == 1)
+        {
+            code.EmitByte(0xD1);  // SAR r/m64, 1
+            code.EmitByte(ModRM(0b11, 7, (byte)v));
+        }
+        else
+        {
+            code.EmitByte(0xC1);  // SAR r/m64, imm8
+            code.EmitByte(ModRM(0b11, 7, (byte)v));
+            code.EmitByte(imm);
+        }
+    }
+
+    /// <summary>
+    /// Shift right (logical/unsigned) by immediate.
+    /// </summary>
+    public static void ShrRI(ref CodeBuffer code, VReg reg, byte imm)
+    {
+        var v = Map(reg);
+        EmitRexSingle(ref code, true, v);
+        if (imm == 1)
+        {
+            code.EmitByte(0xD1);  // SHR r/m64, 1
+            code.EmitByte(ModRM(0b11, 5, (byte)v));
+        }
+        else
+        {
+            code.EmitByte(0xC1);  // SHR r/m64, imm8
+            code.EmitByte(ModRM(0b11, 5, (byte)v));
+            code.EmitByte(imm);
+        }
+    }
+
+    /// <summary>
     /// Shift right (arithmetic/signed) by register.
     /// </summary>
     public static void SarCL(ref CodeBuffer code, VReg reg)
