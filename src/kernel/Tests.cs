@@ -3580,25 +3580,8 @@ public static unsafe class Tests
         }
         DebugConsole.WriteLine("[NewPAL Test] Test 7: IsWindowsVersionOrGreater - PASSED");
 
-        // ==================== COM Stubs Tests ====================
-        DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx");
-        int hr = PAL.COM.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
-        if (hr != PAL.HResult.S_OK)
-        {
-            DebugConsole.Write("[NewPAL Test] Test 8: FAILED - hr = ");
-            DebugConsole.WriteHex((uint)hr);
-            DebugConsole.WriteLine();
-            return 1;
-        }
-        // Second call should return S_FALSE (already initialized)
-        hr = PAL.COM.CoInitializeEx(null, PAL.CoInitFlags.COINIT_MULTITHREADED);
-        if (hr != PAL.HResult.S_FALSE)
-        {
-            DebugConsole.WriteLine("[NewPAL Test] Test 8: FAILED - second call should be S_FALSE");
-            return 1;
-        }
-        PAL.COM.CoUninitialize();
-        DebugConsole.WriteLine("[NewPAL Test] Test 8: CoInitializeEx/CoUninitialize - PASSED");
+        // ==================== COM Stubs Tests (removed - COM.cs deleted) ====================
+        DebugConsole.WriteLine("[NewPAL Test] Test 8: COM stubs - SKIPPED (removed)");
 
         // ==================== NativeAOT PAL Tests ====================
         DebugConsole.WriteLine("[NewPAL Test] Test 9: PalGetModuleBounds");

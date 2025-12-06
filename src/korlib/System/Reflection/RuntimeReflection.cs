@@ -33,7 +33,7 @@ namespace System.Reflection
             {
                 if (_name == null)
                 {
-                    byte* namePtr = PalGetMethodName(_assemblyId, _methodToken);
+                    byte* namePtr = Reflection_GetMethodName(_assemblyId, _methodToken);
                     if (namePtr != null)
                         _name = BytePtrToString(namePtr);
                     else
@@ -69,14 +69,14 @@ namespace System.Reflection
             {
                 if (!_isStaticChecked)
                 {
-                    _isStatic = PalIsMethodStatic(_assemblyId, _methodToken);
+                    _isStatic = Reflection_IsMethodStatic(_assemblyId, _methodToken);
                     _isStaticChecked = true;
                 }
                 return _isStatic;
             }
         }
 
-        public bool IsVirtual => PalIsMethodVirtual(_assemblyId, _methodToken);
+        public bool IsVirtual => Reflection_IsMethodVirtual(_assemblyId, _methodToken);
 
         public override ParameterInfo[] GetParameters()
         {
@@ -87,7 +87,7 @@ namespace System.Reflection
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture)
         {
-            return PalInvokeMethod(_methodToken, obj, parameters);
+            return Reflection_InvokeMethod(_methodToken, obj, parameters);
         }
 
         public override MethodInfo GetBaseDefinition() => this;
@@ -98,17 +98,17 @@ namespace System.Reflection
         public override int MetadataToken => (int)_methodToken;
 
         // Import kernel reflection APIs
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern byte* PalGetMethodName(uint assemblyId, uint methodToken);
+        [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern bool PalIsMethodStatic(uint assemblyId, uint methodToken);
+        [DllImport("*", EntryPoint = "Reflection_IsMethodStatic", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern bool Reflection_IsMethodStatic(uint assemblyId, uint methodToken);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern bool PalIsMethodVirtual(uint assemblyId, uint methodToken);
+        [DllImport("*", EntryPoint = "Reflection_IsMethodVirtual", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern bool Reflection_IsMethodVirtual(uint assemblyId, uint methodToken);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern object? PalInvokeMethod(uint methodToken, object? target, object?[]? args);
+        [DllImport("*", EntryPoint = "Reflection_InvokeMethod", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern object? Reflection_InvokeMethod(uint methodToken, object? target, object?[]? args);
 
         private static string BytePtrToString(byte* ptr)
         {
@@ -160,7 +160,7 @@ namespace System.Reflection
             {
                 if (_name == null)
                 {
-                    byte* namePtr = PalGetFieldName(_assemblyId, _fieldToken);
+                    byte* namePtr = Reflection_GetFieldName(_assemblyId, _fieldToken);
                     if (namePtr != null)
                         _name = BytePtrToString(namePtr);
                     else
@@ -183,27 +183,27 @@ namespace System.Reflection
 
         public override object? GetValue(object? obj)
         {
-            return PalGetFieldValue(_fieldToken, obj, _fieldOffset, _fieldSize, _isValueType);
+            return Reflection_GetFieldValue(_fieldToken, obj, _fieldOffset, _fieldSize, _isValueType);
         }
 
         public override void SetValue(object? obj, object? value, BindingFlags invokeAttr,
             Binder? binder, CultureInfo? culture)
         {
-            PalSetFieldValue(_fieldToken, obj, _fieldOffset, _fieldSize, _isValueType, value);
+            Reflection_SetFieldValue(_fieldToken, obj, _fieldOffset, _fieldSize, _isValueType, value);
         }
 
         public override int MetadataToken => (int)_fieldToken;
 
         // Import kernel reflection APIs
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern byte* PalGetFieldName(uint assemblyId, uint fieldToken);
+        [DllImport("*", EntryPoint = "Reflection_GetFieldName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetFieldName(uint assemblyId, uint fieldToken);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern object? PalGetFieldValue(uint fieldToken, object? target,
+        [DllImport("*", EntryPoint = "Reflection_GetFieldValue", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern object? Reflection_GetFieldValue(uint fieldToken, object? target,
             int fieldOffset, int fieldSize, bool isValueType);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern void PalSetFieldValue(uint fieldToken, object? target,
+        [DllImport("*", EntryPoint = "Reflection_SetFieldValue", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern void Reflection_SetFieldValue(uint fieldToken, object? target,
             int fieldOffset, int fieldSize, bool isValueType, object? value);
 
         private static string BytePtrToString(byte* ptr)
@@ -328,7 +328,7 @@ namespace System.Reflection
             {
                 if (_name == null)
                 {
-                    byte* namePtr = PalGetMethodName(_assemblyId, _methodToken);
+                    byte* namePtr = Reflection_GetMethodName(_assemblyId, _methodToken);
                     if (namePtr != null)
                         _name = BytePtrToString(namePtr);
                     else
@@ -352,7 +352,7 @@ namespace System.Reflection
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture)
         {
-            return PalInvokeMethod(_methodToken, obj, parameters);
+            return Reflection_InvokeMethod(_methodToken, obj, parameters);
         }
 
         public override object Invoke(BindingFlags invokeAttr, Binder? binder,
@@ -360,16 +360,16 @@ namespace System.Reflection
         {
             // Create instance then call constructor
             // For now, simplified - just invoke
-            return PalInvokeMethod(_methodToken, null, parameters) ?? new object();
+            return Reflection_InvokeMethod(_methodToken, null, parameters) ?? new object();
         }
 
         public override int MetadataToken => (int)_methodToken;
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern byte* PalGetMethodName(uint assemblyId, uint methodToken);
+        [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
 
-        [DllImport("*", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern object? PalInvokeMethod(uint methodToken, object? target, object?[]? args);
+        [DllImport("*", EntryPoint = "Reflection_InvokeMethod", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern object? Reflection_InvokeMethod(uint methodToken, object? target, object?[]? args);
 
         private static string BytePtrToString(byte* ptr)
         {

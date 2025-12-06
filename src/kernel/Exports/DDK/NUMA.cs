@@ -6,7 +6,7 @@ using ProtonOS.Platform;
 using ProtonOS.Memory;
 using ProtonOS.Threading;
 
-namespace ProtonOS.Exports;
+namespace ProtonOS.Exports.DDK;
 
 /// <summary>
 /// DDK exports for NUMA topology and NUMA-aware memory allocation.

@@ -55,7 +55,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
         if (_cachedTypes != null)
             return _cachedTypes;
 
-        uint typeCount = PalGetTypeCount(_assemblyId);
+        uint typeCount = Reflection_GetTypeCount(_assemblyId);
         if (typeCount == 0)
         {
             _cachedTypes = Array.Empty<Type>();
@@ -66,14 +66,14 @@ public unsafe sealed class RuntimeAssembly : Assembly
         int validCount = 0;
         for (uint i = 0; i < typeCount; i++)
         {
-            uint typeToken = PalGetTypeTokenByIndex(_assemblyId, i);
+            uint typeToken = Reflection_GetTypeTokenByIndex(_assemblyId, i);
             if (typeToken == 0)
                 continue;
 
             // Skip <Module> type (row 1, index 0)
             if (i == 0)
             {
-                byte* name = PalGetTypeName(_assemblyId, typeToken);
+                byte* name = Reflection_GetTypeName(_assemblyId, typeToken);
                 if (name != null && name[0] == '<')
                     continue;
             }
@@ -86,20 +86,20 @@ public unsafe sealed class RuntimeAssembly : Assembly
 
         for (uint i = 0; i < typeCount; i++)
         {
-            uint typeToken = PalGetTypeTokenByIndex(_assemblyId, i);
+            uint typeToken = Reflection_GetTypeTokenByIndex(_assemblyId, i);
             if (typeToken == 0)
                 continue;
 
             // Skip <Module> type (row 1, index 0)
             if (i == 0)
             {
-                byte* name = PalGetTypeName(_assemblyId, typeToken);
+                byte* name = Reflection_GetTypeName(_assemblyId, typeToken);
                 if (name != null && name[0] == '<')
                     continue;
             }
 
             // Get or create RuntimeType for this type
-            void* mt = PalGetTypeMethodTable(_assemblyId, typeToken);
+            void* mt = Reflection_GetTypeMethodTable(_assemblyId, typeToken);
             RuntimeType runtimeType;
             if (mt != null)
             {
@@ -131,7 +131,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
         {
             if (allTypes[i] is RuntimeType rt)
             {
-                uint flags = PalGetTypeFlags(_assemblyId, GetTypeToken(rt));
+                uint flags = Reflection_GetTypeFlags(_assemblyId, GetTypeToken(rt));
                 // Visibility mask is 0x7, Public = 1
                 if ((flags & 0x7) == 1)
                     publicCount++;
@@ -148,7 +148,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
         {
             if (allTypes[i] is RuntimeType rt)
             {
-                uint flags = PalGetTypeFlags(_assemblyId, GetTypeToken(rt));
+                uint flags = Reflection_GetTypeFlags(_assemblyId, GetTypeToken(rt));
                 if ((flags & 0x7) == 1)
                     exported[idx++] = allTypes[i];
             }
@@ -188,7 +188,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
             StringToUtf8(ns, nsUtf8, ns.Length + 1);
         }
 
-        uint typeToken = PalFindTypeByName(_assemblyId, nameUtf8, nsUtf8);
+        uint typeToken = Reflection_FindTypeByName(_assemblyId, nameUtf8, nsUtf8);
 
         if (typeToken == 0)
         {
@@ -198,7 +198,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
         }
 
         // Create RuntimeType for the found type
-        void* mt = PalGetTypeMethodTable(_assemblyId, typeToken);
+        void* mt = Reflection_GetTypeMethodTable(_assemblyId, typeToken);
         return new RuntimeType((MethodTable*)mt, _assemblyId, typeToken);
     }
 
@@ -222,7 +222,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
             StringToUtf8(ns, nsUtf8, ns.Length + 1);
         }
 
-        return PalFindTypeByName(_assemblyId, nameUtf8, nsUtf8);
+        return Reflection_FindTypeByName(_assemblyId, nameUtf8, nsUtf8);
     }
 
     // ========================================================================
@@ -237,14 +237,14 @@ public unsafe sealed class RuntimeAssembly : Assembly
     /// </summary>
     public static RuntimeAssembly[] GetLoadedAssemblies()
     {
-        uint count = PalGetAssemblyCount();
+        uint count = Reflection_GetAssemblyCount();
         if (_loadedAssemblies != null && _cachedAssemblyCount == (int)count)
             return _loadedAssemblies;
 
         var assemblies = new RuntimeAssembly[count];
         for (uint i = 0; i < count; i++)
         {
-            uint asmId = PalGetAssemblyIdByIndex(i);
+            uint asmId = Reflection_GetAssemblyIdByIndex(i);
             if (asmId != 0)
             {
                 assemblies[i] = new RuntimeAssembly(asmId);
@@ -267,7 +267,7 @@ public unsafe sealed class RuntimeAssembly : Assembly
         void* mt = type.TypeHandle.Value.ToPointer();
         if (mt != null)
         {
-            PalGetTypeInfo(mt, &asmId, &token);
+            Reflection_GetTypeInfo(mt, &asmId, &token);
         }
 
         if (asmId == 0)
@@ -295,33 +295,33 @@ public unsafe sealed class RuntimeAssembly : Assembly
     }
 
     // ========================================================================
-    // Kernel PAL Imports
+    // Kernel Reflection Imports
     // ========================================================================
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalGetAssemblyCount();
+    [DllImport("*", EntryPoint = "Reflection_GetAssemblyCount", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_GetAssemblyCount();
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalGetAssemblyIdByIndex(uint index);
+    [DllImport("*", EntryPoint = "Reflection_GetAssemblyIdByIndex", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_GetAssemblyIdByIndex(uint index);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalGetTypeCount(uint assemblyId);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeCount", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_GetTypeCount(uint assemblyId);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalGetTypeTokenByIndex(uint assemblyId, uint index);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeTokenByIndex", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_GetTypeTokenByIndex(uint assemblyId, uint index);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalFindTypeByName(uint assemblyId, byte* nameUtf8, byte* namespaceUtf8);
+    [DllImport("*", EntryPoint = "Reflection_FindTypeByName", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_FindTypeByName(uint assemblyId, byte* nameUtf8, byte* namespaceUtf8);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void* PalGetTypeMethodTable(uint assemblyId, uint typeToken);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeMethodTable", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void* Reflection_GetTypeMethodTable(uint assemblyId, uint typeToken);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern uint PalGetTypeFlags(uint assemblyId, uint typeDefToken);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeFlags", CallingConvention = CallingConvention.Cdecl)]
+    private static extern uint Reflection_GetTypeFlags(uint assemblyId, uint typeDefToken);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern byte* PalGetTypeName(uint assemblyId, uint typeDefToken);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeName", CallingConvention = CallingConvention.Cdecl)]
+    private static extern byte* Reflection_GetTypeName(uint assemblyId, uint typeDefToken);
 
-    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-    private static extern void PalGetTypeInfo(void* methodTable, uint* outAssemblyId, uint* outTypeDefToken);
+    [DllImport("*", EntryPoint = "Reflection_GetTypeInfo", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void Reflection_GetTypeInfo(void* methodTable, uint* outAssemblyId, uint* outTypeDefToken);
 }

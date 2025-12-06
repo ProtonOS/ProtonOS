@@ -117,7 +117,6 @@ public static unsafe class ReflectionRuntime
     /// Get type info from a MethodTable pointer.
     /// Returns assembly ID and type token, or 0 if not found.
     /// </summary>
-    [RuntimeExport("PalGetTypeInfo")]
     public static void GetTypeInfo(void* methodTable, uint* outAssemblyId, uint* outTypeDefToken)
     {
         if (outAssemblyId != null) *outAssemblyId = 0;
@@ -140,7 +139,6 @@ public static unsafe class ReflectionRuntime
     /// <param name="target">The target object (null for static methods).</param>
     /// <param name="args">Array of arguments.</param>
     /// <returns>The return value, or null for void methods.</returns>
-    [RuntimeExport("PalInvokeMethod")]
     public static object? InvokeMethod(uint methodToken, object? target, object?[]? args)
     {
         // Look up the compiled method
@@ -184,7 +182,6 @@ public static unsafe class ReflectionRuntime
     /// Supports reference types fully and primitive value types (int, long, byte, bool, etc.)
     /// by reading raw bytes. Complex value types (structs) are not fully supported.
     /// </summary>
-    [RuntimeExport("PalGetFieldValue")]
     public static object? GetFieldValue(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType)
     {
         // Static field case with negative offset means absolute address
@@ -223,7 +220,6 @@ public static unsafe class ReflectionRuntime
     /// Set field value using field token and offset.
     /// Supports reference types fully and primitive value types by unboxing.
     /// </summary>
-    [RuntimeExport("PalSetFieldValue")]
     public static void SetFieldValue(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType, object? value)
     {
         byte* fieldPtr;
@@ -276,7 +272,6 @@ public static unsafe class ReflectionRuntime
     /// Writes the field value to the provided buffer.
     /// Returns the number of bytes written, or 0 on error.
     /// </summary>
-    [RuntimeExport("PalGetFieldValueRaw")]
     public static int GetFieldValueRaw(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType, byte* buffer, int bufferSize)
     {
         if (buffer == null || bufferSize < fieldSize)
@@ -352,7 +347,6 @@ public static unsafe class ReflectionRuntime
     /// Get field information including type signature for proper boxing.
     /// Returns the ElementType for primitive fields, or 0 for unknown/complex types.
     /// </summary>
-    [RuntimeExport("PalGetFieldElementType")]
     public static byte GetFieldElementType(uint assemblyId, uint fieldToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -376,7 +370,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get method name from token (returns pointer to null-terminated UTF-8 string).
     /// </summary>
-    [RuntimeExport("PalGetMethodName")]
     public static byte* GetMethodName(uint assemblyId, uint methodToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -391,7 +384,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get method count for a type.
     /// </summary>
-    [RuntimeExport("PalGetMethodCount")]
     public static uint GetMethodCount(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -407,7 +399,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get method token at index for a type.
     /// </summary>
-    [RuntimeExport("PalGetMethodToken")]
     public static uint GetMethodToken(uint assemblyId, uint typeDefToken, uint index)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -427,7 +418,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get field count for a type.
     /// </summary>
-    [RuntimeExport("PalGetFieldCount")]
     public static uint GetFieldCount(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -443,7 +433,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get field token at index for a type.
     /// </summary>
-    [RuntimeExport("PalGetFieldToken")]
     public static uint GetFieldToken(uint assemblyId, uint typeDefToken, uint index)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -463,7 +452,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get field name from token.
     /// </summary>
-    [RuntimeExport("PalGetFieldName")]
     public static byte* GetFieldName(uint assemblyId, uint fieldToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -478,7 +466,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get type name from TypeDef token.
     /// </summary>
-    [RuntimeExport("PalGetTypeName")]
     public static byte* GetTypeName(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -493,7 +480,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get type namespace from TypeDef token.
     /// </summary>
-    [RuntimeExport("PalGetTypeNamespace")]
     public static byte* GetTypeNamespace(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -508,7 +494,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Check if a method is static.
     /// </summary>
-    [RuntimeExport("PalIsMethodStatic")]
     public static bool IsMethodStatic(uint assemblyId, uint methodToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -522,7 +507,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Check if a method is virtual.
     /// </summary>
-    [RuntimeExport("PalIsMethodVirtual")]
     public static bool IsMethodVirtual(uint assemblyId, uint methodToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -540,7 +524,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get the number of loaded assemblies.
     /// </summary>
-    [RuntimeExport("PalGetAssemblyCount")]
     public static uint GetAssemblyCount()
     {
         return (uint)AssemblyLoader.GetAssemblyCount();
@@ -550,7 +533,6 @@ public static unsafe class ReflectionRuntime
     /// Get an assembly ID by index (0-based).
     /// Returns 0 if index is out of range.
     /// </summary>
-    [RuntimeExport("PalGetAssemblyIdByIndex")]
     public static uint GetAssemblyIdByIndex(uint index)
     {
         // Iterate through loaded assemblies to find the nth one
@@ -573,7 +555,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get the number of types (TypeDef entries) in an assembly.
     /// </summary>
-    [RuntimeExport("PalGetTypeCount")]
     public static uint GetTypeCount(uint assemblyId)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -589,7 +570,6 @@ public static unsafe class ReflectionRuntime
     /// Note: TypeDef rows are 1-based in metadata, but this API uses 0-based index.
     /// Row 1 is typically &lt;Module&gt;, so useful types start at index 1.
     /// </summary>
-    [RuntimeExport("PalGetTypeTokenByIndex")]
     public static uint GetTypeTokenByIndex(uint assemblyId, uint index)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -608,7 +588,6 @@ public static unsafe class ReflectionRuntime
     /// Find a type by its name and namespace in an assembly.
     /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
     /// </summary>
-    [RuntimeExport("PalFindTypeByName")]
     public static uint FindTypeByName(uint assemblyId, byte* nameUtf8, byte* namespaceUtf8)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -645,7 +624,6 @@ public static unsafe class ReflectionRuntime
     /// Get the MethodTable pointer for a type token if it has been resolved.
     /// Returns null if the type hasn't been instantiated yet.
     /// </summary>
-    [RuntimeExport("PalGetTypeMethodTable")]
     public static void* GetTypeMethodTable(uint assemblyId, uint typeToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -658,7 +636,6 @@ public static unsafe class ReflectionRuntime
     /// <summary>
     /// Get the TypeDef flags (attributes) for a type.
     /// </summary>
-    [RuntimeExport("PalGetTypeFlags")]
     public static uint GetTypeFlags(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
@@ -673,7 +650,6 @@ public static unsafe class ReflectionRuntime
     /// Get the base type of a type (extends clause).
     /// Returns 0 if no base type or if base type is System.Object.
     /// </summary>
-    [RuntimeExport("PalGetTypeBaseType")]
     public static uint GetTypeBaseType(uint assemblyId, uint typeDefToken)
     {
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);

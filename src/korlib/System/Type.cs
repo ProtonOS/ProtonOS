@@ -185,7 +185,7 @@ namespace System
 
             // Query kernel for type info based on MethodTable
             uint asmId = 0, token = 0;
-            PalGetTypeInfo(_pMethodTable, &asmId, &token);
+            Reflection_GetTypeInfo(_pMethodTable, &asmId, &token);
             _assemblyId = asmId;
             _typeDefToken = token;
             _metadataLoaded = true;
@@ -202,7 +202,7 @@ namespace System
                     EnsureMetadataLoaded();
                     if (_typeDefToken != 0)
                     {
-                        byte* namePtr = PalGetTypeName(_assemblyId, _typeDefToken);
+                        byte* namePtr = Reflection_GetTypeName(_assemblyId, _typeDefToken);
                         if (namePtr != null)
                             _name = BytePtrToString(namePtr);
                     }
@@ -222,7 +222,7 @@ namespace System
                     EnsureMetadataLoaded();
                     if (_typeDefToken != 0)
                     {
-                        byte* nsPtr = PalGetTypeNamespace(_assemblyId, _typeDefToken);
+                        byte* nsPtr = Reflection_GetTypeNamespace(_assemblyId, _typeDefToken);
                         if (nsPtr != null && *nsPtr != 0)
                             _namespace = BytePtrToString(nsPtr);
                     }
@@ -249,14 +249,14 @@ namespace System
             if (_typeDefToken == 0)
                 return new MethodInfo[0];
 
-            uint count = PalGetMethodCount(_assemblyId, _typeDefToken);
+            uint count = Reflection_GetMethodCount(_assemblyId, _typeDefToken);
             if (count == 0)
                 return new MethodInfo[0];
 
             var methods = new MethodInfo[count];
             for (uint i = 0; i < count; i++)
             {
-                uint methodToken = PalGetMethodToken(_assemblyId, _typeDefToken, i);
+                uint methodToken = Reflection_GetMethodToken(_assemblyId, _typeDefToken, i);
                 if (methodToken != 0)
                 {
                     methods[i] = new RuntimeMethodInfo(_assemblyId, methodToken, this);
@@ -308,14 +308,14 @@ namespace System
             if (_typeDefToken == 0)
                 return new FieldInfo[0];
 
-            uint count = PalGetFieldCount(_assemblyId, _typeDefToken);
+            uint count = Reflection_GetFieldCount(_assemblyId, _typeDefToken);
             if (count == 0)
                 return new FieldInfo[0];
 
             var fields = new FieldInfo[count];
             for (uint i = 0; i < count; i++)
             {
-                uint fieldToken = PalGetFieldToken(_assemblyId, _typeDefToken, i);
+                uint fieldToken = Reflection_GetFieldToken(_assemblyId, _typeDefToken, i);
                 if (fieldToken != 0)
                 {
                     // For now, create with default offset/size - would need metadata to calculate
@@ -333,7 +333,7 @@ namespace System
                 return new ConstructorInfo[0];
 
             // Look for .ctor methods
-            uint methodCount = PalGetMethodCount(_assemblyId, _typeDefToken);
+            uint methodCount = Reflection_GetMethodCount(_assemblyId, _typeDefToken);
             if (methodCount == 0)
                 return new ConstructorInfo[0];
 
@@ -341,10 +341,10 @@ namespace System
             int ctorCount = 0;
             for (uint i = 0; i < methodCount; i++)
             {
-                uint methodToken = PalGetMethodToken(_assemblyId, _typeDefToken, i);
+                uint methodToken = Reflection_GetMethodToken(_assemblyId, _typeDefToken, i);
                 if (methodToken != 0)
                 {
-                    byte* namePtr = PalGetMethodName(_assemblyId, methodToken);
+                    byte* namePtr = Reflection_GetMethodName(_assemblyId, methodToken);
                     if (namePtr != null && IsCtorName(namePtr))
                         ctorCount++;
                 }
@@ -358,10 +358,10 @@ namespace System
             int idx = 0;
             for (uint i = 0; i < methodCount; i++)
             {
-                uint methodToken = PalGetMethodToken(_assemblyId, _typeDefToken, i);
+                uint methodToken = Reflection_GetMethodToken(_assemblyId, _typeDefToken, i);
                 if (methodToken != 0)
                 {
-                    byte* namePtr = PalGetMethodName(_assemblyId, methodToken);
+                    byte* namePtr = Reflection_GetMethodName(_assemblyId, methodToken);
                     if (namePtr != null && IsCtorName(namePtr))
                     {
                         ctors[idx++] = new RuntimeConstructorInfo(_assemblyId, methodToken, this);
@@ -398,28 +398,28 @@ namespace System
         }
 
         // Import kernel reflection APIs
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void PalGetTypeInfo(void* methodTable, uint* outAssemblyId, uint* outTypeDefToken);
+        [DllImport("*", EntryPoint = "Reflection_GetTypeInfo", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void Reflection_GetTypeInfo(void* methodTable, uint* outAssemblyId, uint* outTypeDefToken);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern byte* PalGetTypeName(uint assemblyId, uint typeDefToken);
+        [DllImport("*", EntryPoint = "Reflection_GetTypeName", CallingConvention = CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetTypeName(uint assemblyId, uint typeDefToken);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern byte* PalGetTypeNamespace(uint assemblyId, uint typeDefToken);
+        [DllImport("*", EntryPoint = "Reflection_GetTypeNamespace", CallingConvention = CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetTypeNamespace(uint assemblyId, uint typeDefToken);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint PalGetMethodCount(uint assemblyId, uint typeDefToken);
+        [DllImport("*", EntryPoint = "Reflection_GetMethodCount", CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint Reflection_GetMethodCount(uint assemblyId, uint typeDefToken);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint PalGetMethodToken(uint assemblyId, uint typeDefToken, uint index);
+        [DllImport("*", EntryPoint = "Reflection_GetMethodToken", CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint Reflection_GetMethodToken(uint assemblyId, uint typeDefToken, uint index);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint PalGetFieldCount(uint assemblyId, uint typeDefToken);
+        [DllImport("*", EntryPoint = "Reflection_GetFieldCount", CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint Reflection_GetFieldCount(uint assemblyId, uint typeDefToken);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint PalGetFieldToken(uint assemblyId, uint typeDefToken, uint index);
+        [DllImport("*", EntryPoint = "Reflection_GetFieldToken", CallingConvention = CallingConvention.Cdecl)]
+        private static extern uint Reflection_GetFieldToken(uint assemblyId, uint typeDefToken, uint index);
 
-        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
-        private static extern byte* PalGetMethodName(uint assemblyId, uint methodToken);
+        [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
     }
 }

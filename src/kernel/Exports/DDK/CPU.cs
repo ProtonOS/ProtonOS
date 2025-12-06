@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 using ProtonOS.Platform;
 using ProtonOS.Threading;
 
-namespace ProtonOS.Exports;
+namespace ProtonOS.Exports.DDK;
 
 /// <summary>
 /// DDK exports for CPU topology and thread affinity.

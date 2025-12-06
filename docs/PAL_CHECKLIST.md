@@ -1,6 +1,10 @@
-# PAL Integration Checklist for JIT Support
+# PAL Implementation Checklist
 
-This document tracks the Platform Abstraction Layer (PAL) APIs required for CoreCLR/RyuJIT integration.
+This document tracks the Platform Abstraction Layer (PAL) APIs implemented for NativeAOT runtime compatibility.
+PAL provides Win32-compatible APIs that the bflat/NativeAOT runtime requires for memory management,
+threading, synchronization, and exception handling. These are internal kernel APIs, not exported to
+managed code - see `docs/KERNEL_EXPORTS.md` for the managed code export structure.
+
 Based on [CoreCLR PAL header](https://github.com/dotnet/coreclr/blob/master/src/pal/inc/pal.h).
 
 ## Legend
