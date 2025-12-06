@@ -16,7 +16,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 - **NUMA Awareness** - Topology detection and NUMA-aware memory allocation
 - **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues
 - **Virtual Memory** - 4-level paging with higher-half kernel
-- **Tier 0 JIT** - Load and execute .NET assemblies at runtime
+- **Tier 0 JIT** - Load and execute .NET assemblies with TOS caching and constant folding
 
 ## Current Status
 
@@ -108,6 +108,7 @@ Everything else is C#.
 - [Architecture Reference](docs/ARCHITECTURE.md) - Detailed system design
 - [korlib Plan](docs/KORLIB_PLAN.md) - Runtime library roadmap
 - [JIT Checklist](docs/JIT_CHECKLIST.md) - JIT compiler implementation status
+- [Tier 0 Optimizations](docs/TIER0_OPTIMIZATIONS.md) - JIT optimization phases
 
 ## Contributing
 

@@ -450,6 +450,17 @@ public unsafe struct ILCompiler
     // For a more sophisticated approach, track register allocation
     private int _evalStackDepth;
 
+    // TOS (Top-of-Stack) caching optimization
+    // When _tosCached is true, RAX contains the top of the eval stack
+    // This reduces push/pop traffic by keeping the most recent value in a register
+    private bool _tosCached;
+    private byte _tosType;  // Type of cached value (StackType_Int, etc.)
+
+    // Constant folding: track if TOS is a compile-time constant
+    // When _tosIsConst is true, _tosConstValue holds the value and no code was emitted
+    private bool _tosIsConst;
+    private long _tosConstValue;
+
     // Stack type tracking for float support (0=int, 1=float32, 2=float64)
     private const int MaxStackDepth = 32;
     private fixed byte _evalStackTypes[MaxStackDepth];
@@ -503,6 +514,10 @@ public unsafe struct ILCompiler
         compiler._gcRefMask = gcRefMask;
         compiler._gcInfo = default;
         compiler._evalStackDepth = 0;
+        compiler._tosCached = false;
+        compiler._tosType = 0;
+        compiler._tosIsConst = false;
+        compiler._tosConstValue = 0;
         compiler._branchCount = 0;
         compiler._labelCount = 0;
         compiler._resolver = null;
@@ -1625,44 +1640,42 @@ public unsafe struct ILCompiler
 
     private bool CompileLdcI4(int value)
     {
-        // Push constant onto eval stack (sign-extended to 64-bit)
-        // For naive implementation: mov rax, imm64; push rax
-        // We sign-extend to 64-bit so that comparisons with long work correctly
-        // and so that returning negative i4 values works properly
-        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)(long)value);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        // Constant folding: defer code generation by tracking constant value
+        // Spill current TOS (constant or register-cached) if needed
+        SpillTOSIfCached();
+
+        // Mark this as a compile-time constant (no code emitted yet!)
+        // Code will be generated when the value is actually consumed
+        MarkConstAsTOS(value, StackType_Int);
         return true;
     }
 
     private bool CompileLdarg(int index)
     {
         // Load argument from shadow space - use full 64-bit load
-        // This handles both native int (pointer) and int32 arguments correctly
-        // For int32 args, the caller already zero-extends per Microsoft x64 ABI
+        // Uses TOS caching
+        SpillTOSIfCached();
         X64Emitter.LoadArgFromHome(ref _code, VReg.R0, index);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileLdloc(int index)
     {
         // Locals are at negative offsets from RBP
-        // After prologue: [rbp-8] = local0, [rbp-16] = local1, etc.
-        // But we need to account for shadow space + stack adjustment
+        // Uses TOS caching
+        SpillTOSIfCached();
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileStloc(int index)
     {
         // Pop from eval stack, store to local
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        // Uses TOS caching - if value is in R0, no pop needed
+        PopToR0();
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
         return true;
@@ -1671,17 +1684,37 @@ public unsafe struct ILCompiler
     private bool CompileDup()
     {
         // Duplicate top of stack
-        X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);  // Read top without popping
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        // With TOS caching: if TOS is cached, push a copy to memory
+        if (_tosCached)
+        {
+            // Value is in R0, push a copy to memory, R0 stays cached
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushStackType(_tosType);
+        }
+        else
+        {
+            // Value is in memory, read and push without popping
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushStackType(PeekStackType());
+        }
         return true;
     }
 
     private bool CompilePop()
     {
         // Discard top of stack
-        X64Emitter.AddRI(ref _code, VReg.SP, 8);
-        PopStackType();
+        // With TOS caching: if cached, just discard (no code needed)
+        if (_tosCached)
+        {
+            _tosCached = false;
+            PopStackType();
+        }
+        else
+        {
+            X64Emitter.AddRI(ref _code, VReg.SP, 8);
+            PopStackType();
+        }
         return true;
     }
 
@@ -1733,19 +1766,179 @@ public unsafe struct ILCompiler
     // Check if type is float (single or double)
     private bool IsFloatType(byte type) => type == StackType_Float32 || type == StackType_Float64;
 
+    // === TOS (Top-of-Stack) Caching Helpers ===
+    // These reduce push/pop traffic by keeping the topmost value in RAX.
+    //
+    // Usage pattern for pushing:
+    //   SpillTOSIfCached();      // Make room for new value
+    //   ... compute value in R0 ...
+    //   MarkR0AsTOS(type);       // Mark R0 as holding TOS
+    //
+    // Usage pattern for popping:
+    //   PopToR0();               // Get TOS into R0 (free if cached!)
+    //   ... use value in R0 ...
+
+    /// <summary>
+    /// If TOS is cached in R0, push it to memory to make room.
+    /// Call this BEFORE computing a new value in R0.
+    /// </summary>
+    /// <summary>
+    /// Materialize a constant TOS value into R0.
+    /// Called when we need the actual value in a register.
+    /// </summary>
+    private void MaterializeConstToR0()
+    {
+        if (!_tosIsConst) return;
+
+        long value = _tosConstValue;
+        if (value == 0)
+        {
+            X64Emitter.ZeroReg(ref _code, VReg.R0);
+        }
+        else if (value > 0 && value <= int.MaxValue)
+        {
+            X64Emitter.MovRI32(ref _code, VReg.R0, (int)value);
+        }
+        else
+        {
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
+        }
+        _tosIsConst = false;
+        _tosCached = true;  // Now it's in R0
+    }
+
+    private void SpillTOSIfCached()
+    {
+        if (_tosIsConst)
+        {
+            // Constant TOS: materialize and push
+            MaterializeConstToR0();
+            X64Emitter.Push(ref _code, VReg.R0);
+            _tosCached = false;
+        }
+        else if (_tosCached)
+        {
+            X64Emitter.Push(ref _code, VReg.R0);
+            _tosCached = false;
+        }
+    }
+
+    /// <summary>
+    /// Mark R0 as containing the new TOS value.
+    /// Call this AFTER the value is computed in R0.
+    /// </summary>
+    private void MarkR0AsTOS(byte stackType = 0)
+    {
+        _tosCached = true;
+        _tosIsConst = false;  // Value in register, not a known constant
+        _tosType = stackType;
+        PushStackType(stackType);
+    }
+
+    /// <summary>
+    /// Mark TOS as a compile-time constant (no code emitted yet).
+    /// </summary>
+    private void MarkConstAsTOS(long value, byte stackType = 0)
+    {
+        _tosCached = false;   // Not in R0 yet
+        _tosIsConst = true;
+        _tosConstValue = value;
+        _tosType = stackType;
+        PushStackType(stackType);
+    }
+
+    /// <summary>
+    /// Flush TOS to memory unconditionally (for branches/calls).
+    /// </summary>
+    private void FlushTOS()
+    {
+        SpillTOSIfCached();
+    }
+
+    /// <summary>
+    /// Pop a value from the eval stack into R0.
+    /// If TOS is cached (or a constant), the value is already there (free!) or gets materialized.
+    /// </summary>
+    private void PopToR0()
+    {
+        PopStackType();
+        if (_tosIsConst)
+        {
+            // Constant TOS: materialize to R0
+            MaterializeConstToR0();
+            _tosCached = false;
+        }
+        else if (_tosCached)
+        {
+            // Value is already in R0 - no code needed!
+            _tosCached = false;
+        }
+        else
+        {
+            X64Emitter.Pop(ref _code, VReg.R0);
+        }
+    }
+
+    /// <summary>
+    /// Pop a value from the eval stack into a specific register.
+    /// </summary>
+    private void PopToReg(VReg dst)
+    {
+        PopStackType();
+        if (_tosIsConst)
+        {
+            // Constant TOS: load directly into destination register
+            long value = _tosConstValue;
+            _tosIsConst = false;
+            if (value == 0)
+            {
+                X64Emitter.ZeroReg(ref _code, dst);
+            }
+            else if (value > 0 && value <= int.MaxValue)
+            {
+                X64Emitter.MovRI32(ref _code, dst, (int)value);
+            }
+            else
+            {
+                X64Emitter.MovRI64(ref _code, dst, (ulong)value);
+            }
+        }
+        else if (_tosCached)
+        {
+            _tosCached = false;
+            if (dst != VReg.R0)
+            {
+                X64Emitter.MovRR(ref _code, dst, VReg.R0);
+            }
+        }
+        else
+        {
+            X64Emitter.Pop(ref _code, dst);
+        }
+    }
+
+    /// <summary>
+    /// Push R0 to memory stack unconditionally (for when we need the slot).
+    /// </summary>
+    private void PushR0ToMemory()
+    {
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushStackType(StackType_Int);
+    }
+
     private bool CompileAdd()
     {
         // Pop two values, add, push result
-        // Peek at operand types before popping
-        byte type2 = PopStackType();
-        byte type1 = PopStackType();
+        // Peek at types to determine float vs int (without popping yet)
+        byte type2 = PeekStackTypeAt(0);  // Top
+        byte type1 = PeekStackTypeAt(1);  // Second from top
 
         if (IsFloatType(type1) || IsFloatType(type2))
         {
-            // Float arithmetic - use SSE
-            // Pop both operands from memory stack
-            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
-            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
+            // Float arithmetic with peephole optimization
+            // Use PopToReg to avoid push/pop pair when TOS is cached
+            PopToReg(VReg.R2);  // Second operand (bits) -> R2
+            PopToR0();          // First operand (bits) -> R0
 
             // Determine if single or double precision (use widest type)
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
@@ -1759,8 +1952,7 @@ public unsafe struct ILCompiler
                 X64Emitter.AddsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float64);
+                MarkR0AsTOS(StackType_Float64);
             }
             else
             {
@@ -1771,33 +1963,52 @@ public unsafe struct ILCompiler
                 X64Emitter.AddssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float32);
+                MarkR0AsTOS(StackType_Float32);
             }
         }
         else
         {
-            // Integer arithmetic
-            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
-            X64Emitter.Pop(ref _code, VReg.R0);  // First operand
+            // Integer arithmetic with TOS caching
+            // Pop second operand (may be in TOS cache or memory)
+            PopToReg(VReg.R2);  // Second operand -> R2
+            // Pop first operand
+            PopToR0();  // First operand -> R0
+            // Add
             X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
-            X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);
+            // Result is in R0, mark as TOS
+            MarkR0AsTOS(StackType_Int);
         }
         return true;
+    }
+
+    /// <summary>
+    /// Peek at stack type at given depth (0 = top, 1 = second from top, etc.)
+    /// </summary>
+    private byte PeekStackTypeAt(int depth)
+    {
+        int index = _evalStackDepth - 1 - depth;
+        if (index >= 0 && index < MaxStackDepth)
+        {
+            fixed (byte* types = _evalStackTypes)
+            {
+                return types[index];
+            }
+        }
+        return StackType_Int;
     }
 
     private bool CompileSub()
     {
         // Pop two values, subtract, push result
-        byte type2 = PopStackType();
-        byte type1 = PopStackType();
+        // Peek at types to determine float vs int (without popping yet)
+        byte type2 = PeekStackTypeAt(0);  // Top
+        byte type1 = PeekStackTypeAt(1);  // Second from top
 
         if (IsFloatType(type1) || IsFloatType(type2))
         {
-            // Float arithmetic - use SSE
-            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
-            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
+            // Float arithmetic with peephole optimization
+            PopToReg(VReg.R2);  // Second operand (bits) -> R2
+            PopToR0();          // First operand (bits) -> R0
 
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
 
@@ -1807,8 +2018,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.SubsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float64);
+                MarkR0AsTOS(StackType_Float64);
             }
             else
             {
@@ -1816,18 +2026,16 @@ public unsafe struct ILCompiler
                 X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.SubssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float32);
+                MarkR0AsTOS(StackType_Float32);
             }
         }
         else
         {
-            // Integer arithmetic
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R0);
+            // Integer arithmetic with TOS caching
+            PopToReg(VReg.R2);  // Second operand -> R2
+            PopToR0();  // First operand -> R0
             X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
-            X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);
+            MarkR0AsTOS(StackType_Int);
         }
         return true;
     }
@@ -1835,14 +2043,15 @@ public unsafe struct ILCompiler
     private bool CompileMul()
     {
         // Pop two values, multiply, push result
-        byte type2 = PopStackType();
-        byte type1 = PopStackType();
+        // Peek at types to determine float vs int (without popping yet)
+        byte type2 = PeekStackTypeAt(0);  // Top
+        byte type1 = PeekStackTypeAt(1);  // Second from top
 
         if (IsFloatType(type1) || IsFloatType(type2))
         {
-            // Float arithmetic - use SSE
-            X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (bits)
-            X64Emitter.Pop(ref _code, VReg.R0);  // First operand (bits)
+            // Float arithmetic with peephole optimization
+            PopToReg(VReg.R2);  // Second operand (bits) -> R2
+            PopToR0();          // First operand (bits) -> R0
 
             bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
 
@@ -1852,8 +2061,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.MulsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float64);
+                MarkR0AsTOS(StackType_Float64);
             }
             else
             {
@@ -1861,18 +2069,16 @@ public unsafe struct ILCompiler
                 X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.MulssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float32);
+                MarkR0AsTOS(StackType_Float32);
             }
         }
         else
         {
-            // Integer arithmetic
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R0);
+            // Integer arithmetic with TOS caching
+            PopToReg(VReg.R2);  // Second operand -> R2
+            PopToR0();  // First operand -> R0
             X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
-            X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);
+            MarkR0AsTOS(StackType_Int);
         }
         return true;
     }
@@ -1883,6 +2089,7 @@ public unsafe struct ILCompiler
 
     private bool CompileAddOvf(bool unsigned)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         _evalStackDepth -= 2;
@@ -1896,6 +2103,7 @@ public unsafe struct ILCompiler
 
     private bool CompileSubOvf(bool unsigned)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (subtrahend)
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand (minuend)
         _evalStackDepth -= 2;
@@ -1909,6 +2117,7 @@ public unsafe struct ILCompiler
 
     private bool CompileMulOvf(bool unsigned)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         _evalStackDepth -= 2;
@@ -1943,6 +2152,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCkfinite()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value into RAX (it stays on the logical stack, we just peek and check)
         X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
@@ -1989,55 +2199,75 @@ public unsafe struct ILCompiler
 
     private bool CompileNeg()
     {
-        X64Emitter.Pop(ref _code, VReg.R0);
+        // Constant folding: if TOS is a constant, fold at compile time
+        if (_tosIsConst)
+        {
+            PopStackType();  // Consume the type info
+            long result = -_tosConstValue;
+            _tosIsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Unary op: pop one, negate, push result
+        PopToR0();
         X64Emitter.Neg(ref _code, VReg.R0);
-        X64Emitter.Push(ref _code, VReg.R0);
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileAnd()
     {
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        // Binary op: pop two, AND, push result
+        PopToReg(VReg.R2);  // Second operand
+        PopToR0();          // First operand
         X64Emitter.AndRR(ref _code, VReg.R0, VReg.R2);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileOr()
     {
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        // Binary op: pop two, OR, push result
+        PopToReg(VReg.R2);  // Second operand
+        PopToR0();          // First operand
         X64Emitter.OrRR(ref _code, VReg.R0, VReg.R2);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileXor()
     {
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        // Binary op: pop two, XOR, push result
+        PopToReg(VReg.R2);  // Second operand
+        PopToR0();          // First operand
         X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileNot()
     {
-        X64Emitter.Pop(ref _code, VReg.R0);
+        // Constant folding: if TOS is a constant, fold at compile time
+        if (_tosIsConst)
+        {
+            PopStackType();  // Consume the type info
+            long result = ~_tosConstValue;
+            _tosIsConst = false;
+            MarkConstAsTOS(result, StackType_Int);
+            return true;
+        }
+
+        // Unary op: pop one, NOT, push result
+        PopToR0();
         X64Emitter.Not(ref _code, VReg.R0);
-        X64Emitter.Push(ref _code, VReg.R0);
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileDiv(bool signed)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Division: dividend / divisor
         // IL stack: [..., dividend, divisor] -> [..., quotient]
         byte type2 = PopStackType();
@@ -2104,6 +2334,7 @@ public unsafe struct ILCompiler
 
     private bool CompileRem(bool signed)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Remainder: dividend % divisor
         // IL stack: [..., dividend, divisor] -> [..., remainder]
         X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX
@@ -2134,21 +2365,19 @@ public unsafe struct ILCompiler
     {
         // Shift left: value << shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
-        X64Emitter.Pop(ref _code, VReg.R1);  // Shift amount to CL
-        X64Emitter.Pop(ref _code, VReg.R0);  // Value to shift
-        _evalStackDepth -= 2;
+        PopToReg(VReg.R1);  // Shift amount to CL (part of RCX)
+        PopToR0();          // Value to shift
         X64Emitter.ShlCL(ref _code, VReg.R0);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileShr(bool signed)
     {
         // Shift right: value >> shiftAmount
-        X64Emitter.Pop(ref _code, VReg.R1);  // Shift amount to CL
-        X64Emitter.Pop(ref _code, VReg.R0);  // Value to shift
-        _evalStackDepth -= 2;
+        // IL stack: [..., value, shiftAmount] -> [..., result]
+        PopToReg(VReg.R1);  // Shift amount to CL (part of RCX)
+        PopToR0();          // Value to shift
 
         if (signed)
         {
@@ -2162,13 +2391,13 @@ public unsafe struct ILCompiler
             X64Emitter.ShrCL(ref _code, VReg.R0);  // Logical shift (zero-fill)
         }
 
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);
         return true;
     }
 
     private bool CompileConv(int targetBytes, bool signed)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Convert top of stack to different size
         // For naive JIT, we just mask/sign-extend as needed
         X64Emitter.Pop(ref _code, VReg.R0);
@@ -2258,6 +2487,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileConvOvf(int targetBytes, bool targetSigned, bool sourceUnsigned)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value from stack
         X64Emitter.Pop(ref _code, VReg.R0);
 
@@ -2488,8 +2718,21 @@ public unsafe struct ILCompiler
 
     private bool CompileLdcI8(long value)
     {
-        // Load 64-bit constant
-        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
+        // Load 64-bit constant with size optimization
+        if (value == 0)
+        {
+            X64Emitter.ZeroReg(ref _code, VReg.R0);
+        }
+        else if (value > 0 && value <= int.MaxValue)
+        {
+            // Small positive fits in 32-bit, zero-extends correctly
+            X64Emitter.MovRI32(ref _code, VReg.R0, (int)value);
+        }
+        else
+        {
+            // Full 64-bit immediate required
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
+        }
         X64Emitter.Push(ref _code, VReg.R0);
         _evalStackDepth++;
         return true;
@@ -2516,6 +2759,7 @@ public unsafe struct ILCompiler
 
     private bool CompileConvR4()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Convert integer to float (single precision)
         // Pop value, convert to float, push back as 32-bit pattern (zero-extended)
         X64Emitter.Pop(ref _code, VReg.R0);
@@ -2532,6 +2776,7 @@ public unsafe struct ILCompiler
 
     private bool CompileConvR8()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Convert integer to double precision
         // Pop value, convert to double, push back as 64-bit pattern
         X64Emitter.Pop(ref _code, VReg.R0);
@@ -2548,6 +2793,7 @@ public unsafe struct ILCompiler
 
     private bool CompileConvR_Un()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Convert unsigned integer to float (F - the native float type, which is double for IL)
         // This is tricky because CVTSI2SD only handles signed integers.
         // For unsigned 64-bit integers with the high bit set, we need special handling.
@@ -2617,8 +2863,7 @@ public unsafe struct ILCompiler
     private bool CompileStarg(int index)
     {
         // Pop from eval stack, store to argument home location
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopToR0();  // Uses TOS cache if available
         int offset = 16 + index * 8;  // Shadow space offset
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
         return true;
@@ -2627,20 +2872,20 @@ public unsafe struct ILCompiler
     private bool CompileLdarga(int index)
     {
         // Load address of argument
+        SpillTOSIfCached();  // Make room for new value
         int offset = 16 + index * 8;
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);  // Address is treated as integer
         return true;
     }
 
     private bool CompileLdloca(int index)
     {
         // Load address of local variable
+        SpillTOSIfCached();  // Make room for new value
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);  // Address is treated as integer
         return true;
     }
 
@@ -2649,8 +2894,7 @@ public unsafe struct ILCompiler
         // If there's a return value, it should be on eval stack
         if (_evalStackDepth > 0)
         {
-            X64Emitter.Pop(ref _code, VReg.R0);  // Return value in RAX
-            _evalStackDepth--;
+            PopToR0();  // Return value in RAX (uses TOS cache if available)
         }
 
         // Emit epilogue
@@ -2660,6 +2904,7 @@ public unsafe struct ILCompiler
 
     private bool CompileBr(int targetIL)
     {
+        FlushTOS();  // Must be consistent at branch target
         int patchOffset = X64Emitter.JmpRel32(ref _code);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
@@ -2668,8 +2913,7 @@ public unsafe struct ILCompiler
     private bool CompileBrfalse(int targetIL)
     {
         // Pop value, branch if zero
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopToR0();  // Uses TOS cache if available
         X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
         int patchOffset = X64Emitter.Je(ref _code);  // Jump if equal (to zero)
         RecordBranch(_ilOffset, targetIL, patchOffset);
@@ -2679,8 +2923,7 @@ public unsafe struct ILCompiler
     private bool CompileBrtrue(int targetIL)
     {
         // Pop value, branch if non-zero
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopToR0();  // Uses TOS cache if available
         X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
         int patchOffset = X64Emitter.Jne(ref _code);  // Jump if not equal (to zero)
         RecordBranch(_ilOffset, targetIL, patchOffset);
@@ -2690,9 +2933,8 @@ public unsafe struct ILCompiler
     private bool CompileBranchCmp(byte cc, int targetIL)
     {
         // Pop two values, compare, branch based on condition
-        X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
-        X64Emitter.Pop(ref _code, VReg.R0);  // First operand
-        _evalStackDepth -= 2;
+        PopToReg(VReg.R2);  // Second operand (uses TOS cache)
+        PopToR0();  // First operand
         // Use 32-bit comparison for proper signed int32 semantics
         // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
         X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
@@ -2704,9 +2946,8 @@ public unsafe struct ILCompiler
     private bool CompileCeq()
     {
         // Compare equal: pop two values, push 1 if equal, 0 otherwise
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        PopToReg(VReg.R2);  // Second operand (uses TOS cache)
+        PopToR0();  // First operand
         X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
 
         // SETE sets AL to 1 if equal, 0 otherwise
@@ -2721,16 +2962,14 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);  // ModRM: mod=11, reg=RAX, r/m=AL
 
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);  // Result is in R0, mark as TOS
         return true;
     }
 
     private bool CompileCgt(bool signed)
     {
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        PopToReg(VReg.R2);  // Second operand (uses TOS cache)
+        PopToR0();  // First operand
         // Use 32-bit comparison for proper signed int32 semantics
         X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
 
@@ -2745,16 +2984,14 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);
 
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);  // Result is in R0, mark as TOS
         return true;
     }
 
     private bool CompileClt(bool signed)
     {
-        X64Emitter.Pop(ref _code, VReg.R2);
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth -= 2;
+        PopToReg(VReg.R2);  // Second operand (uses TOS cache)
+        PopToR0();  // First operand
         // Use 32-bit comparison for proper signed int32 semantics
         X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
 
@@ -2769,8 +3006,7 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);
 
-        X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        MarkR0AsTOS(StackType_Int);  // Result is in R0, mark as TOS
         return true;
     }
 
@@ -2791,9 +3027,8 @@ public unsafe struct ILCompiler
         // Calculate IL offset at end of switch (where offsets are relative to)
         int switchEndIL = _ilOffset + (int)(n * 4);
 
-        // Pop value into RAX
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        // Pop value into RAX (uses TOS cache if available)
+        PopToR0();
 
         // Compare value with n: if value >= n, fall through (jump past all cases)
         X64Emitter.CmpRI(ref _code, VReg.R0, (int)n);
@@ -2828,6 +3063,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdind(int size, bool signExtend)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop address from stack into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
@@ -2897,6 +3133,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStind(int size)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value into RDX
         X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
@@ -2941,6 +3178,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdindFloat(int size)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop address from stack into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
@@ -2974,6 +3212,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStindFloat(int size)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value into RDX
         X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
@@ -3080,6 +3319,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCall(uint token)
     {
+        FlushTOS();  // RAX is caller-saved, must spill before call
         // Resolve the method
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
@@ -3328,6 +3568,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCallvirt(uint token)
     {
+        FlushTOS();  // RAX is caller-saved, must spill before call
         // For now, callvirt behaves like call but always has 'this'.
         // The resolved method should have HasThis=true.
         //
@@ -3588,6 +3829,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCalli(uint sigToken)
     {
+        FlushTOS();  // RAX is caller-saved, must spill before call
         // Decode the signature token
         // For our test purposes, we encode: (ReturnKind << 8) | ArgCount
         int argCount = (int)(sigToken & 0xFF);
@@ -3775,6 +4017,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCpblk()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 3)
         {
             DebugConsole.WriteLine("[JIT] cpblk: insufficient stack depth");
@@ -3810,6 +4053,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileInitblk()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 3)
         {
             DebugConsole.WriteLine("[JIT] initblk: insufficient stack depth");
@@ -3860,6 +4104,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileInitobj(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] initobj: insufficient stack depth");
@@ -3910,6 +4155,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdobj(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] ldobj: insufficient stack depth");
@@ -3957,6 +4203,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStobj(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 2)
         {
             DebugConsole.WriteLine("[JIT] stobj: insufficient stack depth");
@@ -4004,6 +4251,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCpobj(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 2)
         {
             DebugConsole.WriteLine("[JIT] cpobj: insufficient stack depth");
@@ -4044,6 +4292,7 @@ public unsafe struct ILCompiler
         // Leave empties the evaluation stack (reset to 0)
         // We don't need to emit pops since we're jumping away and the
         // target IL expects an empty stack
+        _tosCached = false;  // Discard any cached TOS value
         _evalStackDepth = 0;
 
         // Emit unconditional jump to target
@@ -4062,6 +4311,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileThrow()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] throw: insufficient stack depth");
@@ -4168,6 +4418,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdfld(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         int offset;
         int size;
         bool signed;
@@ -4229,6 +4480,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdflda(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         int offset;
 
         // Try field resolver first, fall back to test token encoding
@@ -4264,6 +4516,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStfld(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         int offset;
         int size;
 
@@ -4312,6 +4565,9 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdsfld(uint token)
     {
+        // Spill TOS before using R0 for address loading
+        SpillTOSIfCached();
+
         ulong staticAddr;
         int size;
         bool signed;
@@ -4399,6 +4655,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStsfld(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         ulong staticAddr;
         int size;
 
@@ -4458,6 +4715,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdlen()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop array reference
         X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
@@ -4478,6 +4736,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdelem(int elemSize, bool signed)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
@@ -4540,6 +4799,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStelem(int elemSize)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value, index, array
         X64Emitter.Pop(ref _code, VReg.R2);  // value
         X64Emitter.Pop(ref _code, VReg.R1);  // index
@@ -4586,6 +4846,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdelemFloat(int elemSize)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
@@ -4629,6 +4890,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStelemFloat(int elemSize)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Pop value, index, array
         X64Emitter.Pop(ref _code, VReg.R2);  // value (float/double bit pattern)
         X64Emitter.Pop(ref _code, VReg.R1);  // index
@@ -4669,6 +4931,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdelema(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         int elemSize = (int)(token & 0xFF);
         if (elemSize == 0) elemSize = 8; // Default to pointer size
 
@@ -4838,6 +5101,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileNewarr(uint token)
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         // Resolve token to MethodTable* address
         ulong mtAddress = token;  // Fallback: use token directly (for testing)
 
@@ -5477,6 +5741,7 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileEndfilter()
     {
+        FlushTOS();  // Spill TOS to memory before direct pops
         if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] endfilter: stack empty");
