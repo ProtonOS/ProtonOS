@@ -3027,15 +3027,7 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        if (!info->IsCompiled)
-        {
-            DebugConsole.Write("[JIT] Method token 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.WriteLine(" not yet compiled");
-            return false;
-        }
-
-        result.NativeCode = info->NativeCode;
+        // Fill in method information from registry
         result.ArgCount = info->ArgCount;
         result.ReturnKind = info->ReturnKind;
         result.HasThis = info->HasThis;
@@ -3046,6 +3038,29 @@ public unsafe struct ILCompiler
         result.IsInterfaceMethod = info->IsInterfaceMethod;
         result.InterfaceMT = info->InterfaceMT;
         result.InterfaceMethodSlot = info->InterfaceMethodSlot;
+
+        if (info->IsCompiled)
+        {
+            // Method is fully compiled - use direct call
+            result.NativeCode = info->NativeCode;
+            result.RegistryEntry = null;
+        }
+        else if (info->IsBeingCompiled)
+        {
+            // Method is being compiled (recursive call) - use indirect call through registry
+            // The NativeCode will be filled in by the time the call actually executes
+            result.NativeCode = null;
+            result.RegistryEntry = info;
+        }
+        else
+        {
+            // Method is reserved but not being compiled - this shouldn't happen
+            DebugConsole.Write("[JIT] Method token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine(" not yet compiled");
+            return false;
+        }
+
         return true;
     }
 
@@ -3095,9 +3110,13 @@ public unsafe struct ILCompiler
         // IL stack has args in order: arg0 at bottom, argN-1 at top
         // We need to pop in reverse order (top first)
 
+        // Track whether we need to allocate shadow space (for 0-4 args)
+        // The x64 ABI requires 32 bytes of shadow space for the callee to home register args
+        bool needsShadowSpace = totalArgs <= 4;
+
         if (totalArgs == 0)
         {
-            // No arguments - just call
+            // No arguments - just call (shadow space allocated below)
         }
         else if (totalArgs == 1)
         {
@@ -3195,6 +3214,13 @@ public unsafe struct ILCompiler
             _evalStackDepth -= totalArgs;
         }
 
+        // Allocate shadow space for calls with 0-4 args
+        // x64 ABI requires 32 bytes for the callee to home register arguments
+        if (needsShadowSpace)
+        {
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+        }
+
         // Load target address and call
         // We use an indirect call through RAX to support any address
         if (method.NativeCode != null)
@@ -3221,9 +3247,15 @@ public unsafe struct ILCompiler
         // Record safe point after call (GC can happen during callee execution)
         RecordSafePoint();
 
-        // Clean up extra stack space if we allocated any
-        if (stackArgs > 0)
+        // Clean up stack space if we allocated any
+        if (needsShadowSpace)
         {
+            // Deallocate the 32-byte shadow space we allocated for 0-4 args
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+        }
+        else if (stackArgs > 0)
+        {
+            // Deallocate extra space for >4 args
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
             X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }
@@ -3333,6 +3365,9 @@ public unsafe struct ILCompiler
         // The rest is identical to CompileCall - pop args, set up registers, call, handle return
         int stackArgs = totalArgs > 4 ? totalArgs - 4 : 0;
 
+        // Track whether we need to allocate shadow space (for 0-4 args)
+        bool needsShadowSpace = totalArgs <= 4;
+
         if (totalArgs == 0)
         {
             // No arguments - just call (shouldn't happen for callvirt)
@@ -3396,6 +3431,13 @@ public unsafe struct ILCompiler
             }
 
             _evalStackDepth -= totalArgs;
+        }
+
+        // Allocate shadow space for calls with 0-4 args
+        // x64 ABI requires 32 bytes for the callee to home register arguments
+        if (needsShadowSpace)
+        {
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
         }
 
         // Load target address and call
@@ -3479,9 +3521,15 @@ public unsafe struct ILCompiler
         // Record safe point after call
         RecordSafePoint();
 
-        // Clean up extra stack space if we allocated any
-        if (stackArgs > 0)
+        // Clean up stack space if we allocated any
+        if (needsShadowSpace)
         {
+            // Deallocate the 32-byte shadow space we allocated for 0-4 args
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+        }
+        else if (stackArgs > 0)
+        {
+            // Deallocate extra space for >4 args
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
             X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }
@@ -3567,6 +3615,9 @@ public unsafe struct ILCompiler
         // Calculate stack args needed (args beyond the first 4 go on stack)
         int stackArgs = argCount > 4 ? argCount - 4 : 0;
 
+        // Track whether we need to allocate shadow space (for 0-4 args)
+        bool needsShadowSpace = argCount <= 4;
+
         // Now pop arguments and set up the call (same logic as CompileCall)
         if (argCount == 0)
         {
@@ -3648,15 +3699,28 @@ public unsafe struct ILCompiler
             _evalStackDepth -= argCount;
         }
 
+        // Allocate shadow space for calls with 0-4 args
+        // x64 ABI requires 32 bytes for the callee to home register arguments
+        if (needsShadowSpace)
+        {
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+        }
+
         // Call through the function pointer in R11
         X64Emitter.CallR(ref _code, VReg.R6);
 
         // Record safe point after call (GC can happen during callee execution)
         RecordSafePoint();
 
-        // Clean up extra stack space if we allocated any
-        if (stackArgs > 0)
+        // Clean up stack space if we allocated any
+        if (needsShadowSpace)
         {
+            // Deallocate the 32-byte shadow space we allocated for 0-4 args
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+        }
+        else if (stackArgs > 0)
+        {
+            // Deallocate extra space for >4 args
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
             X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
         }

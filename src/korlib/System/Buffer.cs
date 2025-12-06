@@ -42,4 +42,84 @@ public static unsafe class Buffer
         // Simple copy - no write barrier needed for our non-concurrent GC
         Memmove(ref destination, ref source, byteCount);
     }
+
+    /// <summary>
+    /// Copies a block of memory from one location to another.
+    /// </summary>
+    /// <param name="source">A pointer to the source memory.</param>
+    /// <param name="destination">A pointer to the destination memory.</param>
+    /// <param name="destinationSizeInBytes">The size of the destination buffer.</param>
+    /// <param name="sourceBytesToCopy">The number of bytes to copy.</param>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void MemoryCopy(void* source, void* destination, long destinationSizeInBytes, long sourceBytesToCopy)
+    {
+        if (sourceBytesToCopy > destinationSizeInBytes)
+            Environment.FailFast("Buffer overflow in MemoryCopy");
+
+        byte* src = (byte*)source;
+        byte* dst = (byte*)destination;
+
+        // Simple byte-by-byte copy
+        for (long i = 0; i < sourceBytesToCopy; i++)
+        {
+            dst[i] = src[i];
+        }
+    }
+
+    /// <summary>
+    /// Copies a specified number of bytes from a source array starting at a particular
+    /// offset to a destination array starting at a particular offset.
+    /// </summary>
+    public static void BlockCopy(Array src, int srcOffset, Array dst, int dstOffset, int count)
+    {
+        if (src == null || dst == null)
+            Environment.FailFast("BlockCopy: null array");
+
+        byte* srcPtr = (byte*)Unsafe.AsPointer(ref Unsafe.As<Runtime.CompilerServices.RawArrayData>(src).Data);
+        byte* dstPtr = (byte*)Unsafe.AsPointer(ref Unsafe.As<Runtime.CompilerServices.RawArrayData>(dst).Data);
+
+        for (int i = 0; i < count; i++)
+        {
+            dstPtr[dstOffset + i] = srcPtr[srcOffset + i];
+        }
+    }
+
+    /// <summary>
+    /// Returns the number of bytes in the specified array.
+    /// </summary>
+    public static int ByteLength(Array array)
+    {
+        if (array == null)
+            Environment.FailFast("ByteLength: null array");
+
+        // Get element size from MethodTable
+        void* pMT = *(void**)Unsafe.AsPointer(ref Unsafe.As<Array, byte>(ref array));
+        ushort componentSize = *(ushort*)pMT;
+
+        return array.Length * componentSize;
+    }
+
+    /// <summary>
+    /// Retrieves a byte at a specified location in a specified array.
+    /// </summary>
+    public static byte GetByte(Array array, int index)
+    {
+        if (array == null)
+            Environment.FailFast("GetByte: null array");
+
+        byte* ptr = (byte*)Unsafe.AsPointer(ref Unsafe.As<Runtime.CompilerServices.RawArrayData>(array).Data);
+        return ptr[index];
+    }
+
+    /// <summary>
+    /// Assigns a specified value to a byte at a particular location in a specified array.
+    /// </summary>
+    public static void SetByte(Array array, int index, byte value)
+    {
+        if (array == null)
+            Environment.FailFast("SetByte: null array");
+
+        byte* ptr = (byte*)Unsafe.AsPointer(ref Unsafe.As<Runtime.CompilerServices.RawArrayData>(array).Data);
+        ptr[index] = value;
+    }
 }

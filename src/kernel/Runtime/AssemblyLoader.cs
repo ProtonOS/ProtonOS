@@ -5,6 +5,7 @@
 using ProtonOS.Memory;
 using ProtonOS.Platform;
 using ProtonOS.Runtime.JIT;
+using ProtonOS.Runtime.Reflection;
 
 namespace ProtonOS.Runtime;
 
@@ -60,6 +61,7 @@ public unsafe struct TypeRegistry
 
     /// <summary>
     /// Register a type token to MethodTable mapping.
+    /// Also registers with ReflectionRuntime for reverse lookup support.
     /// </summary>
     public bool Register(uint token, MethodTable* mt)
     {
@@ -72,6 +74,8 @@ public unsafe struct TypeRegistry
             if (Entries[i].Token == token)
             {
                 Entries[i].MT = mt;  // Update existing
+                // Also update reflection registry
+                ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
                 return true;
             }
         }
@@ -83,6 +87,10 @@ public unsafe struct TypeRegistry
         Entries[Count].Token = token;
         Entries[Count].MT = mt;
         Count++;
+
+        // Register with ReflectionRuntime for reverse lookup (MT* -> assembly/token)
+        ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
+
         return true;
     }
 
@@ -866,7 +874,117 @@ public static unsafe class AssemblyLoader
             }
         }
 
+        // Type not found in target assembly - check for well-known AOT types
+        // This handles cases where TypeRefs point to System.Runtime but the type
+        // is actually defined in korlib (AOT-compiled into the kernel)
+        return TryResolveWellKnownType(targetName, targetNs);
+    }
+
+    /// <summary>
+    /// Try to resolve a type name to a well-known AOT type from korlib.
+    /// This handles primitive types like System.Int32, System.String, etc.
+    /// </summary>
+    private static MethodTable* TryResolveWellKnownType(byte* name, byte* ns)
+    {
+        // Only handle System namespace
+        if (ns == null || !IsSystemNamespace(ns))
+            return null;
+
+        // Check for well-known primitive types
+        uint wellKnownToken = GetWellKnownTypeToken(name);
+
+        if (wellKnownToken != 0)
+            return JIT.MetadataIntegration.LookupType(wellKnownToken);
+
         return null;
+    }
+
+    /// <summary>
+    /// Check if the namespace is "System".
+    /// </summary>
+    private static bool IsSystemNamespace(byte* ns)
+    {
+        return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
+               ns[4] == 'e' && ns[5] == 'm' && ns[6] == 0;
+    }
+
+    /// <summary>
+    /// Get the well-known type token for a type name in the System namespace.
+    /// </summary>
+    private static uint GetWellKnownTypeToken(byte* name)
+    {
+        if (name == null || name[0] == 0)
+            return 0;
+
+        // Dispatch based on first character for efficiency
+        switch (name[0])
+        {
+            case (byte)'I':  // Int32, Int64, Int16, IntPtr
+                if (name[1] == 'n' && name[2] == 't')
+                {
+                    if (name[3] == '3' && name[4] == '2' && name[5] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.Int32;
+                    if (name[3] == '6' && name[4] == '4' && name[5] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.Int64;
+                    if (name[3] == '1' && name[4] == '6' && name[5] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.Int16;
+                    if (name[3] == 'P' && name[4] == 't' && name[5] == 'r' && name[6] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.IntPtr;
+                }
+                break;
+
+            case (byte)'U':  // UInt32, UInt64, UInt16, UIntPtr
+                if (name[1] == 'I' && name[2] == 'n' && name[3] == 't')
+                {
+                    if (name[4] == '3' && name[5] == '2' && name[6] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.UInt32;
+                    if (name[4] == '6' && name[5] == '4' && name[6] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.UInt64;
+                    if (name[4] == '1' && name[5] == '6' && name[6] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.UInt16;
+                    if (name[4] == 'P' && name[5] == 't' && name[6] == 'r' && name[7] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.UIntPtr;
+                }
+                break;
+
+            case (byte)'B':  // Byte, Boolean
+                if (name[1] == 'y' && name[2] == 't' && name[3] == 'e' && name[4] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Byte;
+                if (name[1] == 'o' && name[2] == 'o' && name[3] == 'l' && name[4] == 'e' &&
+                    name[5] == 'a' && name[6] == 'n' && name[7] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Boolean;
+                break;
+
+            case (byte)'S':  // SByte, Single, String
+                if (name[1] == 'B' && name[2] == 'y' && name[3] == 't' && name[4] == 'e' && name[5] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.SByte;
+                if (name[1] == 'i' && name[2] == 'n' && name[3] == 'g' && name[4] == 'l' &&
+                    name[5] == 'e' && name[6] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Single;
+                if (name[1] == 't' && name[2] == 'r' && name[3] == 'i' && name[4] == 'n' &&
+                    name[5] == 'g' && name[6] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.String;
+                break;
+
+            case (byte)'C':  // Char
+                if (name[1] == 'h' && name[2] == 'a' && name[3] == 'r' && name[4] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Char;
+                break;
+
+            case (byte)'D':  // Double
+                if (name[1] == 'o' && name[2] == 'u' && name[3] == 'b' && name[4] == 'l' &&
+                    name[5] == 'e' && name[6] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Double;
+                break;
+
+            case (byte)'O':  // Object
+                if (name[1] == 'b' && name[2] == 'j' && name[3] == 'e' && name[4] == 'c' &&
+                    name[5] == 't' && name[6] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Object;
+                break;
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -1017,6 +1135,137 @@ public static unsafe class AssemblyLoader
             if (StringsEqual(fieldName, defName))
             {
                 return 0x04000000 | fieldRow;  // FieldDef token
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Resolve a MemberRef token to find method information in another assembly.
+    /// MemberRef can reference either a field or a method. This is for methods.
+    /// Returns true if it's a method and populates methodToken/targetAsmId.
+    /// </summary>
+    public static bool ResolveMemberRefMethod(uint sourceAsmId, uint memberRefToken,
+                                               out uint methodToken, out uint targetAsmId)
+    {
+        methodToken = 0;
+        targetAsmId = InvalidAssemblyId;
+
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+            return false;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        // Get member name and signature
+        uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        uint sigIdx = MetadataReader.GetMemberRefSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        byte* sig = MetadataReader.GetBlob(ref sourceAsm->Metadata, sigIdx, out uint sigLen);
+
+        if (memberName == null || sig == null || sigLen == 0)
+            return false;
+
+        // Check if this is a method signature (NOT 0x06 which is FIELD)
+        // Method calling conventions: 0x00 (default), 0x01-0x05 (various), 0x20 (generic)
+        if (sig[0] == 0x06)
+            return false;  // It's a field, not a method
+
+        // Resolve the containing type
+        LoadedAssembly* targetAsm = null;
+        uint typeDefToken = 0;
+
+        if (classRef.Table == MetadataTableId.TypeRef)
+        {
+            // MemberRef in another assembly via TypeRef
+            uint typeRefToken = 0x01000000 | classRef.RowId;
+            MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
+            if (mt == null)
+                return false;
+
+            // Find which assembly this MethodTable belongs to
+            for (int i = 0; i < MaxAssemblies; i++)
+            {
+                if (!_assemblies[i].IsLoaded)
+                    continue;
+
+                for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                {
+                    if (_assemblies[i].Types.Entries[j].MT == mt)
+                    {
+                        targetAsm = &_assemblies[i];
+                        typeDefToken = _assemblies[i].Types.Entries[j].Token;
+                        break;
+                    }
+                }
+                if (targetAsm != null)
+                    break;
+            }
+        }
+        else if (classRef.Table == MetadataTableId.TypeDef)
+        {
+            // MemberRef in same assembly
+            targetAsm = sourceAsm;
+            typeDefToken = 0x02000000 | classRef.RowId;
+        }
+        else
+        {
+            // Other class types (ModuleRef, MethodDef, TypeSpec) not implemented
+            return false;
+        }
+
+        if (targetAsm == null || typeDefToken == 0)
+            return false;
+
+        targetAsmId = targetAsm->AssemblyId;
+
+        // Find the matching MethodDef in the target type
+        methodToken = FindMethodDefByName(targetAsm, typeDefToken, memberName, sig, sigLen);
+        return methodToken != 0;
+    }
+
+    /// <summary>
+    /// Find a MethodDef token by name within a specific type.
+    /// </summary>
+    private static uint FindMethodDefByName(LoadedAssembly* asm, uint typeDefToken, byte* methodName, byte* sig, uint sigLen)
+    {
+        uint typeRow = typeDefToken & 0x00FFFFFF;
+        if (typeRow == 0)
+            return 0;
+
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodEnd;
+
+        if (typeRow < typeDefCount)
+        {
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+        }
+        else
+        {
+            methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+        }
+
+        // Search methods in range
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* defName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (StringsEqual(methodName, defName))
+            {
+                // TODO: Could also compare signatures for overload resolution
+                // For now, match by name only
+                return 0x06000000 | methodRow;  // MethodDef token
             }
         }
 

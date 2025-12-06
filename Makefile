@@ -8,6 +8,7 @@ BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
 TEST_DIR := src/FullTest
+SYSTEMRUNTIME_DIR := src/SystemRuntime
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -61,8 +62,11 @@ KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 # Test assembly output
 TEST_DLL := $(BUILD_DIR)/FullTest.dll
 
+# System.Runtime assembly (JIT library)
+SYSTEM_RUNTIME_DLL := $(BUILD_DIR)/System.Runtime.dll
+
 # Targets
-.PHONY: all clean native kernel test image run
+.PHONY: all clean native kernel test systemruntime image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -91,6 +95,14 @@ $(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/FullTest.csproj | $(BUILD_DIR)
 
 test: $(TEST_DLL)
 
+# Build System.Runtime library (JIT-compiled at runtime)
+SYSTEMRUNTIME_SRC := $(call rwildcard,$(SYSTEMRUNTIME_DIR),*.cs)
+$(SYSTEM_RUNTIME_DLL): $(SYSTEMRUNTIME_SRC) $(SYSTEMRUNTIME_DIR)/System.Runtime.csproj | $(BUILD_DIR)
+	@echo "DOTNET build System.Runtime"
+	dotnet build $(SYSTEMRUNTIME_DIR)/System.Runtime.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+systemruntime: $(SYSTEM_RUNTIME_DLL)
+
 # Link UEFI executable
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
@@ -98,7 +110,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -106,6 +118,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL)
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(SYSTEM_RUNTIME_DLL) ::/System.Runtime.dll
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

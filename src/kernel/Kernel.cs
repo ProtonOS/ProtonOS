@@ -14,14 +14,17 @@ namespace ProtonOS;
 
 public static unsafe class Kernel
 {
-    // Loaded test assembly binary (persists after ExitBootServices)
+    // Loaded assembly binaries (persist after ExitBootServices)
     // Note: PE bytes are loaded via UEFI before ExitBootServices,
     // then registered with AssemblyLoader after HeapAllocator.Init
     private static byte* _testAssemblyBytes;
     private static ulong _testAssemblySize;
+    private static byte* _systemRuntimeBytes;
+    private static ulong _systemRuntimeSize;
 
-    // Assembly ID from AssemblyLoader (assigned after registration)
+    // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
+    private static uint _systemRuntimeId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -151,11 +154,26 @@ public static unsafe class Kernel
         // Initialize runtime helpers for JIT (allocation, MD array, etc.)
         Runtime.RuntimeHelpers.Init();
 
+        // Initialize AOT method registry for well-known types (String, etc.)
+        Runtime.AotMethodRegistry.Init();
+
         // Initialize string pool for interning and ldstr caching (requires HeapAllocator)
         Runtime.StringPool.Init();
 
         // Initialize assembly loader (requires HeapAllocator)
         AssemblyLoader.Initialize();
+
+        // Register System.Runtime.dll first (dependency for other assemblies)
+        if (_systemRuntimeBytes != null)
+        {
+            _systemRuntimeId = AssemblyLoader.Load(_systemRuntimeBytes, _systemRuntimeSize);
+            if (_systemRuntimeId != AssemblyLoader.InvalidAssemblyId)
+            {
+                DebugConsole.Write("[Kernel] System.Runtime registered with ID ");
+                DebugConsole.WriteDecimal(_systemRuntimeId);
+                DebugConsole.WriteLine();
+            }
+        }
 
         // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
         if (_testAssemblyBytes != null)
@@ -212,8 +230,22 @@ public static unsafe class Kernel
     /// </summary>
     private static void LoadTestAssembly()
     {
-        DebugConsole.WriteLine("[Kernel] Loading test assembly from UEFI FS...");
+        DebugConsole.WriteLine("[Kernel] Loading assemblies from UEFI FS...");
 
+        // Load System.Runtime.dll first (dependency for FullTest)
+        _systemRuntimeBytes = UEFIFS.ReadFileAscii("\\System.Runtime.dll", out _systemRuntimeSize);
+        if (_systemRuntimeBytes != null)
+        {
+            DebugConsole.Write("[Kernel] System.Runtime.dll loaded, size ");
+            DebugConsole.WriteHex(_systemRuntimeSize);
+            DebugConsole.WriteLine();
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Kernel] System.Runtime.dll not found (optional)");
+        }
+
+        // Load FullTest.dll
         _testAssemblyBytes = UEFIFS.ReadFileAscii("\\FullTest.dll", out _testAssemblySize);
 
         if (_testAssemblyBytes == null)

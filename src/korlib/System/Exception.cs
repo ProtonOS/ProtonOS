@@ -202,3 +202,111 @@ public class InvalidProgramException : Exception
     public InvalidProgramException(string? message) : base(message) { }
     public InvalidProgramException(string? message, Exception? innerException) : base(message, innerException) { }
 }
+
+/// <summary>
+/// Exception thrown when the format of an argument is invalid.
+/// </summary>
+public class FormatException : Exception
+{
+    public FormatException() : base() { }
+    public FormatException(string? message) : base(message) { }
+    public FormatException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a type fails to load.
+/// </summary>
+public class TypeLoadException : Exception
+{
+    public TypeLoadException() : base() { }
+    public TypeLoadException(string? message) : base(message) { }
+    public TypeLoadException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a requested member does not exist.
+/// </summary>
+public class MissingMemberException : Exception
+{
+    public MissingMemberException() : base() { }
+    public MissingMemberException(string? message) : base(message) { }
+    public MissingMemberException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a requested method does not exist.
+/// </summary>
+public class MissingMethodException : MissingMemberException
+{
+    public MissingMethodException() : base() { }
+    public MissingMethodException(string? message) : base(message) { }
+    public MissingMethodException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a requested field does not exist.
+/// </summary>
+public class MissingFieldException : MissingMemberException
+{
+    public MissingFieldException() : base() { }
+    public MissingFieldException(string? message) : base(message) { }
+    public MissingFieldException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a static constructor fails.
+/// </summary>
+public class TypeInitializationException : Exception
+{
+    private readonly string? _typeName;
+
+    public string? TypeName => _typeName;
+
+    public TypeInitializationException(string? typeName, Exception? innerException)
+        : base("Type initializer threw an exception", innerException)
+    {
+        _typeName = typeName;
+    }
+}
+
+/// <summary>
+/// Exception thrown when a method is called on a disposed object.
+/// </summary>
+public class ObjectDisposedException : InvalidOperationException
+{
+    private readonly string? _objectName;
+
+    public string? ObjectName => _objectName;
+
+    public ObjectDisposedException(string? objectName)
+        : base("Cannot access a disposed object")
+    {
+        _objectName = objectName;
+    }
+
+    public ObjectDisposedException(string? objectName, string? message)
+        : base(message)
+    {
+        _objectName = objectName;
+    }
+}
+
+/// <summary>
+/// Exception thrown when an operation times out.
+/// </summary>
+public class TimeoutException : Exception
+{
+    public TimeoutException() : base() { }
+    public TimeoutException(string? message) : base(message) { }
+    public TimeoutException(string? message, Exception? innerException) : base(message, innerException) { }
+}
+
+/// <summary>
+/// Exception thrown when a key is not found in a collection.
+/// </summary>
+public class KeyNotFoundException : Exception
+{
+    public KeyNotFoundException() : base() { }
+    public KeyNotFoundException(string? message) : base(message) { }
+    public KeyNotFoundException(string? message, Exception? innerException) : base(message, innerException) { }
+}

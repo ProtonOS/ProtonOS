@@ -37,7 +37,7 @@ public static class TestRunner
         // Local variable tests
         RunLocalVariableTests();
 
-        // Method call tests
+        // Method call tests (includes recursion test)
         RunMethodCallTests();
 
         // Conversion tests
@@ -52,7 +52,35 @@ public static class TestRunner
         // Field tests
         RunFieldTests();
 
+        // String tests - uses AOT method registry for String.get_Length, String.Concat
+        RunStringTests();
+
+        // TODO: Exception tests - requires MemberRef support (exception constructors from System.Runtime)
+        // RunExceptionTests();
+
+        // TODO: Generic tests - requires MethodSpec/TypeSpec support
+        // RunGenericTests();
+
         return (_passCount << 16) | _failCount;
+    }
+
+    private static void RunStringTests()
+    {
+        RecordResult(StringTests.TestLdstr() == 5);
+        RecordResult(StringTests.TestStringConcat() == 10);
+    }
+
+    private static void RunExceptionTests()
+    {
+        RecordResult(ExceptionTests.TestTryCatch() == 42);
+        RecordResult(ExceptionTests.TestTryFinally() == 42);
+        RecordResult(ExceptionTests.TestNestedTryCatch() == 42);
+    }
+
+    private static void RunGenericTests()
+    {
+        RecordResult(GenericTests.TestGenericMethod() == 42);
+        RecordResult(GenericTests.TestGenericClass() == 42);
     }
 
     private static void RecordResult(bool passed)
@@ -125,7 +153,7 @@ public static class TestRunner
         RecordResult(MethodCallTests.TestSimpleCall() == 42);
         RecordResult(MethodCallTests.TestCallWithArgs() == 15);
         RecordResult(MethodCallTests.TestCallChain() == 120);
-        RecordResult(MethodCallTests.TestRecursion() == 120);  // 5!
+        RecordResult(MethodCallTests.TestRecursion() == 120);  // 5! = 120
     }
 
     private static void RunConversionTests()
