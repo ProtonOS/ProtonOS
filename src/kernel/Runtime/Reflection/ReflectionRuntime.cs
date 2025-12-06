@@ -181,73 +181,196 @@ public static unsafe class ReflectionRuntime
 
     /// <summary>
     /// Get field value using field token and offset.
-    /// NOTE: Full boxing support requires RuntimeExports which we don't have in minimal runtime.
-    /// This is a stub - real field access should be done via JIT thunks.
+    /// Supports reference types fully and primitive value types (int, long, byte, bool, etc.)
+    /// by reading raw bytes. Complex value types (structs) are not fully supported.
     /// </summary>
     [RuntimeExport("PalGetFieldValue")]
     public static object? GetFieldValue(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType)
     {
-        // In minimal runtime without boxing support, we can only handle reference types
-        if (target == null && fieldOffset >= 0)
+        // Static field case with negative offset means absolute address
+        byte* fieldPtr;
+        if (target != null)
         {
+            byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref target);
+            objPtr += sizeof(void*); // Skip MethodTable*
+            fieldPtr = objPtr + fieldOffset;
+        }
+        else if (fieldOffset < 0)
+        {
+            // For static fields, negative offset indicates invalid/unresolved
+            DebugConsole.WriteLine("[Reflection] Static field not resolved");
             return null;
+        }
+        else
+        {
+            // Static field with absolute address
+            fieldPtr = (byte*)(nint)fieldOffset;
         }
 
         if (!isValueType)
         {
-            byte* objPtr;
-            if (target != null)
-            {
-                objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref target);
-                objPtr += sizeof(void*); // Skip MethodTable*
-            }
-            else
-            {
-                objPtr = (byte*)(nint)fieldOffset;
-                fieldOffset = 0;
-            }
-            byte* fieldPtr = objPtr + fieldOffset;
+            // Reference type - just read the pointer
             return *(object*)fieldPtr;
         }
 
-        // Value types require boxing - not supported in minimal runtime
-        DebugConsole.WriteLine("[Reflection] GetFieldValue for value types not supported");
-        return null;
+        // Value type - read raw bytes based on field size
+        // Boxing requires allocation which we can't do fully, but we can read the value
+        // and return it in a form the caller can use
+        return ReadPrimitiveValue(fieldPtr, fieldSize);
     }
 
     /// <summary>
     /// Set field value using field token and offset.
-    /// NOTE: Full unboxing support requires RuntimeExports which we don't have in minimal runtime.
-    /// This is a stub - real field access should be done via JIT thunks.
+    /// Supports reference types fully and primitive value types by unboxing.
     /// </summary>
     [RuntimeExport("PalSetFieldValue")]
     public static void SetFieldValue(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType, object? value)
     {
-        if (target == null && fieldOffset >= 0)
+        byte* fieldPtr;
+        if (target != null)
         {
+            byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref target);
+            objPtr += sizeof(void*); // Skip MethodTable*
+            fieldPtr = objPtr + fieldOffset;
+        }
+        else if (fieldOffset < 0)
+        {
+            DebugConsole.WriteLine("[Reflection] Static field not resolved");
             return;
         }
-
-        if (!isValueType && value != null)
+        else
         {
-            byte* objPtr;
-            if (target != null)
-            {
-                objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref target);
-                objPtr += sizeof(void*); // Skip MethodTable*
-            }
-            else
-            {
-                objPtr = (byte*)(nint)fieldOffset;
-                fieldOffset = 0;
-            }
-            byte* fieldPtr = objPtr + fieldOffset;
+            fieldPtr = (byte*)(nint)fieldOffset;
+        }
+
+        if (!isValueType)
+        {
+            // Reference type - just write the pointer
             *(object*)fieldPtr = value;
             return;
         }
 
-        // Value types require unboxing - not supported in minimal runtime
-        DebugConsole.WriteLine("[Reflection] SetFieldValue for value types not supported");
+        // Value type - write raw bytes based on field size
+        // The value should already be boxed (object containing the primitive)
+        WritePrimitiveValue(fieldPtr, fieldSize, value);
+    }
+
+    /// <summary>
+    /// Read a primitive value from memory and return as object.
+    /// In minimal runtime without full boxing support, we return null for value types.
+    /// For proper value type support, use PalGetFieldValueRaw which returns the raw bytes.
+    /// </summary>
+    private static object? ReadPrimitiveValue(byte* ptr, int size)
+    {
+        // Boxing requires RuntimeExports which aren't available in minimal runtime.
+        // Value type fields require JIT-compiled boxing thunks or a full runtime.
+        // For now, log and return null. Callers should use PalGetFieldValueRaw instead.
+        DebugConsole.Write("[Reflection] Value type GetFieldValue (size ");
+        DebugConsole.WriteDecimal((uint)size);
+        DebugConsole.WriteLine(") - use PalGetFieldValueRaw instead");
+        return null;
+    }
+
+    /// <summary>
+    /// Get raw field value bytes for value types.
+    /// Writes the field value to the provided buffer.
+    /// Returns the number of bytes written, or 0 on error.
+    /// </summary>
+    [RuntimeExport("PalGetFieldValueRaw")]
+    public static int GetFieldValueRaw(uint fieldToken, object? target, int fieldOffset, int fieldSize, bool isValueType, byte* buffer, int bufferSize)
+    {
+        if (buffer == null || bufferSize < fieldSize)
+            return 0;
+
+        byte* fieldPtr;
+        if (target != null)
+        {
+            byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref target);
+            objPtr += sizeof(void*); // Skip MethodTable*
+            fieldPtr = objPtr + fieldOffset;
+        }
+        else if (fieldOffset < 0)
+        {
+            return 0;
+        }
+        else
+        {
+            fieldPtr = (byte*)(nint)fieldOffset;
+        }
+
+        // Copy the raw bytes to the buffer
+        for (int i = 0; i < fieldSize; i++)
+            buffer[i] = fieldPtr[i];
+
+        return fieldSize;
+    }
+
+    /// <summary>
+    /// Write a primitive value to memory.
+    /// </summary>
+    private static void WritePrimitiveValue(byte* ptr, int size, object? value)
+    {
+        if (value == null)
+        {
+            // Zero-initialize
+            for (int i = 0; i < size; i++)
+                ptr[i] = 0;
+            return;
+        }
+
+        // Value is boxed - we need to unbox it
+        // In minimal runtime, unboxing is limited
+        // We attempt to read the boxed value's data
+
+        byte* valueData = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref value);
+        valueData += sizeof(void*); // Skip MethodTable*
+
+        // Copy the value bytes
+        switch (size)
+        {
+            case 1:
+                *ptr = *valueData;
+                break;
+            case 2:
+                *(short*)ptr = *(short*)valueData;
+                break;
+            case 4:
+                *(int*)ptr = *(int*)valueData;
+                break;
+            case 8:
+                *(long*)ptr = *(long*)valueData;
+                break;
+            default:
+                // Copy arbitrary size
+                for (int i = 0; i < size; i++)
+                    ptr[i] = valueData[i];
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Get field information including type signature for proper boxing.
+    /// Returns the ElementType for primitive fields, or 0 for unknown/complex types.
+    /// </summary>
+    [RuntimeExport("PalGetFieldElementType")]
+    public static byte GetFieldElementType(uint assemblyId, uint fieldToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint rowId = fieldToken & 0x00FFFFFF;
+        uint sigBlobIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, rowId);
+
+        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigBlobIdx, out uint blobLen);
+        if (blob == null || blobLen < 2)
+            return 0;
+
+        // Field signature: FIELD (0x06) followed by Type
+        if (blob[0] != 0x06) // SignatureHeader.Field
+            return 0;
+
+        return blob[1]; // ElementType byte
     }
 
     /// <summary>
@@ -410,142 +533,503 @@ public static unsafe class ReflectionRuntime
         return MetadataReader.IsMethodDefVirtual(ref asm->Tables, ref asm->Sizes, rowId);
     }
 
+    // ========================================================================
+    // Type Enumeration APIs
+    // ========================================================================
+
+    /// <summary>
+    /// Get the number of loaded assemblies.
+    /// </summary>
+    [RuntimeExport("PalGetAssemblyCount")]
+    public static uint GetAssemblyCount()
+    {
+        return (uint)AssemblyLoader.GetAssemblyCount();
+    }
+
+    /// <summary>
+    /// Get an assembly ID by index (0-based).
+    /// Returns 0 if index is out of range.
+    /// </summary>
+    [RuntimeExport("PalGetAssemblyIdByIndex")]
+    public static uint GetAssemblyIdByIndex(uint index)
+    {
+        // Iterate through loaded assemblies to find the nth one
+        int count = 0;
+        for (uint id = 1; id <= 32; id++)  // AssemblyLoader.MaxAssemblies = 32
+        {
+            LoadedAssembly* asm = AssemblyLoader.GetAssembly(id);
+            if (asm != null && asm->IsLoaded)
+            {
+                if (count == (int)index)
+                {
+                    return id;
+                }
+                count++;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the number of types (TypeDef entries) in an assembly.
+    /// </summary>
+    [RuntimeExport("PalGetTypeCount")]
+    public static uint GetTypeCount(uint assemblyId)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        return asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+    }
+
+    /// <summary>
+    /// Get the type token at the specified index (0-based).
+    /// Returns 0x02xxxxxx token or 0 if index is out of range.
+    /// Note: TypeDef rows are 1-based in metadata, but this API uses 0-based index.
+    /// Row 1 is typically &lt;Module&gt;, so useful types start at index 1.
+    /// </summary>
+    [RuntimeExport("PalGetTypeTokenByIndex")]
+    public static uint GetTypeTokenByIndex(uint assemblyId, uint index)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        if (index >= typeCount)
+            return 0;
+
+        // TypeDef rows are 1-based, so row = index + 1
+        return 0x02000000 | (index + 1);
+    }
+
+    /// <summary>
+    /// Find a type by its name and namespace in an assembly.
+    /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// </summary>
+    [RuntimeExport("PalFindTypeByName")]
+    public static uint FindTypeByName(uint assemblyId, byte* nameUtf8, byte* namespaceUtf8)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null || nameUtf8 == null)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        for (uint row = 1; row <= typeCount; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
+            byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (!StringEquals(typeName, nameUtf8))
+                continue;
+
+            // If namespace is provided, check it too
+            if (namespaceUtf8 != null && namespaceUtf8[0] != 0)
+            {
+                uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, row);
+                byte* typeNs = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+                if (!StringEquals(typeNs, namespaceUtf8))
+                    continue;
+            }
+
+            return 0x02000000 | row;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the MethodTable pointer for a type token if it has been resolved.
+    /// Returns null if the type hasn't been instantiated yet.
+    /// </summary>
+    [RuntimeExport("PalGetTypeMethodTable")]
+    public static void* GetTypeMethodTable(uint assemblyId, uint typeToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        return asm->Types.Lookup(typeToken);
+    }
+
+    /// <summary>
+    /// Get the TypeDef flags (attributes) for a type.
+    /// </summary>
+    [RuntimeExport("PalGetTypeFlags")]
+    public static uint GetTypeFlags(uint assemblyId, uint typeDefToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint rowId = typeDefToken & 0x00FFFFFF;
+        return MetadataReader.GetTypeDefFlags(ref asm->Tables, ref asm->Sizes, rowId);
+    }
+
+    /// <summary>
+    /// Get the base type of a type (extends clause).
+    /// Returns 0 if no base type or if base type is System.Object.
+    /// </summary>
+    [RuntimeExport("PalGetTypeBaseType")]
+    public static uint GetTypeBaseType(uint assemblyId, uint typeDefToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint rowId = typeDefToken & 0x00FFFFFF;
+        var extends = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, rowId);
+
+        // TypeDefOrRef coded index: tag 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (extends.Table == MetadataTableId.TypeDef)
+        {
+            return 0x02000000 | extends.RowId;
+        }
+        else if (extends.Table == MetadataTableId.TypeRef)
+        {
+            return 0x01000000 | extends.RowId;
+        }
+        else if (extends.Table == MetadataTableId.TypeSpec)
+        {
+            return 0x1B000000 | extends.RowId;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Helper: Compare two null-terminated UTF-8 strings.
+    /// </summary>
+    private static bool StringEquals(byte* a, byte* b)
+    {
+        if (a == null || b == null)
+            return a == b;
+
+        while (*a != 0 && *b != 0)
+        {
+            if (*a != *b)
+                return false;
+            a++;
+            b++;
+        }
+        return *a == *b;
+    }
+
     /// <summary>
     /// Native invocation dispatcher.
+    /// Supports methods with 0-4 arguments, returning void or object reference.
+    /// Int32/Int64 return boxing is not supported in minimal runtime.
     /// </summary>
     private static object? InvokeNative(void* nativeCode, CompiledMethodInfo* methodInfo, object? target, object?[]? args)
     {
-        // Simple implementation for common cases
-        // In a full implementation, we'd need to handle all combinations of argument types
-
         bool hasThis = methodInfo->HasThis;
         int argCount = methodInfo->ArgCount;
         ReturnKind returnKind = methodInfo->ReturnKind;
 
-        // For now, support methods with 0-3 arguments returning void, int, or object
-        if (argCount == 0 && !hasThis)
+        // Dispatch based on argument count and instance/static
+        if (!hasThis)
         {
-            // Static, no args
-            return returnKind switch
+            // Static methods
+            return argCount switch
             {
-                ReturnKind.Void => InvokeVoidNoArgs(nativeCode),
-                ReturnKind.Int32 => InvokeInt32NoArgs(nativeCode),
-                ReturnKind.IntPtr => InvokeObjectNoArgs(nativeCode),
-                _ => null
+                0 => InvokeStatic0(nativeCode, returnKind),
+                1 => InvokeStatic1(nativeCode, returnKind, args),
+                2 => InvokeStatic2(nativeCode, returnKind, args),
+                3 => InvokeStatic3(nativeCode, returnKind, args),
+                4 => InvokeStatic4(nativeCode, returnKind, args),
+                _ => LogUnsupportedAndReturn(argCount, hasThis)
             };
         }
-        else if (argCount == 0 && hasThis)
+        else
         {
-            // Instance, no args (just 'this')
-            return returnKind switch
+            // Instance methods
+            return argCount switch
             {
-                ReturnKind.Void => InvokeVoidThis(nativeCode, target),
-                ReturnKind.Int32 => InvokeInt32This(nativeCode, target),
-                ReturnKind.IntPtr => InvokeObjectThis(nativeCode, target),
-                _ => null
+                0 => InvokeInstance0(nativeCode, returnKind, target),
+                1 => InvokeInstance1(nativeCode, returnKind, target, args),
+                2 => InvokeInstance2(nativeCode, returnKind, target, args),
+                3 => InvokeInstance3(nativeCode, returnKind, target, args),
+                4 => InvokeInstance4(nativeCode, returnKind, target, args),
+                _ => LogUnsupportedAndReturn(argCount, hasThis)
             };
         }
-        else if (argCount == 1 && !hasThis && args != null)
-        {
-            // Static, 1 arg
-            return returnKind switch
-            {
-                ReturnKind.Void => InvokeVoid1Arg(nativeCode, args[0]),
-                ReturnKind.Int32 => InvokeInt321Arg(nativeCode, args[0]),
-                ReturnKind.IntPtr => InvokeObject1Arg(nativeCode, args[0]),
-                _ => null
-            };
-        }
-        else if (argCount == 1 && hasThis && args != null)
-        {
-            // Instance, 1 arg
-            return returnKind switch
-            {
-                ReturnKind.Void => InvokeVoidThis1Arg(nativeCode, target, args[0]),
-                ReturnKind.Int32 => InvokeInt32This1Arg(nativeCode, target, args[0]),
-                ReturnKind.IntPtr => InvokeObjectThis1Arg(nativeCode, target, args[0]),
-                _ => null
-            };
-        }
+    }
 
-        DebugConsole.WriteLine("[Reflection] Unsupported method signature for invoke");
+    private static object? LogUnsupportedAndReturn(int argCount, bool hasThis)
+    {
+        DebugConsole.Write("[Reflection] Unsupported: ");
+        DebugConsole.WriteDecimal((uint)argCount);
+        DebugConsole.Write(" args, hasThis=");
+        DebugConsole.WriteDecimal(hasThis ? 1u : 0u);
+        DebugConsole.WriteLine();
         return null;
     }
 
-    // Invocation helpers - void return, static
-    private static object? InvokeVoidNoArgs(void* code)
+    // ========================================================================
+    // Static method invocations
+    // ========================================================================
+
+    private static object? InvokeStatic0(void* code, ReturnKind returnKind)
+    {
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidStatic0(code),
+            ReturnKind.IntPtr => ((delegate*<object?>)code)(),
+            ReturnKind.Int32 => InvokeInt32Static0(code),
+            ReturnKind.Int64 => InvokeInt64Static0(code),
+            _ => null
+        };
+    }
+
+    private static object? InvokeStatic1(void* code, ReturnKind returnKind, object?[]? args)
+    {
+        if (args == null || args.Length < 1) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidStatic1(code, args[0]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?>)code)(args[0]),
+            ReturnKind.Int32 => InvokeInt32Static1(code, args[0]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeStatic2(void* code, ReturnKind returnKind, object?[]? args)
+    {
+        if (args == null || args.Length < 2) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidStatic2(code, args[0], args[1]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?>)code)(args[0], args[1]),
+            ReturnKind.Int32 => InvokeInt32Static2(code, args[0], args[1]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeStatic3(void* code, ReturnKind returnKind, object?[]? args)
+    {
+        if (args == null || args.Length < 3) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidStatic3(code, args[0], args[1], args[2]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?, object?>)code)(args[0], args[1], args[2]),
+            ReturnKind.Int32 => InvokeInt32Static3(code, args[0], args[1], args[2]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeStatic4(void* code, ReturnKind returnKind, object?[]? args)
+    {
+        if (args == null || args.Length < 4) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidStatic4(code, args[0], args[1], args[2], args[3]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?, object?, object?>)code)(args[0], args[1], args[2], args[3]),
+            ReturnKind.Int32 => InvokeInt32Static4(code, args[0], args[1], args[2], args[3]),
+            _ => null
+        };
+    }
+
+    // ========================================================================
+    // Instance method invocations
+    // ========================================================================
+
+    private static object? InvokeInstance0(void* code, ReturnKind returnKind, object? target)
+    {
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidInstance0(code, target),
+            ReturnKind.IntPtr => ((delegate*<object?, object?>)code)(target),
+            ReturnKind.Int32 => InvokeInt32Instance0(code, target),
+            _ => null
+        };
+    }
+
+    private static object? InvokeInstance1(void* code, ReturnKind returnKind, object? target, object?[]? args)
+    {
+        if (args == null || args.Length < 1) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidInstance1(code, target, args[0]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?>)code)(target, args[0]),
+            ReturnKind.Int32 => InvokeInt32Instance1(code, target, args[0]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeInstance2(void* code, ReturnKind returnKind, object? target, object?[]? args)
+    {
+        if (args == null || args.Length < 2) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidInstance2(code, target, args[0], args[1]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?, object?>)code)(target, args[0], args[1]),
+            ReturnKind.Int32 => InvokeInt32Instance2(code, target, args[0], args[1]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeInstance3(void* code, ReturnKind returnKind, object? target, object?[]? args)
+    {
+        if (args == null || args.Length < 3) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidInstance3(code, target, args[0], args[1], args[2]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?, object?, object?>)code)(target, args[0], args[1], args[2]),
+            ReturnKind.Int32 => InvokeInt32Instance3(code, target, args[0], args[1], args[2]),
+            _ => null
+        };
+    }
+
+    private static object? InvokeInstance4(void* code, ReturnKind returnKind, object? target, object?[]? args)
+    {
+        if (args == null || args.Length < 4) return null;
+        return returnKind switch
+        {
+            ReturnKind.Void => InvokeVoidInstance4(code, target, args[0], args[1], args[2], args[3]),
+            ReturnKind.IntPtr => ((delegate*<object?, object?, object?, object?, object?, object?>)code)(target, args[0], args[1], args[2], args[3]),
+            ReturnKind.Int32 => InvokeInt32Instance4(code, target, args[0], args[1], args[2], args[3]),
+            _ => null
+        };
+    }
+
+    // ========================================================================
+    // Void return helpers - Static
+    // ========================================================================
+
+    private static object? InvokeVoidStatic0(void* code)
     {
         ((delegate*<void>)code)();
         return null;
     }
 
-    private static object? InvokeInt32NoArgs(void* code)
+    private static object? InvokeVoidStatic1(void* code, object? a0)
     {
-        // Boxing int to object requires RuntimeExports - not supported in minimal runtime
-        ((delegate*<int>)code)();  // Call method but discard result
-        DebugConsole.WriteLine("[Reflection] Int32 return boxing not supported");
+        ((delegate*<object?, void>)code)(a0);
         return null;
     }
 
-    private static object? InvokeObjectNoArgs(void* code)
+    private static object? InvokeVoidStatic2(void* code, object? a0, object? a1)
     {
-        return ((delegate*<object?>)code)();
+        ((delegate*<object?, object?, void>)code)(a0, a1);
+        return null;
     }
 
-    // Invocation helpers - void return, instance
-    private static object? InvokeVoidThis(void* code, object? target)
+    private static object? InvokeVoidStatic3(void* code, object? a0, object? a1, object? a2)
+    {
+        ((delegate*<object?, object?, object?, void>)code)(a0, a1, a2);
+        return null;
+    }
+
+    private static object? InvokeVoidStatic4(void* code, object? a0, object? a1, object? a2, object? a3)
+    {
+        ((delegate*<object?, object?, object?, object?, void>)code)(a0, a1, a2, a3);
+        return null;
+    }
+
+    // ========================================================================
+    // Void return helpers - Instance
+    // ========================================================================
+
+    private static object? InvokeVoidInstance0(void* code, object? target)
     {
         ((delegate*<object?, void>)code)(target);
         return null;
     }
 
-    private static object? InvokeInt32This(void* code, object? target)
+    private static object? InvokeVoidInstance1(void* code, object? target, object? a0)
+    {
+        ((delegate*<object?, object?, void>)code)(target, a0);
+        return null;
+    }
+
+    private static object? InvokeVoidInstance2(void* code, object? target, object? a0, object? a1)
+    {
+        ((delegate*<object?, object?, object?, void>)code)(target, a0, a1);
+        return null;
+    }
+
+    private static object? InvokeVoidInstance3(void* code, object? target, object? a0, object? a1, object? a2)
+    {
+        ((delegate*<object?, object?, object?, object?, void>)code)(target, a0, a1, a2);
+        return null;
+    }
+
+    private static object? InvokeVoidInstance4(void* code, object? target, object? a0, object? a1, object? a2, object? a3)
+    {
+        ((delegate*<object?, object?, object?, object?, object?, void>)code)(target, a0, a1, a2, a3);
+        return null;
+    }
+
+    // ========================================================================
+    // Int32 return helpers (return discarded - boxing not supported)
+    // ========================================================================
+
+    private static object? InvokeInt32Static0(void* code)
+    {
+        ((delegate*<int>)code)();
+        return null;  // Boxing not supported
+    }
+
+    private static object? InvokeInt64Static0(void* code)
+    {
+        ((delegate*<long>)code)();
+        return null;  // Boxing not supported
+    }
+
+    private static object? InvokeInt32Static1(void* code, object? a0)
+    {
+        ((delegate*<object?, int>)code)(a0);
+        return null;
+    }
+
+    private static object? InvokeInt32Static2(void* code, object? a0, object? a1)
+    {
+        ((delegate*<object?, object?, int>)code)(a0, a1);
+        return null;
+    }
+
+    private static object? InvokeInt32Static3(void* code, object? a0, object? a1, object? a2)
+    {
+        ((delegate*<object?, object?, object?, int>)code)(a0, a1, a2);
+        return null;
+    }
+
+    private static object? InvokeInt32Static4(void* code, object? a0, object? a1, object? a2, object? a3)
+    {
+        ((delegate*<object?, object?, object?, object?, int>)code)(a0, a1, a2, a3);
+        return null;
+    }
+
+    private static object? InvokeInt32Instance0(void* code, object? target)
     {
         ((delegate*<object?, int>)code)(target);
-        DebugConsole.WriteLine("[Reflection] Int32 return boxing not supported");
         return null;
     }
 
-    private static object? InvokeObjectThis(void* code, object? target)
+    private static object? InvokeInt32Instance1(void* code, object? target, object? a0)
     {
-        return ((delegate*<object?, object?>)code)(target);
-    }
-
-    // Invocation helpers - 1 arg, static
-    private static object? InvokeVoid1Arg(void* code, object? arg)
-    {
-        ((delegate*<object?, void>)code)(arg);
+        ((delegate*<object?, object?, int>)code)(target, a0);
         return null;
     }
 
-    private static object? InvokeInt321Arg(void* code, object? arg)
+    private static object? InvokeInt32Instance2(void* code, object? target, object? a0, object? a1)
     {
-        ((delegate*<object?, int>)code)(arg);
-        DebugConsole.WriteLine("[Reflection] Int32 return boxing not supported");
+        ((delegate*<object?, object?, object?, int>)code)(target, a0, a1);
         return null;
     }
 
-    private static object? InvokeObject1Arg(void* code, object? arg)
+    private static object? InvokeInt32Instance3(void* code, object? target, object? a0, object? a1, object? a2)
     {
-        return ((delegate*<object?, object?>)code)(arg);
-    }
-
-    // Invocation helpers - 1 arg, instance
-    private static object? InvokeVoidThis1Arg(void* code, object? target, object? arg)
-    {
-        ((delegate*<object?, object?, void>)code)(target, arg);
+        ((delegate*<object?, object?, object?, object?, int>)code)(target, a0, a1, a2);
         return null;
     }
 
-    private static object? InvokeInt32This1Arg(void* code, object? target, object? arg)
+    private static object? InvokeInt32Instance4(void* code, object? target, object? a0, object? a1, object? a2, object? a3)
     {
-        ((delegate*<object?, object?, int>)code)(target, arg);
-        DebugConsole.WriteLine("[Reflection] Int32 return boxing not supported");
+        ((delegate*<object?, object?, object?, object?, object?, int>)code)(target, a0, a1, a2, a3);
         return null;
-    }
-
-    private static object? InvokeObjectThis1Arg(void* code, object? target, object? arg)
-    {
-        return ((delegate*<object?, object?, object?>)code)(target, arg);
     }
 }

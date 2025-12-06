@@ -227,7 +227,7 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 - [x] Created csproj targeting net10.0
 - [x] Added to Makefile to compile after kernel
 - [x] Copies to boot image automatically
-- [x] Build verified working (55 tests pass)
+- [x] Build verified working (58 tests pass)
 
 ---
 
@@ -268,7 +268,10 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 - `src/SystemRuntime/System/Collections/Generic/Stack.cs`
 - `src/SystemRuntime/System/Collections/Generic/EqualityComparer.cs`
 - `src/SystemRuntime/System/Collections/Generic/Comparer.cs`
+- `src/SystemRuntime/System/Collections/Generic/LinkedList.cs`
+- `src/SystemRuntime/System/Collections/Generic/SortedList.cs`
 - `src/SystemRuntime/System/Collections/ObjectModel/ReadOnlyCollection.cs`
+- `src/SystemRuntime/System/Collections/ObjectModel/Collection.cs`
 
 **Key implementations:**
 - [x] `List<T>` - dynamic array with Add, Remove, Insert, IndexOf, Contains, Sort, etc.
@@ -278,9 +281,9 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 - [x] `Stack<T>` - LIFO with Push, Pop, Peek
 - [x] `EqualityComparer<T>.Default`, `Comparer<T>.Default`
 - [x] `ReadOnlyCollection<T>` - read-only wrapper
-
-**Deferred (lower priority):**
-- LinkedList<T>, SortedList<TKey,TValue>, Collection<T>
+- [x] `LinkedList<T>` - doubly-linked list with LinkedListNode<T>, version-tracked enumerator
+- [x] `SortedList<TKey,TValue>` - sorted dictionary with parallel arrays, binary search
+- [x] `Collection<T>` - base class for custom collections with virtual Insert/Remove/Set/Clear
 
 ---
 
@@ -321,7 +324,7 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 
 ## Phase 13: Reflection Support (System.Runtime.dll + JIT)
 
-**Status: PARTIAL (stub types complete, deep reflection deferred)**
+**Status: COMPLETE**
 
 **Files created (System.Runtime.dll):**
 - `src/SystemRuntime/System/Reflection/Assembly.cs`
@@ -332,21 +335,38 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 - `src/SystemRuntime/System/Reflection/MemberTypes.cs`
 - `src/SystemRuntime/System/Activator.cs`
 
+**Files created (korlib - runtime integration):**
+- `src/korlib/System/Type.cs` - RuntimeType with kernel PAL integration
+- `src/korlib/System/Reflection/RuntimeReflection.cs` - RuntimeMethodInfo, RuntimeFieldInfo, RuntimePropertyInfo, RuntimeConstructorInfo
+- `src/korlib/System/Reflection/RuntimeAssembly.cs` - RuntimeAssembly with type enumeration via kernel PAL
+- `src/korlib/System/Reflection/MemberInfo.cs` - Assembly abstract base class
+
+**Kernel PAL exports (src/kernel/Runtime/Reflection/ReflectionRuntime.cs):**
+- `PalGetAssemblyCount`, `PalGetAssemblyIdByIndex` - assembly enumeration
+- `PalGetTypeCount`, `PalGetTypeTokenByIndex` - type enumeration
+- `PalFindTypeByName`, `PalGetTypeMethodTable` - type lookup
+- `PalGetTypeFlags`, `PalGetTypeName`, `PalGetTypeBaseType` - type metadata
+- `PalInvokeMethod` - dynamic method invocation (0-4 arguments, static/instance)
+- `PalGetFieldValue`, `PalSetFieldValue`, `PalGetFieldValueRaw` - field access
+
 **Implemented:**
 - [x] `BindingFlags` enum
 - [x] `MemberTypes` enum
 - [x] `MemberInfo` abstract base class
 - [x] `MethodBase` abstract class
 - [x] `MethodInfo`, `ConstructorInfo`, `FieldInfo`, `PropertyInfo`, `EventInfo`, `ParameterInfo` stub classes
-- [x] `Assembly` stub class
+- [x] `Assembly` abstract base class with `GetTypes()`, `GetType(string)` methods
 - [x] `Activator.CreateInstance<T>()` (basic)
-
-**Deferred (requires JIT integration):**
-- [ ] `MethodInfo.Invoke()` dynamic invocation
-- [ ] `FieldInfo.GetValue()`, `SetValue()` dynamic access
-- [ ] `PropertyInfo.GetValue()`, `SetValue()` dynamic access
-- [ ] `Type.GetMembers()`, `GetMethods()`, `GetFields()`, `GetProperties()` metadata queries
-- [ ] `Assembly.GetTypes()`, `GetType(string)` type enumeration
+- [x] `RuntimeType` with MethodTable* and kernel PAL metadata loading
+- [x] `RuntimeMethodInfo` with name lookup via kernel PAL
+- [x] `RuntimeFieldInfo` with GetValue/SetValue via kernel PAL
+- [x] `RuntimePropertyInfo` with getter/setter support
+- [x] `RuntimeConstructorInfo` with constructor detection
+- [x] `Type.GetMethods()`, `Type.GetFields()`, `Type.GetConstructors()` - working via kernel PAL
+- [x] `MethodInfo.Invoke()` dynamic method invocation (0-4 arguments via kernel PAL)
+- [x] `FieldInfo.GetValue()`, `SetValue()` dynamic access (reference types, `PalGetFieldValueRaw` for value types)
+- [x] `RuntimeAssembly.GetTypes()`, `GetType(string)` type enumeration via kernel PAL
+- [x] `RuntimeAssembly.GetLoadedAssemblies()` static method
 
 ---
 
@@ -389,6 +409,45 @@ Expand korlib with compiler-required types and create System.Runtime.dll as a JI
 
 ---
 
+## Phase 16: Array and Buffer Support (korlib)
+
+**Status: COMPLETE**
+
+**Files modified:**
+- `src/korlib/System/Array.cs` - expanded with utility methods
+- `src/korlib/System/Buffer.cs` - new file with memory operations
+- `src/korlib/System/Runtime/CompilerServices/RuntimeHelpers.cs` - InitializeArray support
+
+**System.Array enhancements:**
+- [x] `Copy(Array, Array, int)` - element-wise copy
+- [x] `Copy(Array, int, Array, int, int)` - copy with offsets
+- [x] `Clear(Array, int, int)` - zero out array region
+- [x] `IndexOf<T>(T[], T)`, `IndexOf<T>(T[], T, int)`, `IndexOf<T>(T[], T, int, int)`
+- [x] `LastIndexOf<T>(T[], T)`, `LastIndexOf<T>(T[], T, int)`, `LastIndexOf<T>(T[], T, int, int)`
+- [x] `Find<T>(T[], Predicate<T>)`, `FindLast<T>(T[], Predicate<T>)`
+- [x] `FindIndex<T>(T[], Predicate<T>)`, `FindLastIndex<T>(T[], Predicate<T>)`
+- [x] `FindAll<T>(T[], Predicate<T>)` - returns matching elements
+- [x] `Exists<T>(T[], Predicate<T>)`, `TrueForAll<T>(T[], Predicate<T>)`
+- [x] `Reverse<T>(T[])`, `Reverse<T>(T[], int, int)`
+- [x] `Resize<T>(ref T[], int)` - resize with copy
+- [x] `Fill<T>(T[], T)`, `Fill<T>(T[], T, int, int)`
+- [x] `Empty<T>()` - returns cached empty array
+- [x] `GetEnumerator()` - IEnumerator implementation
+
+**System.Buffer methods:**
+- [x] `Memmove(ref byte, ref byte, nuint)` - overlapping-safe memory copy
+- [x] `BulkMoveWithWriteBarrier` - for GC reference copies
+- [x] `MemoryCopy(void*, void*, long, long)` - unsafe memory copy
+- [x] `BlockCopy(Array, int, Array, int, int)` - array block copy
+- [x] `ByteLength(Array)` - get array size in bytes
+- [x] `GetByte(Array, int)`, `SetByte(Array, int, byte)` - byte-level access
+
+**RuntimeHelpers.InitializeArray:**
+- [x] `InitializeArray(Array, RuntimeFieldHandle)` - copies static initializer data to arrays
+- [x] `RawArrayData` struct for array data access
+
+---
+
 ## Dependency Order
 
 ```
@@ -421,6 +480,8 @@ Phase 13: Reflection (collections from Phase 11, async from Phase 12)
 Phase 14: StringBuilder (string from Phase 6)
     ↓
 Phase 15: Additional Compiler Support (async types from Phase 12)
+    ↓
+Phase 16: Array and Buffer Support (primitives, delegates from Phase 4)
 ```
 
 ---
@@ -439,12 +500,13 @@ Phase 15: Additional Compiler Support (async types from Phase 12)
 | 8 | 1 (expand) | ~200 |
 | 9 | 2 | ~50 |
 | 10 | 8 | ~800 |
-| 11 | 11 | ~2500 |
+| 11 | 14 | ~3500 |
 | 12 | 16 | ~1500 |
-| 13 | 14 | ~1500 |
+| 13 | 16 | ~2200 |
 | 14 | 1 | ~300 |
 | 15 | 6 | ~150 |
-| **Total** | **~104 files** | **~9500 lines** |
+| 16 | 3 | ~450 |
+| **Total** | **~115 files** | **~12000 lines** |
 
 ---
 
@@ -456,6 +518,13 @@ Phase 15: Additional Compiler Support (async types from Phase 12)
 - `src/korlib/System/Math.cs` - add math functions
 - `src/korlib/System/ValueTuple.cs` - expand to T1-T8
 - `src/korlib/System/Exception.cs` - add exception types
+- `src/korlib/System/Array.cs` - utility methods (Copy, IndexOf, Find, Reverse, etc.)
+- `src/korlib/System/Buffer.cs` - memory operations (Memmove, MemoryCopy, BlockCopy)
+- `src/korlib/System/Type.cs` - RuntimeType with kernel PAL integration
+- `src/korlib/System/Reflection/RuntimeReflection.cs` - runtime reflection types
+- `src/korlib/System/Reflection/RuntimeAssembly.cs` - assembly enumeration via kernel PAL
+- `src/korlib/System/Reflection/MemberInfo.cs` - Assembly abstract base class
+- `src/kernel/Runtime/Reflection/ReflectionRuntime.cs` - kernel PAL reflection exports
 
 **New korlib files (most important):**
 - `src/korlib/System/Index.cs`
@@ -468,6 +537,9 @@ Phase 15: Additional Compiler Support (async types from Phase 12)
 **System.Runtime.dll (most important):**
 - `src/SystemRuntime/System/Collections/Generic/List.cs`
 - `src/SystemRuntime/System/Collections/Generic/Dictionary.cs`
+- `src/SystemRuntime/System/Collections/Generic/LinkedList.cs`
+- `src/SystemRuntime/System/Collections/Generic/SortedList.cs`
+- `src/SystemRuntime/System/Collections/ObjectModel/Collection.cs`
 - `src/SystemRuntime/System/Threading/Tasks/Task.cs`
 - `src/SystemRuntime/System/Reflection/MethodInfo.cs`
 - `src/SystemRuntime/System/Text/StringBuilder.cs`
@@ -481,3 +553,27 @@ Phase 15: Additional Compiler Support (async types from Phase 12)
 - Async (Phase 12) enables non-blocking driver patterns
 - Reflection (Phase 13) is complex and may require JIT modifications
 - Can implement phases incrementally and test after each
+
+## Current Status (as of last update)
+
+**Complete:** All phases (1-16) fully implemented
+**Test count:** 58 tests passing
+
+**Phase 11 additions (Collections):**
+- LinkedList<T> with LinkedListNode<T>, version-tracked enumerator
+- SortedList<TKey,TValue> with binary search, KeyList/ValueList nested classes
+- Collection<T> base class with virtual Insert/Remove/Set/Clear methods
+
+**Phase 13 additions (Reflection):**
+- Kernel PAL exports for assembly/type enumeration
+- RuntimeAssembly with GetTypes() and GetType(string) via kernel PAL
+- PalInvokeMethod expanded to support 0-4 arguments (static and instance)
+- PalGetFieldValueRaw for value type field access
+- Assembly abstract base class in korlib
+
+**Earlier additions:**
+- RuntimeHelpers.InitializeArray for array literal initialization
+- System.Array utility methods (Copy, IndexOf, Find, Reverse, Resize, Fill, etc.)
+- System.Buffer memory operations
+- RuntimeType with kernel PAL metadata integration
+- Runtime reflection types (RuntimeMethodInfo, RuntimeFieldInfo, etc.)

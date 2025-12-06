@@ -344,4 +344,41 @@ namespace System.Reflection
             set => _byRef[index] = value;
         }
     }
+
+    /// <summary>
+    /// Base class for assembly representation in reflection.
+    /// Minimal korlib implementation - full features in SystemRuntime.
+    /// </summary>
+    public abstract class Assembly : ICustomAttributeProvider
+    {
+        /// <summary>Gets the display name of the assembly.</summary>
+        public virtual string FullName => string.Empty;
+
+        /// <summary>Gets the types defined in this assembly.</summary>
+        public virtual Type[] GetTypes() => Array.Empty<Type>();
+
+        /// <summary>Gets the public types defined in this assembly.</summary>
+        public virtual Type[] GetExportedTypes() => GetTypes();
+
+        /// <summary>Gets the Type object with the specified name in the assembly.</summary>
+        public virtual Type? GetType(string name) => GetType(name, false, false);
+
+        /// <summary>Gets the Type object with the specified name, optionally throwing.</summary>
+        public virtual Type? GetType(string name, bool throwOnError) => GetType(name, throwOnError, false);
+
+        /// <summary>Gets the Type object with the specified name.</summary>
+        public virtual Type? GetType(string name, bool throwOnError, bool ignoreCase) => null;
+
+        /// <summary>Gets custom attributes applied to this assembly.</summary>
+        public virtual object[] GetCustomAttributes(bool inherit) => Array.Empty<object>();
+
+        /// <summary>Gets custom attributes of the specified type.</summary>
+        public virtual object[] GetCustomAttributes(Type attributeType, bool inherit) => Array.Empty<object>();
+
+        /// <summary>Determines whether the specified attribute is defined.</summary>
+        public virtual bool IsDefined(Type attributeType, bool inherit) => false;
+
+        /// <summary>Returns a string representation.</summary>
+        public override string ToString() => FullName;
+    }
 }
