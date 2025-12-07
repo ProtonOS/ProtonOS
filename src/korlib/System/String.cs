@@ -434,6 +434,15 @@ namespace System
             }
         }
 
+        /// <summary>
+        /// Gets a reference to the first character.
+        /// Used by fixed statements for pinning strings.
+        /// </summary>
+        public ref readonly char GetPinnableReference()
+        {
+            return ref _firstChar;
+        }
+
         public char[] ToCharArray()
         {
             if (_length == 0) return new char[0];

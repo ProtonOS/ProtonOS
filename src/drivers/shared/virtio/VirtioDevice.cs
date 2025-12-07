@@ -77,10 +77,14 @@ public abstract unsafe class VirtioDevice : IDisposable
     /// </summary>
     public bool Initialize(PciDeviceInfo pciDevice)
     {
+        Debug.WriteHex(0xCAFE0001u);
         _pciDevice = pciDevice;
+        Debug.WriteHex(0xCAFE0002u);
 
         // Determine if legacy or modern
-        _isLegacy = VirtioPciIds.IsLegacyDevice(pciDevice.DeviceId);
+        bool isLeg = VirtioPciIds.IsLegacyDevice(pciDevice.DeviceId);
+        Debug.WriteHex(0xCAFE0003u);
+        _isLegacy = isLeg;
 
         if (_isLegacy)
         {
@@ -97,33 +101,54 @@ public abstract unsafe class VirtioDevice : IDisposable
     /// </summary>
     private bool InitializeModern()
     {
+        Debug.WriteHex(0xCAFE0010u);
+
         // Enable memory space and bus mastering
-        PCI.EnableMemorySpace(_pciDevice.Address);
+        // NOTE: Avoid local struct variables - JIT has a bug with ldfld on value types
+        // Access struct fields through the object reference directly
+        byte bus = _pciDevice.Address.Bus;
+        byte device = _pciDevice.Address.Device;
+        byte function = _pciDevice.Address.Function;
+        Debug.WriteHex(0xCAFE0011u);
+
+        ushort cmd = PCI.ReadConfig16(bus, device, function, PCI.PCI_COMMAND);
+        cmd |= PCI.PCI_CMD_MEMORY_SPACE;
+        PCI.WriteConfig16(bus, device, function, PCI.PCI_COMMAND, cmd);
+        Debug.WriteHex(0xCAFE0012u);
+
         PCI.EnableBusMaster(_pciDevice.Address);
+        Debug.WriteHex(0xCAFE0013u);
 
         // Map BARs
         if (!MapBars())
             return false;
+        Debug.WriteHex(0xCAFE0014u);
 
         // Find virtio capabilities
         if (!FindCapabilities())
             return false;
+        Debug.WriteHex(0xCAFE0015u);
 
         // Reset device
         WriteStatus(VirtioDeviceStatus.Reset);
+        Debug.WriteHex(0xCAFE0016u);
 
         // Acknowledge device
         WriteStatus(VirtioDeviceStatus.Acknowledge);
+        Debug.WriteHex(0xCAFE0017u);
 
         // We know how to drive it
         WriteStatus(ReadStatus() | VirtioDeviceStatus.Driver);
+        Debug.WriteHex(0xCAFE0018u);
 
         // Read and negotiate features
         if (!NegotiateFeatures())
             return false;
+        Debug.WriteHex(0xCAFE0019u);
 
         // Features OK
         WriteStatus(ReadStatus() | VirtioDeviceStatus.FeaturesOk);
+        Debug.WriteHex(0xCAFE001Au);
 
         // Check if features were accepted
         if ((ReadStatus() & VirtioDeviceStatus.FeaturesOk) == 0)
@@ -132,12 +157,15 @@ public abstract unsafe class VirtioDevice : IDisposable
             WriteStatus(VirtioDeviceStatus.Failed);
             return false;
         }
+        Debug.WriteHex(0xCAFE001Bu);
 
         // Get number of queues
         _numQueues = *(ushort*)(_commonCfg + VirtioCommonCfgOffsets.NumQueues);
+        Debug.WriteHex(0xCAFE001Cu);
 
         // Allocate queue array
         _queues = new Virtqueue[_numQueues];
+        Debug.WriteHex(0xCAFE001Du);
 
         _initialized = true;
         return true;
@@ -159,16 +187,59 @@ public abstract unsafe class VirtioDevice : IDisposable
     /// </summary>
     private bool MapBars()
     {
+        Debug.WriteHex(0xBAF00001u);
+        if (_pciDevice == null)
+        {
+            Debug.WriteHex(0xBAF0DEADu); // _pciDevice is null!
+            return false;
+        }
+        Debug.WriteHex(0xBAF00002u);
+
+        var bars = _pciDevice.Bars;
+        Debug.WriteHex(0xBAF00003u);
+
+        if (bars == null)
+        {
+            Debug.WriteHex(0xBAF0DEAEu); // Bars is null!
+            return false;
+        }
+        Debug.WriteHex(0xBAF00004u);
+
         for (int i = 0; i < 6; i++)
         {
-            if (_pciDevice.Bars[i].IsValid && !_pciDevice.Bars[i].IsIO)
+            // WORKAROUND: JIT bug - don't copy value type from array to local variable
+            // Access array elements directly via indexing to avoid broken struct copy
+
+            // Debug: Show BAR info
+            Debug.WriteHex(0xBAF00010u);
+            Debug.WriteHex((uint)i);
+
+            // Access fields directly from array element - avoid intermediate local
+            ulong baseAddr = bars[i].BaseAddress;
+            ulong size = bars[i].Size;
+            bool isValid = bars[i].IsValid;
+            bool isIO = bars[i].IsIO;
+
+            Debug.WriteHex((uint)(baseAddr >> 32));
+            Debug.WriteHex((uint)baseAddr);
+            Debug.WriteHex((uint)size);
+            Debug.WriteHex(isValid ? 1u : 0u);
+            Debug.WriteHex(isIO ? 1u : 0u);
+
+            if (isValid && !isIO)
             {
-                _barPhysAddr[i] = _pciDevice.Bars[i].BaseAddress;
-                _barSize[i] = _pciDevice.Bars[i].Size;
+                Debug.WriteHex(0xBAF00020u); // Mapping this BAR
+                _barPhysAddr[i] = baseAddr;
+                _barSize[i] = size;
                 _barVirtAddr[i] = Memory.MapMMIO(_barPhysAddr[i], _barSize[i]);
+                Debug.WriteHex((uint)(_barVirtAddr[i] >> 32));
+                Debug.WriteHex((uint)_barVirtAddr[i]);
 
                 if (_barVirtAddr[i] == 0)
+                {
+                    Debug.WriteHex(0xBAF0FA11u); // MapMMIO failed
                     return false;
+                }
             }
         }
         return true;
@@ -176,64 +247,147 @@ public abstract unsafe class VirtioDevice : IDisposable
 
     /// <summary>
     /// Find virtio PCI capabilities.
+    /// Uses simple approach to work around JIT if-else chain bugs.
     /// </summary>
     private bool FindCapabilities()
     {
-        byte capPtr = PCI.FindCapability(_pciDevice.Address, 0x09); // Vendor-specific cap
+        Debug.WriteHex(0xCAC00001u);
 
-        while (capPtr != 0)
+        // Extract address components to avoid JIT chained field access issues
+        var addr = _pciDevice.Address;
+        byte bus = addr.Bus;
+        byte device = addr.Device;
+        byte function = addr.Function;
+
+        Debug.WriteHex(0xCAC00002u);
+
+        // Find first vendor-specific capability
+        byte capPtr = PCI.FindCapability(addr, 0x09);
+        Debug.WriteHex(0xCAC00003u);
+        Debug.WriteHex((uint)capPtr);
+
+        // Extract BAR addresses array to avoid repeated field access
+        var barAddrs = _barVirtAddr;
+
+        // Iterate through capabilities using a simple for loop with index
+        // (avoid while loop with multiple conditions - JIT has issues)
+        for (int i = 0; i < 10; i++)
         {
-            // Check if this is a virtio cap
-            byte capLen = PCI.ReadConfig8(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                           _pciDevice.Address.Function, capPtr);
-
-            if (capLen >= 16)
+            // Check if we're done
+            if (capPtr == 0)
             {
-                byte cfgType = PCI.ReadConfig8(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                                _pciDevice.Address.Function, (ushort)(capPtr + 3));
-                byte bar = PCI.ReadConfig8(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                            _pciDevice.Address.Function, (ushort)(capPtr + 4));
-                uint offset = PCI.ReadConfig32(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                               _pciDevice.Address.Function, (ushort)(capPtr + 8));
-                uint length = PCI.ReadConfig32(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                               _pciDevice.Address.Function, (ushort)(capPtr + 12));
-
-                switch ((VirtioPciCapType)cfgType)
-                {
-                    case VirtioPciCapType.CommonCfg:
-                        _commonCfg = (byte*)(_barVirtAddr[bar] + offset);
-                        _commonCfgBar = bar;
-                        _commonCfgOffset = offset;
-                        _commonCfgLength = length;
-                        break;
-
-                    case VirtioPciCapType.NotifyCfg:
-                        _notifyCfg = (byte*)(_barVirtAddr[bar] + offset);
-                        _notifyBar = bar;
-                        _notifyOffset = offset;
-                        // Read notify multiplier (at cap offset 16)
-                        _notifyMultiplier = PCI.ReadConfig32(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                                             _pciDevice.Address.Function, (ushort)(capPtr + 16));
-                        break;
-
-                    case VirtioPciCapType.IsrCfg:
-                        _isrCfg = (byte*)(_barVirtAddr[bar] + offset);
-                        break;
-
-                    case VirtioPciCapType.DeviceCfg:
-                        _deviceCfg = (byte*)(_barVirtAddr[bar] + offset);
-                        _deviceCfgLength = length;
-                        break;
-                }
+                Debug.WriteHex(0xCAC00050u); // capPtr is 0, exiting
+                break;
             }
 
-            // Next capability
-            capPtr = PCI.ReadConfig8(_pciDevice.Address.Bus, _pciDevice.Address.Device,
-                                      _pciDevice.Address.Function, (ushort)(capPtr + 1));
+            Debug.WriteHex(0xCAC00010u);
+            Debug.WriteHex((uint)i);
+
+            // Read capability structure
+            byte capLen = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 2));
+
+            if (capLen < 16)
+            {
+                // Skip - capability too short
+                Debug.WriteHex(0xCAC00011u);
+                capPtr = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 1));
+                continue;
+            }
+
+            byte cfgType = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 3));
+            byte bar = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 4));
+            uint offset = PCI.ReadConfig32(bus, device, function, (ushort)(capPtr + 8));
+            uint length = PCI.ReadConfig32(bus, device, function, (ushort)(capPtr + 12));
+
+            Debug.WriteHex(0xCAC00012u);
+            Debug.WriteHex((uint)cfgType);
+            Debug.WriteHex((uint)bar);
+
+            // Process capability by type - use separate blocks instead of if-else chain
+            // to work around JIT bug that executes all branches
+            ProcessCapability(cfgType, bar, offset, length, capPtr, bus, device, function, barAddrs);
+
+            // Get next capability pointer
+            capPtr = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 1));
+            Debug.WriteHex(0xCAC00030u);
+            Debug.WriteHex((uint)capPtr);
         }
 
+        Debug.WriteHex(0xCAC00040u);
+
         // Common config is required
-        return _commonCfg != null;
+        bool hasCommon = _commonCfg != null;
+        Debug.WriteHex(hasCommon ? 0xCAC00041u : 0xCAC00042u);
+        return hasCommon;
+    }
+
+    /// <summary>
+    /// Process a single capability - separate method to isolate JIT issues.
+    /// </summary>
+    private void ProcessCapability(byte cfgType, byte bar, uint offset, uint length,
+                                   byte capPtr, byte bus, byte device, byte function, ulong[] barAddrs)
+    {
+        // Validate BAR
+        if (bar >= 6)
+        {
+            Debug.WriteHex(0xCAC00060u); // BAR index too high
+            return;
+        }
+
+        ulong barAddr = barAddrs[bar];
+        if (barAddr == 0)
+        {
+            Debug.WriteHex(0xCAC00061u); // BAR not mapped
+            return;
+        }
+
+        Debug.WriteHex(0xCAC00062u); // Valid BAR
+
+        // Handle each type separately using explicit comparisons
+        // Avoid if-else chains completely
+
+        // Type 1: CommonCfg
+        if (cfgType == 1)
+        {
+            _commonCfg = (byte*)(barAddr + offset);
+            _commonCfgBar = bar;
+            _commonCfgOffset = offset;
+            _commonCfgLength = length;
+            Debug.WriteHex(0xCAC00020u); // CommonCfg found
+            return; // Early return to avoid executing other comparisons
+        }
+
+        // Type 2: NotifyCfg
+        if (cfgType == 2)
+        {
+            _notifyCfg = (byte*)(barAddr + offset);
+            _notifyBar = bar;
+            _notifyOffset = offset;
+            _notifyMultiplier = PCI.ReadConfig32(bus, device, function, (ushort)(capPtr + 16));
+            Debug.WriteHex(0xCAC00021u); // NotifyCfg found
+            return;
+        }
+
+        // Type 3: IsrCfg
+        if (cfgType == 3)
+        {
+            _isrCfg = (byte*)(barAddr + offset);
+            Debug.WriteHex(0xCAC00022u); // IsrCfg found
+            return;
+        }
+
+        // Type 4: DeviceCfg
+        if (cfgType == 4)
+        {
+            _deviceCfg = (byte*)(barAddr + offset);
+            _deviceCfgLength = length;
+            Debug.WriteHex(0xCAC00023u); // DeviceCfg found
+            return;
+        }
+
+        // Unknown type - just skip
+        Debug.WriteHex(0xCAC00024u);
+        Debug.WriteHex((uint)cfgType);
     }
 
     /// <summary>

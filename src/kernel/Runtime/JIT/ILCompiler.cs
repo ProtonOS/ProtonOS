@@ -412,6 +412,15 @@ public unsafe struct ResolvedField
 
     /// <summary>True if resolution was successful.</summary>
     public bool IsValid;
+
+    /// <summary>True if the declaring type is a value type (struct/enum).</summary>
+    public bool IsDeclaringTypeValueType;
+
+    /// <summary>Size of the declaring type in bytes (for value types).</summary>
+    public int DeclaringTypeSize;
+
+    /// <summary>True if the field type itself is a value type (for propagating through ldfld chains).</summary>
+    public bool IsFieldTypeValueType;
 }
 
 /// <summary>
@@ -489,6 +498,12 @@ public unsafe struct ILCompiler
     // Heap buffer for all compiler arrays (freed after compilation)
     private byte* _heapBuffers;
 
+    // Local and argument type tracking for value type handling in ldfld
+    private const int MaxLocals = 64;
+    private const int MaxArgs = 32;
+    private bool* _localIsValueType;  // heap-allocated [MaxLocals] - true if local is a value type
+    private bool* _argIsValueType;    // heap-allocated [MaxArgs] - true if arg is a value type
+
     // Method resolution callback (optional - if null, uses CompiledMethodRegistry)
     private MethodResolver _resolver;
 
@@ -512,7 +527,8 @@ public unsafe struct ILCompiler
     // Buffer size constants for heap allocation
     // Layout: evalStackTypes[32] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
     //       + branchTargetStackDepth[64] + labelILOffset[512] + labelCodeOffset[512] + ehClauseData[320] + funcletInfo[192]
-    private const int HeapBufferSize = 32 + 256 + 256 + 256 + 64 + 512 + 512 + 320 + 192; // 2400 bytes
+    //       + localIsValueType[64] + argIsValueType[32]
+    private const int HeapBufferSize = 32 + 256 + 256 + 256 + 64 + 512 + 512 + 320 + 192 + 64 + 32; // 2496 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -549,8 +565,8 @@ public unsafe struct ILCompiler
         // Use default type helpers from RuntimeHelpers
         compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
-        // Debug helper
-        compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
+        // Debug helper - disabled to debug page fault
+        compiler._debugStfld = null; // RuntimeHelpers.GetDebugStfldPtr();
 
         // Initialize funclet support
         compiler._ehClauseCount = 0;
@@ -568,6 +584,8 @@ public unsafe struct ILCompiler
         compiler._labelCodeOffset = null;
         compiler._ehClauseData = null;
         compiler._funcletInfo = null;
+        compiler._localIsValueType = null;
+        compiler._argIsValueType = null;
 
         // Allocate heap buffer for all arrays (reduces stack usage during nested JIT)
         compiler._heapBuffers = (byte*)HeapAllocator.AllocZeroed(HeapBufferSize);
@@ -584,6 +602,8 @@ public unsafe struct ILCompiler
             compiler._labelCodeOffset = (int*)(p + 1376);      // offset 1376, 512 bytes
             compiler._ehClauseData = (int*)(p + 1888);         // offset 1888, 320 bytes
             compiler._funcletInfo = (int*)(p + 2208);          // offset 2208, 192 bytes
+            compiler._localIsValueType = (bool*)(p + 2400);    // offset 2400, 64 bytes
+            compiler._argIsValueType = (bool*)(p + 2464);      // offset 2464, 32 bytes
         }
 
         // Create code buffer (4KB should be plenty for simple methods)
@@ -646,6 +666,49 @@ public unsafe struct ILCompiler
     public void SetMethodResolver(MethodResolver resolver)
     {
         _resolver = resolver;
+    }
+
+    /// <summary>
+    /// Set local variable type information for value type handling in ldfld.
+    /// </summary>
+    /// <param name="localTypes">Array of booleans, true if local is a value type</param>
+    /// <param name="count">Number of locals</param>
+    public void SetLocalTypes(bool* localTypes, int count)
+    {
+        // Copy the value type flags for each local
+        // Use the minimum of count and _localCount (already set during Create)
+        int copyCount = count < _localCount ? count : _localCount;
+        if (copyCount > MaxLocals)
+            copyCount = MaxLocals;
+
+        if (_localIsValueType != null && localTypes != null)
+        {
+            for (int i = 0; i < copyCount; i++)
+            {
+                _localIsValueType[i] = localTypes[i];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Set which arguments are value types (affects ldfld behavior on args).
+    /// </summary>
+    /// <param name="argTypes">Array of bools, true if arg at that index is a value type</param>
+    /// <param name="count">Number of args</param>
+    public void SetArgTypes(bool* argTypes, int count)
+    {
+        // Copy the value type flags for each arg
+        int copyCount = count < _argCount ? count : _argCount;
+        if (copyCount > MaxArgs)
+            copyCount = MaxArgs;
+
+        if (_argIsValueType != null && argTypes != null)
+        {
+            for (int i = 0; i < copyCount; i++)
+            {
+                _argIsValueType[i] = argTypes[i];
+            }
+        }
     }
 
     /// <summary>
@@ -1746,7 +1809,14 @@ public unsafe struct ILCompiler
         // Uses TOS caching
         SpillTOSIfCached();
         X64Emitter.LoadArgFromHome(ref _code, VReg.R0, index);
-        MarkR0AsTOS(StackType_Int);
+
+        // Check if this arg is a value type - affects ldfld behavior
+        byte stackType = StackType_Int;
+        if (_argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index])
+        {
+            stackType = StackType_ValueType;
+        }
+        MarkR0AsTOS(stackType);
         return true;
     }
 
@@ -1757,7 +1827,14 @@ public unsafe struct ILCompiler
         SpillTOSIfCached();
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
-        MarkR0AsTOS(StackType_Int);
+
+        // Check if this local is a value type - affects ldfld behavior
+        byte stackType = StackType_Int;
+        if (_localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index])
+        {
+            stackType = StackType_ValueType;
+        }
+        MarkR0AsTOS(stackType);
         return true;
     }
 
@@ -1812,6 +1889,7 @@ public unsafe struct ILCompiler
     private const byte StackType_Int = 0;
     private const byte StackType_Float32 = 1;
     private const byte StackType_Float64 = 2;
+    private const byte StackType_ValueType = 3;  // Inline value type (not a pointer)
 
     // Helper to push a type onto the type stack
     private void PushStackType(byte type)
@@ -1895,6 +1973,7 @@ public unsafe struct ILCompiler
             MaterializeConstToR0();
             X64Emitter.Push(ref _code, VReg.R0);
             _tosCached = false;
+            _tosIsConst = false;  // Must also clear const flag after spilling
         }
         else if (_tosCached)
         {
@@ -3976,6 +4055,9 @@ public unsafe struct ILCompiler
         // Resolve the method
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
+            DebugConsole.Write("[JIT] ResolveMethod failed for call 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
             return false;
         }
 
@@ -4025,9 +4107,9 @@ public unsafe struct ILCompiler
         // IL stack has args in order: arg0 at bottom, argN-1 at top
         // We need to pop in reverse order (top first)
 
-        // Track whether we need to allocate shadow space (for 0-4 args)
-        // The x64 ABI requires 32 bytes of shadow space for the callee to home register args
-        bool needsShadowSpace = totalArgs <= 4;
+        // Track whether we need to allocate shadow space
+        // The x64 ABI ALWAYS requires 32 bytes of shadow space for the callee to home register args
+        bool needsShadowSpace = true;
 
         if (totalArgs == 0)
         {
@@ -4084,49 +4166,75 @@ public unsafe struct ILCompiler
             // 4. Sub extraStackSpace from RSP (allocate call frame)
             // 5. Store stack args to [RSP+32], [RSP+40], etc.
 
+            // SIMPLER APPROACH:
+            // 1. First save all stack args to scratch registers (R10, R11, etc.)
+            // 2. Load register args (arg0-3) into RCX, RDX, R8, R9
+            // 3. Pop the eval stack (ADD RSP, totalArgs*8)
+            // 4. Allocate call frame (SUB RSP, 32 + extraStackSpace)
+            // 5. Store stack args at [RSP+32], [RSP+40], etc.
+
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
 
-            // Load register args from eval stack (before RSP changes)
+            DebugConsole.Write("[JIT] >4 args: totalArgs=");
+            DebugConsole.WriteDecimal((uint)totalArgs);
+            DebugConsole.Write(" stackArgs=");
+            DebugConsole.WriteDecimal((uint)stackArgs);
+            DebugConsole.Write(" extraStackSpace=");
+            DebugConsole.WriteDecimal((uint)extraStackSpace);
+            DebugConsole.WriteLine();
+
+            // CRITICAL: Spill TOS to actual stack before reading from [RSP+...]
+            // With TOS caching, the top value is in R0, not on the stack.
+            // We need all values on the actual stack for the [RSP+offset] reads below.
+            SpillTOSIfCached();
+
+            // Step 1: Save stack args to scratch registers (R10, R11)
+            // Stack args are at [RSP+0], [RSP+8], ... (top of eval stack)
+            // VReg.R5 = R10 (scratch), VReg.R6 = R11 (scratch)
+            // For now, support up to 6 total args (2 on stack).
+            if (stackArgs >= 1)
+            {
+                // arg4 is at [RSP+0] (top of stack)
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, 0);  // R10 = arg4 (VReg.R5 = R10)
+                DebugConsole.WriteLine("[JIT]   arg4 saved to R10 from [RSP+0]");
+            }
+            if (stackArgs >= 2)
+            {
+                // arg5 is at [RSP+8]
+                X64Emitter.MovRM(ref _code, VReg.R6, VReg.SP, 8);  // R11 = arg5 (VReg.R6 = R11)
+                DebugConsole.WriteLine("[JIT]   arg5 saved to R11 from [RSP+8]");
+            }
+
+            // Step 2: Load register args from eval stack
             // arg0 at [RSP + (totalArgs-1)*8], arg1 at [RSP + (totalArgs-2)*8], etc.
-            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);  // arg0
-            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);  // arg1
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);   // arg2
-            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);   // arg3
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);  // RCX = arg0
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);  // RDX = arg1
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);  // R8 = arg2
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);  // R9 = arg3
 
-            // WORKING APPROACH:
-            // 1. Compute final RSP position and work backwards
-            // 2. Current RSP has eval stack, we need to end up at RSP + totalArgs*8 - extraStackSpace
-            //
-            // Let finalRSP = RSP + totalArgs*8 - extraStackSpace
-            // Stack args need to be at [finalRSP + 32], [finalRSP + 40], etc.
-            // In terms of current RSP: [RSP + totalArgs*8 - extraStackSpace + 32], etc.
-            //
-            // So we can copy stack args to their final locations BEFORE adjusting RSP!
+            // Step 3: Pop eval stack
+            X64Emitter.AddRI(ref _code, VReg.SP, totalArgs * 8);
 
-            // Copy stack args to their final locations (relative to current RSP)
-            for (int i = 0; i < stackArgs; i++)
+            // Step 4: Allocate call frame (shadow space + extra for stack args)
+            int callFrameSize = 32 + extraStackSpace;
+            X64Emitter.SubRI(ref _code, VReg.SP, callFrameSize);
+
+            // Step 5: Store stack args to their proper locations
+            // arg4 at [RSP+32], arg5 at [RSP+40], etc.
+            if (stackArgs >= 1)
             {
-                // arg(4+i) source: [RSP + (stackArgs-1-i)*8]
-                // arg(4+i) dest: [RSP + totalArgs*8 - extraStackSpace + 32 + i*8]
-                int srcOffset = (stackArgs - 1 - i) * 8;
-                int dstOffset = totalArgs * 8 - extraStackSpace + 32 + i * 8;
-                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
-                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
+                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R5);  // [RSP+32] = R10 (arg4)
+                DebugConsole.WriteLine("[JIT]   arg4 stored to [RSP+32] from R10");
             }
-
-            // Now adjust RSP to point to the call frame
-            // Final RSP = current RSP + totalArgs*8 - extraStackSpace
-            int rspAdjust = totalArgs * 8 - extraStackSpace;
-            if (rspAdjust > 0)
+            if (stackArgs >= 2)
             {
-                X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
-            }
-            else if (rspAdjust < 0)
-            {
-                X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
+                X64Emitter.MovMR(ref _code, VReg.SP, 40, VReg.R6);  // [RSP+40] = R11 (arg5)
+                DebugConsole.WriteLine("[JIT]   arg5 stored to [RSP+40] from R11");
             }
 
             _evalStackDepth -= totalArgs;
+            // For >4 args, we already allocated shadow space as part of callFrameSize
+            needsShadowSpace = false;
         }
 
         // Allocate shadow space for calls with 0-4 args
@@ -4170,9 +4278,10 @@ public unsafe struct ILCompiler
         }
         else if (stackArgs > 0)
         {
-            // Deallocate extra space for >4 args
+            // Deallocate the full call frame (shadow space + extra stack args space)
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
+            int callFrameSize = 32 + extraStackSpace;
+            X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);
         }
 
         // Handle return value
@@ -4258,6 +4367,9 @@ public unsafe struct ILCompiler
 
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
+            DebugConsole.Write("[JIT] ResolveMethod failed for callvirt 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
             return false;
         }
 
@@ -4281,8 +4393,8 @@ public unsafe struct ILCompiler
         // The rest is identical to CompileCall - pop args, set up registers, call, handle return
         int stackArgs = totalArgs > 4 ? totalArgs - 4 : 0;
 
-        // Track whether we need to allocate shadow space (for 0-4 args)
-        bool needsShadowSpace = totalArgs <= 4;
+        // x64 ABI ALWAYS requires 32 bytes shadow space, even for >4 args
+        bool needsShadowSpace = true;
 
         if (totalArgs == 0)
         {
@@ -4328,10 +4440,14 @@ public unsafe struct ILCompiler
             X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);
             X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);
 
+            // Copy stack args to their final locations (relative to current RSP)
+            // Note: shadow space (32 bytes) is allocated AFTER rspAdjust, so positions are
+            // calculated relative to the pre-shadow RSP. After shadow space allocation,
+            // these will be at [finalRSP + 32], [finalRSP + 40], etc. as required.
             for (int i = 0; i < stackArgs; i++)
             {
                 int srcOffset = (stackArgs - 1 - i) * 8;
-                int dstOffset = totalArgs * 8 - extraStackSpace + 32 + i * 8;
+                int dstOffset = totalArgs * 8 - extraStackSpace + i * 8;
                 X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
                 X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
             }
@@ -4349,7 +4465,7 @@ public unsafe struct ILCompiler
             _evalStackDepth -= totalArgs;
         }
 
-        // Allocate shadow space for calls with 0-4 args
+        // Allocate shadow space (x64 ABI ALWAYS requires 32 bytes)
         // x64 ABI requires 32 bytes for the callee to home register arguments
         if (needsShadowSpace)
         {
@@ -4445,9 +4561,10 @@ public unsafe struct ILCompiler
         }
         else if (stackArgs > 0)
         {
-            // Deallocate extra space for >4 args
+            // Deallocate the full call frame (shadow space + extra stack args space)
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
+            int callFrameSize = 32 + extraStackSpace;
+            X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);
         }
 
         // Handle return value (same as CompileCall)
@@ -4532,8 +4649,8 @@ public unsafe struct ILCompiler
         // Calculate stack args needed (args beyond the first 4 go on stack)
         int stackArgs = argCount > 4 ? argCount - 4 : 0;
 
-        // Track whether we need to allocate shadow space (for 0-4 args)
-        bool needsShadowSpace = argCount <= 4;
+        // x64 ABI ALWAYS requires 32 bytes shadow space, even for >4 args
+        bool needsShadowSpace = true;
 
         // Now pop arguments and set up the call (same logic as CompileCall)
         if (argCount == 0)
@@ -4591,12 +4708,13 @@ public unsafe struct ILCompiler
             X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (argCount - 4) * 8);   // arg3
 
             // Copy stack args to their final locations (relative to current RSP)
-            // arg(4+i) source: [RSP + (stackArgs-1-i)*8]
-            // arg(4+i) dest: [RSP + argCount*8 - extraStackSpace + 32 + i*8]
+            // Note: shadow space (32 bytes) is allocated AFTER rspAdjust, so positions are
+            // calculated relative to the pre-shadow RSP. After shadow space allocation,
+            // these will be at [finalRSP + 32], [finalRSP + 40], etc. as required.
             for (int i = 0; i < stackArgs; i++)
             {
                 int srcOffset = (stackArgs - 1 - i) * 8;
-                int dstOffset = argCount * 8 - extraStackSpace + 32 + i * 8;
+                int dstOffset = argCount * 8 - extraStackSpace + i * 8;
                 X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
                 X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
             }
@@ -4637,9 +4755,10 @@ public unsafe struct ILCompiler
         }
         else if (stackArgs > 0)
         {
-            // Deallocate extra space for >4 args
+            // Deallocate the full call frame (shadow space + extra stack args space)
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            X64Emitter.AddRI(ref _code, VReg.SP, extraStackSpace);
+            int callFrameSize = 32 + extraStackSpace;
+            X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);
         }
 
         // Handle return value (same as CompileCall)
@@ -4798,10 +4917,16 @@ public unsafe struct ILCompiler
         // Size in R8 (third arg)
         X64Emitter.MovRI64(ref _code, VReg.R3, (ulong)size);
 
+        // Reserve shadow space for call (Windows x64 ABI requires 32 bytes)
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
         // Call CPU.MemSet(addr, 0, size)
         delegate*<void*, byte, ulong, void*> memsetFn = &CPU.MemSet;
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)memsetFn);
         X64Emitter.CallR(ref _code, VReg.R0);
+
+        // Restore shadow space
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
         return true;
     }
@@ -4887,11 +5012,11 @@ public unsafe struct ILCompiler
 
         int size = GetTypeSizeFromToken(token);
 
-        // Pop value into RDX
+        // Pop srcAddr into RDX (second operand - source pointer for large structs, value for small)
         X64Emitter.Pop(ref _code, VReg.R2);
         _evalStackDepth--;
 
-        // Pop addr into RAX
+        // Pop destAddr into RAX (first operand - destination pointer)
         X64Emitter.Pop(ref _code, VReg.R0);
         _evalStackDepth--;
 
@@ -4911,10 +5036,45 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
                 break;
             default:
-                DebugConsole.Write("[JIT] stobj: unsupported size ");
-                DebugConsole.WriteDecimal((uint)size);
-                DebugConsole.WriteLine();
-                return false;
+                // Large struct: srcAddr is in RDX, destAddr is in RAX
+                // Need to copy 'size' bytes from [RDX] to [RAX]
+                // We'll use a simple inline loop for small-ish structs
+                // RAX = dest, RDX = src, use R8 for temp
+
+                // Copy 8 bytes at a time
+                int offset = 0;
+                while (offset + 8 <= size)
+                {
+                    // mov R8, [RDX + offset]
+                    X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, offset);
+                    // mov [RAX + offset], R8
+                    X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R3);
+                    offset += 8;
+                }
+
+                // Copy remaining 4 bytes if present
+                if (offset + 4 <= size)
+                {
+                    X64Emitter.MovRM32(ref _code, VReg.R3, VReg.R2, offset);
+                    X64Emitter.MovMR32(ref _code, VReg.R0, offset, VReg.R3);
+                    offset += 4;
+                }
+
+                // Copy remaining 2 bytes if present
+                if (offset + 2 <= size)
+                {
+                    X64Emitter.MovRM16(ref _code, VReg.R3, VReg.R2, offset);
+                    X64Emitter.MovMR16(ref _code, VReg.R0, offset, VReg.R3);
+                    offset += 2;
+                }
+
+                // Copy remaining 1 byte if present
+                if (offset < size)
+                {
+                    X64Emitter.MovRM8(ref _code, VReg.R3, VReg.R2, offset);
+                    X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
+                }
+                break;
         }
 
         return true;
@@ -5097,6 +5257,9 @@ public unsafe struct ILCompiler
         int offset;
         int size;
         bool signed;
+        bool isValueType = false;
+        int declaringTypeSize = 0;
+        bool fieldTypeIsValueType = false;
 
         // Try field resolver first, fall back to test token encoding
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
@@ -5104,47 +5267,112 @@ public unsafe struct ILCompiler
             offset = field.Offset;
             size = field.Size;
             signed = field.IsSigned;
+            isValueType = field.IsDeclaringTypeValueType;
+            declaringTypeSize = field.DeclaringTypeSize;
+            fieldTypeIsValueType = field.IsFieldTypeValueType;
         }
         else
         {
             DecodeFieldToken(token, out offset, out size, out signed);
         }
 
-        // Pop object reference
+        // Check if TOS is a value type (pushed by ldloc on a struct)
+        byte tosType = PeekStackType();
+
+        // Pop the value/reference into R0
         X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
 
-        // Load field at obj + offset
-        // mov RAX, [RAX + offset]
-        switch (size)
+        // Handle value types that fit in a register (<=8 bytes)
+        // When a small struct is loaded with ldloc, the VALUE is on the stack, not a pointer.
+        // We need to extract the field by bit shifting, not by memory dereference.
+        //
+        // Detection: TOS is explicitly marked as StackType_ValueType (from ldloc on a value type).
+        // If TOS is StackType_Int (from ldloca, ldarg for byref, etc), it's a pointer and we dereference.
+        bool treatAsInlineValue = (tosType == StackType_ValueType) &&
+                                   isValueType && declaringTypeSize > 0 && declaringTypeSize <= 8;
+
+        if (treatAsInlineValue)
         {
-            case 1:
-                if (signed)
-                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, offset);
-                else
-                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, offset);
-                break;
-            case 2:
-                if (signed)
-                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, offset);
-                else
-                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, offset);
-                break;
-            case 4:
-                if (signed)
-                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, offset);
-                else
-                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, offset); // Zero-extends to 64-bit
-                break;
-            case 8:
-            default:
-                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
-                break;
+            // Value type is inline in R0 - extract field by shifting
+            // In little-endian, field at offset N starts at bit (N * 8)
+            if (offset > 0)
+            {
+                // shr rax, (offset * 8)
+                X64Emitter.ShrRI(ref _code, VReg.R0, (byte)(offset * 8));
+            }
+
+            // Mask/extend to field size
+            switch (size)
+            {
+                case 1:
+                    if (signed)
+                        X64Emitter.MovsxByteReg(ref _code, VReg.R0, VReg.R0);  // movsx rax, al
+                    else
+                        X64Emitter.MovzxByteReg(ref _code, VReg.R0, VReg.R0);  // movzx rax, al
+                    break;
+                case 2:
+                    if (signed)
+                        X64Emitter.MovsxWordReg(ref _code, VReg.R0, VReg.R0);  // movsx rax, ax
+                    else
+                        X64Emitter.MovzxWordReg(ref _code, VReg.R0, VReg.R0);  // movzx rax, ax
+                    break;
+                case 4:
+                    if (signed)
+                        X64Emitter.MovsxdReg(ref _code, VReg.R0, VReg.R0);  // movsxd rax, eax
+                    else
+                    {
+                        // mov eax, eax zero-extends to 64-bit
+                        X64Emitter.MovRR32(ref _code, VReg.R0, VReg.R0);
+                    }
+                    break;
+                case 8:
+                default:
+                    // Already have the full 8 bytes
+                    break;
+            }
+        }
+        else
+        {
+            // Standard case: R0 contains a pointer, dereference to get field
+            // Load field at obj + offset
+            // mov RAX, [RAX + offset]
+            switch (size)
+            {
+                case 1:
+                    if (signed)
+                        X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, offset);
+                    else
+                        X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, offset);
+                    break;
+                case 2:
+                    if (signed)
+                        X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, offset);
+                    else
+                        X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, offset);
+                    break;
+                case 4:
+                    if (signed)
+                        X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, offset);
+                    else
+                        X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, offset); // Zero-extends to 64-bit
+                    break;
+                case 8:
+                default:
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
+                    break;
+            }
         }
 
         // Push result
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+
+        // If loading a small value type field, mark TOS as value type so subsequent ldfld
+        // knows to treat it as inline data, not a pointer
+        if (fieldTypeIsValueType && size > 0 && size <= 8)
+            PushStackType(StackType_ValueType);
+        else
+            PushStackType(StackType_Int);
 
         return true;
     }
@@ -5641,13 +5869,19 @@ public unsafe struct ILCompiler
     /// <summary>
     /// Compile ldelema - Load element address.
     /// Stack: ..., array, index -> ..., &elem
-    /// For testing: token encodes element size.
+    /// Token is a TypeSpec/TypeDef/TypeRef that encodes the element type.
     /// </summary>
     private bool CompileLdelema(uint token)
     {
         FlushTOS();  // Spill TOS to memory before direct pops
-        int elemSize = (int)(token & 0xFF);
-        if (elemSize == 0) elemSize = 8; // Default to pointer size
+
+        // Resolve the element size from the type token using metadata
+        uint elemSize = MetadataIntegration.GetTypeSize(token);
+        DebugConsole.Write("[JIT ldelema] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" elemSize=");
+        DebugConsole.WriteHex(elemSize);
+        DebugConsole.WriteLine();
 
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
@@ -5655,25 +5889,33 @@ public unsafe struct ILCompiler
         PopStackType();
         PopStackType();
 
-        // Compute element address: array + 16 + index * elemSize
-        switch (elemSize)
+        // Compute element address: array + ArrayDataOffset + index * elemSize
+        // For generic sizes, use imul: R1 = index * elemSize
+        if (elemSize == 1)
         {
-            case 1:
-                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
-                break;
-            case 2:
-                X64Emitter.ShlImm(ref _code, VReg.R1, 1);
-                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
-                break;
-            case 4:
-                X64Emitter.ShlImm(ref _code, VReg.R1, 2);
-                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
-                break;
-            case 8:
-            default:
-                X64Emitter.ShlImm(ref _code, VReg.R1, 3);
-                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
-                break;
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+        }
+        else if (elemSize == 2)
+        {
+            X64Emitter.ShlImm(ref _code, VReg.R1, 1);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+        }
+        else if (elemSize == 4)
+        {
+            X64Emitter.ShlImm(ref _code, VReg.R1, 2);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+        }
+        else if (elemSize == 8)
+        {
+            X64Emitter.ShlImm(ref _code, VReg.R1, 3);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
+        }
+        else
+        {
+            // General case: use imul for arbitrary element sizes
+            // imul R1, R1, elemSize -> R1 = index * elemSize
+            X64Emitter.ImulRI(ref _code, VReg.R1, (int)elemSize);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R1);
         }
         X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
 

@@ -75,6 +75,15 @@ public unsafe struct FieldLayoutEntry
     /// <summary>For statics: pointer to storage. For instance: null.</summary>
     public void* StaticAddress;
 
+    /// <summary>True if the declaring type is a value type.</summary>
+    public bool IsDeclaringTypeValueType;
+
+    /// <summary>Size of the declaring type in bytes (for value types).</summary>
+    public int DeclaringTypeSize;
+
+    /// <summary>True if the field type itself is a value type.</summary>
+    public bool IsFieldTypeValueType;
+
     /// <summary>True if this slot is in use.</summary>
     public bool IsUsed => Token != 0;
 }
@@ -573,6 +582,46 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Get the size of a type from its token.
+    /// For value types (structs), returns the size of the struct.
+    /// For reference types, returns 8 (pointer size).
+    /// Used by ldelema to compute array element addresses.
+    /// </summary>
+    public static uint GetTypeSize(uint token)
+    {
+        // Try to resolve the type to get its MethodTable
+        void* mtPtr;
+        if (!ResolveType(token, out mtPtr) || mtPtr == null)
+        {
+            // If we can't resolve, fall back to pointer size
+            DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine(", defaulting to 8");
+            return 8;
+        }
+
+        // Get BaseSize from MethodTable
+        MethodTable* mt = (MethodTable*)mtPtr;
+
+        // For value types, ComponentSize = 0 and we use the type's calculated size
+        // For arrays, ComponentSize holds the element size
+        // BaseSize includes MT pointer overhead (8 bytes), so subtract it for value types
+        uint baseSize = mt->_uBaseSize;
+
+        // If it's a value type (non-array, non-object), return the actual struct size
+        // Value type MethodTables typically have BaseSize = struct size + 8 (for boxing purposes)
+        // But for ldelema, we want the raw struct size
+        if (mt->_usComponentSize == 0 && baseSize > 8)
+        {
+            // This is a value type - subtract the MT pointer overhead
+            return baseSize - 8;
+        }
+
+        // For reference types, return pointer size
+        return 8;
+    }
+
+    /// <summary>
     /// TypeResolver with explicit assembly ID (for cross-assembly calls).
     /// </summary>
     public static bool ResolveTypeInAssembly(uint assemblyId, uint token, out void* methodTablePtr)
@@ -710,7 +759,9 @@ public static unsafe class MetadataIntegration
     /// Cache a field's layout information for faster subsequent lookups.
     /// </summary>
     public static void CacheFieldLayout(uint token, int offset, byte size, bool isSigned,
-                                         bool isStatic, bool isGCRef, void* staticAddress)
+                                         bool isStatic, bool isGCRef, void* staticAddress,
+                                         bool isDeclaringTypeValueType = false, int declaringTypeSize = 0,
+                                         bool isFieldTypeValueType = false)
     {
         if (!_initialized)
             Initialize();
@@ -727,6 +778,9 @@ public static unsafe class MetadataIntegration
                 _fieldLayoutCache[i].IsStatic = isStatic;
                 _fieldLayoutCache[i].IsGCRef = isGCRef;
                 _fieldLayoutCache[i].StaticAddress = staticAddress;
+                _fieldLayoutCache[i].IsDeclaringTypeValueType = isDeclaringTypeValueType;
+                _fieldLayoutCache[i].DeclaringTypeSize = declaringTypeSize;
+                _fieldLayoutCache[i].IsFieldTypeValueType = isFieldTypeValueType;
                 return;
             }
         }
@@ -745,6 +799,9 @@ public static unsafe class MetadataIntegration
         _fieldLayoutCache[_fieldLayoutCount].IsStatic = isStatic;
         _fieldLayoutCache[_fieldLayoutCount].IsGCRef = isGCRef;
         _fieldLayoutCache[_fieldLayoutCount].StaticAddress = staticAddress;
+        _fieldLayoutCache[_fieldLayoutCount].IsDeclaringTypeValueType = isDeclaringTypeValueType;
+        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeSize = declaringTypeSize;
+        _fieldLayoutCache[_fieldLayoutCount].IsFieldTypeValueType = isFieldTypeValueType;
         _fieldLayoutCount++;
     }
 
@@ -866,6 +923,9 @@ public static unsafe class MetadataIntegration
             result.IsStatic = cached.IsStatic;
             result.IsGCRef = cached.IsGCRef;
             result.StaticAddress = cached.StaticAddress;
+            result.IsDeclaringTypeValueType = cached.IsDeclaringTypeValueType;
+            result.DeclaringTypeSize = cached.DeclaringTypeSize;
+            result.IsFieldTypeValueType = cached.IsFieldTypeValueType;
             result.IsValid = true;
             return true;
         }
@@ -933,11 +993,26 @@ public static unsafe class MetadataIntegration
         result.IsGCRef = isGCRef;
         result.IsStatic = isStatic;
 
+        // Check if the field type itself is a value type
+        // ElementType.ValueType = 0x11, plus primitives (0x02-0x0D) are also value types
+        bool fieldIsValueType = (elementType == 0x11) ||
+                                 (elementType >= 0x02 && elementType <= 0x0D);
+        result.IsFieldTypeValueType = fieldIsValueType;
+
         if (size == 0)
         {
-            // ValueType - need to look up actual size
-            // For now, assume 8 bytes
-            size = 8;
+            // ValueType - need to look up actual size from metadata
+            if (elementType == 0x11 && sigLen >= 3)
+            {
+                // Parse the TypeDefOrRef token to get the actual size
+                uint fieldTypeSize = AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);
+                size = fieldTypeSize > 0 && fieldTypeSize <= 255 ? (byte)fieldTypeSize : (byte)8;
+            }
+            else
+            {
+                // Fallback: assume 8 bytes
+                size = 8;
+            }
         }
         result.Size = size;
 
@@ -1007,13 +1082,22 @@ public static unsafe class MetadataIntegration
             }
 
             result.StaticAddress = null;
+
+            // Set value type info for the declaring type
+            result.IsDeclaringTypeValueType = isValueType;
+            if (isValueType && typeRow > 0)
+            {
+                result.DeclaringTypeSize = (int)CalculateTypeDefSize(typeRow);
+            }
         }
 
         result.IsValid = true;
 
         // Cache the result
         CacheFieldLayout(token, result.Offset, result.Size, result.IsSigned,
-                        result.IsStatic, result.IsGCRef, result.StaticAddress);
+                        result.IsStatic, result.IsGCRef, result.StaticAddress,
+                        result.IsDeclaringTypeValueType, result.DeclaringTypeSize,
+                        result.IsFieldTypeValueType);
 
         return true;
     }
@@ -1068,7 +1152,12 @@ public static unsafe class MetadataIntegration
         result = default;
 
         if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
+        {
+            DebugConsole.Write("[AotMemberRef] No metadata for token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
             return false;
+        }
 
         uint rowId = token & 0x00FFFFFF;
         if (rowId == 0)
@@ -1105,13 +1194,29 @@ public static unsafe class MetadataIntegration
             // Combine into full name
             typeName = BuildFullTypeName(ns, name);
         }
+        else
+        {
+            DebugConsole.Write("[AotMemberRef] Token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" classRef.Table=");
+            DebugConsole.WriteDecimal((int)classRef.Table);
+            DebugConsole.WriteLine(" (not TypeRef)");
+        }
 
         if (typeName == null)
             return false;
 
         // Check if this is a well-known AOT type
         if (!AotMethodRegistry.IsWellKnownAotType(typeName))
+        {
+            // Debug: show the type name that wasn't recognized
+            DebugConsole.Write("[AotMemberRef] Token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" type '");
+            WriteByteString(typeName);
+            DebugConsole.WriteLine("' is not a well-known AOT type");
             return false;
+        }
 
         // Parse the signature to get parameter count
         int sigPos = 0;
@@ -1130,6 +1235,14 @@ public static unsafe class MetadataIntegration
         // Try to look up in the AOT registry (pass paramCount, not including 'this')
         if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry))
         {
+            DebugConsole.Write("[AotMemberRef] Found AOT method: ");
+            WriteByteString(typeName);
+            DebugConsole.Write(".");
+            WriteByteString(memberName);
+            DebugConsole.Write(" -> 0x");
+            DebugConsole.WriteHex((ulong)entry.NativeCode);
+            DebugConsole.WriteLine();
+
             result.NativeCode = (void*)entry.NativeCode;
             result.ArgCount = entry.ArgCount;
             result.ReturnKind = entry.ReturnKind;
@@ -1145,12 +1258,34 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
+        // Debug: TryLookup failed
+        DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
+        WriteByteString(typeName);
+        DebugConsole.Write(".");
+        WriteByteString(memberName);
+        DebugConsole.Write(" paramCount=");
+        DebugConsole.WriteDecimal(paramCount);
+        DebugConsole.WriteLine();
+
         return false;
     }
 
     // Temp buffer for building full type names
     private static byte* _typeNameBuffer;
     private const int TypeNameBufferSize = 256;
+
+    /// <summary>
+    /// Write a null-terminated byte string to debug console.
+    /// </summary>
+    private static void WriteByteString(byte* s)
+    {
+        if (s == null) return;
+        while (*s != 0)
+        {
+            DebugConsole.WriteByte(*s);
+            s++;
+        }
+    }
 
     /// <summary>
     /// Build a full type name from namespace and name.
@@ -1430,6 +1565,141 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Calculate the size of a value type (struct) by summing field sizes.
+    /// </summary>
+    private static uint CalculateTypeDefSize(uint typeRow)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return 8;  // Default fallback
+
+        // Get the type's field list range
+        uint firstField = MetadataReader.GetTypeDefFieldList(ref *_tablesHeader, ref *_tableSizes, typeRow);
+        uint typeDefCount = _tablesHeader->RowCounts[(int)MetadataTableId.TypeDef];
+        uint nextFieldList;
+        if (typeRow < typeDefCount)
+            nextFieldList = MetadataReader.GetTypeDefFieldList(ref *_tablesHeader, ref *_tableSizes, typeRow + 1);
+        else
+            nextFieldList = _tablesHeader->RowCounts[(int)MetadataTableId.Field] + 1;
+
+        uint totalSize = 0;
+        uint maxAlignment = 1;
+
+        for (uint f = firstField; f < nextFieldList; f++)
+        {
+            // Skip static fields
+            ushort flags = MetadataReader.GetFieldFlags(ref *_tablesHeader, ref *_tableSizes, f);
+            if ((flags & 0x0010) != 0)  // fdStatic
+                continue;
+
+            // Get field size from signature
+            uint sigIdx = MetadataReader.GetFieldSignature(ref *_tablesHeader, ref *_tableSizes, f);
+            byte* sig = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
+
+            if (sig != null && sigLen >= 2 && sig[0] == 0x06)
+            {
+                byte elementType = sig[1];
+                uint fieldSize;
+
+                if (elementType == ElementType.ValueType || elementType == ElementType.GenericInst)
+                {
+                    fieldSize = AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);
+                }
+                else
+                {
+                    GetFieldSizeFromElementType(elementType, out byte primSize, out _, out _);
+                    fieldSize = primSize > 0 ? primSize : (uint)8;
+                }
+
+                // Track alignment
+                uint align = fieldSize < 8 ? fieldSize : 8;
+                if (align > maxAlignment)
+                    maxAlignment = align;
+
+                // Align and add
+                totalSize = (totalSize + align - 1) & ~(align - 1);
+                totalSize += fieldSize;
+            }
+        }
+
+        // Final alignment
+        totalSize = (totalSize + maxAlignment - 1) & ~(maxAlignment - 1);
+
+        return totalSize > 0 ? totalSize : 1;  // Minimum 1 byte
+    }
+
+    /// <summary>
+    /// Get the size of the base class for field offset calculation.
+    /// Returns 8 for types that directly extend Object/ValueType.
+    /// </summary>
+    private static uint GetBaseClassSizeForOffset(uint typeRow)
+    {
+        // Get the TypeDef's extends CodedIndex
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref *_tablesHeader, ref *_tableSizes, typeRow);
+        if (extendsIdx.RowId == 0)
+            return 8;
+
+        // Check if this is a well-known base type (Object, ValueType, Enum)
+        if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            uint nameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, extendsIdx.RowId);
+            byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+
+            if (name != null)
+            {
+                // Check for "Object", "ValueType", or "Enum"
+                if ((name[0] == 'O' && name[1] == 'b' && name[2] == 'j' && name[3] == 'e' &&
+                     name[4] == 'c' && name[5] == 't' && name[6] == 0) ||
+                    (name[0] == 'V' && name[1] == 'a' && name[2] == 'l' && name[3] == 'u' &&
+                     name[4] == 'e' && name[5] == 'T' && name[6] == 'y' && name[7] == 'p' &&
+                     name[8] == 'e' && name[9] == 0) ||
+                    (name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0))
+                {
+                    return 8;  // Just the MT pointer
+                }
+            }
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            // Base class is in the same assembly - check if it's Object
+            uint nameIdx = MetadataReader.GetTypeDefName(ref *_tablesHeader, ref *_tableSizes, extendsIdx.RowId);
+            byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+
+            if (name != null && name[0] == 'O' && name[1] == 'b' && name[2] == 'j' && name[3] == 'e' &&
+                name[4] == 'c' && name[5] == 't' && name[6] == 0)
+            {
+                return 8;
+            }
+        }
+
+        // Resolve the base class to get its MethodTable and size
+        uint baseTypeToken;
+        if (extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            baseTypeToken = 0x02000000 | extendsIdx.RowId;
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            baseTypeToken = 0x01000000 | extendsIdx.RowId;
+        }
+        else
+        {
+            return 8;
+        }
+
+        void* baseMT;
+        if (ResolveType(baseTypeToken, out baseMT) && baseMT != null)
+        {
+            MethodTable* mt = (MethodTable*)baseMT;
+            uint baseSize = mt->_uBaseSize;
+            DebugConsole.Write(" base=");
+            DebugConsole.WriteDecimal(baseSize);
+            return baseSize;
+        }
+
+        return 8;  // Fallback
+    }
+
+    /// <summary>
     /// Calculate field offset for auto-layout fields.
     /// Simple sequential layout: fields are placed in order with natural alignment.
     /// </summary>
@@ -1442,6 +1712,13 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
+        DebugConsole.Write("[CalcFieldOff] fld=");
+        DebugConsole.WriteDecimal(fieldRow);
+        DebugConsole.Write(" type=");
+        DebugConsole.WriteDecimal(typeRow);
+        DebugConsole.Write(" asm=");
+        DebugConsole.WriteDecimal(_currentAssemblyId);
+
         // Check if this is a value type (struct/enum)
         // Value types accessed via byref don't have an MT pointer, so offsets start at 0
         bool isValueType = IsTypeDefValueType(typeRow);
@@ -1452,7 +1729,19 @@ public static unsafe class MetadataIntegration
         // Calculate offset by summing sizes of preceding fields
         // Reference types start after MethodTable pointer (8 bytes)
         // Value types start at 0 (no MT pointer in raw struct data)
-        int offset = isValueType ? 0 : 8;
+        // For derived types, start after the base class fields
+        int offset;
+        if (isValueType)
+        {
+            offset = 0;
+        }
+        else
+        {
+            // Get base class size if this type extends something other than Object/ValueType
+            offset = (int)GetBaseClassSizeForOffset(typeRow);
+            if (offset < 8)
+                offset = 8;  // Minimum is MT pointer size
+        }
 
         for (uint f = firstField; f < fieldRow; f++)
         {
@@ -1468,10 +1757,21 @@ public static unsafe class MetadataIntegration
             if (sig != null && sigLen >= 2 && sig[0] == 0x06)
             {
                 byte elementType = sig[1];
-                GetFieldSizeFromElementType(elementType, out byte size, out _, out _);
+                int size;
 
-                if (size == 0)
-                    size = 8;  // Default for unknown types
+                // For ValueType fields, use AssemblyLoader to compute actual struct size
+                if (elementType == ElementType.ValueType || elementType == ElementType.GenericInst)
+                {
+                    // Pass the type signature (after the 0x06 calling convention byte)
+                    size = (int)AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);
+                }
+                else
+                {
+                    GetFieldSizeFromElementType(elementType, out byte primSize, out _, out _);
+                    size = primSize;
+                    if (size == 0)
+                        size = 8;  // Default for unknown types
+                }
 
                 // Align offset
                 int alignment = size < 8 ? size : 8;
@@ -1486,13 +1786,29 @@ public static unsafe class MetadataIntegration
 
         if (targetSig != null && targetSigLen >= 2 && targetSig[0] == 0x06)
         {
-            GetFieldSizeFromElementType(targetSig[1], out byte targetSize, out _, out _);
-            if (targetSize == 0)
-                targetSize = 8;
+            byte targetElementType = targetSig[1];
+            int targetSize;
+
+            // For ValueType fields, use AssemblyLoader to compute actual struct size
+            if (targetElementType == ElementType.ValueType || targetElementType == ElementType.GenericInst)
+            {
+                targetSize = (int)AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, targetSig + 1, targetSigLen - 1);
+            }
+            else
+            {
+                GetFieldSizeFromElementType(targetElementType, out byte primSize, out _, out _);
+                targetSize = primSize;
+                if (targetSize == 0)
+                    targetSize = 8;
+            }
+
             int alignment = targetSize < 8 ? targetSize : 8;
             offset = (offset + alignment - 1) & ~(alignment - 1);
         }
 
+        DebugConsole.Write(" -> offset=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.WriteLine();
         return offset;
     }
 

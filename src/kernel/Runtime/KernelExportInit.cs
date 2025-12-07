@@ -24,6 +24,9 @@ public static unsafe class KernelExportInit
         // Register Memory exports
         RegisterMemoryExports();
 
+        // Register Debug exports
+        RegisterDebugExports();
+
         // Register PCI exports
         RegisterPCIExports();
 
@@ -110,6 +113,54 @@ public static unsafe class KernelExportInit
         n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
         n[7]=0x55; n[8]=0x6E; n[9]=0x6D; n[10]=0x61; n[11]=0x70; n[12]=0x4D; n[13]=0x4D; n[14]=0x49; n[15]=0x4F; n[16]=0; // UnmapMMIO
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong, void>)&MemoryExports.UnmapMMIO);
+    }
+
+    private static void RegisterDebugExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_DebugWrite
+        // "Kernel_DebugWrite" = 4B 65 72 6E 65 6C 5F 44 65 62 75 67 57 72 69 74 65
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67; // Debug
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65; n[17]=0; // Write
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<char*, int, void>)&DebugExports.DebugWrite);
+
+        // Kernel_DebugWriteLine
+        // "Kernel_DebugWriteLine" = 4B 65 72 6E 65 6C 5F 44 65 62 75 67 57 72 69 74 65 4C 69 6E 65
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67; // Debug
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65; // Write
+        n[17]=0x4C; n[18]=0x69; n[19]=0x6E; n[20]=0x65; n[21]=0; // Line
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<char*, int, void>)&DebugExports.DebugWriteLine);
+
+        // Kernel_DebugWriteHex64
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67; // Debug
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65; // Write
+        n[17]=0x48; n[18]=0x65; n[19]=0x78; n[20]=0x36; n[21]=0x34; n[22]=0; // Hex64
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, void>)&DebugExports.DebugWriteHex64);
+
+        // Kernel_DebugWriteHex32
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67;
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
+        n[17]=0x48; n[18]=0x65; n[19]=0x78; n[20]=0x33; n[21]=0x32; n[22]=0; // Hex32
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, void>)&DebugExports.DebugWriteHex32);
+
+        // Kernel_DebugWriteHex16
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67;
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
+        n[17]=0x48; n[18]=0x65; n[19]=0x78; n[20]=0x31; n[21]=0x36; n[22]=0; // Hex16
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, void>)&DebugExports.DebugWriteHex16);
+
+        // Kernel_DebugWriteHex8
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67;
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
+        n[17]=0x48; n[18]=0x65; n[19]=0x78; n[20]=0x38; n[21]=0; // Hex8
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, void>)&DebugExports.DebugWriteHex8);
     }
 
     private static void RegisterPCIExports()

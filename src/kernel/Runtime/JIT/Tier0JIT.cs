@@ -215,6 +215,37 @@ public static unsafe class Tier0JIT
         // Wire up resolvers
         MetadataIntegration.WireCompiler(ref compiler);
 
+        // Parse local variable types for value type handling in ldfld
+        if (body.LocalVarSigToken != 0 && localCount > 0)
+        {
+            // Allocate temp buffer for local types (on stack, small)
+            const int MaxLocalTypesOnStack = 64;
+            bool* localTypes = stackalloc bool[MaxLocalTypesOnStack];
+            for (int i = 0; i < MaxLocalTypesOnStack; i++)
+                localTypes[i] = false;
+
+            int parsedCount = ParseLocalVarSigTypes(assembly, body.LocalVarSigToken, localTypes, MaxLocalTypesOnStack);
+            if (parsedCount > 0)
+            {
+                compiler.SetLocalTypes(localTypes, parsedCount);
+            }
+        }
+
+        // Parse argument types for value type handling in ldfld
+        if (jitArgCount > 0 && sigBlob != null)
+        {
+            const int MaxArgTypesOnStack = 32;
+            bool* argTypes = stackalloc bool[MaxArgTypesOnStack];
+            for (int i = 0; i < MaxArgTypesOnStack; i++)
+                argTypes[i] = false;
+
+            int parsedArgCount = ParseMethodSigArgTypes(sigBlob, sigLen, hasThis, paramCount, argTypes, MaxArgTypesOnStack);
+            if (parsedArgCount > 0)
+            {
+                compiler.SetArgTypes(argTypes, parsedArgCount);
+            }
+        }
+
         // Compile to native code
         void* code = compiler.Compile();
 
@@ -338,6 +369,305 @@ public static unsafe class Tier0JIT
         uint count = MetadataReader.ReadCompressedUInt(ref ptr);
 
         return (int)count;
+    }
+
+    /// <summary>
+    /// Parse a LocalVarSig token to determine which locals are value types.
+    /// </summary>
+    /// <param name="assembly">Assembly containing the method</param>
+    /// <param name="token">LocalVarSig token (0x11xxxxxx)</param>
+    /// <param name="isValueType">Output array - true if local is a value type</param>
+    /// <param name="maxLocals">Maximum number of locals to process</param>
+    /// <returns>Number of locals parsed</returns>
+    private static int ParseLocalVarSigTypes(LoadedAssembly* assembly, uint token, bool* isValueType, int maxLocals)
+    {
+        // LocalVarSig token is a StandAloneSig token (0x11xxxxxx)
+        uint tableId = (token >> 24) & 0xFF;
+        uint rid = token & 0x00FFFFFF;
+
+        if (tableId != 0x11 || rid == 0 || isValueType == null)
+            return 0;
+
+        // Get signature blob from StandAloneSig table
+        uint sigIdx = MetadataReader.GetStandAloneSigSignature(ref assembly->Tables, ref assembly->Sizes, rid);
+        byte* sigBlob = MetadataReader.GetBlob(ref assembly->Metadata, sigIdx, out uint sigLen);
+
+        if (sigBlob == null || sigLen < 2)
+            return 0;
+
+        // LocalVarSig format: LOCAL_SIG (0x07) followed by count, then types
+        if (sigBlob[0] != 0x07)
+            return 0;
+
+        byte* ptr = sigBlob + 1;
+        byte* end = sigBlob + sigLen;
+
+        uint count = MetadataReader.ReadCompressedUInt(ref ptr);
+        int numLocals = (int)(count < (uint)maxLocals ? count : (uint)maxLocals);
+
+        // Parse each local's type
+        for (int i = 0; i < numLocals && ptr < end; i++)
+        {
+            // Handle PINNED modifier if present
+            if (*ptr == 0x45) // ELEMENT_TYPE_PINNED
+                ptr++;
+
+            // Handle BYREF modifier if present
+            bool isByRef = false;
+            if (*ptr == 0x10) // ELEMENT_TYPE_BYREF
+            {
+                ptr++;
+                isByRef = true;
+            }
+
+            // Read the element type
+            byte elemType = *ptr++;
+
+            // ValueType (0x11) or struct-like types are value types
+            // Note: byref to a value type is a pointer, not a value type itself
+            if (!isByRef && (elemType == 0x11 || elemType == 0x12)) // ValueType or Class that's actually a struct
+            {
+                isValueType[i] = (elemType == 0x11); // Only ValueType is truly a value type
+                // Skip the TypeDefOrRef token
+                MetadataReader.ReadCompressedUInt(ref ptr);
+            }
+            else if (!isByRef && (elemType >= 0x02 && elemType <= 0x0D))
+            {
+                // Primitive types: Boolean, Char, I1, U1, I2, U2, I4, U4, I8, U8, R4, R8
+                // These are value types
+                isValueType[i] = true;
+            }
+            else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
+            {
+                // Single-dimension array - skip element type
+                isValueType[i] = false;
+                // Skip the element type
+                if (ptr < end)
+                {
+                    byte arrElemType = *ptr++;
+                    if (arrElemType == 0x11 || arrElemType == 0x12) // ValueType or Class
+                        MetadataReader.ReadCompressedUInt(ref ptr);
+                }
+            }
+            else if (elemType == 0x15) // ELEMENT_TYPE_GENERICINST
+            {
+                // Generic instantiation - skip all tokens
+                isValueType[i] = false;
+                // Skip: CLASS/VALUETYPE marker, TypeDefOrRef, argCount, args...
+                if (ptr < end)
+                {
+                    byte genKind = *ptr++;
+                    isValueType[i] = (genKind == 0x11); // ValueType generic
+                    if (ptr < end)
+                    {
+                        MetadataReader.ReadCompressedUInt(ref ptr); // TypeDefOrRef
+                        if (ptr < end)
+                        {
+                            uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                            // Skip type arguments (simplified - just skip tokens)
+                            for (uint j = 0; j < argCount && ptr < end; j++)
+                            {
+                                byte argType = *ptr++;
+                                if (argType == 0x11 || argType == 0x12)
+                                    MetadataReader.ReadCompressedUInt(ref ptr);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Other types (Class, Object, String, SzArray, Ptr, etc.) are reference types
+                isValueType[i] = false;
+                // Skip any following token if it's a ValueType or Class
+                if (elemType == 0x12) // Class
+                    MetadataReader.ReadCompressedUInt(ref ptr);
+            }
+        }
+
+        return numLocals;
+    }
+
+    /// <summary>
+    /// Parse method signature to determine which arguments are value types.
+    /// </summary>
+    /// <param name="sigBlob">Pointer to signature blob</param>
+    /// <param name="sigLen">Length of signature blob</param>
+    /// <param name="hasThis">True if method has implicit 'this' parameter</param>
+    /// <param name="paramCount">Number of explicit parameters (not including 'this')</param>
+    /// <param name="isValueType">Output: true if arg at index is a value type</param>
+    /// <param name="maxArgs">Maximum number of args to process</param>
+    /// <returns>Number of args parsed (including 'this' if hasThis)</returns>
+    private static int ParseMethodSigArgTypes(byte* sigBlob, uint sigLen, bool hasThis, int paramCount,
+                                               bool* isValueType, int maxArgs)
+    {
+        if (sigBlob == null || sigLen < 2 || isValueType == null)
+            return 0;
+
+        int argIndex = 0;
+
+        // If hasThis, arg0 is 'this' which is always a reference (even for value types, it's a byref)
+        if (hasThis && argIndex < maxArgs)
+        {
+            isValueType[argIndex++] = false;
+        }
+
+        // Parse signature: CallingConv, ParamCount, ReturnType, Params...
+        byte* ptr = sigBlob;
+        byte* end = sigBlob + sigLen;
+
+        // Skip calling convention
+        byte callConv = *ptr++;
+
+        // Skip param count (compressed uint)
+        MetadataReader.ReadCompressedUInt(ref ptr);
+
+        // Skip return type
+        SkipTypeSig(ref ptr, end);
+
+        // Parse each parameter type
+        for (int i = 0; i < paramCount && argIndex < maxArgs && ptr < end; i++)
+        {
+            isValueType[argIndex] = IsValueTypeSig(ref ptr, end);
+            argIndex++;
+        }
+
+        return argIndex;
+    }
+
+    /// <summary>
+    /// Check if the type at current position is a value type, advancing the pointer.
+    /// </summary>
+    private static bool IsValueTypeSig(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return false;
+
+        // Handle BYREF modifier - byref is a pointer, not a value type
+        if (*ptr == 0x10) // ELEMENT_TYPE_BYREF
+        {
+            ptr++;
+            SkipTypeSig(ref ptr, end);
+            return false;
+        }
+
+        byte elemType = *ptr++;
+
+        // ValueType (0x11) is a value type
+        if (elemType == 0x11)
+        {
+            // Skip TypeDefOrRef token
+            MetadataReader.ReadCompressedUInt(ref ptr);
+            return true;
+        }
+
+        // Primitive types (Boolean through R8) are value types
+        if (elemType >= 0x02 && elemType <= 0x0D)
+        {
+            return true;
+        }
+
+        // Class (0x12) - skip token, not a value type
+        if (elemType == 0x12)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr);
+            return false;
+        }
+
+        // Generic instantiation
+        if (elemType == 0x15) // ELEMENT_TYPE_GENERICINST
+        {
+            if (ptr < end)
+            {
+                byte genKind = *ptr++;
+                bool isValueTypeGen = (genKind == 0x11);
+                // Skip TypeDefOrRef
+                if (ptr < end)
+                {
+                    MetadataReader.ReadCompressedUInt(ref ptr);
+                    // Skip type arguments
+                    if (ptr < end)
+                    {
+                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        for (uint j = 0; j < argCount && ptr < end; j++)
+                        {
+                            SkipTypeSig(ref ptr, end);
+                        }
+                    }
+                }
+                return isValueTypeGen;
+            }
+        }
+
+        // SzArray, Object, String, IntPtr, UIntPtr, etc. - not small value types
+        // (IntPtr/UIntPtr are technically value types but passed by value as integers)
+        if (elemType == 0x18 || elemType == 0x19) // I, U (native int)
+            return true;
+
+        // For arrays, skip element type
+        if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
+        {
+            SkipTypeSig(ref ptr, end);
+            return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Skip over a type signature without processing it.
+    /// </summary>
+    private static void SkipTypeSig(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return;
+
+        byte elemType = *ptr++;
+
+        // Handle BYREF modifier
+        if (elemType == 0x10) // BYREF
+        {
+            SkipTypeSig(ref ptr, end);
+            return;
+        }
+
+        // ValueType or Class - skip TypeDefOrRef token
+        if (elemType == 0x11 || elemType == 0x12)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr);
+            return;
+        }
+
+        // Generic instantiation
+        if (elemType == 0x15)
+        {
+            if (ptr < end)
+            {
+                ptr++; // Skip CLASS/VALUETYPE marker
+                if (ptr < end)
+                {
+                    MetadataReader.ReadCompressedUInt(ref ptr); // Skip TypeDefOrRef
+                    if (ptr < end)
+                    {
+                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        for (uint j = 0; j < argCount && ptr < end; j++)
+                        {
+                            SkipTypeSig(ref ptr, end);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // SzArray - skip element type
+        if (elemType == 0x1D)
+        {
+            SkipTypeSig(ref ptr, end);
+            return;
+        }
+
+        // Primitives, Object, String, etc. - already consumed the byte, nothing more to skip
     }
 
     /// <summary>

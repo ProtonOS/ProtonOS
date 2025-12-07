@@ -747,12 +747,227 @@ public static unsafe class AssemblyLoader
             case 0x01:  // TypeRef - resolve cross-assembly
                 return ResolveTypeRef(asm, token);
 
-            case 0x1B:  // TypeSpec - generic instantiation (not implemented)
-                return null;
+            case 0x1B:  // TypeSpec - array types, generic instantiations
+                return ResolveTypeSpec(asm, token);
 
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Resolve a TypeSpec token (array types, generics, etc.).
+    /// TypeSpec contains a signature blob describing the type.
+    /// </summary>
+    private static MethodTable* ResolveTypeSpec(LoadedAssembly* asm, uint token)
+    {
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0 || rowId > asm->Tables.RowCounts[(int)MetadataTableId.TypeSpec])
+        {
+            DebugConsole.Write("[AsmLoader] TypeSpec 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine(" invalid row");
+            return null;
+        }
+
+        // Get the TypeSpec signature blob
+        uint sigIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
+        DebugConsole.Write("[AsmLoader] TypeSpec 0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" asm=");
+        DebugConsole.WriteDecimal(asm->AssemblyId);
+        DebugConsole.Write(" blobIdx=");
+        DebugConsole.WriteHex(sigIdx);
+        DebugConsole.WriteLine("");
+
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen == 0)
+        {
+            DebugConsole.Write("[AsmLoader] TypeSpec 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine(" no signature");
+            return null;
+        }
+
+        DebugConsole.Write("[AsmLoader] TypeSpec sig[0]=0x");
+        DebugConsole.WriteHex((uint)sig[0]);
+        DebugConsole.Write(" sig[1]=0x");
+        DebugConsole.WriteHex((uint)sig[1]);
+        DebugConsole.Write(" len=");
+        DebugConsole.WriteDecimal(sigLen);
+        DebugConsole.WriteLine("");
+
+        int pos = 0;
+        byte elementType = sig[pos++];
+
+        // ELEMENT_TYPE_SZARRAY = 0x1D - single-dimension zero-lower-bound array
+        if (elementType == 0x1D)
+        {
+            // Next is the element type
+            MethodTable* elementMT = ParseTypeFromSignature(asm, sig, ref pos, sigLen);
+            if (elementMT == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] TypeSpec array element MT is null");
+                return null;
+            }
+
+            // Get or create array MethodTable
+            return GetOrCreateArrayMethodTable(elementMT);
+        }
+
+        // ELEMENT_TYPE_PTR = 0x0F - pointer type (e.g., void*)
+        // Pointers are IntPtr-sized, so use IntPtr's MethodTable
+        if (elementType == 0x0F)
+        {
+            // Skip the pointed-to type (we don't need it for sizing)
+            // Just need to know it's a pointer, which is pointer-sized (IntPtr)
+            MethodTable* ptrMt = GetPrimitiveMethodTable(0x18);  // IntPtr
+            if (ptrMt == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] TypeSpec PTR: IntPtr MT not found");
+                return null;
+            }
+            DebugConsole.WriteLine("[AsmLoader] TypeSpec PTR resolved to IntPtr");
+            return ptrMt;
+        }
+
+        // ELEMENT_TYPE_GENERICINST = 0x15 - generic instantiation
+        // Not yet implemented - would need to parse generic type and type arguments
+
+        DebugConsole.Write("[AsmLoader] TypeSpec unhandled elementType 0x");
+        DebugConsole.WriteHex((uint)elementType);
+        DebugConsole.WriteLine("");
+        // Other TypeSpec kinds not implemented yet
+        return null;
+    }
+
+    /// <summary>
+    /// Parse a type from a signature blob.
+    /// Returns the MethodTable for the parsed type.
+    /// </summary>
+    private static MethodTable* ParseTypeFromSignature(LoadedAssembly* asm, byte* sig, ref int pos, uint sigLen)
+    {
+        if (pos >= (int)sigLen)
+        {
+            DebugConsole.WriteLine("[AsmLoader] ParseType: pos >= sigLen");
+            return null;
+        }
+
+        byte elementType = sig[pos++];
+        DebugConsole.Write("[AsmLoader] ParseType elementType=0x");
+        DebugConsole.WriteHex((uint)elementType);
+        DebugConsole.WriteLine("");
+
+        // ELEMENT_TYPE_CLASS or ELEMENT_TYPE_VALUETYPE - followed by TypeDefOrRefOrSpecEncoded
+        if (elementType == 0x12 || elementType == 0x11)  // CLASS=0x12, VALUETYPE=0x11
+        {
+            // Decode compressed unsigned integer for TypeDefOrRefOrSpec
+            uint typeToken = DecodeTypeDefOrRefOrSpec(sig, ref pos, sigLen);
+            DebugConsole.Write("[AsmLoader] ParseType decoded token=0x");
+            DebugConsole.WriteHex(typeToken);
+            DebugConsole.WriteLine("");
+            if (typeToken == 0)
+                return null;
+
+            MethodTable* mt = ResolveType(asm->AssemblyId, typeToken);
+            if (mt == null)
+            {
+                DebugConsole.Write("[AsmLoader] ParseType ResolveType failed for 0x");
+                DebugConsole.WriteHex(typeToken);
+                DebugConsole.WriteLine("");
+            }
+            return mt;
+        }
+
+        // Primitive types - get AOT MethodTables from registry
+        MethodTable* primMt = GetPrimitiveMethodTable(elementType);
+        if (primMt == null)
+        {
+            DebugConsole.Write("[AsmLoader] ParseType no primitive for 0x");
+            DebugConsole.WriteHex((uint)elementType);
+            DebugConsole.WriteLine("");
+        }
+        return primMt;
+    }
+
+    /// <summary>
+    /// Decode a TypeDefOrRefOrSpec coded index from a signature blob.
+    /// Returns the full token (0x02xxxxxx for TypeDef, 0x01xxxxxx for TypeRef, 0x1Bxxxxxx for TypeSpec).
+    /// </summary>
+    private static uint DecodeTypeDefOrRefOrSpec(byte* sig, ref int pos, uint sigLen)
+    {
+        // First decode compressed unsigned integer
+        if (pos >= (int)sigLen)
+            return 0;
+
+        uint value = 0;
+        byte b = sig[pos++];
+        if ((b & 0x80) == 0)
+        {
+            // 1-byte encoding
+            value = b;
+        }
+        else if ((b & 0xC0) == 0x80)
+        {
+            // 2-byte encoding
+            if (pos >= (int)sigLen) return 0;
+            value = ((uint)(b & 0x3F) << 8) | sig[pos++];
+        }
+        else if ((b & 0xE0) == 0xC0)
+        {
+            // 4-byte encoding
+            if (pos + 2 >= (int)sigLen) return 0;
+            value = ((uint)(b & 0x1F) << 24) | ((uint)sig[pos++] << 16) | ((uint)sig[pos++] << 8) | sig[pos++];
+        }
+        else
+        {
+            return 0;
+        }
+
+        // TypeDefOrRefOrSpec encoding: low 2 bits are table, rest is row ID
+        uint table = value & 0x03;
+        uint row = value >> 2;
+
+        switch (table)
+        {
+            case 0: return 0x02000000 | row;  // TypeDef
+            case 1: return 0x01000000 | row;  // TypeRef
+            case 2: return 0x1B000000 | row;  // TypeSpec
+            default: return 0;
+        }
+    }
+
+    /// <summary>
+    /// Get the MethodTable for a primitive ELEMENT_TYPE code.
+    /// Maps ECMA-335 element type codes to registered well-known type MethodTables.
+    /// </summary>
+    private static MethodTable* GetPrimitiveMethodTable(byte elementType)
+    {
+        uint token = elementType switch
+        {
+            0x02 => JIT.MetadataIntegration.WellKnownTypes.Boolean,  // ELEMENT_TYPE_BOOLEAN
+            0x03 => JIT.MetadataIntegration.WellKnownTypes.Char,     // ELEMENT_TYPE_CHAR
+            0x04 => JIT.MetadataIntegration.WellKnownTypes.SByte,    // ELEMENT_TYPE_I1
+            0x05 => JIT.MetadataIntegration.WellKnownTypes.Byte,     // ELEMENT_TYPE_U1
+            0x06 => JIT.MetadataIntegration.WellKnownTypes.Int16,    // ELEMENT_TYPE_I2
+            0x07 => JIT.MetadataIntegration.WellKnownTypes.UInt16,   // ELEMENT_TYPE_U2
+            0x08 => JIT.MetadataIntegration.WellKnownTypes.Int32,    // ELEMENT_TYPE_I4
+            0x09 => JIT.MetadataIntegration.WellKnownTypes.UInt32,   // ELEMENT_TYPE_U4
+            0x0A => JIT.MetadataIntegration.WellKnownTypes.Int64,    // ELEMENT_TYPE_I8
+            0x0B => JIT.MetadataIntegration.WellKnownTypes.UInt64,   // ELEMENT_TYPE_U8
+            0x0C => JIT.MetadataIntegration.WellKnownTypes.Single,   // ELEMENT_TYPE_R4
+            0x0D => JIT.MetadataIntegration.WellKnownTypes.Double,   // ELEMENT_TYPE_R8
+            0x0E => JIT.MetadataIntegration.WellKnownTypes.String,   // ELEMENT_TYPE_STRING
+            0x18 => JIT.MetadataIntegration.WellKnownTypes.IntPtr,   // ELEMENT_TYPE_I
+            0x19 => JIT.MetadataIntegration.WellKnownTypes.UIntPtr,  // ELEMENT_TYPE_U
+            0x1C => JIT.MetadataIntegration.WellKnownTypes.Object,   // ELEMENT_TYPE_OBJECT
+            _ => 0
+        };
+
+        if (token == 0)
+            return null;
+
+        return JIT.MetadataIntegration.LookupType(token);
     }
 
     /// <summary>
@@ -836,12 +1051,32 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
-    /// Compute instance size for a type from its fields.
+    /// Compute instance size for a type from its fields, including base class.
     /// </summary>
     private static uint ComputeInstanceSize(LoadedAssembly* asm, uint typeDefRow, bool isValueType)
     {
         // For reference types, start with pointer size (for MethodTable*)
         uint size = isValueType ? 0u : 8u;
+
+        // Get base class size if not a value type and has a base class
+        if (!isValueType)
+        {
+            CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
+            if (extendsIdx.RowId != 0 && !IsValueTypeBase(asm, extendsIdx) && !IsObjectBase(asm, extendsIdx))
+            {
+                // Get the base class's method table to get its size
+                uint baseSize = GetBaseClassSize(asm, extendsIdx);
+                DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
+                DebugConsole.WriteDecimal(typeDefRow);
+                DebugConsole.Write(" baseSize=");
+                DebugConsole.WriteDecimal(baseSize);
+                if (baseSize > 8)
+                {
+                    // Base class size already includes the object header
+                    size = baseSize;
+                }
+            }
+        }
 
         // Get field range for this type
         uint fieldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow);
@@ -858,7 +1093,7 @@ public static unsafe class AssemblyLoader
             fieldEnd = fieldDefCount + 1;
         }
 
-        // Sum up instance field sizes
+        // Sum up instance field sizes for THIS class only
         for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
         {
             // Get field flags
@@ -877,7 +1112,7 @@ public static unsafe class AssemblyLoader
                 // Field signature: FIELD (0x06), followed by type
                 if (sig[0] == 0x06)
                 {
-                    size += GetTypeSize(sig[1]);
+                    size += GetFieldTypeSize(asm, sig + 1, sigLen - 1);
                 }
             }
             else
@@ -894,7 +1129,61 @@ public static unsafe class AssemblyLoader
         // Align to 8 bytes
         size = (size + 7) & ~7u;
 
+        DebugConsole.Write(" finalSize=");
+        DebugConsole.WriteDecimal(size);
+        DebugConsole.WriteLine();
+
         return size;
+    }
+
+    /// <summary>
+    /// Check if extends index points to System.Object
+    /// </summary>
+    private static bool IsObjectBase(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // TypeDefOrRef coded index: TypeDef=0, TypeRef=1, TypeSpec=2
+        if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            if (ns != null && name != null)
+            {
+                return IsSystemNamespace(ns) && IsObjectName(name);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get the base class size by resolving the extends coded index.
+    /// </summary>
+    private static uint GetBaseClassSize(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // TypeDefOrRef coded index: TypeDef=0, TypeRef=1, TypeSpec=2
+        if (extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            // Base class is in the same assembly
+            return ComputeInstanceSize(asm, extendsIdx.RowId, false);
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            // Base class is in another assembly - resolve to TypeDef and compute size
+            LoadedAssembly* targetAsm;
+            uint typeDefToken;
+            if (ResolveTypeRefToTypeDef(asm, extendsIdx.RowId, out targetAsm, out typeDefToken))
+            {
+                // Extract row from token
+                uint typeDefRow = typeDefToken & 0x00FFFFFF;
+                if (targetAsm != null && typeDefRow > 0)
+                {
+                    return ComputeInstanceSize(targetAsm, typeDefRow, false);
+                }
+            }
+        }
+        return 8; // Default to just object header
     }
 
     /// <summary>
@@ -938,6 +1227,112 @@ public static unsafe class AssemblyLoader
             default:
                 return 8;  // Default to pointer size
         }
+    }
+
+    /// <summary>
+    /// Get the size of a field type from its signature bytes.
+    /// Handles complex types like ValueType and Class references.
+    /// </summary>
+    private static uint GetFieldTypeSize(LoadedAssembly* asm, byte* typeSig, uint sigLen)
+    {
+        if (typeSig == null || sigLen == 0)
+            return 8;
+
+        byte elementType = typeSig[0];
+
+        // For primitive types, use simple lookup
+        if (elementType != 0x11 && elementType != 0x12 && elementType != 0x15)
+        {
+            return GetTypeSize(elementType);
+        }
+
+        // VALUETYPE (0x11) or CLASS (0x12) - followed by TypeDefOrRef token
+        // GenericInst (0x15) - more complex, skip for now
+        if (elementType == 0x15)
+            return 8;
+
+        if (sigLen < 2)
+            return 8;
+
+        // Decode compressed token
+        uint token = 0;
+        int bytesRead = 0;
+
+        // Simple compressed integer decoding
+        if ((typeSig[1] & 0x80) == 0)
+        {
+            token = typeSig[1];
+            bytesRead = 1;
+        }
+        else if ((typeSig[1] & 0xC0) == 0x80)
+        {
+            if (sigLen < 3) return 8;
+            token = ((uint)(typeSig[1] & 0x3F) << 8) | typeSig[2];
+            bytesRead = 2;
+        }
+        else if ((typeSig[1] & 0xE0) == 0xC0)
+        {
+            if (sigLen < 5) return 8;
+            token = ((uint)(typeSig[1] & 0x1F) << 24) | ((uint)typeSig[2] << 16) | ((uint)typeSig[3] << 8) | typeSig[4];
+            bytesRead = 4;
+        }
+        else
+        {
+            return 8;
+        }
+
+        // Token is TypeDefOrRef coded index (2-bit table, rest is row)
+        // Table: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        uint table = token & 0x03;
+        uint row = token >> 2;
+
+        if (row == 0)
+            return 8;
+
+        if (elementType == 0x12)  // CLASS
+        {
+            // Class fields are references (pointers)
+            return 8;
+        }
+
+        // VALUETYPE - need to compute actual size
+        if (table == 0)  // TypeDef in same assembly
+        {
+            return ComputeInstanceSize(asm, row, true);
+        }
+        else if (table == 1)  // TypeRef in another assembly
+        {
+            // Resolve TypeRef to TypeDef in target assembly
+            LoadedAssembly* targetAsm;
+            uint typeDefToken;
+            if (ResolveTypeRefToTypeDef(asm, row, out targetAsm, out typeDefToken))
+            {
+                uint typeDefRow = typeDefToken & 0x00FFFFFF;
+                if (targetAsm != null && typeDefRow > 0)
+                {
+                    return ComputeInstanceSize(targetAsm, typeDefRow, true);
+                }
+            }
+        }
+
+        return 8;  // Fallback
+    }
+
+    /// <summary>
+    /// Get the size of a field type from its signature bytes.
+    /// Public wrapper for MetadataIntegration to call during JIT compilation.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID from which the field signature originates</param>
+    /// <param name="typeSig">Pointer to the type signature bytes (after the field signature calling convention byte)</param>
+    /// <param name="sigLen">Length of the type signature</param>
+    /// <returns>Size of the field in bytes</returns>
+    public static uint GetFieldTypeSizeForAssembly(uint assemblyId, byte* typeSig, uint sigLen)
+    {
+        if (assemblyId == 0 || assemblyId > (uint)_assemblyCount)
+            return 8;
+
+        LoadedAssembly* asm = &_assemblies[assemblyId - 1];
+        return GetFieldTypeSize(asm, typeSig, sigLen);
     }
 
     /// <summary>
@@ -1280,6 +1675,16 @@ public static unsafe class AssemblyLoader
     {
         // "Enum" = E n u m \0
         return name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is "Object".
+    /// </summary>
+    private static bool IsObjectName(byte* name)
+    {
+        // "Object" = O b j e c t \0
+        return name[0] == 'O' && name[1] == 'b' && name[2] == 'j' && name[3] == 'e' &&
+               name[4] == 'c' && name[5] == 't' && name[6] == 0;
     }
 
     /// <summary>

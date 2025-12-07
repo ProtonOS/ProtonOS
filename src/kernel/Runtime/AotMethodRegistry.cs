@@ -124,6 +124,12 @@ public static unsafe class AotMethodRegistry
             "System.String", "Equals",
             (nint)(delegate*<string, string?, bool>)&StringHelpers.Equals,
             1, ReturnKind.Int32, true, false);
+
+        // String.GetPinnableReference() - 0 parameters, HasThis=true, returns ref char (pointer)
+        Register(
+            "System.String", "GetPinnableReference",
+            (nint)(delegate*<string, nint>)&StringHelpers.GetPinnableReference,
+            0, ReturnKind.IntPtr, true, false);
     }
 
     /// <summary>
@@ -359,6 +365,21 @@ public static unsafe class StringHelpers
         if (s == null)
             return other == null;
         return s.Equals(other);
+    }
+
+    /// <summary>
+    /// Wrapper for String.GetPinnableReference().
+    /// Returns a pointer to the first character of the string.
+    /// </summary>
+    public static unsafe nint GetPinnableReference(string s)
+    {
+        if (s == null || s.Length == 0)
+            return 0;
+        // Get reference and convert to pointer
+        fixed (char* ptr = &s.GetPinnableReference())
+        {
+            return (nint)ptr;
+        }
     }
 }
 

@@ -1,8 +1,93 @@
 # VirtioBlk JIT Page Fault Debug
 
-## Current Status (Latest)
-All four JIT bugs have been fixed. The kernel now continues successfully after driver binding.
-VirtioBlk driver's Bind() returns false (driver not fully implemented), but no crashes occur.
+## Current Status (2025-12-07)
+
+**ACTIVELY DEBUGGING: Bug 5 - ldfld on value types from ldloc**
+
+A page fault at CR2=0x300 occurs during VirtioBlk driver initialization. The crash happens when JIT-compiled code attempts to access a field of a struct that was loaded with `ldloc`.
+
+### Current Crash Details
+```
+BEEF0001-BEEF0008  <- VirtioBlkEntry.Bind progressing
+CAFE0001, CAFE0002, CAFE0003  <- VirtioDevice.Initialize starts
+CAFE0010, CAFE0011, CAFE0012  <- VirtioDevice.InitializeModern progressing
+!!! EXCEPTION 000E: Page Fault
+    Error Code: 0x0000000000000000
+    CR2: 0x0000000000000300  <- FAULT ADDRESS
+```
+
+### Root Cause Analysis
+The JIT has a bug in `CompileLdfld` when accessing fields of value types loaded via `ldloc`:
+
+**The Problem:**
+When C# compiles `localStruct.Field`, it emits:
+1. `ldloc localStruct` - Loads the struct VALUE onto the eval stack
+2. `ldfld Field` - Should access field FROM the struct value on stack
+
+But the JIT's `CompileLdfld` implementation treats the value on the stack as a POINTER and dereferences it:
+```csharp
+// ILCompiler.cs CompileLdfld (around line 5100-5150)
+_emitter.Mov(VReg.R0, VReg.SP, 0);  // Load "address" from stack
+_emitter.Mov(VReg.R0, VReg.R0, offset);  // MOV R0, [R0 + offset] - CRASH!
+```
+
+**Why CR2=0x300?**
+- PciAddress struct = 3 bytes: Bus=0x00, Device=0x03, Function=0x00
+- When `ldloc` loads this as a value, it's 0x00030000 (little-endian)
+- `ldfld` treats this as an address and tries to read [0x300 + offset]
+- Address 0x300 is in the null guard page, so page fault!
+
+### Current Workaround Applied
+Modified `VirtioDevice.InitializeModern()` to avoid local struct variables by accessing struct fields through the object reference directly:
+
+```csharp
+// OLD CODE (crashes):
+var pd = _pciDevice;
+var addr = pd.Address;  // addr is local struct variable
+byte b = addr.Bus;      // CRASH - ldfld on value from ldloc
+
+// NEW CODE (workaround):
+byte bus = _pciDevice.Address.Bus;
+byte device = _pciDevice.Address.Device;
+byte function = _pciDevice.Address.Function;
+```
+
+**However,** the crash still occurs at CAFE0012 because `PCI.EnableBusMaster(_pciDevice.Address)` still passes the struct by value, triggering the same bug when the callee accesses struct fields.
+
+### Next Steps to Fix
+
+**Option A: Fix CompileLdfld (proper fix)**
+Modify `CompileLdfld` to detect when the source is a value type (not a reference):
+- If value type on stack: read field directly from stack at [SP + offset]
+- If reference type on stack: dereference first, then read at [ptr + offset]
+
+The challenge: JIT needs to track whether the TOS is a value type or reference type.
+
+**Option B: Workaround in driver code**
+Modify all code paths that pass struct by value to instead pass individual fields:
+- `PCI.EnableBusMaster(PciAddress addr)` -> `PCI.EnableBusMaster(byte bus, byte dev, byte func)`
+- This is fragile and requires modifying all call sites
+
+### Files to Investigate
+
+1. **src/kernel/Runtime/JIT/ILCompiler.cs**
+   - `CompileLdfld` at line ~5100 - needs to handle value types on stack
+   - `CompileLdloc` at line ~3400 - understand how value types are loaded
+   - May need to track value type sizes in eval stack metadata
+
+2. **src/kernel/Runtime/JIT/X64Emitter.cs**
+   - Stack operations for value types
+
+3. **src/drivers/shared/virtio/VirtioDevice.cs**
+   - Current workaround location
+   - Line 119: `PCI.EnableBusMaster(_pciDevice.Address);` still crashes
+
+4. **src/ddk/Drivers/PciDeviceInfo.cs**
+   - `PciAddress` struct definition (3 bytes: Bus, Device, Function)
+
+---
+
+## Previously Fixed Bugs
 
 ### Bug 1: Array ComponentSize (FIXED)
 **Problem:** Array allocations for struct element types were undersized.
@@ -10,127 +95,73 @@ VirtioBlk driver's Bind() returns false (driver not fully implemented), but no c
 - Root cause: `newarr` used element type's MethodTable which had ComponentSize=0
 - Array needs its own MethodTable with ComponentSize = element size
 
-**Fix:** Added `GetOrCreateArrayMethodTable` in AssemblyLoader.cs:
-- Creates array MethodTables on-demand with correct ComponentSize
-- For value types: ComponentSize = BaseSize - 8 (removes boxed MT pointer overhead)
-- For reference types: ComponentSize = 8 (pointer size)
-
-**Result:** Arrays now allocate correctly (112 bytes for PciBar[6])
+**Fix:** Added `GetOrCreateArrayMethodTable` in AssemblyLoader.cs
 
 ### Bug 2: Instance Method 'this' Homing (FIXED)
 **Problem:** Constructors with no explicit params had null 'this' pointer.
-- Signature's `ParamCount` doesn't include 'this', but instance methods have 'this' in RCX as arg0
-- JIT used `ParamCount` directly for `_argCount`, so `HomeArguments` wasn't called
-- RCX was never saved to [RBP+16], so `ldarg.0` loaded garbage
+- Signature's `ParamCount` doesn't include 'this', but instance methods have 'this' in RCX
 
-**Fix:** Modified Tier0JIT.cs:
-```csharp
-int jitArgCount = hasThis ? paramCount + 1 : paramCount;
-// Pass jitArgCount to ILCompiler (includes 'this')
-// Store paramCount to registry (for CompileNewobj which needs user args only)
-```
-
-**Result:** `this` is now properly homed and `ldarg.0` works correctly.
+**Fix:** Modified Tier0JIT.cs to calculate `jitArgCount = hasThis ? paramCount + 1 : paramCount`
 
 ### Bug 3: Value Type Field Offset (FIXED)
 **Problem:** Value type field offsets included +8 for MethodTable pointer.
 - Field resolver always added +8 to offsets (for boxed object's MT pointer)
 - But value type instance methods receive `this` as byref to raw struct data (no MT)
-- PciAddress fields got offsets 8, 9, 10 instead of 0, 1, 2
 
-**Fix:** Modified MetadataIntegration.cs:
-- Added `IsTypeDefValueType(uint typeDefRow)` helper function
-- Modified `CalculateFieldOffset()` to start at 0 for value types
-- Modified `ResolveFieldDef()` to NOT add +8 for explicit offsets on value types
+**Fix:** Modified MetadataIntegration.cs to start at offset 0 for value types
 
-```csharp
-// Before: int offset = 8;  // Always started at 8
-// After:
-bool isValueType = IsTypeDefValueType(typeRow);
-int offset = isValueType ? 0 : 8;  // 0 for value types, 8 for reference types
-```
+### Bug 4: Local Variable Slot Size / Callee-Saved Registers (FIXED)
+**Problem:** Two related issues:
+- Local variable slots were only 8 bytes (too small for structs)
+- Callee-saved registers (RBX, R12-R15) were not preserved
 
-**Result:** PciAddress fields now correctly use offsets 0, 1, 2:
-```
-[JIT stfld] token=0x0400030F offset=0 size=1  // Was offset=8
-[JIT stfld] token=0x04000310 offset=1 size=1  // Was offset=9
-[JIT stfld] token=0x04000311 offset=2 size=1  // Was offset=10
-```
-
-### Bug 4: Page Fault at CR2=0x0 (FIXED)
-**Problem:** Two related issues caused crashes after JIT code returned to AOT caller.
-
-**Part A: Local Variable Slot Size**
-- Local variable slots were only 8 bytes each
-- PciBar struct is ~32 bytes, overflowing into saved RBP/return address
-- Writing to struct fields at offset >= 8 corrupted the stack frame
-
-**Fix A:** Changed local slot size from 8 to 64 bytes in ILCompiler.cs and X64Emitter.cs:
-```csharp
-// ILCompiler.cs line 793
-int localBytes = _localCount * 64 + 64;  // Was * 8
-
-// X64Emitter.cs GetLocalOffset
-return -((localIndex + 1) * 64);  // Was * 8
-```
-
-**Part B: Callee-Saved Register Corruption**
-- JIT prologue only saved RBP, not other callee-saved registers
-- VRegs R7-R11 map to RBX, R12, R13, R14, R15 (callee-saved)
-- JIT code used these without saving/restoring them
-- After JIT returned, AOT kernel had corrupted register values
-
-**Fix B:** Added callee-saved register preservation in X64Emitter.cs:
-```csharp
-// Prologue: Save RBX, R12, R13, R14, R15 to [RBP-8] through [RBP-40]
-// Epilogue: Restore them before leave/ret
-```
-
-**Result:** Kernel now continues successfully after driver binding:
-```
-[Drivers]   Bind failed
-[OK] Kernel initialization complete
-```
+**Fix:** Changed local slot size to 64 bytes, added register preservation
 
 ---
 
-## Historical Context
+## Debug Markers
 
-### Original Problem
-VirtioBlk driver crashed at CR2=0x13 (offset 19 = ProgIf field) - null 'this' pointer.
-
-### C# Code Pattern (VirtioBlkEntry.cs)
-```csharp
-public static bool Bind(byte bus, byte device, byte function)
-{
-    var pciDevice = new PciDeviceInfo
-    {
-        Address = new PciAddress(bus, device, function)
-    };
-    // Field accesses crashed because pciDevice was null
-    pciDevice.VendorId = ...;
-    pciDevice.ProgIf = ...;  // <-- Original crash at CR2=0x13
-}
+### VirtioBlkEntry.Bind (VirtioBlkEntry.cs)
+```
+0xBEEF0001 - Entry
+0xBEEF0002 - Created PciDeviceInfo
+0xBEEF0003 - Set Address
+0xBEEF0004 - Before BAR loop
+0xBEEF0005 - After BAR loop
+0xBEEF0006 - Before new VirtioBlkDevice
+0xBEEF0007 - After new VirtioBlkDevice
+0xBEEF0008 - Before Initialize call
+0xBEEF0009 - After Initialize success
+0xBEEF000A - Before InitializeBlockDevice
+0xBEEF000B - After InitializeBlockDevice success
+0xDEADFFA1 - Initialize failed
+0xDEADFFA2 - InitializeBlockDevice failed
 ```
 
-### IL Pattern for Object Initializer
+### VirtioDevice.Initialize (VirtioDevice.cs)
 ```
-newobj      PciDeviceInfo::.ctor()    // Inside ctor: allocates Bars array
-dup                                    // Duplicate ref for stloc later
-ldarg.0                                // Push bus
-ldarg.1                                // Push device
-ldarg.2                                // Push function
-newobj      PciAddress::.ctor(byte, byte, byte)  // Nested newobj
-stfld       PciDeviceInfo::Address    // Store to field
-stloc.0                                // Store ref to local
+0xCAFE0001 - Entry
+0xCAFE0002 - After _pciDevice assignment
+0xCAFE0003 - After IsLegacyDevice check
 ```
 
-### PciDeviceInfo Constructor
-The constructor has a field initializer that allocates an array:
-```csharp
-public PciBar[] Bars = new PciBar[6];
+### VirtioDevice.InitializeModern (VirtioDevice.cs)
 ```
-This was causing the undersized allocation bug (now fixed).
+0xCAFE0010 - Entry
+0xCAFE0011 - After extracting bus/device/function
+0xCAFE0012 - After WriteConfig16 (CURRENTLY CRASHES AFTER THIS)
+0xCAFE0013 - After EnableBusMaster
+0xCAFE0014 - After MapBars
+0xCAFE0015 - After FindCapabilities
+0xCAFE0016 - After WriteStatus(Reset)
+0xCAFE0017 - After WriteStatus(Acknowledge)
+0xCAFE0018 - After WriteStatus(Driver)
+0xCAFE0019 - After NegotiateFeatures
+0xCAFE001A - After WriteStatus(FeaturesOk)
+0xCAFE001B - After features check
+0xCAFE001C - After read NumQueues
+0xCAFE001D - After allocate queues array
+```
 
 ---
 
@@ -153,65 +184,6 @@ This was causing the undersized allocation bug (now fixed).
 - Caller reserves 32-byte shadow space
 - Callee homes args to shadow space: [RBP+16], [RBP+24], [RBP+32], [RBP+40]
 
-### Argument Homing
-For instance methods, `this` is arg0:
-- arg0 (this): RCX -> [RBP+16]
-- arg1: RDX -> [RBP+24]
-- arg2: R8 -> [RBP+32]
-- arg3: R9 -> [RBP+40]
-
----
-
-## Files Modified
-
-1. **src/kernel/Runtime/AssemblyLoader.cs**
-   - Added `GetOrCreateArrayMethodTable` function
-   - Creates array MTs with correct ComponentSize
-   - Caches created array MTs to avoid duplication
-
-2. **src/kernel/Runtime/JIT/MetadataIntegration.cs**
-   - Added `ResolveArrayElementType` function
-   - Bridges element type tokens to array MethodTables
-   - Added `IsTypeDefValueType(uint typeDefRow)` helper function
-   - Modified `CalculateFieldOffset()` to use 0 base for value types
-   - Modified `ResolveFieldDef()` explicit offset handling for value types
-
-3. **src/kernel/Runtime/JIT/ILCompiler.cs**
-   - Modified `CompileNewarr` to use `ResolveArrayElementType`
-   - Falls back to old resolver if new one fails
-
-4. **src/kernel/Runtime/JIT/Tier0JIT.cs**
-   - Separated `paramCount` (signature's count) from `jitArgCount` (includes 'this')
-   - Pass `jitArgCount` to ILCompiler for homing
-   - Pass `paramCount` to registry for CompileNewobj
-
----
-
-## Next Steps to Debug CR2=0x0
-
-### 1. Analyze the stfld trace
-The runtime stfld trace shows successful stores before crash:
-```
-[stfld RT] obj=0x000000001FE665B0 off=0   <- PciAddress field Bus
-[stfld RT] obj=0x000000001FE665B0 off=1   <- PciAddress field Device
-[stfld RT] obj=0x000000001FE665B0 off=2   <- PciAddress field Function
-[stfld RT] obj=0xFFFF800000100188 off=8   <- PciDeviceInfo.Address (ref type)
-[stfld RT] obj=0x000000001FE66538 off=0   <- ???
-[stfld RT] obj=0x000000001FE66538 off=8   <- ???
-!!! EXCEPTION 000E: Page Fault at CR2=0x0
-```
-
-### 2. Investigate what objects are being accessed
-- 0x1FE665B0 appears to be a stack address (PciAddress value type)
-- 0xFFFF800000100188 is in the GC heap (managed object)
-- 0x1FE66538 appears to be another stack address
-
-### 3. Check for null object references
-The CR2=0x0 means we're dereferencing a null pointer. Possible causes:
-- Eval stack underflow returning 0
-- Uninitialized local variable
-- Bad object reference from constructor
-
 ---
 
 ## Build & Test Commands
@@ -220,3 +192,12 @@ The CR2=0x0 means we're dereferencing a null pointer. Possible causes:
 ./dev.sh ./run.sh 2>&1   # Run in QEMU (timeout: 10000)
 ./kill.sh                # Kill containers after test
 ```
+
+---
+
+## Pending Tasks
+1. **[IN PROGRESS]** Fix Bug 5: ldfld on value types from ldloc
+2. Test driver binding with modern virtio device
+3. Add block read test after driver binding
+4. Implement FAT32 filesystem driver
+5. Test mounting filesystem and reading/writing files

@@ -260,6 +260,31 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(0x7D);
         code.EmitByte(0xD8);  // -40
 
+        // Home arguments to shadow space (required for ldarg after calls)
+        // mov [rbp+16], rcx  ; arg0
+        code.EmitByte(0x48);
+        code.EmitByte(0x89);
+        code.EmitByte(0x4D);
+        code.EmitByte(0x10);  // +16
+
+        // mov [rbp+24], rdx  ; arg1
+        code.EmitByte(0x48);
+        code.EmitByte(0x89);
+        code.EmitByte(0x55);
+        code.EmitByte(0x18);  // +24
+
+        // mov [rbp+32], r8   ; arg2
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x45);
+        code.EmitByte(0x20);  // +32
+
+        // mov [rbp+40], r9   ; arg3
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x4D);
+        code.EmitByte(0x28);  // +40
+
         return frameSize;
     }
 
@@ -1146,6 +1171,22 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// Move from memory to register (16-bit zero-extended): dst = [baseReg + disp]
+    /// </summary>
+    public static void MovRM16(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load16(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Move from memory to register (8-bit zero-extended): dst = [baseReg + disp]
+    /// </summary>
+    public static void MovRM8(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
+    {
+        Load8(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
     /// Add register to register: dst = dst + src
     /// </summary>
     public static void AddRR(ref CodeBuffer code, VReg dst, VReg src)
@@ -1183,6 +1224,19 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     public static void ImulRR(ref CodeBuffer code, VReg dst, VReg src)
     {
         Mul(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// Signed multiply by immediate: dst = dst * imm
+    /// Encodes: imul r64, r64, imm32 (REX.W + 69 /r id)
+    /// </summary>
+    public static void ImulRI(ref CodeBuffer code, VReg dst, int imm)
+    {
+        var d = Map(dst);
+        EmitRexSingle(ref code, true, d);
+        code.EmitByte(0x69);  // imul r64, r/m64, imm32
+        code.EmitByte(ModRM(0b11, (byte)d, (byte)d));  // dst is both dest and source
+        code.EmitInt32(imm);
     }
 
     /// <summary>
@@ -1431,6 +1485,97 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     public static void MovsxdRM(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)
     {
         Load32Signed(ref code, dst, baseReg, disp);
+    }
+
+    /// <summary>
+    /// Zero-extend byte register: dst = zero-extend(src low byte)
+    /// movzx r64, r8 (0x0F 0xB6 with ModRM mod=11)
+    /// </summary>
+    public static void MovzxByteReg(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        // Need REX for 64-bit destination or if using extended registers
+        EmitRex(ref code, true, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0xB6);  // MOVZX r64, r/m8
+        // ModRM: mod=11 (register), reg=dst, r/m=src
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
+    }
+
+    /// <summary>
+    /// Sign-extend byte register: dst = sign-extend(src low byte)
+    /// movsx r64, r8 (REX.W + 0x0F 0xBE with ModRM mod=11)
+    /// </summary>
+    public static void MovsxByteReg(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRex(ref code, true, d, s);  // REX.W for 64-bit destination
+        code.EmitByte(0x0F);
+        code.EmitByte(0xBE);  // MOVSX r64, r/m8
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
+    }
+
+    /// <summary>
+    /// Zero-extend word register: dst = zero-extend(src low word)
+    /// movzx r64, r16 (0x0F 0xB7 with ModRM mod=11)
+    /// </summary>
+    public static void MovzxWordReg(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRex(ref code, true, d, s);
+        code.EmitByte(0x0F);
+        code.EmitByte(0xB7);  // MOVZX r64, r/m16
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
+    }
+
+    /// <summary>
+    /// Sign-extend word register: dst = sign-extend(src low word)
+    /// movsx r64, r16 (REX.W + 0x0F 0xBF with ModRM mod=11)
+    /// </summary>
+    public static void MovsxWordReg(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRex(ref code, true, d, s);  // REX.W for 64-bit destination
+        code.EmitByte(0x0F);
+        code.EmitByte(0xBF);  // MOVSX r64, r/m16
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
+    }
+
+    /// <summary>
+    /// Sign-extend dword register: dst = sign-extend(src low dword)
+    /// movsxd r64, r32 (REX.W + 0x63 with ModRM mod=11)
+    /// </summary>
+    public static void MovsxdReg(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        EmitRex(ref code, true, d, s);  // REX.W for 64-bit destination
+        code.EmitByte(0x63);  // MOVSXD r64, r/m32
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
+    }
+
+    /// <summary>
+    /// 32-bit move (zero-extends to 64-bit): dst = src (low 32 bits)
+    /// mov r32, r32 (0x8B with ModRM mod=11, no REX.W)
+    /// </summary>
+    public static void MovRR32(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        // Only emit REX if we need extended registers (no REX.W - 32-bit operation)
+        if ((byte)d >= 8 || (byte)s >= 8)
+        {
+            byte rex = REX;
+            if ((byte)d >= 8) rex |= REX_R;
+            if ((byte)s >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x8B);  // MOV r32, r/m32
+        code.EmitByte((byte)(0xC0 | (((byte)d & 7) << 3) | ((byte)s & 7)));
     }
 
     /// <summary>

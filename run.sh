@@ -10,12 +10,30 @@ cd "$SCRIPT_DIR"
 ARCH="${ARCH:-x64}"
 BUILD_DIR="build/${ARCH}"
 IMG_FILE="${BUILD_DIR}/boot.img"
+TEST_DISK="${BUILD_DIR}/test.img"
 
 # Check for boot image
 if [ ! -f "$IMG_FILE" ]; then
     echo "Error: Boot image not found: $IMG_FILE"
     echo "Run 'make image' first"
     exit 1
+fi
+
+# Create test disk if it doesn't exist
+if [ ! -f "$TEST_DISK" ]; then
+    echo "Creating test disk image..."
+    # Create 32MB FAT32 disk image
+    dd if=/dev/zero of="$TEST_DISK" bs=1M count=32 status=none
+    mformat -i "$TEST_DISK" -F -v TESTDISK ::
+    # Create a test file
+    echo "Hello from ProtonOS test disk!" > /tmp/hello.txt
+    echo "This is a test file for virtio-blk driver testing." >> /tmp/hello.txt
+    mcopy -i "$TEST_DISK" /tmp/hello.txt ::/hello.txt
+    # Create a directory with more files
+    mmd -i "$TEST_DISK" ::/testdir
+    echo "File in subdirectory" > /tmp/subfile.txt
+    mcopy -i "$TEST_DISK" /tmp/subfile.txt ::/testdir/subfile.txt
+    echo "Test disk created: $TEST_DISK"
 fi
 
 # Find OVMF firmware
@@ -44,13 +62,15 @@ LOG_FILE="qemu.log"
 rm -f "$LOG_FILE"
 
 echo "OVMF: $OVMF"
-echo "Image: $IMG_FILE"
+echo "Boot image: $IMG_FILE"
+echo "Test disk: $TEST_DISK"
 echo ""
 echo "Serial output below (Ctrl+A, X to exit QEMU):"
 echo "=============================================="
 
 # Use tee to write serial output to both stdout and log file
 # NUMA configuration: 2 nodes, 256MB each, CPUs 0-1 on node 0, CPUs 2-3 on node 1
+# virtio-blk-pci with disable-legacy=on forces modern virtio 1.0+ mode
 qemu-system-x86_64 \
     -machine q35 \
     -cpu max \
@@ -63,8 +83,8 @@ qemu-system-x86_64 \
     -numa dist,src=0,dst=1,val=20 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF" \
     -drive format=raw,file="$IMG_FILE" \
-    -drive id=virtio-disk0,if=none,format=raw,file=/dev/null \
-    -device virtio-blk-pci,drive=virtio-disk0 \
+    -drive id=virtio-disk0,if=none,format=raw,file="$TEST_DISK" \
+    -device virtio-blk-pci,drive=virtio-disk0,disable-legacy=on \
     -serial mon:stdio \
     -display none \
     -no-reboot \
