@@ -63,6 +63,8 @@ qemu-system-x86_64 \
     -numa dist,src=0,dst=1,val=20 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF" \
     -drive format=raw,file="$IMG_FILE" \
+    -drive id=virtio-disk0,if=none,format=raw,file=/dev/null \
+    -device virtio-blk-pci,drive=virtio-disk0 \
     -serial mon:stdio \
     -display none \
     -no-reboot \

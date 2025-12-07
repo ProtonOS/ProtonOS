@@ -24,10 +24,18 @@ public static unsafe class Kernel
     private static byte* _ddkBytes;
     private static ulong _ddkSize;
 
+    // Driver assembly data
+    private static byte* _virtioDriverBytes;
+    private static ulong _virtioDriverSize;
+    private static byte* _virtioBlkDriverBytes;
+    private static ulong _virtioBlkDriverSize;
+
     // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
     private static uint _systemRuntimeId;
     private static uint _ddkId;
+    private static uint _virtioDriverId;
+    private static uint _virtioBlkDriverId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -190,6 +198,29 @@ public static unsafe class Kernel
             }
         }
 
+        // Register driver assemblies (depend on System.Runtime and DDK)
+        if (_virtioDriverBytes != null)
+        {
+            _virtioDriverId = AssemblyLoader.Load(_virtioDriverBytes, _virtioDriverSize);
+            if (_virtioDriverId != AssemblyLoader.InvalidAssemblyId)
+            {
+                DebugConsole.Write("[Kernel] Virtio driver registered with ID ");
+                DebugConsole.WriteDecimal(_virtioDriverId);
+                DebugConsole.WriteLine();
+            }
+        }
+
+        if (_virtioBlkDriverBytes != null)
+        {
+            _virtioBlkDriverId = AssemblyLoader.Load(_virtioBlkDriverBytes, _virtioBlkDriverSize);
+            if (_virtioBlkDriverId != AssemblyLoader.InvalidAssemblyId)
+            {
+                DebugConsole.Write("[Kernel] VirtioBlk driver registered with ID ");
+                DebugConsole.WriteDecimal(_virtioBlkDriverId);
+                DebugConsole.WriteLine();
+            }
+        }
+
         // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
         if (_testAssemblyBytes != null)
         {
@@ -221,6 +252,19 @@ public static unsafe class Kernel
 
         // Test IL JIT compiler (legacy tests - replaced by FullTest assembly)
         // Tests.TestILCompiler();
+
+        // Initialize DDK (Driver Development Kit)
+        RunDDKInit();
+
+        // Initialize kernel exports for PInvoke resolution
+        Runtime.KernelExportInit.Initialize();
+
+        // Initialize PCI subsystem and enumerate devices
+        Platform.PCI.Initialize();
+        Platform.PCI.EnumerateAndPrint();
+
+        // Bind drivers to detected PCI devices
+        BindDrivers();
 
         // Run FullTest assembly via JIT
         RunFullTestAssembly();
@@ -274,6 +318,23 @@ public static unsafe class Kernel
         else
         {
             DebugConsole.WriteLine("[Kernel] ProtonOS.DDK.dll not found (optional)");
+        }
+
+        // Load driver assemblies from /drivers/
+        _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
+        if (_virtioDriverBytes != null)
+        {
+            DebugConsole.Write("[Kernel] Virtio driver loaded, size ");
+            DebugConsole.WriteHex(_virtioDriverSize);
+            DebugConsole.WriteLine();
+        }
+
+        _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
+        if (_virtioBlkDriverBytes != null)
+        {
+            DebugConsole.Write("[Kernel] VirtioBlk driver loaded, size ");
+            DebugConsole.WriteHex(_virtioBlkDriverSize);
+            DebugConsole.WriteLine();
         }
 
         // Load FullTest.dll
@@ -575,5 +636,209 @@ public static unsafe class Kernel
         {
             DebugConsole.WriteLine("[FullTest] ERROR: JIT compilation failed");
         }
+    }
+
+    /// <summary>
+    /// Initialize the DDK via JIT compilation.
+    /// Finds DDKInit.Initialize() and executes it.
+    /// </summary>
+    private static void RunDDKInit()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Initializing DDK");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        if (_ddkId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[DDK] No DDK assembly loaded, skipping initialization");
+            return;
+        }
+
+        DebugConsole.Write("[DDK] Assembly ID: ");
+        DebugConsole.WriteDecimal(_ddkId);
+        DebugConsole.WriteLine();
+
+        // Find DDKInit type
+        uint ddkInitToken = AssemblyLoader.FindTypeDefByFullName(_ddkId, "ProtonOS.DDK", "DDKInit");
+        if (ddkInitToken == 0)
+        {
+            DebugConsole.WriteLine("[DDK] ERROR: Could not find ProtonOS.DDK.DDKInit type");
+            return;
+        }
+
+        DebugConsole.Write("[DDK] Found DDKInit type, token: 0x");
+        DebugConsole.WriteHex(ddkInitToken);
+        DebugConsole.WriteLine();
+
+        // Find Initialize method
+        uint initializeToken = AssemblyLoader.FindMethodDefByName(_ddkId, ddkInitToken, "Initialize");
+        if (initializeToken == 0)
+        {
+            DebugConsole.WriteLine("[DDK] ERROR: Could not find Initialize method");
+            return;
+        }
+
+        DebugConsole.Write("[DDK] Found Initialize method, token: 0x");
+        DebugConsole.WriteHex(initializeToken);
+        DebugConsole.WriteLine();
+
+        // JIT compile the method
+        DebugConsole.WriteLine("[DDK] JIT compiling DDKInit.Initialize...");
+
+        var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_ddkId, initializeToken);
+        if (jitResult.Success)
+        {
+            DebugConsole.Write("[DDK] JIT compilation successful, code at 0x");
+            DebugConsole.WriteHex((ulong)jitResult.CodeAddress);
+            DebugConsole.WriteLine();
+
+            // Execute the compiled method (returns bool)
+            DebugConsole.WriteLine("[DDK] Executing DDKInit.Initialize()...");
+
+            var funcPtr = (delegate* unmanaged<bool>)jitResult.CodeAddress;
+            bool success = funcPtr();
+
+            if (success)
+            {
+                DebugConsole.WriteLine("[DDK] Initialization successful");
+            }
+            else
+            {
+                DebugConsole.WriteLine("[DDK] Initialization failed");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[DDK] ERROR: JIT compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Bind drivers to detected PCI devices.
+    /// Iterates through PCI devices and tries to match them with loaded drivers.
+    /// </summary>
+    private static void BindDrivers()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[Drivers] Binding drivers to PCI devices...");
+
+        if (_virtioBlkDriverId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[Drivers] No VirtioBlk driver loaded, skipping binding");
+            return;
+        }
+
+        // Find VirtioBlkEntry type
+        uint virtioBlkEntryToken = AssemblyLoader.FindTypeDefByFullName(
+            _virtioBlkDriverId, "ProtonOS.Drivers.Storage.VirtioBlk", "VirtioBlkEntry");
+
+        if (virtioBlkEntryToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find VirtioBlkEntry type");
+            return;
+        }
+
+        // Find Probe method
+        uint probeToken = AssemblyLoader.FindMethodDefByName(_virtioBlkDriverId, virtioBlkEntryToken, "Probe");
+        if (probeToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find Probe method");
+            return;
+        }
+
+        // Find Bind method
+        uint bindToken = AssemblyLoader.FindMethodDefByName(_virtioBlkDriverId, virtioBlkEntryToken, "Bind");
+        if (bindToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find Bind method");
+            return;
+        }
+
+        DebugConsole.Write("[Drivers] Found VirtioBlkEntry type (0x");
+        DebugConsole.WriteHex(virtioBlkEntryToken);
+        DebugConsole.Write("), Probe (0x");
+        DebugConsole.WriteHex(probeToken);
+        DebugConsole.Write("), Bind (0x");
+        DebugConsole.WriteHex(bindToken);
+        DebugConsole.WriteLine(")");
+
+        // JIT compile Probe method
+        DebugConsole.WriteLine("[Drivers] JIT compiling VirtioBlkEntry.Probe...");
+        var probeResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioBlkDriverId, probeToken);
+        if (!probeResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile Probe");
+            return;
+        }
+
+        // JIT compile Bind method
+        DebugConsole.WriteLine("[Drivers] JIT compiling VirtioBlkEntry.Bind...");
+        var bindResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioBlkDriverId, bindToken);
+        if (!bindResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile Bind");
+            return;
+        }
+
+        DebugConsole.Write("[Drivers] Probe at 0x");
+        DebugConsole.WriteHex((ulong)probeResult.CodeAddress);
+        DebugConsole.Write(", Bind at 0x");
+        DebugConsole.WriteHex((ulong)bindResult.CodeAddress);
+        DebugConsole.WriteLine();
+
+        // Create function pointers
+        var probeFunc = (delegate* unmanaged<ushort, ushort, bool>)probeResult.CodeAddress;
+        var bindFunc = (delegate* unmanaged<byte, byte, byte, bool>)bindResult.CodeAddress;
+
+        // Iterate through detected PCI devices
+        int deviceCount = Platform.PCI.DeviceCount;
+        int boundCount = 0;
+
+        DebugConsole.Write("[Drivers] Checking ");
+        DebugConsole.WriteDecimal(deviceCount);
+        DebugConsole.WriteLine(" PCI device(s)...");
+
+        for (int i = 0; i < deviceCount; i++)
+        {
+            var device = Platform.PCI.GetDevice(i);
+            if (device == null)
+                continue;
+
+            // Try VirtioBlk driver
+            bool probeSuccess = probeFunc(device->VendorId, device->DeviceId);
+
+            if (probeSuccess)
+            {
+                DebugConsole.Write("[Drivers] VirtioBlk matched ");
+                DebugConsole.WriteHex(device->Bus);
+                DebugConsole.Write(":");
+                DebugConsole.WriteHex(device->Device);
+                DebugConsole.Write(".");
+                DebugConsole.WriteHex(device->Function);
+                DebugConsole.Write(" (Vendor:");
+                DebugConsole.WriteHex(device->VendorId);
+                DebugConsole.Write(" Device:");
+                DebugConsole.WriteHex(device->DeviceId);
+                DebugConsole.WriteLine(")");
+
+                // Bind the driver
+                bool bindSuccess = bindFunc(device->Bus, device->Device, device->Function);
+                if (bindSuccess)
+                {
+                    DebugConsole.WriteLine("[Drivers]   Bind successful");
+                    boundCount++;
+                }
+                else
+                {
+                    DebugConsole.WriteLine("[Drivers]   Bind failed");
+                }
+            }
+        }
+
+        DebugConsole.Write("[Drivers] Bound ");
+        DebugConsole.WriteDecimal(boundCount);
+        DebugConsole.WriteLine(" driver(s)");
     }
 }

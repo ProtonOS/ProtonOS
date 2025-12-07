@@ -1,0 +1,187 @@
+// ProtonOS kernel - Kernel Export Initialization
+// Registers all kernel exports for PInvoke resolution.
+
+using System;
+using ProtonOS.Exports.DDK;
+
+namespace ProtonOS.Runtime;
+
+/// <summary>
+/// Initializes kernel exports at startup.
+/// </summary>
+public static unsafe class KernelExportInit
+{
+    /// <summary>
+    /// Initialize and register all kernel exports.
+    /// </summary>
+    public static void Initialize()
+    {
+        KernelExportRegistry.Initialize();
+
+        // Register Port I/O exports
+        RegisterPortIOExports();
+
+        // Register Memory exports
+        RegisterMemoryExports();
+
+        // Register PCI exports
+        RegisterPCIExports();
+
+        KernelExportRegistry.DebugPrint();
+    }
+
+    private static void RegisterPortIOExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_InByte
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x49; n[8]=0x6E; n[9]=0x42; n[10]=0x79; n[11]=0x74; n[12]=0x65; n[13]=0; // InByte
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, byte>)&PortIOExports.InByte);
+
+        // Kernel_OutByte
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x4F; n[8]=0x75; n[9]=0x74; n[10]=0x42; n[11]=0x79; n[12]=0x74; n[13]=0x65; n[14]=0; // OutByte
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, byte, void>)&PortIOExports.OutByte);
+
+        // Kernel_InWord
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x49; n[8]=0x6E; n[9]=0x57; n[10]=0x6F; n[11]=0x72; n[12]=0x64; n[13]=0; // InWord
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, ushort>)&PortIOExports.InWord);
+
+        // Kernel_OutWord
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x4F; n[8]=0x75; n[9]=0x74; n[10]=0x57; n[11]=0x6F; n[12]=0x72; n[13]=0x64; n[14]=0; // OutWord
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, ushort, void>)&PortIOExports.OutWord);
+
+        // Kernel_InDword
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x49; n[8]=0x6E; n[9]=0x44; n[10]=0x77; n[11]=0x6F; n[12]=0x72; n[13]=0x64; n[14]=0; // InDword
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, uint>)&PortIOExports.InDword);
+
+        // Kernel_OutDword
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x4F; n[8]=0x75; n[9]=0x74; n[10]=0x44; n[11]=0x77; n[12]=0x6F; n[13]=0x72; n[14]=0x64; n[15]=0; // OutDword
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, uint, void>)&PortIOExports.OutDword);
+    }
+
+    private static void RegisterMemoryExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_AllocatePage
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x41; n[8]=0x6C; n[9]=0x6C; n[10]=0x6F; n[11]=0x63; n[12]=0x61; n[13]=0x74; n[14]=0x65; // Allocate
+        n[15]=0x50; n[16]=0x61; n[17]=0x67; n[18]=0x65; n[19]=0; // Page
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong>)&MemoryExports.AllocatePage);
+
+        // Kernel_AllocatePages
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x41; n[8]=0x6C; n[9]=0x6C; n[10]=0x6F; n[11]=0x63; n[12]=0x61; n[13]=0x74; n[14]=0x65;
+        n[15]=0x50; n[16]=0x61; n[17]=0x67; n[18]=0x65; n[19]=0x73; n[20]=0; // Pages
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong>)&MemoryExports.AllocatePages);
+
+        // Kernel_FreePage
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x46; n[8]=0x72; n[9]=0x65; n[10]=0x65; n[11]=0x50; n[12]=0x61; n[13]=0x67; n[14]=0x65; n[15]=0; // FreePage
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, void>)&MemoryExports.FreePage);
+
+        // Kernel_FreePages
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x46; n[8]=0x72; n[9]=0x65; n[10]=0x65; n[11]=0x50; n[12]=0x61; n[13]=0x67; n[14]=0x65; n[15]=0x73; n[16]=0; // FreePages
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong, void>)&MemoryExports.FreePages);
+
+        // Kernel_PhysToVirt
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x68; n[9]=0x79; n[10]=0x73; n[11]=0x54; n[12]=0x6F; n[13]=0x56; n[14]=0x69; n[15]=0x72; n[16]=0x74; n[17]=0; // PhysToVirt
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong>)&MemoryExports.PhysToVirt);
+
+        // Kernel_VirtToPhys
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x56; n[8]=0x69; n[9]=0x72; n[10]=0x74; n[11]=0x54; n[12]=0x6F; n[13]=0x50; n[14]=0x68; n[15]=0x79; n[16]=0x73; n[17]=0; // VirtToPhys
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong>)&MemoryExports.VirtToPhys);
+
+        // Kernel_MapMMIO
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x4D; n[8]=0x61; n[9]=0x70; n[10]=0x4D; n[11]=0x4D; n[12]=0x49; n[13]=0x4F; n[14]=0; // MapMMIO
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong, ulong>)&MemoryExports.MapMMIO);
+
+        // Kernel_UnmapMMIO
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x55; n[8]=0x6E; n[9]=0x6D; n[10]=0x61; n[11]=0x70; n[12]=0x4D; n[13]=0x4D; n[14]=0x49; n[15]=0x4F; n[16]=0; // UnmapMMIO
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong, void>)&MemoryExports.UnmapMMIO);
+    }
+
+    private static void RegisterPCIExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_PciReadConfig32
+        // "Kernel_PciReadConfig32" = 4B 65 72 6E 65 6C 5F 50 63 69 52 65 61 64 43 6F 6E 66 69 67 33 32
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x52; n[11]=0x65; n[12]=0x61; n[13]=0x64; // PciRead
+        n[14]=0x43; n[15]=0x6F; n[16]=0x6E; n[17]=0x66; n[18]=0x69; n[19]=0x67; // Config
+        n[20]=0x33; n[21]=0x32; n[22]=0; // 32
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, uint>)&PCIExports.ReadConfig32);
+
+        // Kernel_PciReadConfig16
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x52; n[11]=0x65; n[12]=0x61; n[13]=0x64;
+        n[14]=0x43; n[15]=0x6F; n[16]=0x6E; n[17]=0x66; n[18]=0x69; n[19]=0x67;
+        n[20]=0x31; n[21]=0x36; n[22]=0; // 16
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, ushort>)&PCIExports.ReadConfig16);
+
+        // Kernel_PciReadConfig8
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x52; n[11]=0x65; n[12]=0x61; n[13]=0x64;
+        n[14]=0x43; n[15]=0x6F; n[16]=0x6E; n[17]=0x66; n[18]=0x69; n[19]=0x67;
+        n[20]=0x38; n[21]=0; // 8
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, byte>)&PCIExports.ReadConfig8);
+
+        // Kernel_PciWriteConfig32
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x57; n[11]=0x72; n[12]=0x69; n[13]=0x74; n[14]=0x65; // PciWrite
+        n[15]=0x43; n[16]=0x6F; n[17]=0x6E; n[18]=0x66; n[19]=0x69; n[20]=0x67; // Config
+        n[21]=0x33; n[22]=0x32; n[23]=0; // 32
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, uint, void>)&PCIExports.WriteConfig32);
+
+        // Kernel_PciWriteConfig16
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x57; n[11]=0x72; n[12]=0x69; n[13]=0x74; n[14]=0x65;
+        n[15]=0x43; n[16]=0x6F; n[17]=0x6E; n[18]=0x66; n[19]=0x69; n[20]=0x67;
+        n[21]=0x31; n[22]=0x36; n[23]=0; // 16
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, ushort, void>)&PCIExports.WriteConfig16);
+
+        // Kernel_PciWriteConfig8
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x57; n[11]=0x72; n[12]=0x69; n[13]=0x74; n[14]=0x65;
+        n[15]=0x43; n[16]=0x6F; n[17]=0x6E; n[18]=0x66; n[19]=0x69; n[20]=0x67;
+        n[21]=0x38; n[22]=0; // 8
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, byte, byte, void>)&PCIExports.WriteConfig8);
+
+        // Kernel_PciGetBar
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x47; n[11]=0x65; n[12]=0x74; // PciGet
+        n[13]=0x42; n[14]=0x61; n[15]=0x72; n[16]=0; // Bar
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, int, uint>)&PCIExports.GetBar);
+
+        // Kernel_PciGetBarSize
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x47; n[11]=0x65; n[12]=0x74;
+        n[13]=0x42; n[14]=0x61; n[15]=0x72; n[16]=0x53; n[17]=0x69; n[18]=0x7A; n[19]=0x65; n[20]=0; // BarSize
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, int, uint>)&PCIExports.GetBarSize);
+
+        // Kernel_PciEnableMemorySpace
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x45; n[11]=0x6E; n[12]=0x61; n[13]=0x62; n[14]=0x6C; n[15]=0x65; // PciEnable
+        n[16]=0x4D; n[17]=0x65; n[18]=0x6D; n[19]=0x6F; n[20]=0x72; n[21]=0x79; // Memory
+        n[22]=0x53; n[23]=0x70; n[24]=0x61; n[25]=0x63; n[26]=0x65; n[27]=0; // Space
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, void>)&PCIExports.EnableMemorySpace);
+
+        // Kernel_PciEnableBusMaster
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x45; n[11]=0x6E; n[12]=0x61; n[13]=0x62; n[14]=0x6C; n[15]=0x65;
+        n[16]=0x42; n[17]=0x75; n[18]=0x73; n[19]=0x4D; n[20]=0x61; n[21]=0x73; n[22]=0x74; n[23]=0x65; n[24]=0x72; n[25]=0; // BusMaster
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, void>)&PCIExports.EnableBusMaster);
+    }
+}

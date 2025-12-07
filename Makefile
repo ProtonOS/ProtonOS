@@ -69,8 +69,17 @@ SYSTEM_RUNTIME_DLL := $(BUILD_DIR)/System.Runtime.dll
 DDK_DIR := src/ddk
 DDK_DLL := $(BUILD_DIR)/ProtonOS.DDK.dll
 
+# Driver directories
+DRIVERS_DIR := src/drivers
+VIRTIO_DIR := $(DRIVERS_DIR)/shared/virtio
+VIRTIO_BLK_DIR := $(DRIVERS_DIR)/shared/storage/virtio-blk
+
+# Driver DLLs
+VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
+VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
+
 # Targets
-.PHONY: all clean native kernel test systemruntime ddk image run
+.PHONY: all clean native kernel test systemruntime ddk drivers image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -115,6 +124,20 @@ $(DDK_DLL): $(DDK_SRC) $(DDK_DIR)/DDK.csproj $(SYSTEM_RUNTIME_DLL) | $(BUILD_DIR
 
 ddk: $(DDK_DLL)
 
+# Build Virtio common library
+VIRTIO_SRC := $(call rwildcard,$(VIRTIO_DIR),*.cs)
+$(VIRTIO_DLL): $(VIRTIO_SRC) $(VIRTIO_DIR)/Virtio.csproj $(DDK_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.Drivers.Virtio"
+	dotnet build $(VIRTIO_DIR)/Virtio.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+# Build Virtio-blk driver
+VIRTIO_BLK_SRC := $(call rwildcard,$(VIRTIO_BLK_DIR),*.cs)
+$(VIRTIO_BLK_DLL): $(VIRTIO_BLK_SRC) $(VIRTIO_BLK_DIR)/VirtioBlk.csproj $(VIRTIO_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.Drivers.VirtioBlk"
+	dotnet build $(VIRTIO_BLK_DIR)/VirtioBlk.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL)
+
 # Link UEFI executable
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
@@ -122,16 +145,19 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL) $(DDK_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
+	mmd -i $(BUILD_DIR)/boot.img ::/drivers
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(SYSTEM_RUNTIME_DLL) ::/System.Runtime.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
+	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

@@ -736,7 +736,13 @@ public static unsafe class AssemblyLoader
         switch (tableId)
         {
             case 0x02:  // TypeDef - look up in this assembly's registry
-                return asm->Types.Lookup(token);
+            {
+                MethodTable* mt = asm->Types.Lookup(token);
+                if (mt != null)
+                    return mt;
+                // Not registered yet - create on-demand
+                return CreateTypeDefMethodTable(asm, token);
+            }
 
             case 0x01:  // TypeRef - resolve cross-assembly
                 return ResolveTypeRef(asm, token);
@@ -746,6 +752,191 @@ public static unsafe class AssemblyLoader
 
             default:
                 return null;
+        }
+    }
+
+    /// <summary>
+    /// Create a MethodTable on-demand for a TypeDef in a JIT-compiled assembly.
+    /// This handles types that weren't pre-registered during assembly loading.
+    /// </summary>
+    private static MethodTable* CreateTypeDefMethodTable(LoadedAssembly* asm, uint token)
+    {
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0 || rowId > asm->Tables.RowCounts[(int)MetadataTableId.TypeDef])
+            return null;
+
+        // Get type metadata
+        uint typeDefFlags = MetadataReader.GetTypeDefFlags(ref asm->Tables, ref asm->Sizes, rowId);
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, rowId);
+
+        // Check if it's a value type (extends System.ValueType or System.Enum)
+        bool isValueType = false;
+        bool isInterface = (typeDefFlags & 0x00000020) != 0;  // tdInterface
+
+        if (!isInterface && extendsIdx.RowId != 0)
+        {
+            // Check if extends System.ValueType or System.Enum
+            isValueType = IsValueTypeBase(asm, extendsIdx);
+        }
+
+        // Compute instance size from fields
+        uint instanceSize = ComputeInstanceSize(asm, rowId, isValueType);
+
+        // Allocate MethodTable (just the header, no vtable for now)
+        MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        if (mt == null)
+            return null;
+
+        // Initialize the MethodTable
+        mt->_usComponentSize = 0;
+        ushort flags = 0;
+        if (isInterface)
+            flags |= (ushort)(MTFlags.IsInterface >> 16);
+        if (isValueType)
+            flags |= (ushort)(MTFlags.IsValueType >> 16);
+        mt->_usFlags = flags;
+        mt->_uBaseSize = instanceSize;
+        mt->_relatedType = null;
+        mt->_usNumVtableSlots = 0;
+        mt->_usNumInterfaces = 0;
+        mt->_uHashCode = token;  // Use token as hash for now
+
+        // Register in the assembly's type registry
+        asm->Types.Register(token, mt);
+
+        return mt;
+    }
+
+    /// <summary>
+    /// Check if a TypeDefOrRef coded index refers to System.ValueType or System.Enum.
+    /// </summary>
+    private static bool IsValueTypeBase(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // TypeDefOrRef: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            // Get the TypeRef name and namespace
+            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            // Check for System.ValueType or System.Enum
+            if (ns != null && name != null)
+            {
+                if (IsSystemNamespace(ns))
+                {
+                    if (IsValueTypeName(name) || IsEnumName(name))
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Compute instance size for a type from its fields.
+    /// </summary>
+    private static uint ComputeInstanceSize(LoadedAssembly* asm, uint typeDefRow, bool isValueType)
+    {
+        // For reference types, start with pointer size (for MethodTable*)
+        uint size = isValueType ? 0u : 8u;
+
+        // Get field range for this type
+        uint fieldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint fieldDefCount = asm->Tables.RowCounts[(int)MetadataTableId.Field];
+        uint fieldEnd;
+
+        if (typeDefRow < typeDefCount)
+        {
+            fieldEnd = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        }
+        else
+        {
+            fieldEnd = fieldDefCount + 1;
+        }
+
+        // Sum up instance field sizes
+        for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
+        {
+            // Get field flags
+            ushort fieldFlags = MetadataReader.GetFieldFlags(ref asm->Tables, ref asm->Sizes, fieldRow);
+
+            // Skip static fields (fdStatic = 0x0010)
+            if ((fieldFlags & 0x0010) != 0)
+                continue;
+
+            // Get field signature to determine size
+            uint sigIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, fieldRow);
+            byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+            if (sig != null && sigLen >= 2)
+            {
+                // Field signature: FIELD (0x06), followed by type
+                if (sig[0] == 0x06)
+                {
+                    size += GetTypeSize(sig[1]);
+                }
+            }
+            else
+            {
+                // Unknown field, assume pointer size
+                size += 8;
+            }
+        }
+
+        // Minimum size for reference types is pointer size + 8 (sync block + MT ptr)
+        if (!isValueType && size < 16)
+            size = 16;
+
+        // Align to 8 bytes
+        size = (size + 7) & ~7u;
+
+        return size;
+    }
+
+    /// <summary>
+    /// Get the size of a primitive type from its element type byte.
+    /// </summary>
+    private static uint GetTypeSize(byte elementType)
+    {
+        switch (elementType)
+        {
+            case 0x01:  // Void
+                return 0;
+            case 0x02:  // Boolean
+            case 0x04:  // I1
+            case 0x05:  // U1
+                return 1;
+            case 0x03:  // Char
+            case 0x06:  // I2
+            case 0x07:  // U2
+                return 2;
+            case 0x08:  // I4
+            case 0x09:  // U4
+            case 0x0C:  // R4
+                return 4;
+            case 0x0A:  // I8
+            case 0x0B:  // U8
+            case 0x0D:  // R8
+            case 0x18:  // I (IntPtr)
+            case 0x19:  // U (UIntPtr)
+            case 0x0E:  // String
+            case 0x0F:  // Ptr
+            case 0x10:  // ByRef
+            case 0x1C:  // Object
+            case 0x12:  // Class
+            case 0x14:  // Array
+            case 0x1D:  // SzArray
+                return 8;
+            case 0x11:  // ValueType
+            case 0x15:  // GenericInst
+                // These need more complex handling - assume 8 for now
+                return 8;
+            default:
+                return 8;  // Default to pointer size
         }
     }
 
@@ -766,6 +957,18 @@ public static unsafe class AssemblyLoader
         // ResolutionScope points to Module, ModuleRef, AssemblyRef, or TypeRef
         if (resScope.Table == MetadataTableId.AssemblyRef)
         {
+            // Get the type name and namespace from the TypeRef
+            uint nameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+            byte* name = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
+
+            // Check for well-known primitive types that are type forwarders in System.Runtime
+            // These types are defined in korlib (AOT kernel) and need special handling
+            MethodTable* wellKnownMT = TryResolveWellKnownType(name, ns);
+            if (wellKnownMT != null)
+                return wellKnownMT;
+
             // Find the target assembly
             uint targetAsmId = ResolveAssemblyRef(sourceAsm, resScope.RowId);
             if (targetAsmId == InvalidAssemblyId)
@@ -775,16 +978,148 @@ public static unsafe class AssemblyLoader
             if (targetAsm == null)
                 return null;
 
-            // Get the type name and namespace from the TypeRef
-            uint nameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
-            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
-
             // Find the matching TypeDef in the target assembly
             return FindTypeDefByName(targetAsm, nameIdx, nsIdx, &sourceAsm->Metadata);
         }
 
         // Other resolution scopes not yet implemented
         return null;
+    }
+
+    /// <summary>
+    /// Resolve a TypeRef to a TypeDef token and target assembly without requiring a MethodTable.
+    /// This is used for JIT-compiled assemblies where types don't have pre-allocated MethodTables.
+    /// </summary>
+    private static bool ResolveTypeRefToTypeDef(LoadedAssembly* sourceAsm, uint typeRefRow,
+                                                 out LoadedAssembly* targetAsm, out uint typeDefToken)
+    {
+        targetAsm = null;
+        typeDefToken = 0;
+
+        if (typeRefRow == 0)
+            return false;
+
+        // Get resolution scope (coded index: ResolutionScope)
+        CodedIndex resScope = MetadataReader.GetTypeRefResolutionScope(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, typeRefRow);
+
+        // ResolutionScope points to Module, ModuleRef, AssemblyRef, or TypeRef
+        if (resScope.Table == MetadataTableId.AssemblyRef)
+        {
+            // Get the type name and namespace from the TypeRef BEFORE resolving assembly
+            uint nameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeRefRow);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeRefRow);
+            byte* typeName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+            byte* typeNs = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
+
+            // Debug: Print what we're looking up
+            DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
+            DebugConsole.WriteDecimal(typeRefRow);
+            DebugConsole.Write(" asmRef=");
+            DebugConsole.WriteDecimal(resScope.RowId);
+            DebugConsole.Write(" type=");
+            if (typeNs != null && typeNs[0] != 0)
+            {
+                for (int i = 0; typeNs[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)typeNs[i]);
+                DebugConsole.WriteChar('.');
+            }
+            if (typeName != null)
+            {
+                for (int i = 0; typeName[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)typeName[i]);
+            }
+            DebugConsole.WriteLine();
+
+            // Find the target assembly
+            uint targetAsmId = ResolveAssemblyRef(sourceAsm, resScope.RowId);
+            if (targetAsmId == InvalidAssemblyId)
+                return false;
+
+            targetAsm = GetAssembly(targetAsmId);
+            if (targetAsm == null)
+                return false;
+
+            // Get the name strings
+            byte* targetName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+            byte* targetNs = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
+
+            if (targetName == null)
+                return false;
+
+            // Find the matching TypeDef in the target assembly by name
+            uint typeDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+            // Debug: Show TypeDef search parameters
+            DebugConsole.Write("[AsmLoader] Searching asm ");
+            DebugConsole.WriteDecimal(targetAsm->AssemblyId);
+            DebugConsole.Write(" TypeDef table (");
+            DebugConsole.WriteDecimal(typeDefCount);
+            DebugConsole.Write(" rows) for ");
+            if (targetNs != null && targetNs[0] != 0)
+            {
+                for (int i = 0; targetNs[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)targetNs[i]);
+                DebugConsole.WriteChar('.');
+            }
+            if (targetName != null)
+            {
+                for (int i = 0; targetName[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)targetName[i]);
+            }
+            DebugConsole.WriteLine();
+
+            for (uint row = 1; row <= typeDefCount; row++)
+            {
+                uint defNameIdx = MetadataReader.GetTypeDefName(ref targetAsm->Tables, ref targetAsm->Sizes, row);
+                uint defNsIdx = MetadataReader.GetTypeDefNamespace(ref targetAsm->Tables, ref targetAsm->Sizes, row);
+
+                byte* defName = MetadataReader.GetString(ref targetAsm->Metadata, defNameIdx);
+                byte* defNs = MetadataReader.GetString(ref targetAsm->Metadata, defNsIdx);
+
+                // Compare names
+                if (!StringsEqual(targetName, defName))
+                    continue;
+
+                // Compare namespaces (both null/empty is a match)
+                bool nsMatch = false;
+                if ((targetNs == null || targetNs[0] == 0) && (defNs == null || defNs[0] == 0))
+                    nsMatch = true;
+                else if (targetNs != null && defNs != null && StringsEqual(targetNs, defNs))
+                    nsMatch = true;
+
+                if (nsMatch)
+                {
+                    typeDefToken = 0x02000000 | row;
+                    return true;
+                }
+            }
+
+            // Debug: print what type wasn't found
+            DebugConsole.Write("[AsmLoader] TypeRef not found: ");
+            if (targetNs != null && targetNs[0] != 0)
+            {
+                for (int i = 0; targetNs[i] != 0 && i < 64; i++)
+                    DebugConsole.WriteChar((char)targetNs[i]);
+                DebugConsole.WriteChar('.');
+            }
+            if (targetName != null)
+            {
+                for (int i = 0; targetName[i] != 0 && i < 64; i++)
+                    DebugConsole.WriteChar((char)targetName[i]);
+            }
+            DebugConsole.Write(" in ");
+            if (targetAsm->Name != null)
+            {
+                for (int i = 0; targetAsm->Name[i] != 0 && i < 64; i++)
+                    DebugConsole.WriteChar((char)targetAsm->Name[i]);
+            }
+            DebugConsole.WriteLine();
+            return false;  // Type not found in target assembly
+        }
+
+        // Other resolution scopes not yet implemented
+        return false;
     }
 
     /// <summary>
@@ -799,7 +1134,13 @@ public static unsafe class AssemblyLoader
         if (assemblyRefRow <= sourceAsm->DependencyCount &&
             sourceAsm->Dependencies[assemblyRefRow - 1] != InvalidAssemblyId)
         {
-            return sourceAsm->Dependencies[assemblyRefRow - 1];
+            uint cachedId = sourceAsm->Dependencies[assemblyRefRow - 1];
+            DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
+            DebugConsole.WriteDecimal(assemblyRefRow);
+            DebugConsole.Write(" -> cached asm ");
+            DebugConsole.WriteDecimal(cachedId);
+            DebugConsole.WriteLine();
+            return cachedId;
         }
 
         // Get the assembly name from AssemblyRef table
@@ -809,16 +1150,25 @@ public static unsafe class AssemblyLoader
         if (name == null)
             return InvalidAssemblyId;
 
+        // Debug: Print what we're looking up
+        DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
+        DebugConsole.WriteDecimal(assemblyRefRow);
+        DebugConsole.Write(" name='");
+        for (int i = 0; name[i] != 0 && i < 32; i++)
+            DebugConsole.WriteChar((char)name[i]);
+        DebugConsole.Write("'");
+
         // Find loaded assembly by name
         LoadedAssembly* target = FindByName(name);
         if (target == null)
         {
-            DebugConsole.Write("[AsmLoader] AssemblyRef not found: ");
-            for (int i = 0; name[i] != 0 && i < 64; i++)
-                DebugConsole.WriteChar((char)name[i]);
-            DebugConsole.WriteLine();
+            DebugConsole.WriteLine(" -> NOT FOUND!");
             return InvalidAssemblyId;
         }
+
+        DebugConsole.Write(" -> found asm ");
+        DebugConsole.WriteDecimal(target->AssemblyId);
+        DebugConsole.WriteLine();
 
         // Cache the resolution
         if (assemblyRefRow <= LoadedAssembly.MaxDependencies)
@@ -870,7 +1220,11 @@ public static unsafe class AssemblyLoader
             {
                 // Found it - return the MethodTable from the type registry
                 uint typeDefToken = 0x02000000 | row;
-                return asm->Types.Lookup(typeDefToken);
+                MethodTable* mt = asm->Types.Lookup(typeDefToken);
+                if (mt != null)
+                    return mt;
+                // Type not registered yet - create on-demand for JIT assemblies
+                return CreateTypeDefMethodTable(asm, typeDefToken);
             }
         }
 
@@ -906,6 +1260,26 @@ public static unsafe class AssemblyLoader
     {
         return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
                ns[4] == 'e' && ns[5] == 'm' && ns[6] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is "ValueType".
+    /// </summary>
+    private static bool IsValueTypeName(byte* name)
+    {
+        // "ValueType" = V a l u e T y p e \0
+        return name[0] == 'V' && name[1] == 'a' && name[2] == 'l' && name[3] == 'u' &&
+               name[4] == 'e' && name[5] == 'T' && name[6] == 'y' && name[7] == 'p' &&
+               name[8] == 'e' && name[9] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is "Enum".
+    /// </summary>
+    private static bool IsEnumName(byte* name)
+    {
+        // "Enum" = E n u m \0
+        return name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0;
     }
 
     /// <summary>
@@ -1055,30 +1429,36 @@ public static unsafe class AssemblyLoader
         if (classRef.Table == MetadataTableId.TypeRef)
         {
             // MemberRef in another assembly via TypeRef
-            uint typeRefToken = 0x01000000 | classRef.RowId;
-            MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
-            if (mt == null)
-                return false;
-
-            // Find which assembly this MethodTable belongs to
-            // We need to search all assemblies' type registries
-            for (int i = 0; i < MaxAssemblies; i++)
+            // Resolve TypeRef directly to TypeDef token and target assembly
+            // (don't require MethodTable* for JIT-compiled assemblies)
+            if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
             {
-                if (!_assemblies[i].IsLoaded)
-                    continue;
+                // Fallback: try MethodTable-based resolution for AOT types
+                uint typeRefToken = 0x01000000 | classRef.RowId;
+                MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
+                if (mt == null)
+                    return false;
 
-                // Check if this assembly owns the MethodTable
-                for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                // Find which assembly this MethodTable belongs to
+                // We need to search all assemblies' type registries
+                for (int i = 0; i < MaxAssemblies; i++)
                 {
-                    if (_assemblies[i].Types.Entries[j].MT == mt)
+                    if (!_assemblies[i].IsLoaded)
+                        continue;
+
+                    // Check if this assembly owns the MethodTable
+                    for (int j = 0; j < _assemblies[i].Types.Count; j++)
                     {
-                        targetAsm = &_assemblies[i];
-                        typeDefToken = _assemblies[i].Types.Entries[j].Token;
-                        break;
+                        if (_assemblies[i].Types.Entries[j].MT == mt)
+                        {
+                            targetAsm = &_assemblies[i];
+                            typeDefToken = _assemblies[i].Types.Entries[j].Token;
+                            break;
+                        }
                     }
+                    if (targetAsm != null)
+                        break;
                 }
-                if (targetAsm != null)
-                    break;
             }
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
@@ -1164,6 +1544,17 @@ public static unsafe class AssemblyLoader
         CodedIndex classRef = MetadataReader.GetMemberRefClass(
             ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
 
+        // Debug: Print MemberRef resolution info
+        DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
+        DebugConsole.WriteHex(memberRefToken);
+        DebugConsole.Write(" from asm ");
+        DebugConsole.WriteDecimal(sourceAsmId);
+        DebugConsole.Write(", class table=");
+        DebugConsole.WriteDecimal((uint)classRef.Table);
+        DebugConsole.Write(" row=");
+        DebugConsole.WriteDecimal(classRef.RowId);
+        DebugConsole.WriteLine();
+
         // Get member name and signature
         uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
         uint sigIdx = MetadataReader.GetMemberRefSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
@@ -1186,28 +1577,43 @@ public static unsafe class AssemblyLoader
         if (classRef.Table == MetadataTableId.TypeRef)
         {
             // MemberRef in another assembly via TypeRef
-            uint typeRefToken = 0x01000000 | classRef.RowId;
-            MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
-            if (mt == null)
-                return false;
-
-            // Find which assembly this MethodTable belongs to
-            for (int i = 0; i < MaxAssemblies; i++)
+            // Resolve TypeRef directly to TypeDef token and target assembly
+            // (don't require MethodTable* for JIT-compiled assemblies)
+            if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
             {
-                if (!_assemblies[i].IsLoaded)
-                    continue;
-
-                for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                // Fallback: try MethodTable-based resolution for AOT types (e.g., System.Int32)
+                uint typeRefToken = 0x01000000 | classRef.RowId;
+                MethodTable* mt = ResolveTypeRef(sourceAsm, typeRefToken);
+                if (mt == null)
                 {
-                    if (_assemblies[i].Types.Entries[j].MT == mt)
-                    {
-                        targetAsm = &_assemblies[i];
-                        typeDefToken = _assemblies[i].Types.Entries[j].Token;
-                        break;
-                    }
+                    // Debug: print the method name that failed to resolve
+                    DebugConsole.Write("[AsmLoader] Failed MemberRef - method name: ");
+                    for (int i = 0; memberName[i] != 0 && i < 64; i++)
+                        DebugConsole.WriteChar((char)memberName[i]);
+                    DebugConsole.WriteLine();
+                    return false;
                 }
-                if (targetAsm != null)
-                    break;
+
+                // Find which assembly this MethodTable belongs to
+                // We need to search all assemblies' type registries
+                for (int i = 0; i < MaxAssemblies; i++)
+                {
+                    if (!_assemblies[i].IsLoaded)
+                        continue;
+
+                    // Check if this assembly owns the MethodTable
+                    for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                    {
+                        if (_assemblies[i].Types.Entries[j].MT == mt)
+                        {
+                            targetAsm = &_assemblies[i];
+                            typeDefToken = _assemblies[i].Types.Entries[j].Token;
+                            break;
+                        }
+                    }
+                    if (targetAsm != null)
+                        break;
+                }
             }
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
@@ -1227,8 +1633,36 @@ public static unsafe class AssemblyLoader
 
         targetAsmId = targetAsm->AssemblyId;
 
+        // Debug: Print resolved target
+        DebugConsole.Write("[AsmLoader] -> resolved to asm ");
+        DebugConsole.WriteDecimal(targetAsmId);
+        DebugConsole.Write(" (");
+        if (targetAsm->Name != null)
+        {
+            for (int i = 0; targetAsm->Name[i] != 0 && i < 32; i++)
+                DebugConsole.WriteChar((char)targetAsm->Name[i]);
+        }
+        DebugConsole.Write("), TypeDef 0x");
+        DebugConsole.WriteHex(typeDefToken);
+        DebugConsole.WriteLine();
+
         // Find the matching MethodDef in the target type
         methodToken = FindMethodDefByName(targetAsm, typeDefToken, memberName, sig, sigLen);
+
+        // Debug: Check if method token row is valid for target assembly
+        uint methodRow = methodToken & 0x00FFFFFF;
+        uint methodDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+        if (methodRow > methodDefCount)
+        {
+            DebugConsole.Write("[AsmLoader] BUG: method row ");
+            DebugConsole.WriteDecimal(methodRow);
+            DebugConsole.Write(" > table size ");
+            DebugConsole.WriteDecimal(methodDefCount);
+            DebugConsole.Write(" in asm ");
+            DebugConsole.WriteDecimal(targetAsmId);
+            DebugConsole.WriteLine();
+        }
+
         return methodToken != 0;
     }
 
@@ -1244,6 +1678,7 @@ public static unsafe class AssemblyLoader
         // Get method range for this type
         uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
         uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodDefCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
         uint methodEnd;
 
         if (typeRow < typeDefCount)
@@ -1252,7 +1687,32 @@ public static unsafe class AssemblyLoader
         }
         else
         {
-            methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+            methodEnd = methodDefCount + 1;
+        }
+
+        // Debug: Show method range
+        DebugConsole.Write("[AsmLoader] FindMethod in type row ");
+        DebugConsole.WriteDecimal(typeRow);
+        DebugConsole.Write(": methodStart=");
+        DebugConsole.WriteDecimal(methodStart);
+        DebugConsole.Write(", methodEnd=");
+        DebugConsole.WriteDecimal(methodEnd);
+        DebugConsole.Write(", totalMethods=");
+        DebugConsole.WriteDecimal(methodDefCount);
+        DebugConsole.Write(", searching for ");
+        for (int i = 0; methodName[i] != 0 && i < 40; i++)
+            DebugConsole.WriteChar((char)methodName[i]);
+        DebugConsole.WriteLine();
+
+        // Sanity check: if methodStart is > totalMethods, we have corrupt metadata
+        if (methodStart > methodDefCount)
+        {
+            DebugConsole.Write("[AsmLoader] BUG: methodStart ");
+            DebugConsole.WriteDecimal(methodStart);
+            DebugConsole.Write(" > totalMethods ");
+            DebugConsole.WriteDecimal(methodDefCount);
+            DebugConsole.WriteLine(" - metadata corruption!");
+            return 0;
         }
 
         // Search methods in range
@@ -1396,6 +1856,51 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Find the TypeDef that declares a given MethodDef.
+    /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// </summary>
+    public static uint FindDeclaringType(uint assemblyId, uint methodToken)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        // Method token must be a MethodDef (0x06xxxxxx)
+        uint tableId = (methodToken >> 24) & 0xFF;
+        if (tableId != 0x06)
+            return 0;
+
+        uint methodRow = methodToken & 0x00FFFFFF;
+        if (methodRow == 0)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        // Iterate through TypeDefs to find which one owns this method
+        for (uint typeRow = 1; typeRow <= typeCount; typeRow++)
+        {
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+            uint methodEnd;
+            if (typeRow < typeCount)
+            {
+                methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+            }
+            else
+            {
+                methodEnd = methodCount + 1;
+            }
+
+            // Check if this method falls within this type's method range
+            if (methodRow >= methodStart && methodRow < methodEnd)
+            {
+                return 0x02000000 | typeRow;  // TypeDef token
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
     /// Find a MethodDef by name within a specific TypeDef.
     /// Returns the MethodDef token (0x06xxxxxx) or 0 if not found.
     /// </summary>
@@ -1461,6 +1966,107 @@ public static unsafe class AssemblyLoader
     // ============================================================================
     // Statistics
     // ============================================================================
+
+    // ============================================================================
+    // Array MethodTable Creation for newarr
+    // ============================================================================
+
+    // Cache of created array MethodTables (element MT ptr -> array MT ptr)
+    private const int MaxArrayMTCache = 128;
+    private static MethodTable** _arrayMTCacheElementMTs;
+    private static MethodTable** _arrayMTCacheArrayMTs;
+    private static int _arrayMTCacheCount;
+
+    /// <summary>
+    /// Get or create an array MethodTable for a given element type.
+    /// The array MT has ComponentSize set to the element size.
+    /// Used by newarr opcode to properly allocate arrays.
+    /// </summary>
+    public static MethodTable* GetOrCreateArrayMethodTable(MethodTable* elementMT)
+    {
+        if (elementMT == null)
+            return null;
+
+        // Initialize cache on first use
+        if (_arrayMTCacheElementMTs == null)
+        {
+            _arrayMTCacheElementMTs = (MethodTable**)HeapAllocator.AllocZeroed(
+                (ulong)(MaxArrayMTCache * sizeof(MethodTable*)));
+            _arrayMTCacheArrayMTs = (MethodTable**)HeapAllocator.AllocZeroed(
+                (ulong)(MaxArrayMTCache * sizeof(MethodTable*)));
+            _arrayMTCacheCount = 0;
+
+            if (_arrayMTCacheElementMTs == null || _arrayMTCacheArrayMTs == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] Failed to allocate array MT cache");
+                return null;
+            }
+        }
+
+        // Check cache for existing array MT
+        for (int i = 0; i < _arrayMTCacheCount; i++)
+        {
+            if (_arrayMTCacheElementMTs[i] == elementMT)
+                return _arrayMTCacheArrayMTs[i];
+        }
+
+        // Compute element size
+        ushort elementSize;
+        if (elementMT->IsValueType)
+        {
+            // Value type: element size is BaseSize (no MT pointer in array elements)
+            // For value types stored in arrays, the size is BaseSize - 8 (subtract MT ptr)
+            // because value type BaseSize includes the boxed object header
+            elementSize = (ushort)(elementMT->BaseSize > 8 ? elementMT->BaseSize - 8 : elementMT->BaseSize);
+        }
+        else
+        {
+            // Reference type: element is a pointer (8 bytes on 64-bit)
+            elementSize = 8;
+        }
+
+        // Create new array MethodTable
+        MethodTable* arrayMT = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        if (arrayMT == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] Failed to allocate array MethodTable");
+            return null;
+        }
+
+        // Initialize array MT
+        arrayMT->_usComponentSize = elementSize;
+        // Set IsArray flag (bit 19 of combined flags, which is bit 3 of _usFlags)
+        arrayMT->_usFlags = (ushort)((MTFlags.IsArray | MTFlags.HasComponentSize) >> 16);
+        // Array base size: MT ptr (8) + length field (8) = 16 bytes
+        arrayMT->_uBaseSize = 16;
+        // _relatedType points to element type's MethodTable
+        arrayMT->_relatedType = elementMT;
+        arrayMT->_usNumVtableSlots = 0;
+        arrayMT->_usNumInterfaces = 0;
+        arrayMT->_uHashCode = (uint)(ulong)elementMT;  // Use element MT address as hash
+
+        // Cache the new array MT
+        if (_arrayMTCacheCount < MaxArrayMTCache)
+        {
+            _arrayMTCacheElementMTs[_arrayMTCacheCount] = elementMT;
+            _arrayMTCacheArrayMTs[_arrayMTCacheCount] = arrayMT;
+            _arrayMTCacheCount++;
+        }
+
+        DebugConsole.Write("[AsmLoader] Created array MT 0x");
+        DebugConsole.WriteHex((ulong)arrayMT);
+        DebugConsole.Write(" elemSize=");
+        DebugConsole.WriteDecimal(elementSize);
+        DebugConsole.Write(" for elem MT 0x");
+        DebugConsole.WriteHex((ulong)elementMT);
+        DebugConsole.Write(" baseSize=");
+        DebugConsole.WriteDecimal(elementMT->BaseSize);
+        DebugConsole.Write(" isVal=");
+        DebugConsole.Write(elementMT->IsValueType ? "Y" : "N");
+        DebugConsole.WriteLine();
+
+        return arrayMT;
+    }
 
     /// <summary>
     /// Print loader statistics.

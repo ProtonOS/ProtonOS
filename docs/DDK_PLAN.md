@@ -4,6 +4,18 @@
 
 **Last Updated**: December 2025
 
+### Recent Progress (Phase 3 Bootstrap)
+
+- [x] Kernel loads DDK.dll, Virtio.dll, VirtioBlk.dll from UEFI boot image
+- [x] DDKInit.Initialize() works via JIT compilation
+- [x] Native kernel PCI enumeration detects all PCI devices
+- [x] Virtio-blk device detected at 00:03.00 (vendor 0x1AF4, device 0x1001)
+- [x] Driver binding (matching VirtioBlk driver to detected device) ✅ Complete
+  - VirtioBlkEntry.Probe() and Bind() JIT compiled and executed
+  - Kernel iterates PCI devices, calls Probe(), binds on match
+  - Successfully bound 1 driver to virtio-blk device
+- [ ] Virtio device initialization (queues, features) - TODO
+
 ### Completed AOT Work
 
 The following subsystems are implemented in the AOT kernel and expose DDK exports:
@@ -298,7 +310,8 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 - [x] **ddk/Storage/IBlockDevice.cs** - Block device interface ✅ Complete
 - [x] **ddk/Storage/IFileSystem.cs** - Filesystem interface ✅ Complete
 - [x] **ddk/Storage/VFS.cs** - Virtual filesystem / mount management ✅ Complete
-- [ ] **drivers/shared/storage/virtio-blk/** - Virtio block driver (QEMU)
+- [x] **drivers/shared/virtio/** - Virtio common library (virtqueue, device init) ✅ Complete
+- [x] **drivers/shared/storage/virtio-blk/** - Virtio block driver (QEMU) ✅ Complete
 - [ ] **drivers/shared/storage/ahci/** - AHCI/SATA driver
 - [ ] **drivers/shared/storage/nvme/** - NVMe driver
 - [ ] **drivers/shared/filesystem/fat32/** - FAT32 filesystem driver

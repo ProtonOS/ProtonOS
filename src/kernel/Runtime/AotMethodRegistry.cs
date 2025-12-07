@@ -72,6 +72,12 @@ public static unsafe class AotMethodRegistry
         // Register well-known String methods
         RegisterStringMethods();
 
+        // Register well-known Object methods
+        RegisterObjectMethods();
+
+        // Register well-known Int32 methods
+        RegisterInt32Methods();
+
         _initialized = true;
         DebugConsole.Write("[AotRegistry] Initialized with ");
         DebugConsole.WriteDecimal(_count);
@@ -118,6 +124,50 @@ public static unsafe class AotMethodRegistry
             "System.String", "Equals",
             (nint)(delegate*<string, string?, bool>)&StringHelpers.Equals,
             1, ReturnKind.Int32, true, false);
+    }
+
+    /// <summary>
+    /// Register Object methods with their wrapper addresses.
+    /// </summary>
+    private static void RegisterObjectMethods()
+    {
+        // Object..ctor() - constructor, 0 parameters (but HasThis=true for instance method)
+        // For constructors, we just return - the object is already allocated
+        Register(
+            "System.Object", ".ctor",
+            (nint)(delegate*<object, void>)&ObjectHelpers.Ctor,
+            0, ReturnKind.Void, true, false);
+
+        // Object.GetHashCode() - instance method, returns int
+        Register(
+            "System.Object", "GetHashCode",
+            (nint)(delegate*<object, int>)&ObjectHelpers.GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // Object.Equals(object) - instance method, 1 parameter, returns bool
+        Register(
+            "System.Object", "Equals",
+            (nint)(delegate*<object, object?, bool>)&ObjectHelpers.Equals,
+            1, ReturnKind.Int32, true, true);
+
+        // Object.ToString() - instance method, returns string
+        Register(
+            "System.Object", "ToString",
+            (nint)(delegate*<object, string>)&ObjectHelpers.ToString,
+            0, ReturnKind.IntPtr, true, true);
+    }
+
+    /// <summary>
+    /// Register Int32 methods with their wrapper addresses.
+    /// </summary>
+    private static void RegisterInt32Methods()
+    {
+        // Int32.ToString() - instance method on value type
+        // For value types, 'this' is a pointer to the value
+        Register(
+            "System.Int32", "ToString",
+            (nint)(delegate*<int*, string>)&Int32Helpers.ToString,
+            0, ReturnKind.IntPtr, true, false);
     }
 
     /// <summary>
@@ -187,9 +237,13 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.String"))
             return true;
 
-        // Could add more well-known types here:
-        // - System.Object
-        // - System.Int32, etc.
+        // Check for System.Object
+        if (StringMatches(typeName, "System.Object"))
+            return true;
+
+        // Check for System.Int32
+        if (StringMatches(typeName, "System.Int32"))
+            return true;
 
         return false;
     }
@@ -305,5 +359,80 @@ public static unsafe class StringHelpers
         if (s == null)
             return other == null;
         return s.Equals(other);
+    }
+}
+
+/// <summary>
+/// Wrapper methods for Object operations.
+/// These are thin wrappers that provide base Object behavior.
+/// NOTE: We avoid virtual calls to prevent triggering unboxing code generation
+/// which requires System.Runtime.RuntimeExports.
+/// </summary>
+public static unsafe class ObjectHelpers
+{
+    /// <summary>
+    /// Wrapper for Object..ctor().
+    /// Object's constructor does nothing - the object is already allocated.
+    /// </summary>
+    public static void Ctor(object obj)
+    {
+        // Nothing to do - object is already allocated
+    }
+
+    /// <summary>
+    /// Wrapper for Object.GetHashCode().
+    /// Returns a pointer-based hash code (base Object behavior).
+    /// </summary>
+    public static int GetHashCode(object obj)
+    {
+        if (obj == null)
+            return 0;
+        // Use pointer-based hash (this is what base Object.GetHashCode() does)
+        return (int)(nint)System.Runtime.CompilerServices.Unsafe.AsPointer(ref obj);
+    }
+
+    /// <summary>
+    /// Wrapper for Object.Equals(object).
+    /// Uses reference equality (base Object behavior).
+    /// </summary>
+    public static bool Equals(object obj, object? other)
+    {
+        // Base Object.Equals uses reference equality
+        return ReferenceEquals(obj, other);
+    }
+
+    /// <summary>
+    /// Wrapper for Object.ToString().
+    /// Returns a type name placeholder (avoids virtual dispatch).
+    /// </summary>
+    public static string ToString(object obj)
+    {
+        if (obj == null)
+            return "null";
+        // Return a simple placeholder - avoids virtual ToString() dispatch
+        return "object";
+    }
+
+    private static bool ReferenceEquals(object? a, object? b)
+    {
+        return (object?)a == (object?)b;
+    }
+}
+
+/// <summary>
+/// Wrapper methods for Int32 operations.
+/// For value types, the 'this' pointer is a pointer to the value.
+/// </summary>
+public static unsafe class Int32Helpers
+{
+    /// <summary>
+    /// Wrapper for Int32.ToString().
+    /// Takes pointer to int value and returns string representation.
+    /// </summary>
+    public static string ToString(int* value)
+    {
+        if (value == null)
+            return "0";
+        return System.Int32.FormatInt32(*value);
     }
 }

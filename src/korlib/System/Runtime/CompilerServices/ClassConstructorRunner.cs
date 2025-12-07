@@ -28,6 +28,12 @@ namespace System.Runtime.CompilerServices
             return nonGcStaticBase;
         }
 
+        private static IntPtr CheckStaticClassConstructionReturnGCStaticBase(ref StaticClassConstructionContext context, IntPtr gcStaticBase)
+        {
+            CheckStaticClassConstruction(ref context);
+            return gcStaticBase;
+        }
+
         private static unsafe void CheckStaticClassConstruction(ref StaticClassConstructionContext context)
         {
             // Not dealing with multithreading issues.

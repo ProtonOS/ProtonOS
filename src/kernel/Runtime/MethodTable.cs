@@ -52,6 +52,9 @@ public static class MTFlags
 
     /// <summary>Mask for component size in low 16 bits.</summary>
     public const uint ComponentSizeMask = 0x0000FFFF;
+
+    /// <summary>Type is a value type (struct/enum).</summary>
+    public const uint IsValueType = 0x00200000;
 }
 
 /// <summary>
@@ -129,6 +132,9 @@ public unsafe struct MethodTable
 
     /// <summary>Whether this is an array type.</summary>
     public bool IsArray => (CombinedFlags & MTFlags.IsArray) != 0;
+
+    /// <summary>Whether this is a value type (struct/enum).</summary>
+    public bool IsValueType => (CombinedFlags & MTFlags.IsValueType) != 0;
 
     /// <summary>Whether this type has a component size (array or string).</summary>
     public bool HasComponentSize => (CombinedFlags & MTFlags.HasComponentSize) != 0;

@@ -203,6 +203,10 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     public static int StackAlignment => 16;
 
     // === Prologue / Epilogue ===
+    // Callee-saved registers used by JIT: RBX (R7), R12 (R8), R13 (R9), R14 (R10), R15 (R11)
+    // These are saved at [RBP-8] through [RBP-40] to avoid corrupting the caller's values.
+    public const int CalleeSaveSize = 40;  // 5 registers * 8 bytes
+
     public static int EmitPrologue(ref CodeBuffer code, int localBytes)
     {
         // push rbp
@@ -212,8 +216,8 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(0x89);
         code.EmitByte(0xE5);
 
-        // Align stack to 16 bytes (include saved rbp)
-        int frameSize = localBytes + ShadowSpaceSize;
+        // Align stack to 16 bytes (include saved rbp + callee-saves + locals)
+        int frameSize = localBytes + ShadowSpaceSize + CalleeSaveSize;
         frameSize = (frameSize + 15) & ~15;
 
         if (frameSize > 0)
@@ -224,16 +228,79 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
             code.EmitByte(0xEC);
             code.EmitInt32(frameSize);
         }
+
+        // Save callee-saved registers to known offsets from RBP
+        // mov [rbp-8], rbx
+        code.EmitByte(0x48);
+        code.EmitByte(0x89);
+        code.EmitByte(0x5D);
+        code.EmitByte(0xF8);  // -8
+
+        // mov [rbp-16], r12
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x65);
+        code.EmitByte(0xF0);  // -16
+
+        // mov [rbp-24], r13
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x6D);
+        code.EmitByte(0xE8);  // -24
+
+        // mov [rbp-32], r14
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x75);
+        code.EmitByte(0xE0);  // -32
+
+        // mov [rbp-40], r15
+        code.EmitByte(0x4C);
+        code.EmitByte(0x89);
+        code.EmitByte(0x7D);
+        code.EmitByte(0xD8);  // -40
+
         return frameSize;
     }
 
     public static void EmitEpilogue(ref CodeBuffer code, int stackAdjust)
     {
-        // Use leave instruction: mov rsp, rbp; pop rbp
-        // This properly restores RSP regardless of any modifications during the function
-        // (e.g., localloc, push/pop imbalances, etc.)
         // The stackAdjust parameter is no longer needed when using frame pointer epilogue
         _ = stackAdjust; // Unused - we restore from RBP instead
+
+        // Restore callee-saved registers from known offsets
+        // mov rbx, [rbp-8]
+        code.EmitByte(0x48);
+        code.EmitByte(0x8B);
+        code.EmitByte(0x5D);
+        code.EmitByte(0xF8);  // -8
+
+        // mov r12, [rbp-16]
+        code.EmitByte(0x4C);
+        code.EmitByte(0x8B);
+        code.EmitByte(0x65);
+        code.EmitByte(0xF0);  // -16
+
+        // mov r13, [rbp-24]
+        code.EmitByte(0x4C);
+        code.EmitByte(0x8B);
+        code.EmitByte(0x6D);
+        code.EmitByte(0xE8);  // -24
+
+        // mov r14, [rbp-32]
+        code.EmitByte(0x4C);
+        code.EmitByte(0x8B);
+        code.EmitByte(0x75);
+        code.EmitByte(0xE0);  // -32
+
+        // mov r15, [rbp-40]
+        code.EmitByte(0x4C);
+        code.EmitByte(0x8B);
+        code.EmitByte(0x7D);
+        code.EmitByte(0xD8);  // -40
+
+        // Use leave instruction: mov rsp, rbp; pop rbp
+        // This properly restores RSP regardless of any modifications during the function
         code.EmitByte(0xC9);  // leave
         // ret
         code.EmitByte(0xC3);
@@ -806,8 +873,9 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
 
     public static int GetLocalOffset(int localIndex)
     {
-        // Locals are at [rbp-8], [rbp-16], etc.
-        return -((localIndex + 1) * 8);
+        // Locals are at [rbp-64], [rbp-128], etc.
+        // Use 64 bytes per local to support value type locals up to 64 bytes
+        return -((localIndex + 1) * 64);
     }
 
     public static void LoadArg(ref CodeBuffer code, VReg dst, int argIndex)

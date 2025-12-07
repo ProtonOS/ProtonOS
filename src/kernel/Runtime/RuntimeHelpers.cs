@@ -92,6 +92,9 @@ public static unsafe class RuntimeHelpers
         _isAssignableToPtr = (void*)(delegate*<MethodTable*, MethodTable*, bool>)&TypeHelpers.IsAssignableTo;
         _getInterfaceMethodPtr = (void*)(delegate*<void*, MethodTable*, int, void*>)&TypeHelpers.GetInterfaceMethod;
 
+        // Cache debug helper pointer
+        _debugStfldPtr = (void*)(delegate*<void*, int, void>)&DebugStfld;
+
         // Register MD array helpers with the CompiledMethodRegistry
         RegisterMDArrayHelpers();
 
@@ -170,6 +173,32 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void* GetInterfaceMethodPtr() => _getInterfaceMethodPtr;
 
+    // Debug helper pointer
+    private static void* _debugStfldPtr;
+
+    /// <summary>
+    /// Get the debug stfld function pointer for tracing.
+    /// Signature: void DebugStfld(void* objPtr, int offset)
+    /// </summary>
+    public static void* GetDebugStfldPtr() => _debugStfldPtr;
+
+    #endregion
+
+    #region Debug Helpers
+
+    /// <summary>
+    /// Debug helper called from JIT code to trace stfld operations.
+    /// Shows the actual runtime object pointer and offset before the store.
+    /// </summary>
+    public static void DebugStfld(void* objPtr, int offset)
+    {
+        DebugConsole.Write("[stfld RT] obj=0x");
+        DebugConsole.WriteHex((ulong)objPtr);
+        DebugConsole.Write(" off=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.WriteLine();
+    }
+
     #endregion
 
     #region Object Allocation (newobj)
@@ -184,13 +213,29 @@ public static unsafe class RuntimeHelpers
     public static void* RhpNewFast(MethodTable* pMT)
     {
         if (pMT == null)
+        {
+            DebugConsole.WriteLine("[RhpNewFast] ERROR: null MethodTable!");
             return null;
+        }
+
+        DebugConsole.Write("[RhpNewFast] MT=0x");
+        DebugConsole.WriteHex((ulong)pMT);
+        DebugConsole.Write(" size=");
+        DebugConsole.WriteDecimal(pMT->BaseSize);
 
         byte* result = (byte*)GCHeap.Alloc(pMT->BaseSize);
         if (result == null)
+        {
+            DebugConsole.WriteLine(" ALLOC FAILED!");
             return null;
+        }
 
         *(MethodTable**)result = pMT;
+
+        DebugConsole.Write(" -> 0x");
+        DebugConsole.WriteHex((ulong)result);
+        DebugConsole.WriteLine();
+
         return result;
     }
 
@@ -211,17 +256,35 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void* RhpNewArray(MethodTable* pMT, int numElements)
     {
+        DebugConsole.Write("[RhpNewArray] MT=0x");
+        DebugConsole.WriteHex((ulong)pMT);
+        DebugConsole.Write(" count=");
+        DebugConsole.WriteDecimal((uint)numElements);
+
         if (pMT == null || numElements < 0)
+        {
+            DebugConsole.WriteLine(" INVALID!");
             return null;
+        }
 
         uint totalSize = pMT->BaseSize + (uint)numElements * pMT->ComponentSize;
 
+        DebugConsole.Write(" size=");
+        DebugConsole.WriteDecimal(totalSize);
+
         byte* result = (byte*)GCHeap.Alloc(totalSize);
         if (result == null)
+        {
+            DebugConsole.WriteLine(" ALLOC FAILED!");
             return null;
+        }
 
         *(MethodTable**)result = pMT;
         *(int*)(result + 8) = numElements;
+
+        DebugConsole.Write(" -> 0x");
+        DebugConsole.WriteHex((ulong)result);
+        DebugConsole.WriteLine();
 
         return result;
     }

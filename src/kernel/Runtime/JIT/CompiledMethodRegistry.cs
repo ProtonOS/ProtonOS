@@ -258,6 +258,71 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
+    /// Register a PInvoke method (extern method that calls native code).
+    /// This is used when the JIT resolves a DllImport method.
+    /// </summary>
+    public static bool RegisterPInvoke(uint token, void* code, byte argCount, ReturnKind returnKind, bool hasThis, uint assemblyId)
+    {
+        // PInvoke methods are registered with assembly ID to avoid cross-assembly token collisions
+        // Different assemblies can have methods with the same token, so we need to include assemblyId
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0)
+            return false;
+
+        // Check if already registered with this assembly ID - update if so
+        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        if (existing != null)
+        {
+            existing->NativeCode = code;
+            existing->ArgCount = argCount;
+            existing->ReturnKind = returnKind;
+            existing->HasThis = hasThis;
+            existing->IsCompiled = true;
+            return true;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return false;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry
+        entry->Token = token;
+        entry->NativeCode = code;
+        entry->ArgCount = argCount;
+        entry->ReturnKind = returnKind;
+        entry->HasThis = hasThis;
+        entry->IsCompiled = true;
+        entry->IsVirtual = false;
+        entry->VtableSlot = -1;
+        entry->AssemblyId = assemblyId;  // Critical: set assembly ID
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return true;
+    }
+
+    /// <summary>
     /// Register a compiled virtual method with vtable slot information.
     /// </summary>
     /// <param name="token">Metadata token identifying the method.</param>
@@ -330,11 +395,78 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
+    /// Register a compiled virtual method with vtable slot and assembly ID.
+    /// Overload for abstract methods that need assembly-aware lookup.
+    /// </summary>
+    public static bool RegisterVirtual(uint token, void* code, byte argCount, ReturnKind returnKind,
+        bool hasThis, bool isVirtual, int vtableSlot, uint assemblyId)
+    {
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0)
+            return false;
+
+        // Check if already registered - update if so
+        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        if (existing != null)
+        {
+            existing->NativeCode = code;
+            existing->ArgCount = argCount;
+            existing->ReturnKind = returnKind;
+            existing->HasThis = hasThis;
+            existing->IsCompiled = true;
+            existing->IsVirtual = isVirtual;
+            existing->VtableSlot = (short)vtableSlot;
+            existing->AssemblyId = assemblyId;
+            return true;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return false;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry
+        entry->Token = token;
+        entry->NativeCode = code;
+        entry->ArgCount = argCount;
+        entry->ReturnKind = returnKind;
+        entry->HasThis = hasThis;
+        entry->IsCompiled = true;
+        entry->IsVirtual = isVirtual;
+        entry->VtableSlot = (short)vtableSlot;
+        entry->AssemblyId = assemblyId;
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return true;
+    }
+
+    /// <summary>
     /// Reserve a slot for a method that is being compiled.
     /// This prevents infinite recursion when compiling recursive methods.
     /// Returns the reserved entry, or null if the method is already being compiled.
     /// </summary>
-    public static CompiledMethodInfo* ReserveForCompilation(uint token, byte argCount, ReturnKind returnKind, bool hasThis)
+    public static CompiledMethodInfo* ReserveForCompilation(uint token, byte argCount, ReturnKind returnKind, bool hasThis, uint assemblyId = 0)
     {
         if (!_initialized)
             Initialize();
@@ -342,8 +474,8 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return null;
 
-        // Check if already exists
-        CompiledMethodInfo* existing = Lookup(token);
+        // Check if already exists (use assembly-aware lookup)
+        CompiledMethodInfo* existing = Lookup(token, assemblyId);
         if (existing != null)
         {
             if (existing->IsBeingCompiled)
@@ -391,6 +523,7 @@ public static unsafe class CompiledMethodRegistry
         entry->IsVirtual = false;
         entry->VtableSlot = -1;
         entry->MethodTable = null;
+        entry->AssemblyId = assemblyId;  // Store assembly ID for lookup
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -408,9 +541,9 @@ public static unsafe class CompiledMethodRegistry
     /// Complete a reserved method compilation.
     /// Sets the native code pointer and marks as compiled.
     /// </summary>
-    public static bool CompleteCompilation(uint token, void* code)
+    public static bool CompleteCompilation(uint token, void* code, uint assemblyId = 0)
     {
-        CompiledMethodInfo* entry = Lookup(token);
+        CompiledMethodInfo* entry = Lookup(token, assemblyId);
         if (entry == null)
             return false;
 
@@ -487,6 +620,27 @@ public static unsafe class CompiledMethodRegistry
         UpdateNextFreeIndex(block);
 
         _totalCount++;
+        return true;
+    }
+
+    /// <summary>
+    /// Set the MethodTable for an already-registered method (typically a constructor).
+    /// Called after JIT compilation to associate the constructor with its type.
+    /// </summary>
+    /// <param name="token">Metadata token of the method.</param>
+    /// <param name="methodTable">MethodTable of the declaring type.</param>
+    /// <param name="assemblyId">Assembly ID for scoped lookup.</param>
+    /// <returns>True if found and updated, false otherwise.</returns>
+    public static bool SetMethodTable(uint token, void* methodTable, uint assemblyId = 0)
+    {
+        if (!_initialized)
+            return false;
+
+        CompiledMethodInfo* info = Lookup(token, assemblyId);
+        if (info == null)
+            return false;
+
+        info->MethodTable = methodTable;
         return true;
     }
 
@@ -589,7 +743,8 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
-    /// Look up a method by token.
+    /// Look up a method by token (legacy - matches first entry with this token).
+    /// Prefer using Lookup(uint token, uint assemblyId) to avoid cross-assembly token collisions.
     /// </summary>
     public static CompiledMethodInfo* Lookup(uint token)
     {
@@ -607,6 +762,34 @@ public static unsafe class CompiledMethodRegistry
             for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
             {
                 if (entries[i].Token == token)
+                    return &entries[i];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Look up a method by token and assembly ID.
+    /// This avoids cross-assembly token collisions where the same token refers to
+    /// different methods in different assemblies.
+    /// </summary>
+    public static CompiledMethodInfo* Lookup(uint token, uint assemblyId)
+    {
+        if (!_initialized || token == 0)
+            return null;
+
+        // Scan all blocks for the token + assemblyId combination
+        for (int b = 0; b < _blockCount; b++)
+        {
+            MethodBlock* block = _blocks[b];
+            if (block == null || block->IsEmpty)
+                continue;
+
+            CompiledMethodInfo* entries = block->GetEntries();
+            for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
+            {
+                if (entries[i].Token == token && entries[i].AssemblyId == assemblyId)
                     return &entries[i];
             }
         }

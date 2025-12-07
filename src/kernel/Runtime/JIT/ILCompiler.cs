@@ -4,6 +4,7 @@
 using ProtonOS.Platform;
 using ProtonOS.X64;
 using ProtonOS.Arch;
+using ProtonOS.Memory;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -469,20 +470,24 @@ public unsafe struct ILCompiler
 
     // Stack type tracking for float support (0=int, 1=float32, 2=float64)
     private const int MaxStackDepth = 32;
-    private fixed byte _evalStackTypes[MaxStackDepth];
+    private byte* _evalStackTypes;  // heap-allocated [MaxStackDepth]
 
-    // Fixed-size array for branch targets
+    // Arrays for branch targets (heap-allocated to reduce stack usage during nested JIT)
     private const int MaxBranches = 64;
-    private fixed int _branchSources[MaxBranches];  // IL offset where branch was emitted
-    private fixed int _branchTargetIL[MaxBranches]; // IL offset branch targets
-    private fixed int _branchPatchOffset[MaxBranches]; // Code offset to patch
+    private int* _branchSources;    // IL offset where branch was emitted [MaxBranches]
+    private int* _branchTargetIL;   // IL offset branch targets [MaxBranches]
+    private int* _branchPatchOffset; // Code offset to patch [MaxBranches]
+    private byte* _branchTargetStackDepth; // Expected stack depth at target [MaxBranches]
     private int _branchCount;
 
-    // Label mapping: IL offset -> code offset
+    // Label mapping: IL offset -> code offset (heap-allocated)
     private const int MaxLabels = 128;
-    private fixed int _labelILOffset[MaxLabels];
-    private fixed int _labelCodeOffset[MaxLabels];
+    private int* _labelILOffset;    // [MaxLabels]
+    private int* _labelCodeOffset;  // [MaxLabels]
     private int _labelCount;
+
+    // Heap buffer for all compiler arrays (freed after compilation)
+    private byte* _heapBuffers;
 
     // Method resolution callback (optional - if null, uses CompiledMethodRegistry)
     private MethodResolver _resolver;
@@ -503,6 +508,11 @@ public unsafe struct ILCompiler
     {
         return CreateWithGCInfo(il, ilLength, argCount, localCount, 0);
     }
+
+    // Buffer size constants for heap allocation
+    // Layout: evalStackTypes[32] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
+    //       + branchTargetStackDepth[64] + labelILOffset[512] + labelCodeOffset[512] + ehClauseData[320] + funcletInfo[192]
+    private const int HeapBufferSize = 32 + 256 + 256 + 256 + 64 + 512 + 512 + 320 + 192; // 2400 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -539,16 +549,60 @@ public unsafe struct ILCompiler
         // Use default type helpers from RuntimeHelpers
         compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
+        // Debug helper
+        compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
 
         // Initialize funclet support
         compiler._ehClauseCount = 0;
         compiler._funcletCount = 0;
         compiler._compilingFunclet = false;
 
+        // Initialize all pointer fields to null first (required for struct initialization)
+        compiler._heapBuffers = null;
+        compiler._evalStackTypes = null;
+        compiler._branchSources = null;
+        compiler._branchTargetIL = null;
+        compiler._branchPatchOffset = null;
+        compiler._branchTargetStackDepth = null;
+        compiler._labelILOffset = null;
+        compiler._labelCodeOffset = null;
+        compiler._ehClauseData = null;
+        compiler._funcletInfo = null;
+
+        // Allocate heap buffer for all arrays (reduces stack usage during nested JIT)
+        compiler._heapBuffers = (byte*)HeapAllocator.AllocZeroed(HeapBufferSize);
+        if (compiler._heapBuffers != null)
+        {
+            // Set up pointers into the heap buffer
+            byte* p = compiler._heapBuffers;
+            compiler._evalStackTypes = p;                      // offset 0, 32 bytes
+            compiler._branchSources = (int*)(p + 32);          // offset 32, 256 bytes
+            compiler._branchTargetIL = (int*)(p + 288);        // offset 288, 256 bytes
+            compiler._branchPatchOffset = (int*)(p + 544);     // offset 544, 256 bytes
+            compiler._branchTargetStackDepth = p + 800;        // offset 800, 64 bytes
+            compiler._labelILOffset = (int*)(p + 864);         // offset 864, 512 bytes
+            compiler._labelCodeOffset = (int*)(p + 1376);      // offset 1376, 512 bytes
+            compiler._ehClauseData = (int*)(p + 1888);         // offset 1888, 320 bytes
+            compiler._funcletInfo = (int*)(p + 2208);          // offset 2208, 192 bytes
+        }
+
         // Create code buffer (4KB should be plenty for simple methods)
         compiler._code = CodeBuffer.Create(4096);
 
         return compiler;
+    }
+
+    /// <summary>
+    /// Free heap buffers allocated during creation.
+    /// Must be called after compilation completes.
+    /// </summary>
+    public void FreeBuffers()
+    {
+        if (_heapBuffers != null)
+        {
+            HeapAllocator.Free(_heapBuffers);
+            _heapBuffers = null;
+        }
     }
 
     /// <summary>
@@ -613,16 +667,12 @@ public unsafe struct ILCompiler
     /// <returns>True if all clauses converted successfully</returns>
     public bool ConvertEHClauses(ref ILExceptionClauses ilClauses, out JITExceptionClauses nativeClauses)
     {
-        fixed (int* ilOffsets = _labelILOffset)
-        fixed (int* nativeOffsets = _labelCodeOffset)
-        {
-            return EHClauseConverter.ConvertClauses(
-                ref ilClauses,
-                out nativeClauses,
-                ilOffsets,
-                nativeOffsets,
-                _labelCount);
-        }
+        return EHClauseConverter.ConvertClauses(
+            ref ilClauses,
+            out nativeClauses,
+            _labelILOffset,
+            _labelCodeOffset,
+            _labelCount);
     }
 
     /// <summary>
@@ -739,8 +789,10 @@ public unsafe struct ILCompiler
     public void* Compile()
     {
         // Emit prologue
-        // Calculate local space: localCount * 8 + evalStack space
-        int localBytes = _localCount * 8 + 64;  // 64 bytes for eval stack
+        // Calculate local space: localCount * 64 + evalStack space
+        // Use 64 bytes per local to support value type locals up to 64 bytes
+        // TODO: Parse local signature to get exact type sizes
+        int localBytes = _localCount * 64 + 64;  // 64 bytes per local + eval stack
         _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes);
 
         // Home arguments to shadow space (so we can load them later)
@@ -752,6 +804,19 @@ public unsafe struct ILCompiler
         {
             // Record label for this IL offset
             RecordLabel(_ilOffset, _code.Position);
+
+            // Check if this is a branch target - if so, restore the expected stack depth
+            // This handles the case where a conditional branch skips over a pop/br.s sequence
+            // and the linear fall-through leaves us with a different stack depth
+            int branchDepth = FindBranchTargetDepth(_ilOffset);
+            if (branchDepth >= 0)
+            {
+                _evalStackDepth = branchDepth;
+                // Also reset TOS caching state since we don't know if the branch was taken
+                _tosCached = false;
+                _tosIsConst = false;
+                _tos2IsConst = false;
+            }
 
             byte opcode = _il[_ilOffset++];
 
@@ -799,8 +864,24 @@ public unsafe struct ILCompiler
             _branchSources[_branchCount] = ilOffset;
             _branchTargetIL[_branchCount] = targetIL;
             _branchPatchOffset[_branchCount] = patchOffset;
+            // Record expected stack depth at the branch target
+            _branchTargetStackDepth[_branchCount] = (byte)_evalStackDepth;
             _branchCount++;
         }
+    }
+
+    /// <summary>
+    /// Find the expected stack depth at a branch target.
+    /// Returns -1 if this IL offset is not a branch target.
+    /// </summary>
+    private int FindBranchTargetDepth(int ilOffset)
+    {
+        for (int i = 0; i < _branchCount; i++)
+        {
+            if (_branchTargetIL[i] == ilOffset)
+                return _branchTargetStackDepth[i];
+        }
+        return -1;
     }
 
     private void PatchBranches()
@@ -1735,12 +1816,9 @@ public unsafe struct ILCompiler
     // Helper to push a type onto the type stack
     private void PushStackType(byte type)
     {
-        if (_evalStackDepth < MaxStackDepth)
+        if (_evalStackDepth < MaxStackDepth && _evalStackTypes != null)
         {
-            fixed (byte* types = _evalStackTypes)
-            {
-                types[_evalStackDepth] = type;
-            }
+            _evalStackTypes[_evalStackDepth] = type;
         }
         _evalStackDepth++;
     }
@@ -1751,10 +1829,8 @@ public unsafe struct ILCompiler
         if (_evalStackDepth > 0)
         {
             _evalStackDepth--;
-            fixed (byte* types = _evalStackTypes)
-            {
-                return types[_evalStackDepth];
-            }
+            if (_evalStackTypes != null)
+                return _evalStackTypes[_evalStackDepth];
         }
         return StackType_Int;
     }
@@ -1762,13 +1838,8 @@ public unsafe struct ILCompiler
     // Helper to peek at the top type
     private byte PeekStackType()
     {
-        if (_evalStackDepth > 0)
-        {
-            fixed (byte* types = _evalStackTypes)
-            {
-                return types[_evalStackDepth - 1];
-            }
-        }
+        if (_evalStackDepth > 0 && _evalStackTypes != null)
+            return _evalStackTypes[_evalStackDepth - 1];
         return StackType_Int;
     }
 
@@ -2072,12 +2143,9 @@ public unsafe struct ILCompiler
     private byte PeekStackTypeAt(int depth)
     {
         int index = _evalStackDepth - 1 - depth;
-        if (index >= 0 && index < MaxStackDepth)
+        if (index >= 0 && index < MaxStackDepth && _evalStackTypes != null)
         {
-            fixed (byte* types = _evalStackTypes)
-            {
-                return types[index];
-            }
+            return _evalStackTypes[index];
         }
         return StackType_Int;
     }
@@ -3901,10 +3969,26 @@ public unsafe struct ILCompiler
     private bool CompileCall(uint token)
     {
         FlushTOS();  // RAX is caller-saved, must spill before call
+
+        // DEBUG: Track stack depth before resolve
+        int depthBefore = _evalStackDepth;
+
         // Resolve the method
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
             return false;
+        }
+
+        // DEBUG: Check if stack depth changed
+        if (_evalStackDepth != depthBefore)
+        {
+            DebugConsole.Write("[JIT] CORRUPTION: eval stack depth changed from ");
+            DebugConsole.WriteDecimal((uint)depthBefore);
+            DebugConsole.Write(" to ");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.Write(" after resolving 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
         }
 
         int totalArgs = method.ArgCount;
@@ -3914,11 +3998,21 @@ public unsafe struct ILCompiler
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalArgs)
         {
-            DebugConsole.Write("[JIT] Call: insufficient stack depth ");
+            DebugConsole.Write("[JIT] Call 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" at IL ");
+            DebugConsole.WriteDecimal((uint)(_ilOffset - 4));  // -4 because token was already read
+            DebugConsole.Write("/");
+            DebugConsole.WriteDecimal((uint)_ilLength);
+            DebugConsole.Write(": insufficient stack depth ");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.Write(" for ");
             DebugConsole.WriteDecimal((uint)totalArgs);
-            DebugConsole.WriteLine(" args");
+            DebugConsole.Write(" args (ArgCount=");
+            DebugConsole.WriteDecimal((uint)method.ArgCount);
+            DebugConsole.Write(", HasThis=");
+            DebugConsole.Write(method.HasThis ? "true" : "false");
+            DebugConsole.WriteLine(")");
             return false;
         }
 
@@ -5112,11 +5206,50 @@ public unsafe struct ILCompiler
             DecodeFieldToken(token, out offset, out size, out _);
         }
 
+        // Debug output
+        DebugConsole.Write("[JIT stfld] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" offset=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.Write(" size=");
+        DebugConsole.WriteDecimal((uint)size);
+        DebugConsole.Write(" evalDepth=");
+        DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        DebugConsole.WriteLine();
+
         // Pop value and object reference
         X64Emitter.Pop(ref _code, VReg.R2);  // value
         X64Emitter.Pop(ref _code, VReg.R0);  // obj
         PopStackType();
         PopStackType();
+
+        // === RUNTIME DEBUG: Emit call to DebugStfld(objPtr, offset) ===
+        // Trace all stfld operations to debug null pointer crash
+        if (_debugStfld != null)
+        {
+            // Save R0 (obj) and R2 (value) - they get clobbered by calls
+            X64Emitter.Push(ref _code, VReg.R0);
+            X64Emitter.Push(ref _code, VReg.R2);
+
+            // Set up args: RCX = objPtr (from R0), RDX = offset
+            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);  // RCX = RAX (obj)
+            X64Emitter.MovRI32(ref _code, VReg.R2, offset);  // RDX = offset
+
+            // Reserve shadow space
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+            // Call DebugStfld
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_debugStfld);
+            X64Emitter.CallR(ref _code, VReg.R0);
+
+            // Restore shadow space
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Restore R2 (value) and R0 (obj)
+            X64Emitter.Pop(ref _code, VReg.R2);
+            X64Emitter.Pop(ref _code, VReg.R0);
+        }
+        // === END RUNTIME DEBUG ===
 
         // Store value at obj + offset
         switch (size)
@@ -5570,16 +5703,38 @@ public unsafe struct ILCompiler
     private bool CompileNewobj(uint token)
     {
         // Try to resolve as a registered constructor
-        if (ResolveMethod(token, out ResolvedMethod ctor) && ctor.IsValid && ctor.MethodTable != null)
+        ResolvedMethod ctor;
+        bool resolved = ResolveMethod(token, out ctor);
+        DebugConsole.Write("[JIT newobj] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" resolved=");
+        DebugConsole.Write(resolved ? "Y" : "N");
+        DebugConsole.Write(" valid=");
+        DebugConsole.Write(ctor.IsValid ? "Y" : "N");
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)ctor.MethodTable);
+        DebugConsole.WriteLine();
+
+        if (resolved && ctor.IsValid && ctor.MethodTable != null)
         {
+            // Check if this is a value type constructor
+            MethodTable* mt = (MethodTable*)ctor.MethodTable;
+            bool isValueType = mt->IsValueType;
+
+            DebugConsole.Write("[JIT newobj] isValueType=");
+            DebugConsole.Write(isValueType ? "Y" : "N");
+            DebugConsole.Write(" baseSize=");
+            DebugConsole.WriteDecimal(mt->BaseSize);
+            DebugConsole.WriteLine();
+
             // We have a constructor with MethodTable - full newobj implementation
             // Stack before: ..., arg1, ..., argN (constructor args, not including 'this')
-            // Stack after: ..., obj
+            // Stack after: ..., obj (reference type) or value (value type)
 
             int ctorArgs = ctor.ArgCount;  // Not including 'this'
 
             // Step 1: Pop constructor arguments from eval stack into temporary storage
-            // We need to save them because we'll call RhpNewFast first
+            // We need to save them because we'll call RhpNewFast first (for ref types)
             // For simplicity, move them to callee-saved registers (we saved them in prologue)
             // RBX, R12, R13, R14 are callee-saved
             // Max 4 args for now (beyond that would need stack spill)
@@ -5590,30 +5745,68 @@ public unsafe struct ILCompiler
                 return false;
             }
 
+            // CRITICAL: Flush TOS cache before direct pops.
+            // If args were loaded via ldarg (which uses TOS caching), the last arg
+            // is cached in R0 and NOT on the RSP stack. We must spill it first.
+            FlushTOS();
+
             // Pop args into temp registers (in reverse order since last arg is on top)
             // Args will go: arg0->RBX, arg1->R12, arg2->R13, arg3->R14
             VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10 };
             for (int i = ctorArgs - 1; i >= 0; i--)
             {
                 X64Emitter.Pop(ref _code, tempRegs[i]);
-                PopStackType();
-                _evalStackDepth--;
+                PopStackType();  // PopStackType already decrements _evalStackDepth
             }
 
-            // Step 2: Allocate the object via RhpNewFast
-            X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)ctor.MethodTable);
-            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
-            X64Emitter.CallR(ref _code, VReg.R0);
-            RecordSafePoint();
+            // CRITICAL: Reserve shadow space to protect any live eval stack data.
+            // After popping args, there may still be items on the RSP-based eval stack
+            // (e.g., from 'dup' in object initializers). These items are at [RSP] and above.
+            // When we call RhpNewFast/constructor, the callee's shadow space overlaps this!
+            // Fix: move RSP down 32 bytes to put live data safely below shadow space.
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
-            // RAX now contains the new object pointer
-            // Save it to R15 (callee-saved) so constructor call doesn't clobber it
-            X64Emitter.MovRR(ref _code, VReg.R11, VReg.R0);
+            int newobjTempOffset = -(_localCount * 8 + 64);
 
-            // Step 3: Call the constructor with 'this' = new object
+            if (isValueType)
+            {
+                // VALUE TYPE: Allocate space on stack, call constructor
+                // Value types don't use RhpNewFast - they're stack allocated
+                // We'll use a temp slot in the frame for the value
+                // For simplicity, always use 8 bytes (pad small structs)
+
+                // Zero the temp slot
+                X64Emitter.MovRI64(ref _code, VReg.R0, 0);
+                X64Emitter.MovMR(ref _code, VReg.FP, newobjTempOffset, VReg.R0);
+
+                // RCX = pointer to the value (for 'this' parameter)
+                // LEA RCX, [RBP + newobjTempOffset]
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.FP, newobjTempOffset);
+            }
+            else
+            {
+                // REFERENCE TYPE: Allocate on heap via RhpNewFast
+                DebugConsole.Write("[JIT newobj] refType: RhpNewFast=0x");
+                DebugConsole.WriteHex((ulong)_rhpNewFast);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)ctor.MethodTable);
+                DebugConsole.WriteLine();
+
+                X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)ctor.MethodTable);
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+                X64Emitter.CallR(ref _code, VReg.R0);
+                RecordSafePoint();
+
+                // RAX now contains the new object pointer
+                // Save to temp slot (nested newobj would clobber registers)
+                X64Emitter.MovMR(ref _code, VReg.FP, newobjTempOffset, VReg.R0);
+
+                // RCX = 'this' pointer (the new object)
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);
+            }
+
+            // Step 3: Call the constructor with 'this' in RCX
             // x64 calling convention: RCX=this, RDX=arg0, R8=arg1, R9=arg2, stack=arg3+
-            // Move 'this' (R15) to RCX
-            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R11);
 
             // Move saved args to their calling convention positions
             // arg0 in RBX -> RDX
@@ -5636,14 +5829,29 @@ public unsafe struct ILCompiler
             }
 
             // Call the constructor
+            DebugConsole.Write("[JIT newobj] calling ctor at 0x");
+            DebugConsole.WriteHex((ulong)ctor.NativeCode);
+            DebugConsole.Write(" args=");
+            DebugConsole.WriteDecimal((uint)ctorArgs);
+            DebugConsole.WriteLine();
+
+            if (ctor.NativeCode == null)
+            {
+                DebugConsole.WriteLine("[JIT newobj] ERROR: ctor.NativeCode is null!");
+                return false;
+            }
+
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctor.NativeCode);
             X64Emitter.CallR(ref _code, VReg.R0);
             RecordSafePoint();
 
-            // Push the object reference (from R15) onto eval stack
-            X64Emitter.Push(ref _code, VReg.R11);
-            PushStackType(StackType_Int);
-            _evalStackDepth++;
+            // Restore RSP after the shadow space reservation
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Push result onto eval stack
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, newobjTempOffset);
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
 
             return true;
         }
@@ -5654,6 +5862,9 @@ public unsafe struct ILCompiler
         // Load MethodTable* into RCX (first arg for RhpNewFast)
         X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
 
+        // Reserve shadow space to protect any live eval stack data
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
         // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
         // RhpNewFast allocates the object and sets the MT pointer
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
@@ -5662,10 +5873,12 @@ public unsafe struct ILCompiler
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
 
+        // Restore RSP after the shadow space reservation
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
         // Push the allocated object reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Objects are 64-bit pointers
-        _evalStackDepth++;
+        PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
 
         return true;
     }
@@ -5683,13 +5896,22 @@ public unsafe struct ILCompiler
     private bool CompileNewarr(uint token)
     {
         FlushTOS();  // Spill TOS to memory before direct pops
-        // Resolve token to MethodTable* address
+        // Resolve token to ARRAY MethodTable* address
+        // The newarr token is for the ELEMENT type, but we need an ARRAY MethodTable
+        // with proper ComponentSize for RhpNewArray to allocate correctly.
         ulong mtAddress = token;  // Fallback: use token directly (for testing)
 
-        // If we have a type resolver, use it to get the real MethodTable
-        if (_typeResolver != null)
+        // Use the array element type resolver to get an array MethodTable
+        // This resolves the element type and creates an array MT with correct ComponentSize
+        void* resolved;
+        if (MetadataIntegration.ResolveArrayElementType(token, out resolved) && resolved != null)
         {
-            void* resolved;
+            mtAddress = (ulong)resolved;
+        }
+        else if (_typeResolver != null)
+        {
+            // Fallback to old behavior if ResolveArrayElementType fails
+            // This may not work correctly for struct arrays but maintains backward compatibility
             if (_typeResolver(token, out resolved) && resolved != null)
             {
                 mtAddress = (ulong)resolved;
@@ -5698,11 +5920,17 @@ public unsafe struct ILCompiler
 
         // Pop numElements from stack into RDX (second arg)
         X64Emitter.Pop(ref _code, VReg.R2);
-        PopStackType();
-        _evalStackDepth--;
+        PopStackType();  // PopStackType already decrements _evalStackDepth
 
         // Load MethodTable* into RCX (first arg for RhpNewArray)
         X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
+
+        // CRITICAL: Reserve shadow space to protect any live eval stack data.
+        // After popping numElements, there may still be items on the RSP-based eval stack
+        // (e.g., 'this' in a constructor doing: ldarg.0, ldc.i4 N, newarr, stfld).
+        // When we call RhpNewArray, the callee's shadow space overlaps this!
+        // Fix: move RSP down 32 bytes to put live data safely below shadow space.
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
         // Call RhpNewArray(MethodTable* pMT, int numElements) -> returns array pointer in RAX
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewArray);
@@ -5711,10 +5939,12 @@ public unsafe struct ILCompiler
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
 
+        // Restore RSP after the shadow space reservation
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
         // Push the allocated array reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Arrays are 64-bit pointers
-        _evalStackDepth++;
+        PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
 
         return true;
     }
@@ -5751,8 +5981,7 @@ public unsafe struct ILCompiler
         // Pop value from stack into R8 (save it temporarily)
         // For simplicity, we assume 64-bit value on stack
         X64Emitter.Pop(ref _code, VReg.R3);
-        PopStackType();
-        _evalStackDepth--;
+        PopStackType();  // PopStackType already decrements _evalStackDepth
 
         // Load MethodTable* into RCX (first arg for RhpNewFast)
         X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
@@ -5760,12 +5989,18 @@ public unsafe struct ILCompiler
         // Save RCX (MT address) in R9 for later use
         X64Emitter.MovRR(ref _code, VReg.R4, VReg.R1);
 
+        // Reserve shadow space to protect any live eval stack data
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
         // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
         X64Emitter.CallR(ref _code, VReg.R0);
 
         // Record safe point after call (GC can happen during allocation)
         RecordSafePoint();
+
+        // Restore RSP after the shadow space reservation
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
         // Now RAX = pointer to boxed object
         // Copy the value (in R8) to offset 8 in the object (after MT pointer)
@@ -5810,8 +6045,7 @@ public unsafe struct ILCompiler
 
         // Pop object reference from stack
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
-        _evalStackDepth--;
+        PopStackType();  // PopStackType already decrements _evalStackDepth
 
         // Calculate pointer to value: obj + 8 (skip MT pointer)
         // lea RAX, [RAX + 8]
@@ -5856,8 +6090,7 @@ public unsafe struct ILCompiler
 
         // Pop object reference from stack
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
-        _evalStackDepth--;
+        PopStackType();  // PopStackType already decrements _evalStackDepth
 
         // Load value from offset 8: mov RAX, [RAX + 8]
         X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);
@@ -6145,8 +6378,7 @@ public unsafe struct ILCompiler
     {
         // Pop the size from the evaluation stack
         X64Emitter.Pop(ref _code, VReg.R1);  // RCX = size in bytes
-        PopStackType();
-        _evalStackDepth--;
+        PopStackType();  // PopStackType already decrements _evalStackDepth
 
         // Add 8 for the result pointer we need to push, then align to 16
         // RCX = ((RCX + 8) + 15) & ~15 = (RCX + 23) & ~15
@@ -6559,6 +6791,7 @@ public unsafe struct ILCompiler
     private void* _rhpNewArray;
     private void* _isAssignableTo;
     private void* _getInterfaceMethod;
+    private void* _debugStfld;
 
     // ==================== Funclet Compilation Support ====================
     // EH clause storage for funclet-based exception handling
@@ -6566,11 +6799,12 @@ public unsafe struct ILCompiler
     private int _ehClauseCount;
 
     // Each clause uses 5 ints: flags, tryStart, tryEnd, handlerStart, handlerEnd (IL offsets)
-    private fixed int _ehClauseData[MaxEHClauses * 5];
+    // Heap-allocated as part of _heapBuffers to reduce stack usage
+    private int* _ehClauseData;   // [MaxEHClauses * 5]
 
     // Funclet compilation results (filled by CompileWithFunclets)
     // Each funclet has: nativeStart (code offset), nativeSize, clauseIndex
-    private fixed int _funcletInfo[MaxEHClauses * 3];
+    private int* _funcletInfo;    // [MaxEHClauses * 3]
     private int _funcletCount;
 
     // Flag to indicate we're compiling a funclet (not main method)
@@ -6586,20 +6820,18 @@ public unsafe struct ILCompiler
         _ehClauseCount = 0;
         int count = clauses.Count;
         if (count > MaxEHClauses) count = MaxEHClauses;
+        if (_ehClauseData == null) return;
 
-        fixed (int* data = _ehClauseData)
+        for (int i = 0; i < count; i++)
         {
-            for (int i = 0; i < count; i++)
-            {
-                var clause = clauses.GetClause(i);
-                int idx = i * 5;
-                data[idx + 0] = (int)clause.Flags;
-                data[idx + 1] = (int)clause.TryOffset;
-                data[idx + 2] = (int)(clause.TryOffset + clause.TryLength);
-                data[idx + 3] = (int)clause.HandlerOffset;
-                data[idx + 4] = (int)(clause.HandlerOffset + clause.HandlerLength);
-                _ehClauseCount++;
-            }
+            var clause = clauses.GetClause(i);
+            int idx = i * 5;
+            _ehClauseData[idx + 0] = (int)clause.Flags;
+            _ehClauseData[idx + 1] = (int)clause.TryOffset;
+            _ehClauseData[idx + 2] = (int)(clause.TryOffset + clause.TryLength);
+            _ehClauseData[idx + 3] = (int)clause.HandlerOffset;
+            _ehClauseData[idx + 4] = (int)(clause.HandlerOffset + clause.HandlerLength);
+            _ehClauseCount++;
         }
     }
 
@@ -6608,16 +6840,15 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool IsInsideHandler(int ilOffset)
     {
-        fixed (int* data = _ehClauseData)
+        if (_ehClauseData == null) return false;
+
+        for (int i = 0; i < _ehClauseCount; i++)
         {
-            for (int i = 0; i < _ehClauseCount; i++)
-            {
-                int idx = i * 5;
-                int handlerStart = data[idx + 3];
-                int handlerEnd = data[idx + 4];
-                if (ilOffset >= handlerStart && ilOffset < handlerEnd)
-                    return true;
-            }
+            int idx = i * 5;
+            int handlerStart = _ehClauseData[idx + 3];
+            int handlerEnd = _ehClauseData[idx + 4];
+            if (ilOffset >= handlerStart && ilOffset < handlerEnd)
+                return true;
         }
         return false;
     }
@@ -6628,16 +6859,15 @@ public unsafe struct ILCompiler
     /// </summary>
     private int SkipHandler(int ilOffset)
     {
-        fixed (int* data = _ehClauseData)
+        if (_ehClauseData == null) return -1;
+
+        for (int i = 0; i < _ehClauseCount; i++)
         {
-            for (int i = 0; i < _ehClauseCount; i++)
-            {
-                int idx = i * 5;
-                int handlerStart = data[idx + 3];
-                int handlerEnd = data[idx + 4];
-                if (ilOffset == handlerStart)
-                    return handlerEnd;
-            }
+            int idx = i * 5;
+            int handlerStart = _ehClauseData[idx + 3];
+            int handlerEnd = _ehClauseData[idx + 4];
+            if (ilOffset == handlerStart)
+                return handlerEnd;
         }
         return -1;
     }
@@ -6723,15 +6953,14 @@ public unsafe struct ILCompiler
         _compilingFunclet = true;
         _funcletCount = 0;
 
-        fixed (int* ehData = _ehClauseData)
-        fixed (int* funcletData = _funcletInfo)
+        if (_ehClauseData != null && _funcletInfo != null)
         {
             for (int i = 0; i < _ehClauseCount; i++)
             {
                 int idx = i * 5;
-                int handlerStart = ehData[idx + 3];
-                int handlerEnd = ehData[idx + 4];
-                int flags = ehData[idx + 0];
+                int handlerStart = _ehClauseData[idx + 3];
+                int handlerEnd = _ehClauseData[idx + 4];
+                int flags = _ehClauseData[idx + 0];
 
                 // Record funclet start
                 int funcletCodeStart = _code.Position;
@@ -6783,9 +7012,9 @@ public unsafe struct ILCompiler
 
                 // Store funclet info
                 int funcIdx = _funcletCount * 3;
-                funcletData[funcIdx + 0] = funcletCodeStart;
-                funcletData[funcIdx + 1] = funcletCodeSize;
-                funcletData[funcIdx + 2] = i;  // clause index
+                _funcletInfo[funcIdx + 0] = funcletCodeStart;
+                _funcletInfo[funcIdx + 1] = funcletCodeSize;
+                _funcletInfo[funcIdx + 2] = i;  // clause index
                 _funcletCount++;
 
                 // Restore label/branch tracking
@@ -6811,40 +7040,35 @@ public unsafe struct ILCompiler
         );
 
         // Allocate funclets in method info
-        if (_funcletCount > 0)
+        if (_funcletCount > 0 && _funcletInfo != null && _ehClauseData != null)
         {
             methodInfo.AllocateFunclets(_funcletCount);
 
-            fixed (int* funcletData = _funcletInfo)
-            fixed (int* ehData = _ehClauseData)
+            for (int i = 0; i < _funcletCount; i++)
             {
-                for (int i = 0; i < _funcletCount; i++)
-                {
-                    int funcIdx = i * 3;
-                    int funcletCodeStart = funcletData[funcIdx + 0];
-                    int funcletCodeSize = funcletData[funcIdx + 1];
-                    int clauseIdx = funcletData[funcIdx + 2];
+                int funcIdx = i * 3;
+                int funcletCodeStart = _funcletInfo[funcIdx + 0];
+                int funcletCodeSize = _funcletInfo[funcIdx + 1];
+                int clauseIdx = _funcletInfo[funcIdx + 2];
 
-                    int ehIdx = clauseIdx * 5;
-                    int flags = ehData[ehIdx + 0];
-                    bool isFilter = (flags == (int)ILExceptionClauseFlags.Filter);
+                int ehIdx = clauseIdx * 5;
+                int flags = _ehClauseData[ehIdx + 0];
+                bool isFilter = (flags == (int)ILExceptionClauseFlags.Filter);
 
-                    ulong funcletAddr = codeBase + (ulong)funcletCodeStart;
-                    methodInfo.AddFunclet(funcletAddr, (uint)funcletCodeSize, isFilter, clauseIdx);
-                }
+                ulong funcletAddr = codeBase + (ulong)funcletCodeStart;
+                methodInfo.AddFunclet(funcletAddr, (uint)funcletCodeSize, isFilter, clauseIdx);
             }
         }
 
         // Build native EH clauses
-        fixed (int* ehData = _ehClauseData)
-        fixed (int* funcletData = _funcletInfo)
+        if (_ehClauseData != null && _funcletInfo != null)
         {
             for (int i = 0; i < _ehClauseCount; i++)
             {
                 int ehIdx = i * 5;
-                int flags = ehData[ehIdx + 0];
-                int tryStartIL = ehData[ehIdx + 1];
-                int tryEndIL = ehData[ehIdx + 2];
+                int flags = _ehClauseData[ehIdx + 0];
+                int tryStartIL = _ehClauseData[ehIdx + 1];
+                int tryEndIL = _ehClauseData[ehIdx + 2];
 
                 // Get native try offsets
                 uint nativeTryStart = (uint)GetNativeOffset(tryStartIL);
@@ -6858,10 +7082,10 @@ public unsafe struct ILCompiler
                 for (int f = 0; f < _funcletCount; f++)
                 {
                     int funcIdx = f * 3;
-                    if (funcletData[funcIdx + 2] == i)
+                    if (_funcletInfo[funcIdx + 2] == i)
                     {
-                        nativeHandlerStart = (uint)funcletData[funcIdx + 0];
-                        nativeHandlerEnd = nativeHandlerStart + (uint)funcletData[funcIdx + 1];
+                        nativeHandlerStart = (uint)_funcletInfo[funcIdx + 0];
+                        nativeHandlerEnd = nativeHandlerStart + (uint)_funcletInfo[funcIdx + 1];
                         break;
                     }
                 }

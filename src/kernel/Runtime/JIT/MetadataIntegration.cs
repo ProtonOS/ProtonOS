@@ -298,22 +298,117 @@ public static unsafe class MetadataIntegration
         return count;
     }
 
+    // Static storage for synthetic primitive MethodTables
+    // These are used for newarr to get element sizes
+    private static MethodTable* _primitiveMethodTables;
+    private const int NumPrimitiveTypes = 16;
+
     /// <summary>
-    /// Register primitives by exploiting that array allocation already knows element types.
+    /// Register primitives by creating synthetic MethodTables with correct element sizes.
+    /// These are used by newarr to determine array element sizes.
     /// </summary>
     private static int RegisterPrimitiveViaArrayAllocation()
     {
-        // The JIT's RuntimeHelpers.NewObjArray already handles primitive arrays
-        // by using hardcoded element sizes. The MethodTables for primitives
-        // exist in the AOT-compiled kernel binary but aren't easily accessible
-        // without triggering value type helper generation.
+        // Allocate storage for primitive MethodTables
+        _primitiveMethodTables = (MethodTable*)HeapAllocator.AllocZeroed(
+            (ulong)(NumPrimitiveTypes * sizeof(MethodTable)));
 
-        // For generic class instantiation to work with primitives, we need
-        // to provide the type information through a different mechanism.
-        // This is a known limitation of the current runtime.
+        if (_primitiveMethodTables == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to allocate primitive MethodTables");
+            return 0;
+        }
 
-        // Return 0 - primitive types will use the fallback path
-        return 0;
+        int count = 0;
+
+        // Create synthetic MethodTables for each primitive type
+        // The key field is _usComponentSize which RhpNewArray uses for element size
+
+        // Int32 - 4 bytes
+        _primitiveMethodTables[0]._usComponentSize = 4;
+        _primitiveMethodTables[0]._uBaseSize = 12;  // MT* (8) + value (4)
+        if (RegisterType(WellKnownTypes.Int32, &_primitiveMethodTables[0]))
+            count++;
+
+        // Int64 - 8 bytes
+        _primitiveMethodTables[1]._usComponentSize = 8;
+        _primitiveMethodTables[1]._uBaseSize = 16;  // MT* (8) + value (8)
+        if (RegisterType(WellKnownTypes.Int64, &_primitiveMethodTables[1]))
+            count++;
+
+        // Boolean - 1 byte
+        _primitiveMethodTables[2]._usComponentSize = 1;
+        _primitiveMethodTables[2]._uBaseSize = 9;
+        if (RegisterType(WellKnownTypes.Boolean, &_primitiveMethodTables[2]))
+            count++;
+
+        // Byte - 1 byte
+        _primitiveMethodTables[3]._usComponentSize = 1;
+        _primitiveMethodTables[3]._uBaseSize = 9;
+        if (RegisterType(WellKnownTypes.Byte, &_primitiveMethodTables[3]))
+            count++;
+
+        // Char - 2 bytes
+        _primitiveMethodTables[4]._usComponentSize = 2;
+        _primitiveMethodTables[4]._uBaseSize = 10;
+        if (RegisterType(WellKnownTypes.Char, &_primitiveMethodTables[4]))
+            count++;
+
+        // Double - 8 bytes
+        _primitiveMethodTables[5]._usComponentSize = 8;
+        _primitiveMethodTables[5]._uBaseSize = 16;
+        if (RegisterType(WellKnownTypes.Double, &_primitiveMethodTables[5]))
+            count++;
+
+        // Single - 4 bytes
+        _primitiveMethodTables[6]._usComponentSize = 4;
+        _primitiveMethodTables[6]._uBaseSize = 12;
+        if (RegisterType(WellKnownTypes.Single, &_primitiveMethodTables[6]))
+            count++;
+
+        // Int16 - 2 bytes
+        _primitiveMethodTables[7]._usComponentSize = 2;
+        _primitiveMethodTables[7]._uBaseSize = 10;
+        if (RegisterType(WellKnownTypes.Int16, &_primitiveMethodTables[7]))
+            count++;
+
+        // UInt16 - 2 bytes
+        _primitiveMethodTables[8]._usComponentSize = 2;
+        _primitiveMethodTables[8]._uBaseSize = 10;
+        if (RegisterType(WellKnownTypes.UInt16, &_primitiveMethodTables[8]))
+            count++;
+
+        // UInt32 - 4 bytes
+        _primitiveMethodTables[9]._usComponentSize = 4;
+        _primitiveMethodTables[9]._uBaseSize = 12;
+        if (RegisterType(WellKnownTypes.UInt32, &_primitiveMethodTables[9]))
+            count++;
+
+        // UInt64 - 8 bytes
+        _primitiveMethodTables[10]._usComponentSize = 8;
+        _primitiveMethodTables[10]._uBaseSize = 16;
+        if (RegisterType(WellKnownTypes.UInt64, &_primitiveMethodTables[10]))
+            count++;
+
+        // IntPtr - 8 bytes (64-bit)
+        _primitiveMethodTables[11]._usComponentSize = 8;
+        _primitiveMethodTables[11]._uBaseSize = 16;
+        if (RegisterType(WellKnownTypes.IntPtr, &_primitiveMethodTables[11]))
+            count++;
+
+        // UIntPtr - 8 bytes (64-bit)
+        _primitiveMethodTables[12]._usComponentSize = 8;
+        _primitiveMethodTables[12]._uBaseSize = 16;
+        if (RegisterType(WellKnownTypes.UIntPtr, &_primitiveMethodTables[12]))
+            count++;
+
+        // SByte - 1 byte
+        _primitiveMethodTables[13]._usComponentSize = 1;
+        _primitiveMethodTables[13]._uBaseSize = 9;
+        if (RegisterType(WellKnownTypes.SByte, &_primitiveMethodTables[13]))
+            count++;
+
+        return count;
     }
 
     // ============================================================================
@@ -421,7 +516,9 @@ public static unsafe class MetadataIntegration
             case 0x02:  // TypeDef
                 DebugConsole.Write("[MetaInt] TypeDef 0x");
                 DebugConsole.WriteHex(token);
-                DebugConsole.WriteLine(" not in registry");
+                DebugConsole.Write(" not in registry (asm ");
+                DebugConsole.WriteDecimal(_currentAssemblyId);
+                DebugConsole.WriteLine(")");
                 break;
 
             case 0x01:  // TypeRef
@@ -438,6 +535,41 @@ public static unsafe class MetadataIntegration
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Resolve an element type token to an ARRAY MethodTable for newarr.
+    /// This takes the element type token, resolves it to the element MT,
+    /// then creates/returns an array MT with proper ComponentSize.
+    /// </summary>
+    public static bool ResolveArrayElementType(uint token, out void* arrayMethodTablePtr)
+    {
+        arrayMethodTablePtr = null;
+
+        // First resolve the element type to get its MethodTable
+        void* elementMTPtr;
+        if (!ResolveType(token, out elementMTPtr) || elementMTPtr == null)
+        {
+            DebugConsole.Write("[MetaInt] Failed to resolve array element type 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Get or create an array MethodTable for this element type
+        MethodTable* elementMT = (MethodTable*)elementMTPtr;
+        MethodTable* arrayMT = AssemblyLoader.GetOrCreateArrayMethodTable(elementMT);
+
+        if (arrayMT == null)
+        {
+            DebugConsole.Write("[MetaInt] Failed to create array MT for element type 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        arrayMethodTablePtr = arrayMT;
+        return true;
     }
 
     /// <summary>
@@ -852,11 +984,19 @@ public static unsafe class MetadataIntegration
             // Instance field - calculate offset
             // Need to determine the field's offset within the object
 
+            // Check if this field belongs to a value type
+            // Value types accessed via byref don't have an MT pointer, so offsets start at 0
+            uint typeToken = FindContainingType(rowId);
+            uint typeRow = typeToken & 0x00FFFFFF;
+            bool isValueType = (typeRow > 0) && IsTypeDefValueType(typeRow);
+
             // Check FieldLayout table for explicit offset
             uint explicitOffset;
             if (HasExplicitFieldOffset(rowId, out explicitOffset))
             {
-                result.Offset = (int)explicitOffset + 8;  // +8 for MethodTable pointer
+                // For value types, use explicit offset directly (no MT pointer)
+                // For reference types, add 8 for the MT pointer
+                result.Offset = (int)explicitOffset + (isValueType ? 0 : 8);
             }
             else
             {
@@ -1084,7 +1224,7 @@ public static unsafe class MetadataIntegration
 
         // Check if the method is already compiled in the registry
         uint methodRowId = methodToken & 0x00FFFFFF;
-        CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(methodToken);
+        CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(methodToken, targetAsmId);
 
         bool success = false;
 
@@ -1137,11 +1277,24 @@ public static unsafe class MetadataIntegration
                     byte retType = sigBlob[sigPos];
 
                     // JIT compile the method
+                    DebugConsole.Write("[MetaInt] Before JIT asm ");
+                    DebugConsole.WriteDecimal(targetAsmId);
+                    DebugConsole.Write(" ctx=");
+                    DebugConsole.WriteDecimal(_currentAssemblyId);
+                    DebugConsole.WriteLine();
+
                     JitResult jitResult = Tier0JIT.CompileMethod(targetAsmId, methodToken);
+
+                    DebugConsole.Write("[MetaInt] After JIT asm ");
+                    DebugConsole.WriteDecimal(targetAsmId);
+                    DebugConsole.Write(" ctx=");
+                    DebugConsole.WriteDecimal(_currentAssemblyId);
+                    DebugConsole.WriteLine();
+
                     if (jitResult.Success)
                     {
                         // Method was successfully compiled, try to get from registry again
-                        info = CompiledMethodRegistry.Lookup(methodToken);
+                        info = CompiledMethodRegistry.Lookup(methodToken, targetAsmId);
                         if (info != null)
                         {
                             result.NativeCode = info->NativeCode;
@@ -1235,6 +1388,48 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Check if a TypeDef row represents a value type (extends System.ValueType or System.Enum).
+    /// </summary>
+    private static bool IsTypeDefValueType(uint typeDefRow)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the type's Extends field
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref *_tablesHeader, ref *_tableSizes, typeDefRow);
+
+        // TypeDefOrRef: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (extendsIdx.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get the TypeRef name and namespace
+        uint nameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, extendsIdx.RowId);
+        uint nsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, extendsIdx.RowId);
+
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        byte* ns = MetadataReader.GetString(ref *_metadataRoot, nsIdx);
+
+        if (ns == null || name == null)
+            return false;
+
+        // Check for "System" namespace
+        if (ns[0] != 'S' || ns[1] != 'y' || ns[2] != 's' || ns[3] != 't' ||
+            ns[4] != 'e' || ns[5] != 'm' || ns[6] != 0)
+            return false;
+
+        // Check for "ValueType" or "Enum"
+        if (name[0] == 'V' && name[1] == 'a' && name[2] == 'l' && name[3] == 'u' &&
+            name[4] == 'e' && name[5] == 'T' && name[6] == 'y' && name[7] == 'p' &&
+            name[8] == 'e' && name[9] == 0)
+            return true;
+
+        if (name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
     /// Calculate field offset for auto-layout fields.
     /// Simple sequential layout: fields are placed in order with natural alignment.
     /// </summary>
@@ -1247,12 +1442,17 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
+        // Check if this is a value type (struct/enum)
+        // Value types accessed via byref don't have an MT pointer, so offsets start at 0
+        bool isValueType = IsTypeDefValueType(typeRow);
+
         // Get the type's field list
         uint firstField = MetadataReader.GetTypeDefFieldList(ref *_tablesHeader, ref *_tableSizes, typeRow);
 
         // Calculate offset by summing sizes of preceding fields
-        // Start after MethodTable pointer (8 bytes)
-        int offset = 8;
+        // Reference types start after MethodTable pointer (8 bytes)
+        // Value types start at 0 (no MT pointer in raw struct data)
+        int offset = isValueType ? 0 : 8;
 
         for (uint f = firstField; f < fieldRow; f++)
         {
@@ -1336,8 +1536,8 @@ public static unsafe class MetadataIntegration
     {
         result = default;
 
-        // First check if already in registry
-        CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(token);
+        // First check if already in registry (use assembly-aware lookup)
+        CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(token, _currentAssemblyId);
         if (info != null)
         {
             if (info->IsCompiled)
@@ -1397,7 +1597,7 @@ public static unsafe class MetadataIntegration
             if (!jitResult.Success)
             {
                 // Check if it failed because of recursion (method being compiled)
-                info = CompiledMethodRegistry.Lookup(token);
+                info = CompiledMethodRegistry.Lookup(token, _currentAssemblyId);
                 if (info != null && info->IsBeingCompiled)
                 {
                     // Recursive call - return info for indirect call
@@ -1416,10 +1616,28 @@ public static unsafe class MetadataIntegration
             }
 
             // Now look it up again - should be registered
-            info = CompiledMethodRegistry.Lookup(token);
+            // IMPORTANT: Use the same assembly ID we passed to CompileMethod
+            info = CompiledMethodRegistry.Lookup(token, _currentAssemblyId);
             if (info == null || !info->IsCompiled)
             {
-                DebugConsole.WriteLine("[MetaInt] Method not in registry after JIT");
+                DebugConsole.Write("[MetaInt] Method 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" not in registry after JIT (asm ");
+                DebugConsole.WriteDecimal(_currentAssemblyId);
+                DebugConsole.Write(") - trying token-only lookup: ");
+
+                // Debug: Try lookup without assembly ID to see if it's registered elsewhere
+                var anyInfo = CompiledMethodRegistry.Lookup(token);
+                if (anyInfo != null)
+                {
+                    DebugConsole.Write("found in asm ");
+                    DebugConsole.WriteDecimal(anyInfo->AssemblyId);
+                }
+                else
+                {
+                    DebugConsole.Write("not found anywhere");
+                }
+                DebugConsole.WriteLine();
                 return false;
             }
 
