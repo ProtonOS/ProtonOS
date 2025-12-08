@@ -92,8 +92,9 @@ public static unsafe class RuntimeHelpers
         _isAssignableToPtr = (void*)(delegate*<MethodTable*, MethodTable*, bool>)&TypeHelpers.IsAssignableTo;
         _getInterfaceMethodPtr = (void*)(delegate*<void*, MethodTable*, int, void*>)&TypeHelpers.GetInterfaceMethod;
 
-        // Cache debug helper pointer
+        // Cache debug helper pointers
         _debugStfldPtr = (void*)(delegate*<void*, int, void>)&DebugStfld;
+        _debugStelemStackPtr = (void*)(delegate*<void*, ulong, void*, int, void>)&DebugStelemStack;
 
         // Register MD array helpers with the CompiledMethodRegistry
         RegisterMDArrayHelpers();
@@ -196,6 +197,32 @@ public static unsafe class RuntimeHelpers
         DebugConsole.WriteHex((ulong)objPtr);
         DebugConsole.Write(" off=");
         DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.WriteLine();
+    }
+
+    // Debug helper pointer for stelem
+    private static void* _debugStelemStackPtr;
+
+    /// <summary>
+    /// Get the debug stelem function pointer for tracing stack values.
+    /// Signature: void DebugStelemStack(void* srcAddr, ulong index, void* array, int elemSize)
+    /// </summary>
+    public static void* GetDebugStelemStackPtr() => _debugStelemStackPtr;
+
+    /// <summary>
+    /// Debug helper called from JIT code to trace stelem stack values.
+    /// Shows the actual runtime stack values before stelem executes.
+    /// </summary>
+    public static void DebugStelemStack(void* srcAddr, ulong index, void* array, int elemSize)
+    {
+        DebugConsole.Write("[stelem stack] src=0x");
+        DebugConsole.WriteHex((ulong)srcAddr);
+        DebugConsole.Write(" idx=");
+        DebugConsole.WriteHex(index);
+        DebugConsole.Write(" arr=0x");
+        DebugConsole.WriteHex((ulong)array);
+        DebugConsole.Write(" dest=0x");
+        DebugConsole.WriteHex((ulong)((byte*)array + 16 + (long)index * elemSize));
         DebugConsole.WriteLine();
     }
 

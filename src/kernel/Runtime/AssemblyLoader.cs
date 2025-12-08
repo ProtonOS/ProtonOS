@@ -2419,10 +2419,10 @@ public static unsafe class AssemblyLoader
         ushort elementSize;
         if (elementMT->IsValueType)
         {
-            // Value type: element size is BaseSize (no MT pointer in array elements)
-            // For value types stored in arrays, the size is BaseSize - 8 (subtract MT ptr)
-            // because value type BaseSize includes the boxed object header
-            elementSize = (ushort)(elementMT->BaseSize > 8 ? elementMT->BaseSize - 8 : elementMT->BaseSize);
+            // Value type: element size is BaseSize
+            // In our runtime, value type BaseSize is the raw struct size (no object header)
+            // This is how ComputeInstanceSize works - value types start at size=0
+            elementSize = (ushort)elementMT->BaseSize;
         }
         else
         {

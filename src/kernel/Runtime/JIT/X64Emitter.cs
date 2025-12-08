@@ -1233,7 +1233,8 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     public static void ImulRI(ref CodeBuffer code, VReg dst, int imm)
     {
         var d = Map(dst);
-        EmitRexSingle(ref code, true, d);
+        // Need full REX encoding because the register appears in both reg and r/m fields
+        EmitRex(ref code, true, d, d);
         code.EmitByte(0x69);  // imul r64, r/m64, imm32
         code.EmitByte(ModRM(0b11, (byte)d, (byte)d));  // dst is both dest and source
         code.EmitInt32(imm);

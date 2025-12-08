@@ -57,6 +57,9 @@ public unsafe struct FieldLayoutEntry
     /// <summary>Field metadata token.</summary>
     public uint Token;
 
+    /// <summary>Assembly ID this field belongs to.</summary>
+    public uint AssemblyId;
+
     /// <summary>Byte offset within the object (for instance fields) or 0 for statics.</summary>
     public int Offset;
 
@@ -602,19 +605,14 @@ public static unsafe class MetadataIntegration
 
         // Get BaseSize from MethodTable
         MethodTable* mt = (MethodTable*)mtPtr;
-
-        // For value types, ComponentSize = 0 and we use the type's calculated size
-        // For arrays, ComponentSize holds the element size
-        // BaseSize includes MT pointer overhead (8 bytes), so subtract it for value types
         uint baseSize = mt->_uBaseSize;
 
-        // If it's a value type (non-array, non-object), return the actual struct size
-        // Value type MethodTables typically have BaseSize = struct size + 8 (for boxing purposes)
-        // But for ldelema, we want the raw struct size
-        if (mt->_usComponentSize == 0 && baseSize > 8)
+        // For value types, BaseSize is the raw struct size (no object header overhead)
+        // This is how ComputeInstanceSize works in AssemblyLoader - value types start at size=0
+        if (mt->IsValueType)
         {
-            // This is a value type - subtract the MT pointer overhead
-            return baseSize - 8;
+            // Value type - BaseSize is already the raw struct size
+            return baseSize;
         }
 
         // For reference types, return pointer size
@@ -757,6 +755,7 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Cache a field's layout information for faster subsequent lookups.
+    /// Cache key is (token, assemblyId) pair.
     /// </summary>
     public static void CacheFieldLayout(uint token, int offset, byte size, bool isSigned,
                                          bool isStatic, bool isGCRef, void* staticAddress,
@@ -766,10 +765,13 @@ public static unsafe class MetadataIntegration
         if (!_initialized)
             Initialize();
 
-        // Check if already cached
+        uint asmId = _currentAssemblyId;
+
+        // Check if already cached (match both token AND assembly ID)
         for (int i = 0; i < _fieldLayoutCount; i++)
         {
-            if (_fieldLayoutCache[i].Token == token)
+            if (_fieldLayoutCache[i].Token == token &&
+                _fieldLayoutCache[i].AssemblyId == asmId)
             {
                 // Update existing entry
                 _fieldLayoutCache[i].Offset = offset;
@@ -793,6 +795,7 @@ public static unsafe class MetadataIntegration
         }
 
         _fieldLayoutCache[_fieldLayoutCount].Token = token;
+        _fieldLayoutCache[_fieldLayoutCount].AssemblyId = asmId;
         _fieldLayoutCache[_fieldLayoutCount].Offset = offset;
         _fieldLayoutCache[_fieldLayoutCount].Size = size;
         _fieldLayoutCache[_fieldLayoutCount].IsSigned = isSigned;
@@ -812,9 +815,12 @@ public static unsafe class MetadataIntegration
     {
         entry = default;
 
+        // Cache key is (token, assemblyId) pair - same token in different assemblies
+        // refers to different fields
         for (int i = 0; i < _fieldLayoutCount; i++)
         {
-            if (_fieldLayoutCache[i].Token == token)
+            if (_fieldLayoutCache[i].Token == token &&
+                _fieldLayoutCache[i].AssemblyId == _currentAssemblyId)
             {
                 entry = _fieldLayoutCache[i];
                 return true;

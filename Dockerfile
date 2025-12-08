@@ -64,6 +64,10 @@ RUN mkdir -p /opt/bflat && \
     chmod +x /opt/bflat/bflat && \
     ln -sf /opt/bflat/bflat /usr/local/bin/bflat
 
+# Install dotnet-ildasm tool globally
+RUN dotnet tool install --global dotnet-ildasm
+ENV PATH="${PATH}:/root/.dotnet/tools"
+
 # Clean up build artifacts
 RUN rm -rf /build/bflat /nuget-cache
 

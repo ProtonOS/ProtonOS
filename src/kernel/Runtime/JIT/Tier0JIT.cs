@@ -218,16 +218,28 @@ public static unsafe class Tier0JIT
         // Parse local variable types for value type handling in ldfld
         if (body.LocalVarSigToken != 0 && localCount > 0)
         {
-            // Allocate temp buffer for local types (on stack, small)
+            // Allocate temp buffer for local types and sizes (on stack, small)
             const int MaxLocalTypesOnStack = 64;
             bool* localTypes = stackalloc bool[MaxLocalTypesOnStack];
+            ushort* localSizes = stackalloc ushort[MaxLocalTypesOnStack];
             for (int i = 0; i < MaxLocalTypesOnStack; i++)
+            {
                 localTypes[i] = false;
+                localSizes[i] = 0;
+            }
 
-            int parsedCount = ParseLocalVarSigTypes(assembly, body.LocalVarSigToken, localTypes, MaxLocalTypesOnStack);
+            int parsedCount = ParseLocalVarSigTypes(assembly, body.LocalVarSigToken, localTypes, localSizes, MaxLocalTypesOnStack);
             if (parsedCount > 0)
             {
                 compiler.SetLocalTypes(localTypes, parsedCount);
+                compiler.SetLocalTypeSizes(localSizes, parsedCount);
+            }
+            else
+            {
+                // DEBUG: Log when parsing fails
+                DebugConsole.Write("[Tier0JIT] ParseLocalVarSigTypes returned 0 for token 0x");
+                DebugConsole.WriteHex(body.LocalVarSigToken);
+                DebugConsole.WriteLine();
             }
         }
 
@@ -372,14 +384,15 @@ public static unsafe class Tier0JIT
     }
 
     /// <summary>
-    /// Parse a LocalVarSig token to determine which locals are value types.
+    /// Parse a LocalVarSig token to determine which locals are value types and their sizes.
     /// </summary>
     /// <param name="assembly">Assembly containing the method</param>
     /// <param name="token">LocalVarSig token (0x11xxxxxx)</param>
     /// <param name="isValueType">Output array - true if local is a value type</param>
+    /// <param name="typeSize">Output array - size of local's type (for value types)</param>
     /// <param name="maxLocals">Maximum number of locals to process</param>
     /// <returns>Number of locals parsed</returns>
-    private static int ParseLocalVarSigTypes(LoadedAssembly* assembly, uint token, bool* isValueType, int maxLocals)
+    private static int ParseLocalVarSigTypes(LoadedAssembly* assembly, uint token, bool* isValueType, ushort* typeSize, int maxLocals)
     {
         // LocalVarSig token is a StandAloneSig token (0x11xxxxxx)
         uint tableId = (token >> 24) & 0xFF;
@@ -405,6 +418,18 @@ public static unsafe class Tier0JIT
         uint count = MetadataReader.ReadCompressedUInt(ref ptr);
         int numLocals = (int)(count < (uint)maxLocals ? count : (uint)maxLocals);
 
+        // Debug: print raw signature bytes for all methods
+        DebugConsole.Write("[ParseLocal] sig(");
+        DebugConsole.WriteHex(count);
+        DebugConsole.Write(" locals): ");
+        byte* dbgPtr = sigBlob;
+        for (uint k = 0; k < sigLen && k < 20; k++)
+        {
+            DebugConsole.WriteHex(*dbgPtr++);
+            DebugConsole.Write(" ");
+        }
+        DebugConsole.WriteLine();
+
         // Parse each local's type
         for (int i = 0; i < numLocals && ptr < end; i++)
         {
@@ -423,28 +448,78 @@ public static unsafe class Tier0JIT
             // Read the element type
             byte elemType = *ptr++;
 
+            // Debug: trace parsing
+            DebugConsole.Write("[ParseLocal] i=");
+            DebugConsole.WriteHex((ulong)i);
+            DebugConsole.Write(" elem=");
+            DebugConsole.WriteHex(elemType);
+
             // ValueType (0x11) or struct-like types are value types
             // Note: byref to a value type is a pointer, not a value type itself
             if (!isByRef && (elemType == 0x11 || elemType == 0x12)) // ValueType or Class that's actually a struct
             {
+                DebugConsole.Write(" VALUETYPE");
                 isValueType[i] = (elemType == 0x11); // Only ValueType is truly a value type
-                // Skip the TypeDefOrRef token
-                MetadataReader.ReadCompressedUInt(ref ptr);
+                // Read the TypeDefOrRef token and compute size
+                uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                // Convert TypeDefOrRef encoded token to full token
+                // TypeDefOrRef encoding: lower 2 bits = tag, upper bits = RID
+                // tag 0 = TypeDef (0x02), tag 1 = TypeRef (0x01), tag 2 = TypeSpec (0x1B)
+                uint tag = typeDefOrRef & 0x03;
+                uint typeRid = typeDefOrRef >> 2;
+                uint fullToken = 0;
+                if (tag == 0)
+                    fullToken = 0x02000000 | typeRid;  // TypeDef
+                else if (tag == 1)
+                    fullToken = 0x01000000 | typeRid;  // TypeRef
+                else if (tag == 2)
+                    fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+                if (typeSize != null && isValueType[i])
+                {
+                    uint size = MetadataIntegration.GetTypeSize(fullToken);
+                    typeSize[i] = (ushort)size;
+                }
             }
             else if (!isByRef && (elemType >= 0x02 && elemType <= 0x0D))
             {
+                DebugConsole.Write(" PRIM");
                 // Primitive types: Boolean, Char, I1, U1, I2, U2, I4, U4, I8, U8, R4, R8
                 // These are value types
                 isValueType[i] = true;
+                // Set size for primitive types
+                if (typeSize != null)
+                {
+                    switch (elemType)
+                    {
+                        case 0x02: typeSize[i] = 1; break;  // Boolean
+                        case 0x03: typeSize[i] = 2; break;  // Char
+                        case 0x04: typeSize[i] = 1; break;  // I1
+                        case 0x05: typeSize[i] = 1; break;  // U1
+                        case 0x06: typeSize[i] = 2; break;  // I2
+                        case 0x07: typeSize[i] = 2; break;  // U2
+                        case 0x08: typeSize[i] = 4; break;  // I4
+                        case 0x09: typeSize[i] = 4; break;  // U4
+                        case 0x0A: typeSize[i] = 8; break;  // I8
+                        case 0x0B: typeSize[i] = 8; break;  // U8
+                        case 0x0C: typeSize[i] = 4; break;  // R4
+                        case 0x0D: typeSize[i] = 8; break;  // R8
+                        default: typeSize[i] = 8; break;
+                    }
+                }
             }
             else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
             {
+                DebugConsole.Write(" SZARRAY");
                 // Single-dimension array - skip element type
                 isValueType[i] = false;
+                typeSize[i] = 8; // Arrays are references (8 bytes on x64)
                 // Skip the element type
                 if (ptr < end)
                 {
                     byte arrElemType = *ptr++;
+                    DebugConsole.Write(" arrElem=");
+                    DebugConsole.WriteHex(arrElemType);
                     if (arrElemType == 0x11 || arrElemType == 0x12) // ValueType or Class
                         MetadataReader.ReadCompressedUInt(ref ptr);
                 }
@@ -477,14 +552,17 @@ public static unsafe class Tier0JIT
             }
             else
             {
+                DebugConsole.Write(" OTHER");
                 // Other types (Class, Object, String, SzArray, Ptr, etc.) are reference types
                 isValueType[i] = false;
                 // Skip any following token if it's a ValueType or Class
                 if (elemType == 0x12) // Class
                     MetadataReader.ReadCompressedUInt(ref ptr);
             }
+            DebugConsole.WriteLine(); // End of this local's debug line
         }
 
+        DebugConsole.WriteLine();
         return numLocals;
     }
 

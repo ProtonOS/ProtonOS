@@ -52,6 +52,9 @@ public static class TestRunner
         // Field tests
         RunFieldTests();
 
+        // Struct tests - value type field access
+        RunStructTests();
+
         // String tests - uses AOT method registry for String.get_Length, String.Concat
         RunStringTests();
 
@@ -185,6 +188,34 @@ public static class TestRunner
         RecordResult(FieldTests.TestStaticField() == 42);
         RecordResult(FieldTests.TestStaticFieldIncrement() == 43);
         RecordResult(FieldTests.TestMultipleStaticFields() == 100);
+    }
+
+    private static void RunStructTests()
+    {
+        // Basic struct field access tests
+        RecordResult(StructTests.TestStructLocalFieldWrite() == 42);
+        RecordResult(StructTests.TestStructLocalFieldSum() == 30);
+        RecordResult(StructTests.TestStructPassByValue() == 100);
+        RecordResult(StructTests.TestStructOutParam() == 42);
+
+        // Object initializer tests
+        RecordResult(StructTests.TestObjectInitializer() == 30);
+        RecordResult(StructTests.TestStindI8() == 100);  // Test stind.i8 pattern first
+        RecordResult(StructTests.TestSimpleStobj() == 300);  // RE-ENABLED for debugging
+        RecordResult(StructTests.TestObjectInitializerOut() == 30);  // TODO: Fix initobj+stobj interaction
+
+        // Struct array tests (ldelem/stelem with type token)
+        RecordResult(StructTests.TestStructArrayStore() == 10);
+        RecordResult(StructTests.TestStructArrayLoad() == 70);
+        RecordResult(StructTests.TestStructArrayCopy() == 100);
+        RecordResult(StructTests.TestStructArrayMultiple() == 111);
+
+        // Large struct tests (structs > 8 bytes)
+        RecordResult(StructTests.TestLargeStructFields() == 60);
+        RecordResult(StructTests.TestLargeStructCopy() == 600);
+        RecordResult(StructTests.TestLargeStructArrayStore() == 1);  // Struct first, array second
+        RecordResult(StructTests.TestLargeStructArrayLoad() == 60);
+        RecordResult(StructTests.TestLargeStructArrayCopy() == 100);
     }
 }
 
@@ -740,6 +771,258 @@ public struct SimpleStruct
     public int Sum()
     {
         return X + Y;
+    }
+}
+
+// Large struct for testing > 8 byte struct operations (24 bytes)
+public struct LargeStruct
+{
+    public long A;
+    public long B;
+    public long C;
+}
+
+// =============================================================================
+// Struct Tests - Value Type Field Access
+// =============================================================================
+
+public static class StructTests
+{
+    // Test writing to a struct field via ldloca
+    public static int TestStructLocalFieldWrite()
+    {
+        SimpleStruct s;
+        s.X = 42;
+        s.Y = 0;
+        return s.X;  // 42
+    }
+
+    // Test reading both fields
+    public static int TestStructLocalFieldSum()
+    {
+        SimpleStruct s;
+        s.X = 10;
+        s.Y = 20;
+        return s.X + s.Y;  // 30
+    }
+
+    // Test passing struct by value to a method
+    public static int TestStructPassByValue()
+    {
+        SimpleStruct s;
+        s.X = 40;
+        s.Y = 60;
+        return GetStructSum(s);  // 100
+    }
+
+    private static int GetStructSum(SimpleStruct s)
+    {
+        return s.X + s.Y;
+    }
+
+    // Test struct out parameter
+    public static int TestStructOutParam()
+    {
+        SimpleStruct s;
+        InitStruct(out s);
+        return s.X;  // 42
+    }
+
+    private static void InitStruct(out SimpleStruct s)
+    {
+        // Use explicit assignment instead of object initializer (JIT workaround)
+        s = default;
+        s.X = 42;
+        s.Y = 0;
+    }
+
+    // Test object initializer syntax (dup + initobj + stfld sequence)
+    // This tests the TOS caching bug with dup followed by initobj
+    public static int TestObjectInitializer()
+    {
+        // This generates: ldloca, dup, initobj, ldc.i4, stfld, ldc.i4, stfld, pop
+        SimpleStruct s = new SimpleStruct { X = 10, Y = 20 };
+        return s.X + s.Y;  // Expected: 30
+    }
+
+    // Test object initializer with out parameter (more complex)
+    public static int TestObjectInitializerOut()
+    {
+        SimpleStruct s;
+        InitStructWithInitializer(out s);
+        return s.X + s.Y;  // Expected: 30
+    }
+
+    private static void InitStructWithInitializer(out SimpleStruct s)
+    {
+        // This uses object initializer syntax on an out parameter
+        // Generates: ldarg.0, ldloca.s 0, initobj, ldloca.s 0, ldc.i4, stfld,
+        //            ldloca.s 0, ldc.i4, stfld, ldloc.0, stobj
+        s = new SimpleStruct { X = 10, Y = 20 };
+    }
+
+    // Test simple stobj without object initializer complexity
+    public static int TestSimpleStobj()
+    {
+        SimpleStruct src;
+        src.X = 100;
+        src.Y = 200;
+        SimpleStruct dest;
+        CopyStructToOut(out dest, src);
+        return dest.X + dest.Y;  // Expected: 300
+    }
+
+    private static void CopyStructToOut(out SimpleStruct dest, SimpleStruct src)
+    {
+        // This should generate: ldarg.0, ldarg.1, stobj
+        // Simpler stobj test without initobj/temp local complexity
+        dest = src;
+    }
+
+    // Test stind.i8 (for long out param) - same IL pattern as stobj
+    public static int TestStindI8()
+    {
+        long src = 0x0000006400000064;  // 100 in both halves
+        long dest;
+        CopyLongToOut(out dest, src);
+        return (int)(dest & 0xFFFFFFFF);  // Expected: 100
+    }
+
+    private static void CopyLongToOut(out long dest, long src)
+    {
+        // This should generate: ldarg.0, ldarg.1, stind.i8, ret
+        // Same pattern as stobj but for primitive type
+        dest = src;
+    }
+
+    // =========================================================================
+    // Struct Array Tests - Tests ldelem/stelem with value type token
+    // =========================================================================
+
+    // Test storing struct to array (stelem with type token)
+    public static int TestStructArrayStore()
+    {
+        SimpleStruct[] arr = new SimpleStruct[2];
+        SimpleStruct s;
+        s.X = 10;
+        s.Y = 20;
+        arr[0] = s;  // stelem with SimpleStruct token
+        return arr[0].X;  // Expected: 10
+    }
+
+    // Test loading struct from array (ldelem with type token)
+    public static int TestStructArrayLoad()
+    {
+        SimpleStruct[] arr = new SimpleStruct[2];
+        arr[0].X = 30;
+        arr[0].Y = 40;
+        SimpleStruct loaded = arr[0];  // ldelem with SimpleStruct token
+        return loaded.X + loaded.Y;  // Expected: 70
+    }
+
+    // Test that loading from array creates a copy (not a reference)
+    public static int TestStructArrayCopy()
+    {
+        SimpleStruct[] arr = new SimpleStruct[1];
+        arr[0].X = 100;
+        arr[0].Y = 200;
+
+        SimpleStruct copy = arr[0];  // ldelem - should copy
+        copy.X = 999;  // Modify copy
+
+        return arr[0].X;  // Expected: 100 (original unchanged)
+    }
+
+    // Test struct array with multiple elements
+    public static int TestStructArrayMultiple()
+    {
+        SimpleStruct[] arr = new SimpleStruct[3];
+
+        SimpleStruct s0;
+        s0.X = 1;
+        s0.Y = 2;
+        arr[0] = s0;
+
+        SimpleStruct s1;
+        s1.X = 10;
+        s1.Y = 20;
+        arr[1] = s1;
+
+        SimpleStruct s2;
+        s2.X = 100;
+        s2.Y = 200;
+        arr[2] = s2;
+
+        return arr[0].X + arr[1].X + arr[2].X;  // Expected: 1 + 10 + 100 = 111
+    }
+
+    // =========================================================================
+    // Large Struct Tests - Tests structs > 8 bytes
+    // =========================================================================
+
+    // Test large struct field access
+    public static int TestLargeStructFields()
+    {
+        LargeStruct ls;
+        ls.A = 10;
+        ls.B = 20;
+        ls.C = 30;
+        return (int)(ls.A + ls.B + ls.C);  // Expected: 60
+    }
+
+    // Test large struct copy via stobj
+    public static int TestLargeStructCopy()
+    {
+        LargeStruct src;
+        src.A = 100;
+        src.B = 200;
+        src.C = 300;
+
+        LargeStruct dest;
+        CopyLargeStructToOut(out dest, src);
+        return (int)(dest.A + dest.B + dest.C);  // Expected: 600
+    }
+
+    private static void CopyLargeStructToOut(out LargeStruct dest, LargeStruct src)
+    {
+        dest = src;  // stobj for large struct
+    }
+
+    // Test large struct array store (swapped order to diagnose local parsing)
+    public static int TestLargeStructArrayStore()
+    {
+        LargeStruct ls;  // local 0: struct (value type)
+        LargeStruct[] arr = new LargeStruct[2];  // local 1: array (ref type)
+        ls.A = 1;
+        ls.B = 2;
+        ls.C = 3;
+        arr[0] = ls;  // stelem for large struct
+        return (int)arr[0].A;  // Expected: 1
+    }
+
+    // Test large struct array load
+    public static int TestLargeStructArrayLoad()
+    {
+        LargeStruct[] arr = new LargeStruct[2];
+        arr[0].A = 10;
+        arr[0].B = 20;
+        arr[0].C = 30;
+        LargeStruct loaded = arr[0];  // ldelem for large struct
+        return (int)(loaded.A + loaded.B + loaded.C);  // Expected: 60
+    }
+
+    // Test large struct array copy semantics
+    public static int TestLargeStructArrayCopy()
+    {
+        LargeStruct[] arr = new LargeStruct[1];
+        arr[0].A = 100;
+        arr[0].B = 200;
+        arr[0].C = 300;
+
+        LargeStruct copy = arr[0];  // ldelem - should copy
+        copy.A = 999;  // Modify copy
+
+        return (int)arr[0].A;  // Expected: 100 (original unchanged)
     }
 }
 
