@@ -52,6 +52,9 @@ public unsafe struct CompiledMethodInfo
     /// <summary>Return type classification.</summary>
     public ReturnKind ReturnKind;
 
+    /// <summary>Size of return struct in bytes (only valid when ReturnKind is Struct).</summary>
+    public ushort ReturnStructSize;
+
     /// <summary>True if this is an instance method (has implicit 'this').</summary>
     public bool HasThis;
 
@@ -466,7 +469,7 @@ public static unsafe class CompiledMethodRegistry
     /// This prevents infinite recursion when compiling recursive methods.
     /// Returns the reserved entry, or null if the method is already being compiled.
     /// </summary>
-    public static CompiledMethodInfo* ReserveForCompilation(uint token, byte argCount, ReturnKind returnKind, bool hasThis, uint assemblyId = 0)
+    public static CompiledMethodInfo* ReserveForCompilation(uint token, byte argCount, ReturnKind returnKind, ushort returnStructSize, bool hasThis, uint assemblyId = 0)
     {
         if (!_initialized)
             Initialize();
@@ -492,6 +495,7 @@ public static unsafe class CompiledMethodRegistry
             existing->IsBeingCompiled = true;
             existing->ArgCount = argCount;
             existing->ReturnKind = returnKind;
+            existing->ReturnStructSize = returnStructSize;
             existing->HasThis = hasThis;
             return existing;
         }
@@ -517,6 +521,7 @@ public static unsafe class CompiledMethodRegistry
         entry->NativeCode = null;  // Will be set after compilation
         entry->ArgCount = argCount;
         entry->ReturnKind = returnKind;
+        entry->ReturnStructSize = returnStructSize;
         entry->HasThis = hasThis;
         entry->IsCompiled = false;
         entry->IsBeingCompiled = true;  // Mark as being compiled

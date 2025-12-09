@@ -91,7 +91,7 @@ public static unsafe class VirtioBlkEntry
                 Debug.WriteHex((uint)(ulong)elemPtr);
             }
 
-            // Use out parameter to avoid JIT struct return bugs
+            // Read and program the BAR, storing result directly in the array
             ReadAndProgramBar(bus, device, function, i, out pciDevice.Bars[i]);
 
             // Debug: show what was stored
@@ -154,7 +154,6 @@ public static unsafe class VirtioBlkEntry
     /// <summary>
     /// Read a PCI BAR, program it if needed, and store the BAR info.
     /// This handles BARs that UEFI didn't program with addresses.
-    /// Uses out parameter to avoid JIT struct return bugs.
     /// </summary>
     private static unsafe void ReadAndProgramBar(byte bus, byte device, byte function, int barIndex, out PciBar result)
     {
@@ -299,7 +298,7 @@ public static unsafe class VirtioBlkEntry
             Debug.WriteHex((uint)baseAddr);
         }
 
-        // Use explicit field assignment to avoid JIT object initializer bug
+        // Initialize result struct
         result = default;
         result.Index = barIndex;
         result.BaseAddress = baseAddr;
@@ -311,7 +310,6 @@ public static unsafe class VirtioBlkEntry
 
     /// <summary>
     /// Read a PCI I/O BAR and its size (used only for I/O BARs).
-    /// Uses out parameter to avoid JIT struct return bugs.
     /// </summary>
     private static void ReadBar(byte bus, byte device, byte function, int barIndex, out PciBar result)
     {

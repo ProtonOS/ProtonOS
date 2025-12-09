@@ -1375,6 +1375,7 @@ public static unsafe class MetadataIntegration
             result.NativeCode = info->NativeCode;
             result.ArgCount = info->ArgCount;
             result.ReturnKind = info->ReturnKind;
+            result.ReturnStructSize = info->ReturnStructSize;
             result.HasThis = info->HasThis;
             result.IsValid = true;
             result.IsVirtual = info->IsVirtual;
@@ -1441,6 +1442,7 @@ public static unsafe class MetadataIntegration
                             result.NativeCode = info->NativeCode;
                             result.ArgCount = info->ArgCount;
                             result.ReturnKind = info->ReturnKind;
+                            result.ReturnStructSize = info->ReturnStructSize;
                             result.HasThis = info->HasThis;
                             result.IsValid = true;
                             result.IsVirtual = info->IsVirtual;
@@ -1867,6 +1869,7 @@ public static unsafe class MetadataIntegration
                 result.NativeCode = info->NativeCode;
                 result.ArgCount = info->ArgCount;
                 result.ReturnKind = info->ReturnKind;
+                result.ReturnStructSize = info->ReturnStructSize;
                 result.HasThis = info->HasThis;
                 result.IsValid = true;
                 result.IsVirtual = info->IsVirtual;
@@ -1889,6 +1892,7 @@ public static unsafe class MetadataIntegration
                 result.NativeCode = null;  // Will be filled in later
                 result.ArgCount = info->ArgCount;
                 result.ReturnKind = info->ReturnKind;
+                result.ReturnStructSize = info->ReturnStructSize;
                 result.HasThis = info->HasThis;
                 result.IsValid = true;
                 result.IsVirtual = false;
@@ -1966,6 +1970,7 @@ public static unsafe class MetadataIntegration
             result.NativeCode = info->NativeCode;
             result.ArgCount = info->ArgCount;
             result.ReturnKind = info->ReturnKind;
+            result.ReturnStructSize = info->ReturnStructSize;
             result.HasThis = info->HasThis;
             result.IsValid = true;
             result.IsVirtual = info->IsVirtual;

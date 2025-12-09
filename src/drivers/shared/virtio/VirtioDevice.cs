@@ -104,8 +104,6 @@ public abstract unsafe class VirtioDevice : IDisposable
         Debug.WriteHex(0xCAFE0010u);
 
         // Enable memory space and bus mastering
-        // NOTE: Avoid local struct variables - JIT has a bug with ldfld on value types
-        // Access struct fields through the object reference directly
         byte bus = _pciDevice.Address.Bus;
         byte device = _pciDevice.Address.Device;
         byte function = _pciDevice.Address.Function;
@@ -207,18 +205,16 @@ public abstract unsafe class VirtioDevice : IDisposable
 
         for (int i = 0; i < 6; i++)
         {
-            // WORKAROUND: JIT bug - don't copy value type from array to local variable
-            // Access array elements directly via indexing to avoid broken struct copy
-
             // Debug: Show BAR info
             Debug.WriteHex(0xBAF00010u);
             Debug.WriteHex((uint)i);
 
-            // Access fields directly from array element - avoid intermediate local
-            ulong baseAddr = bars[i].BaseAddress;
-            ulong size = bars[i].Size;
-            bool isValid = bars[i].IsValid;
-            bool isIO = bars[i].IsIO;
+            // Copy BAR struct to local variable (JIT now handles this correctly)
+            PciBar bar = bars[i];
+            ulong baseAddr = bar.BaseAddress;
+            ulong size = bar.Size;
+            bool isValid = bar.IsValid;
+            bool isIO = bar.IsIO;
 
             Debug.WriteHex((uint)(baseAddr >> 32));
             Debug.WriteHex((uint)baseAddr);
@@ -247,13 +243,12 @@ public abstract unsafe class VirtioDevice : IDisposable
 
     /// <summary>
     /// Find virtio PCI capabilities.
-    /// Uses simple approach to work around JIT if-else chain bugs.
     /// </summary>
     private bool FindCapabilities()
     {
         Debug.WriteHex(0xCAC00001u);
 
-        // Extract address components to avoid JIT chained field access issues
+        // Extract address components for convenience
         var addr = _pciDevice.Address;
         byte bus = addr.Bus;
         byte device = addr.Device;
@@ -266,22 +261,14 @@ public abstract unsafe class VirtioDevice : IDisposable
         Debug.WriteHex(0xCAC00003u);
         Debug.WriteHex((uint)capPtr);
 
-        // Extract BAR addresses array to avoid repeated field access
+        // Extract BAR addresses array for convenience
         var barAddrs = _barVirtAddr;
 
-        // Iterate through capabilities using a simple for loop with index
-        // (avoid while loop with multiple conditions - JIT has issues)
-        for (int i = 0; i < 10; i++)
+        // Iterate through all PCI capabilities
+        while (capPtr != 0)
         {
-            // Check if we're done
-            if (capPtr == 0)
-            {
-                Debug.WriteHex(0xCAC00050u); // capPtr is 0, exiting
-                break;
-            }
-
             Debug.WriteHex(0xCAC00010u);
-            Debug.WriteHex((uint)i);
+            Debug.WriteHex((uint)capPtr);
 
             // Read capability structure
             byte capLen = PCI.ReadConfig8(bus, device, function, (ushort)(capPtr + 2));
@@ -303,8 +290,7 @@ public abstract unsafe class VirtioDevice : IDisposable
             Debug.WriteHex((uint)cfgType);
             Debug.WriteHex((uint)bar);
 
-            // Process capability by type - use separate blocks instead of if-else chain
-            // to work around JIT bug that executes all branches
+            // Process capability by type
             ProcessCapability(cfgType, bar, offset, length, capPtr, bus, device, function, barAddrs);
 
             // Get next capability pointer
@@ -322,7 +308,7 @@ public abstract unsafe class VirtioDevice : IDisposable
     }
 
     /// <summary>
-    /// Process a single capability - separate method to isolate JIT issues.
+    /// Process a single virtio capability.
     /// </summary>
     private void ProcessCapability(byte cfgType, byte bar, uint offset, uint length,
                                    byte capPtr, byte bus, byte device, byte function, ulong[] barAddrs)
@@ -343,51 +329,42 @@ public abstract unsafe class VirtioDevice : IDisposable
 
         Debug.WriteHex(0xCAC00062u); // Valid BAR
 
-        // Handle each type separately using explicit comparisons
-        // Avoid if-else chains completely
-
-        // Type 1: CommonCfg
-        if (cfgType == 1)
+        // Handle capability by type using switch (JIT now handles if-else chains correctly)
+        switch (cfgType)
         {
-            _commonCfg = (byte*)(barAddr + offset);
-            _commonCfgBar = bar;
-            _commonCfgOffset = offset;
-            _commonCfgLength = length;
-            Debug.WriteHex(0xCAC00020u); // CommonCfg found
-            return; // Early return to avoid executing other comparisons
-        }
+            case 1: // CommonCfg
+                _commonCfg = (byte*)(barAddr + offset);
+                _commonCfgBar = bar;
+                _commonCfgOffset = offset;
+                _commonCfgLength = length;
+                Debug.WriteHex(0xCAC00020u); // CommonCfg found
+                break;
 
-        // Type 2: NotifyCfg
-        if (cfgType == 2)
-        {
-            _notifyCfg = (byte*)(barAddr + offset);
-            _notifyBar = bar;
-            _notifyOffset = offset;
-            _notifyMultiplier = PCI.ReadConfig32(bus, device, function, (ushort)(capPtr + 16));
-            Debug.WriteHex(0xCAC00021u); // NotifyCfg found
-            return;
-        }
+            case 2: // NotifyCfg
+                _notifyCfg = (byte*)(barAddr + offset);
+                _notifyBar = bar;
+                _notifyOffset = offset;
+                _notifyMultiplier = PCI.ReadConfig32(bus, device, function, (ushort)(capPtr + 16));
+                Debug.WriteHex(0xCAC00021u); // NotifyCfg found
+                break;
 
-        // Type 3: IsrCfg
-        if (cfgType == 3)
-        {
-            _isrCfg = (byte*)(barAddr + offset);
-            Debug.WriteHex(0xCAC00022u); // IsrCfg found
-            return;
-        }
+            case 3: // IsrCfg
+                _isrCfg = (byte*)(barAddr + offset);
+                Debug.WriteHex(0xCAC00022u); // IsrCfg found
+                break;
 
-        // Type 4: DeviceCfg
-        if (cfgType == 4)
-        {
-            _deviceCfg = (byte*)(barAddr + offset);
-            _deviceCfgLength = length;
-            Debug.WriteHex(0xCAC00023u); // DeviceCfg found
-            return;
-        }
+            case 4: // DeviceCfg
+                _deviceCfg = (byte*)(barAddr + offset);
+                _deviceCfgLength = length;
+                Debug.WriteHex(0xCAC00023u); // DeviceCfg found
+                break;
 
-        // Unknown type - just skip
-        Debug.WriteHex(0xCAC00024u);
-        Debug.WriteHex((uint)cfgType);
+            default:
+                // Unknown type - just skip
+                Debug.WriteHex(0xCAC00024u);
+                Debug.WriteHex((uint)cfgType);
+                break;
+        }
     }
 
     /// <summary>

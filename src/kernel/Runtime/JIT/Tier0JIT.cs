@@ -142,6 +142,7 @@ public static unsafe class Tier0JIT
         byte* sigBlob = MetadataReader.GetBlob(ref assembly->Metadata, sigIdx, out uint sigLen);
         int paramCount = 0;  // Signature's ParamCount (not including 'this')
         ReturnKind returnKind = ReturnKind.Void;
+        ushort returnStructSize = 0;
         bool hasThis = false;
         if (sigBlob != null && sigLen > 0)
         {
@@ -150,6 +151,12 @@ public static unsafe class Tier0JIT
                 paramCount = (int)methodSig.ParamCount;
                 hasThis = methodSig.HasThis;
                 returnKind = GetReturnKind(ref methodSig.ReturnType);
+            }
+            // Parse return type size for struct returns
+            if (returnKind == ReturnKind.Struct)
+            {
+                bool isValueType;
+                ParseMethodSigReturnType(sigBlob, sigLen, out isValueType, out returnStructSize);
             }
         }
 
@@ -186,7 +193,7 @@ public static unsafe class Tier0JIT
         // Store paramCount (not including 'this') because CompileNewobj needs
         // to know how many explicit args to pop from the stack.
         var reserved = CompiledMethodRegistry.ReserveForCompilation(
-            methodToken, (byte)paramCount, returnKind, hasThis, assemblyId);
+            methodToken, (byte)paramCount, returnKind, returnStructSize, hasThis, assemblyId);
         if (reserved == null)
         {
             // Already being compiled - this is a recursive call
@@ -255,6 +262,24 @@ public static unsafe class Tier0JIT
             if (parsedArgCount > 0)
             {
                 compiler.SetArgTypes(argTypes, parsedArgCount);
+            }
+        }
+
+        // Parse return type for struct return handling
+        if (sigBlob != null)
+        {
+            bool returnIsValueType = false;
+            ushort returnTypeSize = 0;
+            ParseMethodSigReturnType(sigBlob, sigLen, out returnIsValueType, out returnTypeSize);
+            if (returnIsValueType && returnTypeSize > 0)
+            {
+                compiler.SetReturnType(true, returnTypeSize);
+                if (returnTypeSize > 8)
+                {
+                    DebugConsole.Write("[Tier0JIT] Struct return: size=");
+                    DebugConsole.WriteDecimal(returnTypeSize);
+                    DebugConsole.WriteLine();
+                }
             }
         }
 
@@ -611,6 +636,101 @@ public static unsafe class Tier0JIT
         }
 
         return argIndex;
+    }
+
+    /// <summary>
+    /// Parse the return type from a method signature and determine if it's a value type and its size.
+    /// </summary>
+    private static void ParseMethodSigReturnType(byte* sigBlob, uint sigLen,
+                                                  out bool isValueType, out ushort typeSize)
+    {
+        isValueType = false;
+        typeSize = 0;
+
+        if (sigBlob == null || sigLen < 2)
+            return;
+
+        byte* ptr = sigBlob;
+        byte* end = sigBlob + sigLen;
+
+        // Skip calling convention
+        ptr++;
+
+        // Skip param count (compressed uint)
+        MetadataReader.ReadCompressedUInt(ref ptr);
+
+        if (ptr >= end)
+            return;
+
+        // Now at return type - parse it
+        // Handle BYREF modifier - byref is a pointer, not a value type
+        if (*ptr == 0x10) // ELEMENT_TYPE_BYREF
+        {
+            // Return by ref - not a value type for our purposes
+            return;
+        }
+
+        // Handle VOID
+        if (*ptr == 0x01) // ELEMENT_TYPE_VOID
+        {
+            return;
+        }
+
+        byte elemType = *ptr++;
+
+        // ValueType (0x11) - read type token and get size
+        if (elemType == 0x11)
+        {
+            isValueType = true;
+            uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+            // Convert TypeDefOrRef encoded token to full token
+            uint tag = typeDefOrRef & 0x03;
+            uint typeRid = typeDefOrRef >> 2;
+            uint fullToken = 0;
+            if (tag == 0)
+                fullToken = 0x02000000 | typeRid;  // TypeDef
+            else if (tag == 1)
+                fullToken = 0x01000000 | typeRid;  // TypeRef
+            else if (tag == 2)
+                fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+            typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
+            return;
+        }
+
+        // Primitive types (Boolean through R8) are value types but small (<=8 bytes)
+        if (elemType >= 0x02 && elemType <= 0x0D)
+        {
+            isValueType = true;
+            switch (elemType)
+            {
+                case 0x02: typeSize = 1; break;  // Boolean
+                case 0x03: typeSize = 2; break;  // Char
+                case 0x04: typeSize = 1; break;  // I1
+                case 0x05: typeSize = 1; break;  // U1
+                case 0x06: typeSize = 2; break;  // I2
+                case 0x07: typeSize = 2; break;  // U2
+                case 0x08: typeSize = 4; break;  // I4
+                case 0x09: typeSize = 4; break;  // U4
+                case 0x0A: typeSize = 8; break;  // I8
+                case 0x0B: typeSize = 8; break;  // U8
+                case 0x0C: typeSize = 4; break;  // R4
+                case 0x0D: typeSize = 8; break;  // R8
+                default: typeSize = 8; break;
+            }
+            return;
+        }
+
+        // IntPtr, UIntPtr (native int)
+        if (elemType == 0x18 || elemType == 0x19)
+        {
+            isValueType = true;
+            typeSize = 8; // Pointer size on x64
+            return;
+        }
+
+        // Class (0x12), SzArray (0x1D), Object (0x1C), String (0x0E) - not value types
+        // isValueType remains false
     }
 
     /// <summary>

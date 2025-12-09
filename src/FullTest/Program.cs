@@ -58,6 +58,12 @@ public static class TestRunner
         // String tests - uses AOT method registry for String.get_Length, String.Concat
         RunStringTests();
 
+        // Boxing and advanced newobj tests (Phase 4)
+        RunBoxingTests();
+
+        // Instance member tests (Phase 5)
+        RunInstanceTests();
+
         // TODO: Exception tests - requires MemberRef support (exception constructors from System.Runtime)
         // RunExceptionTests();
 
@@ -71,6 +77,31 @@ public static class TestRunner
     {
         RecordResult(StringTests.TestLdstr() == 5);
         RecordResult(StringTests.TestStringConcat() == 10);
+    }
+
+    private static void RunBoxingTests()
+    {
+        // Phase 4.1: newobj with >4 constructor args - WORKS
+        RecordResult(BoxingTests.TestNewObjManyArgs() == 15);
+
+        // Phase 4.2: box/unbox operations
+        RecordResult(BoxingTests.TestBoxInt() == 42);  // Int boxing - WORKS
+
+        // Struct boxing tests
+        RecordResult(BoxingTests.TestBoxStruct() == 30);  // Small struct (8 bytes)
+        RecordResult(BoxingTests.TestBoxMediumStruct() == 300);  // Medium struct (16 bytes)
+        RecordResult(BoxingTests.TestBoxLargeStruct() == 60);  // Large struct (24 bytes)
+    }
+
+    private static void RunInstanceTests()
+    {
+        // Phase 5.1: Instance field access
+        RecordResult(InstanceTests.TestInstanceFieldReadWrite() == 42);
+        RecordResult(InstanceTests.TestMultipleInstanceFields() == 60);
+
+        // Phase 5.2: Instance method calls
+        RecordResult(InstanceTests.TestInstanceMethodCall() == 30);
+        RecordResult(InstanceTests.TestInstanceMethodWithThis() == 50);
     }
 
     private static void RunExceptionTests()
@@ -142,6 +173,14 @@ public static class TestRunner
         RecordResult(ControlFlowTests.TestLoop() == 55);  // Sum of 1..10
         RecordResult(ControlFlowTests.TestNestedLoop() == 100);
         RecordResult(ControlFlowTests.TestSwitch() == 42);
+
+        // Phase 3 control flow tests
+        RecordResult(ControlFlowTests.TestIfElseChain() == 20);
+        RecordResult(ControlFlowTests.TestIfElseChainWithReturns() == 30);
+        RecordResult(ControlFlowTests.TestBreakInLoop() == 10);
+        RecordResult(ControlFlowTests.TestContinueInLoop() == 25);
+        RecordResult(ControlFlowTests.TestNestedBreak() == 30);
+        RecordResult(ControlFlowTests.TestWhileWithAndCondition() == 21);
     }
 
     private static void RunLocalVariableTests()
@@ -216,6 +255,20 @@ public static class TestRunner
         RecordResult(StructTests.TestLargeStructArrayStore() == 1);  // Struct first, array second
         RecordResult(StructTests.TestLargeStructArrayLoad() == 60);
         RecordResult(StructTests.TestLargeStructArrayCopy() == 100);
+
+        // Struct return value tests (2.1)
+        RecordResult(StructTests.TestSmallStructReturn() == 30);
+        RecordResult(StructTests.TestMediumStructReturn() == 300);
+        RecordResult(StructTests.TestLargeStructReturn() == 6);
+
+        // ref/out parameter tests (2.3)
+        RecordResult(StructTests.TestSimpleOutParam() == 42);
+        RecordResult(StructTests.TestRefParam() == 20);
+        RecordResult(StructTests.TestRefParamMultiple() == 45);
+
+        // Nested field out/ref tests (class.struct.field pattern)
+        RecordResult(StructTests.TestNestedFieldOut() == 99);
+        RecordResult(StructTests.TestNestedFieldRef() == 110);
     }
 }
 
@@ -515,6 +568,90 @@ public static class ControlFlowTests
             default: return 0;
         }
     }
+
+    // =========================================================================
+    // Phase 3 Control Flow Tests (3.1, 3.2, 3.3)
+    // =========================================================================
+
+    // Test if-else chain (3.1)
+    public static int TestIfElseChain()
+    {
+        int result = 0;
+        int x = 2;
+
+        if (x == 1) result = 10;
+        else if (x == 2) result = 20;
+        else if (x == 3) result = 30;
+        else result = 40;
+
+        return result;  // Expected: 20
+    }
+
+    // Test if-else chain with multiple returns (3.1)
+    public static int TestIfElseChainWithReturns()
+    {
+        return GetValueForCode(3);  // Expected: 30
+    }
+
+    private static int GetValueForCode(int code)
+    {
+        if (code == 1) return 10;
+        if (code == 2) return 20;
+        if (code == 3) return 30;
+        return 0;
+    }
+
+    // Test break in loop (3.2)
+    public static int TestBreakInLoop()
+    {
+        int sum = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            if (i == 5) break;
+            sum += i;
+        }
+        return sum;  // Expected: 0+1+2+3+4 = 10
+    }
+
+    // Test continue in loop (3.2)
+    public static int TestContinueInLoop()
+    {
+        int sum = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            if (i % 2 == 0) continue;  // Skip evens
+            sum += i;
+        }
+        return sum;  // Expected: 1+3+5+7+9 = 25
+    }
+
+    // Test break in nested loop (3.2)
+    public static int TestNestedBreak()
+    {
+        int count = 0;
+        for (int i = 0; i < 10; i++)
+        {
+            for (int j = 0; j < 10; j++)
+            {
+                if (j == 3) break;  // Inner break only
+                count++;
+            }
+        }
+        return count;  // Expected: 10 * 3 = 30
+    }
+
+    // Test while loop with && condition (3.3)
+    public static int TestWhileWithAndCondition()
+    {
+        int i = 0;
+        int sum = 0;
+        while (i < 10 && sum < 20)
+        {
+            sum += i;
+            i++;
+        }
+        return sum;  // Expected: 0+1+2+3+4+5 = 15, then 15+6=21 > 20, so 21
+    }
 }
 
 // =============================================================================
@@ -782,6 +919,25 @@ public struct LargeStruct
     public long C;
 }
 
+// Medium struct for testing 16 byte struct returns (RAX:RDX)
+public struct MediumStruct
+{
+    public long A;
+    public long B;
+}
+
+// Inner struct for nested field out tests
+public struct InnerStruct
+{
+    public int Value;
+}
+
+// Container class for nested field out tests (class.struct.field pattern)
+public class Container
+{
+    public InnerStruct Inner;
+}
+
 // =============================================================================
 // Struct Tests - Value Type Field Access
 // =============================================================================
@@ -1024,6 +1180,133 @@ public static class StructTests
 
         return (int)arr[0].A;  // Expected: 100 (original unchanged)
     }
+
+    // =========================================================================
+    // Struct Return Value Tests (2.1)
+    // Tests returning structs from methods for different size categories:
+    // - <= 8 bytes: Return in RAX
+    // - 9-16 bytes: Return in RAX:RDX
+    // - > 16 bytes: Hidden buffer pointer in first arg
+    // =========================================================================
+
+    // Test small struct return (8 bytes - fits in RAX)
+    public static int TestSmallStructReturn()
+    {
+        SimpleStruct s = GetSmallStruct();
+        return s.X + s.Y;  // Expected: 10 + 20 = 30
+    }
+
+    private static SimpleStruct GetSmallStruct()
+    {
+        SimpleStruct s;
+        s.X = 10;
+        s.Y = 20;
+        return s;
+    }
+
+    // Test medium struct return (16 bytes - RAX:RDX)
+    public static int TestMediumStructReturn()
+    {
+        MediumStruct m = GetMediumStruct();
+        return (int)(m.A + m.B);  // Expected: 100 + 200 = 300
+    }
+
+    private static MediumStruct GetMediumStruct()
+    {
+        MediumStruct m;
+        m.A = 100;
+        m.B = 200;
+        return m;
+    }
+
+    // Test large struct return (24 bytes - hidden buffer pointer)
+    public static int TestLargeStructReturn()
+    {
+        LargeStruct l = GetLargeStruct();
+        return (int)(l.A + l.B + l.C);  // Expected: 1 + 2 + 3 = 6
+    }
+
+    private static LargeStruct GetLargeStruct()
+    {
+        LargeStruct l;
+        l.A = 1;
+        l.B = 2;
+        l.C = 3;
+        return l;
+    }
+
+    // =========================================================================
+    // ref/out Parameter Tests (2.3)
+    // Tests passing parameters by reference for both primitives and structs
+    // =========================================================================
+
+    // Test simple out parameter with primitive int
+    public static int TestSimpleOutParam()
+    {
+        int result;
+        SetValue(out result);
+        return result;  // Expected: 42
+    }
+
+    private static void SetValue(out int x)
+    {
+        x = 42;
+    }
+
+    // Test ref parameter with primitive int
+    public static int TestRefParam()
+    {
+        int value = 10;
+        AddTen(ref value);
+        return value;  // Expected: 20
+    }
+
+    private static void AddTen(ref int x)
+    {
+        x += 10;
+    }
+
+    // Test ref parameter modification multiple times
+    public static int TestRefParamMultiple()
+    {
+        int value = 5;
+        Triple(ref value);
+        Triple(ref value);
+        return value;  // Expected: 45 (5 * 3 * 3)
+    }
+
+    private static void Triple(ref int x)
+    {
+        x *= 3;
+    }
+
+    // Test nested field out parameter (class.struct.field pattern)
+    // This is a critical pattern used in DDK development
+    public static int TestNestedFieldOut()
+    {
+        Container c = new Container();
+        SetInnerValue(out c.Inner.Value);
+        return c.Inner.Value;  // Expected: 99
+    }
+
+    private static void SetInnerValue(out int value)
+    {
+        value = 99;
+    }
+
+    // Test nested field ref parameter
+    public static int TestNestedFieldRef()
+    {
+        Container c = new Container();
+        c.Inner.Value = 10;
+        AddToInnerValue(ref c.Inner.Value);
+        return c.Inner.Value;  // Expected: 110
+    }
+
+    private static void AddToInnerValue(ref int value)
+    {
+        value += 100;
+    }
 }
 
 // =============================================================================
@@ -1103,6 +1386,147 @@ public static class ExceptionTests
             return 42;
         }
         return 0;
+    }
+}
+
+// =============================================================================
+// Boxing Tests (Phase 4)
+// =============================================================================
+
+// Struct with 5 fields to test newobj with >4 constructor args
+public struct MultiFieldStruct
+{
+    public int A;
+    public int B;
+    public int C;
+    public int D;
+    public int E;
+
+    public MultiFieldStruct(int a, int b, int c, int d, int e)
+    {
+        A = a;
+        B = b;
+        C = c;
+        D = d;
+        E = e;
+    }
+}
+
+public static class BoxingTests
+{
+    // Phase 4.1: Test newobj with >4 constructor arguments
+    public static int TestNewObjManyArgs()
+    {
+        var s = new MultiFieldStruct(1, 2, 3, 4, 5);
+        return s.A + s.B + s.C + s.D + s.E;  // Expected: 15
+    }
+
+    // Phase 4.2: Test boxing an int
+    public static int TestBoxInt()
+    {
+        int x = 42;
+        object boxed = x;
+        int unboxed = (int)boxed;
+        return unboxed;  // Expected: 42
+    }
+
+    // Phase 4.2: Test boxing a small struct (8 bytes)
+    public static int TestBoxStruct()
+    {
+        SimpleStruct s;
+        s.X = 10;
+        s.Y = 20;
+        object boxed = s;
+        SimpleStruct unboxed = (SimpleStruct)boxed;
+        return unboxed.X + unboxed.Y;  // Expected: 30
+    }
+
+    // Phase 4.2: Test boxing a medium struct (16 bytes)
+    public static int TestBoxMediumStruct()
+    {
+        MediumStruct m;
+        m.A = 100;
+        m.B = 200;
+        object boxed = m;
+        MediumStruct unboxed = (MediumStruct)boxed;
+        return (int)(unboxed.A + unboxed.B);  // Expected: 300
+    }
+
+    // Phase 4.2: Test boxing a large struct (24 bytes)
+    public static int TestBoxLargeStruct()
+    {
+        LargeStruct l;
+        l.A = 10;
+        l.B = 20;
+        l.C = 30;
+        object boxed = l;
+        LargeStruct unboxed = (LargeStruct)boxed;
+        return (int)(unboxed.A + unboxed.B + unboxed.C);  // Expected: 60
+    }
+}
+
+// =============================================================================
+// Instance Member Tests (Phase 5)
+// =============================================================================
+
+// Class with multiple fields for testing instance field access
+public class MultiFieldClass
+{
+    public int A;
+    public int B;
+    public int C;
+}
+
+// Class for testing instance methods that use 'this'
+public class Calculator
+{
+    public int Value;
+
+    public int Add(int a, int b)
+    {
+        return a + b;
+    }
+
+    public int AddToValue(int x)
+    {
+        // Uses this.Value implicitly
+        return Value + x;
+    }
+}
+
+public static class InstanceTests
+{
+    // Phase 5.1: Test instance field read/write
+    public static int TestInstanceFieldReadWrite()
+    {
+        SimpleClass obj = new SimpleClass(0);
+        obj.SetValue(42);
+        return obj.GetValue();  // Expected: 42
+    }
+
+    // Phase 5.1: Test multiple instance fields
+    public static int TestMultipleInstanceFields()
+    {
+        MultiFieldClass obj = new MultiFieldClass();
+        obj.A = 10;
+        obj.B = 20;
+        obj.C = 30;
+        return obj.A + obj.B + obj.C;  // Expected: 60
+    }
+
+    // Phase 5.2: Test instance method call
+    public static int TestInstanceMethodCall()
+    {
+        Calculator calc = new Calculator();
+        return calc.Add(10, 20);  // Expected: 30
+    }
+
+    // Phase 5.2: Test instance method that uses 'this'
+    public static int TestInstanceMethodWithThis()
+    {
+        Calculator calc = new Calculator();
+        calc.Value = 30;
+        return calc.AddToValue(20);  // Expected: 50 (30 + 20)
     }
 }
 

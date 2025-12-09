@@ -315,6 +315,9 @@ public unsafe struct ResolvedMethod
     /// <summary>Return type classification.</summary>
     public ReturnKind ReturnKind;
 
+    /// <summary>Size of return struct in bytes (only valid when ReturnKind is Struct).</summary>
+    public ushort ReturnStructSize;
+
     /// <summary>True if instance method (has implicit 'this' parameter).</summary>
     public bool HasThis;
 
@@ -447,6 +450,7 @@ public unsafe struct ILCompiler
     private int _argCount;
     private int _localCount;
     private int _stackAdjust;
+    private int _structReturnTempOffset;  // Offset from RBP for 16-byte struct return temp
 
     // GC tracking: bitmask for which locals/args are GC references
     // Bit i set = local i is GC reference (for i < localCount)
@@ -505,6 +509,10 @@ public unsafe struct ILCompiler
     private bool* _argIsValueType;    // heap-allocated [MaxArgs] - true if arg is a value type
     private ushort* _localTypeSize;   // heap-allocated [MaxLocals] - size of local's type (for value types)
 
+    // Return type tracking for struct return handling
+    private bool _returnIsValueType;  // true if return type is a value type
+    private ushort _returnTypeSize;   // size of return type (for value types)
+
     // Method resolution callback (optional - if null, uses CompiledMethodRegistry)
     private MethodResolver _resolver;
 
@@ -544,6 +552,9 @@ public unsafe struct ILCompiler
         compiler._argCount = argCount;
         compiler._localCount = localCount;
         compiler._stackAdjust = 0;
+        compiler._structReturnTempOffset = 0;
+        compiler._returnIsValueType = false;
+        compiler._returnTypeSize = 0;
         compiler._gcRefMask = gcRefMask;
         compiler._gcInfo = default;
         compiler._evalStackDepth = 0;
@@ -737,6 +748,17 @@ public unsafe struct ILCompiler
     }
 
     /// <summary>
+    /// Set return type info for struct return handling.
+    /// </summary>
+    /// <param name="isValueType">true if return type is a value type</param>
+    /// <param name="size">size of the return type (for value types)</param>
+    public void SetReturnType(bool isValueType, ushort size)
+    {
+        _returnIsValueType = isValueType;
+        _returnTypeSize = size;
+    }
+
+    /// <summary>
     /// Get the code buffer.
     /// </summary>
     public ref CodeBuffer Code => ref _code;
@@ -877,11 +899,13 @@ public unsafe struct ILCompiler
     public void* Compile()
     {
         // Emit prologue
-        // Calculate local space: localCount * 64 + evalStack space
+        // Calculate local space: localCount * 64 + evalStack space + struct return temp
         // Use 64 bytes per local to support value type locals up to 64 bytes
         // TODO: Parse local signature to get exact type sizes
         int localBytes = _localCount * 64 + 64;  // 64 bytes per local + eval stack
-        _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes);
+        int structReturnTempBytes = 32;           // 32 bytes for struct return temps
+        _structReturnTempOffset = -(localBytes + 16);  // First 16 bytes of the temp area
+        _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes + structReturnTempBytes);
 
         // Home arguments to shadow space (so we can load them later)
         if (_argCount > 0)
@@ -1905,7 +1929,9 @@ public unsafe struct ILCompiler
         {
             FlushTOS();  // Ensure value is materialized on stack
             int destOffset = X64Emitter.GetLocalOffset(index);
-            int alignedSize = (typeSize + 7) & ~7;
+            // Use 16-byte alignment for structs > 16 bytes (matches call return buffer allocation)
+            // This ensures we clean up any padding from the call's hidden buffer
+            int alignedSize = typeSize > 16 ? ((typeSize + 15) & ~15) : ((typeSize + 7) & ~7);
             int slots = alignedSize / 8;
 
             // Copy from [RSP] (top of eval stack) into the local slot
@@ -3741,7 +3767,64 @@ public unsafe struct ILCompiler
         // If there's a return value, it should be on eval stack
         if (_evalStackDepth > 0)
         {
-            PopToR0();  // Return value in RAX (uses TOS cache if available)
+            // Check if returning a large value type (>8 bytes)
+            // For large structs, TOS contains the ADDRESS of the value, not the value itself
+            if (_returnIsValueType && _returnTypeSize > 8)
+            {
+                if (_returnTypeSize <= 16)
+                {
+                    // Medium struct (9-16 bytes): Return in RAX:RDX
+                    // TOS contains the address of the struct
+                    PopToR0();  // Get address of struct into RAX
+
+                    // Load first 8 bytes from [RAX+0] into a temp register
+                    // mov RDX, [RAX+8]  - second 8 bytes
+                    X64Emitter.MovRM(ref _code, VReg.R2, VReg.R0, 8);  // RDX = [RAX+8] (VReg.R2 = RDX)
+                    // mov RAX, [RAX+0]  - first 8 bytes (do this second since we're using RAX as base)
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);  // RAX = [RAX+0]
+                }
+                else
+                {
+                    // Large struct (>16 bytes): Copy to hidden buffer
+                    // TOS = address of struct to return
+                    // Hidden buffer pointer was passed as arg0, saved at [FP+16]
+                    PopToR0();  // RAX = source address
+
+                    // Load hidden buffer pointer (destination) from arg0 location
+                    // Using R5 (R10) as scratch for destination
+                    X64Emitter.LoadArg(ref _code, VReg.R5, 0);  // R5 = [FP+16] = hidden buffer ptr
+
+                    // Copy _returnTypeSize bytes from [RAX] to [R5]
+                    // Copy 8 bytes at a time
+                    int bytesToCopy = _returnTypeSize;
+                    int offset = 0;
+                    while (bytesToCopy >= 8)
+                    {
+                        // mov R6, [RAX + offset]  ; load 8 bytes from source
+                        X64Emitter.MovRM(ref _code, VReg.R6, VReg.R0, offset);
+                        // mov [R5 + offset], R6   ; store to destination
+                        X64Emitter.MovMR(ref _code, VReg.R5, offset, VReg.R6);
+                        offset += 8;
+                        bytesToCopy -= 8;
+                    }
+                    // Handle remaining 4 bytes if any
+                    if (bytesToCopy >= 4)
+                    {
+                        X64Emitter.MovRM32(ref _code, VReg.R6, VReg.R0, offset);
+                        X64Emitter.MovMR32(ref _code, VReg.R5, offset, VReg.R6);
+                        offset += 4;
+                        bytesToCopy -= 4;
+                    }
+
+                    // Return the buffer address (same as what was passed by caller)
+                    X64Emitter.MovRR(ref _code, VReg.R0, VReg.R5);  // RAX = buffer address
+                }
+            }
+            else
+            {
+                // Small return value (<=8 bytes) or non-struct: just pop to RAX
+                PopToR0();  // Return value in RAX (uses TOS cache if available)
+            }
         }
 
         // Emit epilogue
@@ -4116,6 +4199,7 @@ public unsafe struct ILCompiler
         // Fill in method information from registry
         result.ArgCount = info->ArgCount;
         result.ReturnKind = info->ReturnKind;
+        result.ReturnStructSize = info->ReturnStructSize;
         result.HasThis = info->HasThis;
         result.IsValid = true;
         result.IsVirtual = info->IsVirtual;
@@ -4196,6 +4280,15 @@ public unsafe struct ILCompiler
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg
 
+        // Check if method returns a large struct (>16 bytes) - needs hidden buffer parameter
+        bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
+        int hiddenBufferSize = 0;
+        if (needsHiddenBuffer)
+        {
+            // Align buffer size to 8 bytes
+            hiddenBufferSize = (method.ReturnStructSize + 7) & ~7;
+        }
+
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalArgs)
         {
@@ -4230,24 +4323,42 @@ public unsafe struct ILCompiler
         // The x64 ABI ALWAYS requires 32 bytes of shadow space for the callee to home register args
         bool needsShadowSpace = true;
 
-        if (totalArgs == 0)
+        if (totalArgs == 0 && !needsHiddenBuffer)
         {
             // No arguments - just call (shadow space allocated below)
         }
-        else if (totalArgs == 1)
+        else if (totalArgs == 0 && needsHiddenBuffer)
+        {
+            // No normal args but hidden buffer needed
+            // Buffer address will be set up after shadow space allocation
+        }
+        else if (totalArgs == 1 && !needsHiddenBuffer)
         {
             // Single arg: pop to RCX
             X64Emitter.Pop(ref _code, VReg.R1);
             _evalStackDepth--;
         }
-        else if (totalArgs == 2)
+        else if (totalArgs == 1 && needsHiddenBuffer)
+        {
+            // One normal arg + hidden buffer: pop arg to RDX (shifted), buffer goes in RCX
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
+            _evalStackDepth--;
+        }
+        else if (totalArgs == 2 && !needsHiddenBuffer)
         {
             // Two args: pop to RDX (arg1), then RCX (arg0)
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 2;
         }
-        else if (totalArgs == 3)
+        else if (totalArgs == 2 && needsHiddenBuffer)
+        {
+            // Two normal args + hidden buffer: shift args by 1
+            X64Emitter.Pop(ref _code, VReg.R3);   // arg1 -> R8
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
+            _evalStackDepth -= 2;
+        }
+        else if (totalArgs == 3 && !needsHiddenBuffer)
         {
             // Three args: pop to R8, RDX, RCX
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
@@ -4255,13 +4366,32 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
             _evalStackDepth -= 3;
         }
-        else if (totalArgs == 4)
+        else if (totalArgs == 3 && needsHiddenBuffer)
+        {
+            // Three normal args + hidden buffer: shift args by 1
+            X64Emitter.Pop(ref _code, VReg.R4);    // arg2 -> R9
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg1 -> R8
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
+            _evalStackDepth -= 3;
+        }
+        else if (totalArgs == 4 && !needsHiddenBuffer)
         {
             // Four args: pop to R9, R8, RDX, RCX
             X64Emitter.Pop(ref _code, VReg.R4);    // arg3
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
+            _evalStackDepth -= 4;
+        }
+        else if (totalArgs == 4 && needsHiddenBuffer)
+        {
+            // Four normal args + hidden buffer: arg3 goes on stack, others shift
+            // TODO: Handle stack arg for this case
+            DebugConsole.WriteLine("[JIT] WARNING: 4 args + hidden buffer not fully implemented");
+            X64Emitter.Pop(ref _code, VReg.R4);    // arg3 (should go to stack)
+            X64Emitter.Pop(ref _code, VReg.R4);    // arg2 -> R9
+            X64Emitter.Pop(ref _code, VReg.R3);    // arg1 -> R8
+            X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
             _evalStackDepth -= 4;
         }
         else
@@ -4358,9 +4488,23 @@ public unsafe struct ILCompiler
 
         // Allocate shadow space for calls with 0-4 args
         // x64 ABI requires 32 bytes for the callee to home register arguments
+        // For large struct returns, also allocate buffer space
         if (needsShadowSpace)
         {
-            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            if (needsHiddenBuffer)
+            {
+                // Allocate shadow space + buffer space (aligned to 16 bytes)
+                int totalAlloc = 32 + ((hiddenBufferSize + 15) & ~15);
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // Set RCX = buffer address (RSP + 32, after shadow space)
+                // lea rcx, [rsp + 32]
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+            }
+            else
+            {
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            }
         }
 
         // Load target address and call
@@ -4392,8 +4536,18 @@ public unsafe struct ILCompiler
         // Clean up stack space if we allocated any
         if (needsShadowSpace)
         {
-            // Deallocate the 32-byte shadow space we allocated for 0-4 args
-            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            if (needsHiddenBuffer)
+            {
+                // Only deallocate shadow space - keep the buffer on the stack!
+                // RAX points to the buffer which is now at RSP after this cleanup.
+                // The buffer will be tracked as part of evalStackDepth.
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            }
+            else
+            {
+                // Deallocate the 32-byte shadow space we allocated for 0-4 args
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            }
         }
         else if (stackArgs > 0)
         {
@@ -4445,9 +4599,43 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Struct:
-                // Struct returns are complex - for now, treat as pointer in RAX
-                X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                // Handle struct returns based on size
+                DebugConsole.Write("[JIT] Call struct return: size=");
+                DebugConsole.WriteDecimal(method.ReturnStructSize);
+                DebugConsole.WriteLine();
+                if (method.ReturnStructSize <= 8)
+                {
+                    // Small struct (1-8 bytes): value in RAX, push directly
+                    X64Emitter.Push(ref _code, VReg.R0);
+                    _evalStackDepth++;
+                }
+                else if (method.ReturnStructSize <= 16)
+                {
+                    // Medium struct (9-16 bytes): RAX has first 8 bytes, RDX has second
+                    // Push the struct data directly onto eval stack for stloc to copy
+                    // Push in reverse order so memory layout is correct:
+                    // push RDX  -> [RSP] = bytes 8-15
+                    // push RAX  -> [RSP] = bytes 0-7, [RSP+8] = bytes 8-15
+                    X64Emitter.Push(ref _code, VReg.R2);  // RDX = bytes 8-15 (pushed first, ends up at RSP+8)
+                    X64Emitter.Push(ref _code, VReg.R0);  // RAX = bytes 0-7 (pushed second, ends up at RSP)
+                    _evalStackDepth += 2;  // Two 8-byte slots
+                }
+                else
+                {
+                    // Large struct (>16 bytes): caller passed hidden buffer, address in RAX
+                    // After shadow space cleanup, the buffer data is now at RSP
+                    // The buffer contains the struct VALUE - just like medium struct has
+                    // RAX:RDX at RSP, we have the full struct data at RSP.
+                    // DON'T push anything - the data is already in the right place.
+                    // stloc will copy from RSP to the local variable.
+
+                    // Track eval stack: just the buffer space (struct value on stack)
+                    // Buffer was allocated as ((size+7)&~7) rounded to 16 bytes
+                    int bufferSize8 = (method.ReturnStructSize + 7) & ~7;
+                    int allocatedBuffer = (bufferSize8 + 15) & ~15;
+                    int bufferSlots = allocatedBuffer / 8;
+                    _evalStackDepth += bufferSlots;  // struct data slots on stack
+                }
                 break;
         }
 
@@ -6361,29 +6549,54 @@ public unsafe struct ILCompiler
         // Resolve token to MethodTable* address
         // The value type size is derived from BaseSize - 8 (minus MT pointer)
         ulong mtAddress = token;  // Fallback: use token directly (for testing)
+        uint valueSize = 8;  // Default: 8 bytes
 
         // If we have a type resolver, use it to get the real MethodTable
         if (_typeResolver != null)
         {
-            void* resolved;
-            if (_typeResolver(token, out resolved) && resolved != null)
+            void* resolvedPtr;
+            if (_typeResolver(token, out resolvedPtr) && resolvedPtr != null)
             {
-                mtAddress = (ulong)resolved;
+                mtAddress = (ulong)resolvedPtr;
+                // Read BaseSize from MethodTable (offset 4: _uBaseSize)
+                // Layout: [0-2: ComponentSize] [2-4: Flags] [4-8: BaseSize]
+                uint baseSize = *(uint*)((byte*)resolvedPtr + 4);
+
+                // Token table is in high byte:
+                // 0x01 = TypeRef (external type, like System.Int32 from System.Runtime)
+                // 0x02 = TypeDef (local type defined in the user assembly)
+                // External types have BaseSize that includes 8-byte MT pointer overhead
+                // Local types have BaseSize = actual value size (no overhead)
+                bool isExternalType = (token >> 24) == 0x01;
+                if (isExternalType)
+                {
+                    // External type: BaseSize includes MT pointer overhead
+                    valueSize = baseSize - 8;
+                }
+                else
+                {
+                    // Local type: BaseSize IS the value size
+                    valueSize = baseSize;
+                }
             }
         }
 
-        // Pop value from stack into R8 (save it temporarily)
-        // For simplicity, we assume 64-bit value on stack
+        // Ensure TOS is materialized on the stack (value may be cached in R0)
+        FlushTOS();
+
+        // Pop value/address from stack into R3 (R8)
+        // For small structs (<=8 bytes): R3 contains the VALUE
+        // For large structs (>8 bytes): R3 contains the ADDRESS of the value
         X64Emitter.Pop(ref _code, VReg.R3);
         PopStackType();  // PopStackType already decrements _evalStackDepth
+
+        // Save R3 (the value/address to box) on the stack - R8 is caller-saved and will be clobbered
+        X64Emitter.Push(ref _code, VReg.R3);
 
         // Load MethodTable* into RCX (first arg for RhpNewFast)
         X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
 
-        // Save RCX (MT address) in R9 for later use
-        X64Emitter.MovRR(ref _code, VReg.R4, VReg.R1);
-
-        // Reserve shadow space to protect any live eval stack data
+        // Reserve shadow space (32 bytes) for the call
         X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
         // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
@@ -6396,10 +6609,50 @@ public unsafe struct ILCompiler
         // Restore RSP after the shadow space reservation
         X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
+        // Restore the value/address into R3
+        X64Emitter.Pop(ref _code, VReg.R3);
+
         // Now RAX = pointer to boxed object
-        // Copy the value (in R8) to offset 8 in the object (after MT pointer)
-        // mov [RAX + 8], R8
-        X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
+        // Copy the value to offset 8 in the object (after MT pointer)
+        if (valueSize <= 8)
+        {
+            // Small struct: R3 contains the value directly
+            // mov [RAX + 8], R3
+            X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
+        }
+        else
+        {
+            // Large struct: R3 contains the source address
+            // Need to copy valueSize bytes from [R3] to [RAX + 8]
+            // Use R2 (RDX) as scratch register for copying
+            int copyOffset = 0;
+            while (copyOffset + 8 <= (int)valueSize)
+            {
+                // mov R2, [R3 + copyOffset]
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.R3, copyOffset);
+                // mov [RAX + 8 + copyOffset], R2
+                X64Emitter.MovMR(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 8;
+            }
+            // Handle remaining bytes (4, 2, 1)
+            if (copyOffset + 4 <= (int)valueSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= (int)valueSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 2;
+            }
+            if (copyOffset < (int)valueSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+            }
+        }
 
         // Push the boxed object reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
@@ -6437,6 +6690,9 @@ public unsafe struct ILCompiler
         // Note: In a full implementation, we'd verify obj->MT matches expectedMT
         _ = expectedMT;  // Currently unused - type validation not implemented
 
+        // Ensure TOS is materialized on the stack (reference may be cached in R0)
+        FlushTOS();
+
         // Pop object reference from stack
         X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();  // PopStackType already decrements _evalStackDepth
@@ -6468,6 +6724,7 @@ public unsafe struct ILCompiler
     {
         // Resolve token to MethodTable* address for type validation
         ulong expectedMT = token;  // Fallback: use token directly (for testing)
+        uint valueSize = 8;  // Default: 8 bytes
 
         // If we have a type resolver, use it to get the real MethodTable
         if (_typeResolver != null)
@@ -6476,23 +6733,91 @@ public unsafe struct ILCompiler
             if (_typeResolver(token, out resolved) && resolved != null)
             {
                 expectedMT = (ulong)resolved;
+                // Read BaseSize from MethodTable (offset 4: _uBaseSize)
+                uint baseSize = *(uint*)((byte*)resolved + 4);
+
+                // Token table is in high byte:
+                // 0x01 = TypeRef (external type, like System.Int32 from System.Runtime)
+                // 0x02 = TypeDef (local type defined in the user assembly)
+                // External types have BaseSize that includes 8-byte MT pointer overhead
+                // Local types have BaseSize = actual value size (no overhead)
+                bool isExternalType = (token >> 24) == 0x01;
+                if (isExternalType)
+                {
+                    // External type: BaseSize includes MT pointer overhead
+                    valueSize = baseSize - 8;
+                }
+                else
+                {
+                    // Local type: BaseSize IS the value size
+                    valueSize = baseSize;
+                }
             }
         }
 
         // Note: In a full implementation, we'd verify obj->MT matches expectedMT
         _ = expectedMT;  // Currently unused - type validation not implemented
 
-        // Pop object reference from stack
-        X64Emitter.Pop(ref _code, VReg.R0);
+        // Ensure TOS is materialized on the stack (reference may be cached in R0)
+        FlushTOS();
+
+        // Pop object reference from stack into R3 (source address)
+        X64Emitter.Pop(ref _code, VReg.R3);
         PopStackType();  // PopStackType already decrements _evalStackDepth
 
-        // Load value from offset 8: mov RAX, [RAX + 8]
-        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);
+        // Value data is at [R3 + 8] (after MT pointer)
+        if (valueSize <= 8)
+        {
+            // Small struct: load value directly into R0 and push
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8);
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushStackType(StackType_Int);
+            _evalStackDepth++;
+        }
+        else
+        {
+            // Large struct: allocate space on eval stack and copy the full data
+            // Calculate aligned size for stack (8-byte aligned)
+            int alignedSize = ((int)valueSize + 7) & ~7;
+            int slots = alignedSize / 8;
 
-        // Push the value onto eval stack
-        X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Assuming 64-bit value
-        _evalStackDepth++;
+            // Allocate space on the stack
+            X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
+
+            // Copy from [R3 + 8] to [RSP]
+            int copyOffset = 0;
+            while (copyOffset + 8 <= (int)valueSize)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R0);
+                copyOffset += 8;
+            }
+            // Handle remaining bytes
+            if (copyOffset + 4 <= (int)valueSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R0);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= (int)valueSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R0);
+                copyOffset += 2;
+            }
+            if (copyOffset < (int)valueSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R0);
+            }
+
+            // Track stack slots (all as Int for simplicity)
+            for (int i = 0; i < slots; i++)
+            {
+                PushStackType(StackType_Int);
+                _evalStackDepth++;
+            }
+        }
 
         return true;
     }
@@ -6938,8 +7263,10 @@ public unsafe struct ILCompiler
         X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
         // Now R0 = element address
 
-        // Allocate stack space for the struct (aligned to 8 bytes)
-        int alignedSize = (elemSize + 7) & ~7;
+        // Allocate stack space for the struct
+        // Use 16-byte alignment for structs > 16 bytes to match call return buffer alignment
+        // This ensures consistency with stloc cleanup
+        int alignedSize = elemSize > 16 ? ((elemSize + 15) & ~15) : ((elemSize + 7) & ~7);
         int slots = alignedSize / 8;
         X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
 
