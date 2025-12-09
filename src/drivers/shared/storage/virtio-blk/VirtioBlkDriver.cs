@@ -206,8 +206,9 @@ public unsafe class VirtioBlkDriver : VirtioDevice, IBlockDevice, IPciDriver
         ReadDeviceConfig();
 
         // Update device name based on capacity
-        ulong sizeGB = (_config.Capacity * SectorSize) / (1024 * 1024 * 1024);
-        _deviceName = $"virtio-blk ({sizeGB} GB)";
+        // NOTE: Avoid string interpolation - the JIT doesn't support generic methods yet
+        // ulong sizeGB = (_config.Capacity * SectorSize) / (1024 * 1024 * 1024);
+        _deviceName = "virtio-blk";
     }
 
     public void Unbind()

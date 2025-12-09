@@ -2061,7 +2061,7 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteLine();
 
         // Find the matching MethodDef in the target type
-        methodToken = FindMethodDefByName(targetAsm, typeDefToken, memberName, sig, sigLen);
+        methodToken = FindMethodDefByName(sourceAsm, targetAsm, typeDefToken, memberName, sig, sigLen);
 
         // Debug: Check if method token row is valid for target assembly
         uint methodRow = methodToken & 0x00FFFFFF;
@@ -2081,45 +2081,336 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
-    /// Compare two method signatures for overload resolution.
-    /// MemberRef signatures and MethodDef signatures should be identical for matching overloads.
+    /// Compare two method signatures for overload resolution across assemblies.
+    /// Signatures may contain TypeRef tokens that differ between assemblies but refer to the same type.
     /// </summary>
-    private static bool SignaturesMatch(byte* sig1, uint sig1Len, byte* sig2, uint sig2Len)
+    private static bool SignaturesMatch(
+        LoadedAssembly* sourceAsm, byte* sig1, uint sig1Len,
+        LoadedAssembly* targetAsm, byte* sig2, uint sig2Len)
     {
-        // Quick length check first
-        if (sig1Len != sig2Len)
-            return false;
-
         if (sig1 == null || sig2 == null)
             return sig1 == sig2;
 
-        // Byte-by-byte comparison
-        for (uint i = 0; i < sig1Len; i++)
+        // Parse both signatures element by element
+        uint pos1 = 0;
+        uint pos2 = 0;
+
+        // Compare calling convention (first byte)
+        if (pos1 >= sig1Len || pos2 >= sig2Len)
+            return false;
+        if (sig1[pos1] != sig2[pos2])
+            return false;
+        byte callingConv = sig1[pos1];
+        pos1++;
+        pos2++;
+
+        // If generic, compare generic param count
+        if ((callingConv & 0x10) != 0)
         {
-            if (sig1[i] != sig2[i])
+            uint genCount1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+            uint genCount2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+            if (genCount1 != genCount2)
                 return false;
         }
+
+        // Compare parameter count
+        uint paramCount1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+        uint paramCount2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+        if (paramCount1 != paramCount2)
+            return false;
+
+        // Compare return type and each parameter type
+        uint totalTypes = paramCount1 + 1; // return type + params
+        for (uint i = 0; i < totalTypes; i++)
+        {
+            if (!TypesMatch(sourceAsm, sig1, sig1Len, ref pos1,
+                           targetAsm, sig2, sig2Len, ref pos2))
+                return false;
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// Decode a compressed unsigned integer from a signature blob.
+    /// </summary>
+    private static uint DecodeCompressedUInt(byte* sig, uint sigLen, ref uint pos)
+    {
+        if (pos >= sigLen)
+            return 0;
+
+        byte b0 = sig[pos++];
+        if ((b0 & 0x80) == 0)
+            return b0;
+
+        if ((b0 & 0xC0) == 0x80)
+        {
+            if (pos >= sigLen)
+                return 0;
+            byte b1 = sig[pos++];
+            return (uint)(((b0 & 0x3F) << 8) | b1);
+        }
+
+        if ((b0 & 0xE0) == 0xC0)
+        {
+            if (pos + 2 >= sigLen)
+                return 0;
+            byte b1 = sig[pos++];
+            byte b2 = sig[pos++];
+            byte b3 = sig[pos++];
+            return (uint)(((b0 & 0x1F) << 24) | (b1 << 16) | (b2 << 8) | b3);
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Compare two type encodings in signatures, resolving TypeRefs across assemblies.
+    /// </summary>
+    private static bool TypesMatch(
+        LoadedAssembly* sourceAsm, byte* sig1, uint sig1Len, ref uint pos1,
+        LoadedAssembly* targetAsm, byte* sig2, uint sig2Len, ref uint pos2)
+    {
+        if (pos1 >= sig1Len || pos2 >= sig2Len)
+            return false;
+
+        byte elem1 = sig1[pos1++];
+        byte elem2 = sig2[pos2++];
+
+        // Handle custom modifiers (CMOD_OPT = 0x20, CMOD_REQD = 0x1F)
+        while (elem1 == 0x20 || elem1 == 0x1F)
+        {
+            DecodeCompressedUInt(sig1, sig1Len, ref pos1); // Skip the modifier token
+            if (pos1 >= sig1Len)
+                return false;
+            elem1 = sig1[pos1++];
+        }
+        while (elem2 == 0x20 || elem2 == 0x1F)
+        {
+            DecodeCompressedUInt(sig2, sig2Len, ref pos2); // Skip the modifier token
+            if (pos2 >= sig2Len)
+                return false;
+            elem2 = sig2[pos2++];
+        }
+
+        // Element type codes that must match exactly
+        // ELEMENT_TYPE_* constants from ECMA-335
+        const byte ELEMENT_TYPE_VOID = 0x01;
+        const byte ELEMENT_TYPE_BOOLEAN = 0x02;
+        const byte ELEMENT_TYPE_CHAR = 0x03;
+        const byte ELEMENT_TYPE_I1 = 0x04;
+        const byte ELEMENT_TYPE_U1 = 0x05;
+        const byte ELEMENT_TYPE_I2 = 0x06;
+        const byte ELEMENT_TYPE_U2 = 0x07;
+        const byte ELEMENT_TYPE_I4 = 0x08;
+        const byte ELEMENT_TYPE_U4 = 0x09;
+        const byte ELEMENT_TYPE_I8 = 0x0A;
+        const byte ELEMENT_TYPE_U8 = 0x0B;
+        const byte ELEMENT_TYPE_R4 = 0x0C;
+        const byte ELEMENT_TYPE_R8 = 0x0D;
+        const byte ELEMENT_TYPE_STRING = 0x0E;
+        const byte ELEMENT_TYPE_PTR = 0x0F;
+        const byte ELEMENT_TYPE_BYREF = 0x10;
+        const byte ELEMENT_TYPE_VALUETYPE = 0x11;
+        const byte ELEMENT_TYPE_CLASS = 0x12;
+        const byte ELEMENT_TYPE_VAR = 0x13;
+        const byte ELEMENT_TYPE_ARRAY = 0x14;
+        const byte ELEMENT_TYPE_GENERICINST = 0x15;
+        const byte ELEMENT_TYPE_TYPEDBYREF = 0x16;
+        const byte ELEMENT_TYPE_I = 0x18;
+        const byte ELEMENT_TYPE_U = 0x19;
+        const byte ELEMENT_TYPE_FNPTR = 0x1B;
+        const byte ELEMENT_TYPE_OBJECT = 0x1C;
+        const byte ELEMENT_TYPE_SZARRAY = 0x1D;
+        const byte ELEMENT_TYPE_MVAR = 0x1E;
+
+        // Primitive types must match exactly
+        if (elem1 <= ELEMENT_TYPE_STRING || elem1 == ELEMENT_TYPE_TYPEDBYREF ||
+            elem1 == ELEMENT_TYPE_I || elem1 == ELEMENT_TYPE_U || elem1 == ELEMENT_TYPE_OBJECT)
+        {
+            return elem1 == elem2;
+        }
+
+        // Both must be the same element type
+        if (elem1 != elem2)
+            return false;
+
+        switch (elem1)
+        {
+            case ELEMENT_TYPE_PTR:
+            case ELEMENT_TYPE_BYREF:
+            case ELEMENT_TYPE_SZARRAY:
+                // These have a nested type
+                return TypesMatch(sourceAsm, sig1, sig1Len, ref pos1,
+                                 targetAsm, sig2, sig2Len, ref pos2);
+
+            case ELEMENT_TYPE_VALUETYPE:
+            case ELEMENT_TYPE_CLASS:
+                // TypeDefOrRef token - need to resolve and compare semantically
+                uint token1 = DecodeTypeDefOrRef(sig1, sig1Len, ref pos1);
+                uint token2 = DecodeTypeDefOrRef(sig2, sig2Len, ref pos2);
+                return TypeTokensMatch(sourceAsm, token1, targetAsm, token2);
+
+            case ELEMENT_TYPE_VAR:
+            case ELEMENT_TYPE_MVAR:
+                // Generic parameter index
+                uint idx1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+                uint idx2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+                return idx1 == idx2;
+
+            case ELEMENT_TYPE_GENERICINST:
+                // Generic instantiation: element type + type arg count + type args
+                if (!TypesMatch(sourceAsm, sig1, sig1Len, ref pos1,
+                               targetAsm, sig2, sig2Len, ref pos2))
+                    return false;
+                uint argCount1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+                uint argCount2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+                if (argCount1 != argCount2)
+                    return false;
+                for (uint i = 0; i < argCount1; i++)
+                {
+                    if (!TypesMatch(sourceAsm, sig1, sig1Len, ref pos1,
+                                   targetAsm, sig2, sig2Len, ref pos2))
+                        return false;
+                }
+                return true;
+
+            case ELEMENT_TYPE_ARRAY:
+                // Multi-dimensional array: element type + rank + sizes + lower bounds
+                if (!TypesMatch(sourceAsm, sig1, sig1Len, ref pos1,
+                               targetAsm, sig2, sig2Len, ref pos2))
+                    return false;
+                uint rank1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+                uint rank2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+                if (rank1 != rank2)
+                    return false;
+                // Skip sizes
+                uint numSizes1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+                uint numSizes2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+                if (numSizes1 != numSizes2)
+                    return false;
+                for (uint i = 0; i < numSizes1; i++)
+                {
+                    if (DecodeCompressedUInt(sig1, sig1Len, ref pos1) !=
+                        DecodeCompressedUInt(sig2, sig2Len, ref pos2))
+                        return false;
+                }
+                // Skip lower bounds
+                uint numLoBounds1 = DecodeCompressedUInt(sig1, sig1Len, ref pos1);
+                uint numLoBounds2 = DecodeCompressedUInt(sig2, sig2Len, ref pos2);
+                if (numLoBounds1 != numLoBounds2)
+                    return false;
+                for (uint i = 0; i < numLoBounds1; i++)
+                {
+                    if (DecodeCompressedUInt(sig1, sig1Len, ref pos1) !=
+                        DecodeCompressedUInt(sig2, sig2Len, ref pos2))
+                        return false;
+                }
+                return true;
+
+            case ELEMENT_TYPE_FNPTR:
+                // Function pointer - compare the full method signature
+                return SignaturesMatch(sourceAsm, sig1 + pos1, sig1Len - pos1,
+                                      targetAsm, sig2 + pos2, sig2Len - pos2);
+
+            default:
+                // Unknown element type
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Decode a TypeDefOrRef coded index from a signature.
+    /// </summary>
+    private static uint DecodeTypeDefOrRef(byte* sig, uint sigLen, ref uint pos)
+    {
+        uint coded = DecodeCompressedUInt(sig, sigLen, ref pos);
+        // Coded index: 2 bits for table, rest for row
+        // 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec
+        return coded;
+    }
+
+    /// <summary>
+    /// Compare two type tokens across assemblies, resolving TypeRefs to check if they refer to the same type.
+    /// </summary>
+    private static bool TypeTokensMatch(LoadedAssembly* asm1, uint codedToken1,
+                                        LoadedAssembly* asm2, uint codedToken2)
+    {
+        // Decode TypeDefOrRef coded index
+        uint tag1 = codedToken1 & 0x03;
+        uint row1 = codedToken1 >> 2;
+        uint tag2 = codedToken2 & 0x03;
+        uint row2 = codedToken2 >> 2;
+
+        // Get the full type name from each token
+        byte* ns1 = null, name1 = null;
+        byte* ns2 = null, name2 = null;
+
+        // Tag: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (tag1 == 0) // TypeDef
+        {
+            ns1 = MetadataReader.GetString(ref asm1->Metadata,
+                MetadataReader.GetTypeDefNamespace(ref asm1->Tables, ref asm1->Sizes, row1));
+            name1 = MetadataReader.GetString(ref asm1->Metadata,
+                MetadataReader.GetTypeDefName(ref asm1->Tables, ref asm1->Sizes, row1));
+        }
+        else if (tag1 == 1) // TypeRef
+        {
+            ns1 = MetadataReader.GetString(ref asm1->Metadata,
+                MetadataReader.GetTypeRefNamespace(ref asm1->Tables, ref asm1->Sizes, row1));
+            name1 = MetadataReader.GetString(ref asm1->Metadata,
+                MetadataReader.GetTypeRefName(ref asm1->Tables, ref asm1->Sizes, row1));
+        }
+        else
+        {
+            // TypeSpec - would need to compare the blob content
+            return false;
+        }
+
+        if (tag2 == 0) // TypeDef
+        {
+            ns2 = MetadataReader.GetString(ref asm2->Metadata,
+                MetadataReader.GetTypeDefNamespace(ref asm2->Tables, ref asm2->Sizes, row2));
+            name2 = MetadataReader.GetString(ref asm2->Metadata,
+                MetadataReader.GetTypeDefName(ref asm2->Tables, ref asm2->Sizes, row2));
+        }
+        else if (tag2 == 1) // TypeRef
+        {
+            ns2 = MetadataReader.GetString(ref asm2->Metadata,
+                MetadataReader.GetTypeRefNamespace(ref asm2->Tables, ref asm2->Sizes, row2));
+            name2 = MetadataReader.GetString(ref asm2->Metadata,
+                MetadataReader.GetTypeRefName(ref asm2->Tables, ref asm2->Sizes, row2));
+        }
+        else
+        {
+            // TypeSpec - would need to compare the blob content
+            return false;
+        }
+
+        // Compare namespace and name
+        return StringsEqual(ns1, ns2) && StringsEqual(name1, name2);
     }
 
     /// <summary>
     /// Find a MethodDef token by name within a specific type.
     /// </summary>
-    private static uint FindMethodDefByName(LoadedAssembly* asm, uint typeDefToken, byte* methodName, byte* sig, uint sigLen)
+    /// <param name="sourceAsm">The assembly containing the MemberRef (for signature resolution)</param>
+    /// <param name="targetAsm">The assembly containing the MethodDef to search</param>
+    private static uint FindMethodDefByName(LoadedAssembly* sourceAsm, LoadedAssembly* targetAsm, uint typeDefToken, byte* methodName, byte* sig, uint sigLen)
     {
         uint typeRow = typeDefToken & 0x00FFFFFF;
         if (typeRow == 0)
             return 0;
 
         // Get method range for this type
-        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
-        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
-        uint methodDefCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref targetAsm->Tables, ref targetAsm->Sizes, typeRow);
+        uint typeDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
         uint methodEnd;
 
         if (typeRow < typeDefCount)
         {
-            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref targetAsm->Tables, ref targetAsm->Sizes, typeRow + 1);
         }
         else
         {
@@ -2154,16 +2445,16 @@ public static unsafe class AssemblyLoader
         // Search methods in range
         for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
         {
-            uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
-            byte* defName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            uint nameIdx = MetadataReader.GetMethodDefName(ref targetAsm->Tables, ref targetAsm->Sizes, methodRow);
+            byte* defName = MetadataReader.GetString(ref targetAsm->Metadata, nameIdx);
 
             if (StringsEqual(methodName, defName))
             {
-                // Compare signatures for overload resolution
-                uint defSigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
-                byte* defSig = MetadataReader.GetBlob(ref asm->Metadata, defSigIdx, out uint defSigLen);
+                // Compare signatures for overload resolution (cross-assembly aware)
+                uint defSigIdx = MetadataReader.GetMethodDefSignature(ref targetAsm->Tables, ref targetAsm->Sizes, methodRow);
+                byte* defSig = MetadataReader.GetBlob(ref targetAsm->Metadata, defSigIdx, out uint defSigLen);
 
-                if (SignaturesMatch(sig, sigLen, defSig, defSigLen))
+                if (SignaturesMatch(sourceAsm, sig, sigLen, targetAsm, defSig, defSigLen))
                 {
                     return 0x06000000 | methodRow;  // MethodDef token
                 }
