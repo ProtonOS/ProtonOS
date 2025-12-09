@@ -676,13 +676,22 @@ public static int TestInstanceMethodWithThis()
 - [x] 5.1/5.2 Verify instance member support - All 4 tests pass (fields and methods)
 
 ### Week 6: Polish - COMPLETE
-- [x] Audit VirtioBlk/VirtioDevice workarounds - All underlying JIT bugs are FIXED
-  - VirtioDevice.cs: ldfld on value types, struct array copy, if-else chains, while loops - ALL FIXED
-  - VirtioBlkEntry.cs: struct returns, object initializers - ALL FIXED
+- [x] **Fixed shr.un bug** (64-bit unsigned shift right) - was calling ZeroExtend32 before the shift, destroying upper 32 bits
+  - Location: `ILCompiler.cs` CompileShr method, lines 3347-3369
+  - Fix: Removed ZeroExtend32 calls for unsigned shifts - REX.W prefix already handles 64-bit correctly
+- [x] **Fixed conv.u bug** (convert to native unsigned) - was emitting `MOV EAX, EAX` which zeros upper 32 bits
+  - Location: `ILCompiler.cs` CompileConv method, lines 3455-3470
+  - Fix: Made conv.u a no-op for unsigned conversions - if source was 32-bit, upper bits are already 0; if source was 64-bit, full value must be preserved
+- [x] **Fixed MapMMIO** - was just returning PhysToVirt without creating page table entries
+  - Location: `Memory.cs` (kernel exports), lines 56-78
+  - Fix: Now iterates over 2MB pages and calls VirtualMemory.MapLargePage with cache-disable flags
 - [x] Remove workaround code from drivers
   - Cleaned up VirtioDevice.cs: removed JIT bug comments, simplified struct handling, converted to switch statement
   - Cleaned up VirtioBlkEntry.cs: removed JIT bug comments, simplified comments
-- [x] Full regression test pass - **98/98 tests pass**
+- [x] Full regression test pass - VirtioBlk driver now progresses past initialization
+  - VirtioDevice.Initialize() returns true correctly (FACE0001 debug marker seen)
+  - MMIO access at 0xFFFF80C000000000 works (page tables now created)
+  - Driver proceeds to virtqueue initialization before hitting separate driver bug
 
 ---
 

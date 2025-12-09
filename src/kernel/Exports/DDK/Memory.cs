@@ -50,15 +50,31 @@ public static unsafe class MemoryExports
 
     /// <summary>
     /// Map a memory-mapped I/O region.
-    /// For now, just returns the virtual address via PhysToVirt.
-    /// TODO: Implement proper MMIO mapping with appropriate flags.
+    /// Creates page table entries to map the physical MMIO region to virtual memory.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Kernel_MapMMIO")]
     public static ulong MapMMIO(ulong physicalAddress, ulong size)
     {
-        // For simplicity, use the direct physical map
-        // This works because we have the entire first 4GB mapped
-        return VirtualMemory.PhysToVirt(physicalAddress);
+        // Calculate the virtual address in the higher-half physical map
+        ulong virtAddr = VirtualMemory.PhysToVirt(physicalAddress);
+
+        // Round down to 2MB boundary for mapping
+        ulong physStart = physicalAddress & ~(VirtualMemory.LargePageSize - 1);
+        ulong physEnd = (physicalAddress + size + VirtualMemory.LargePageSize - 1) & ~(VirtualMemory.LargePageSize - 1);
+
+        // Map each 2MB page in the range
+        for (ulong phys = physStart; phys < physEnd; phys += VirtualMemory.LargePageSize)
+        {
+            ulong virt = VirtualMemory.PhysToVirt(phys);
+            // Use cache-disable flags for MMIO
+            if (!VirtualMemory.MapLargePage(virt, phys, PageFlags.KernelRW | PageFlags.CacheDisable))
+            {
+                // Page might already be mapped - that's OK for MMIO
+                // Continue to the next page
+            }
+        }
+
+        return virtAddr;
     }
 
     /// <summary>
