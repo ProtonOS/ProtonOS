@@ -112,6 +112,7 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
+        WriteLine();
     }
 
     /// <summary>
@@ -125,6 +126,7 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
+        WriteLine();
     }
 
     /// <summary>
@@ -138,6 +140,7 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
+        WriteLine();
     }
 
     /// <summary>
@@ -149,6 +152,7 @@ public static unsafe class DebugConsole
         int lo = value & 0xF;
         WriteByte((byte)(hi < 10 ? '0' + hi : 'A' + hi - 10));
         WriteByte((byte)(lo < 10 ? '0' + lo : 'A' + lo - 10));
+        WriteLine();
     }
 
     /// <summary>

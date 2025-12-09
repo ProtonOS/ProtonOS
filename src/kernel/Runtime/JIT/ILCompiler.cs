@@ -1910,7 +1910,22 @@ public unsafe struct ILCompiler
         // Load argument from shadow space - use full 64-bit load
         // Uses TOS caching
         SpillTOSIfCached();
-        X64Emitter.LoadArgFromHome(ref _code, VReg.R0, index);
+
+        // When the method returns a large struct (>16 bytes), the caller passes
+        // a hidden buffer pointer as the first argument (in RCX). This shifts all
+        // IL arguments by 1 in the calling convention:
+        //   - Hidden buffer pointer: RCX -> [FP+16] (arg slot 0)
+        //   - IL arg0: RDX -> [FP+24] (arg slot 1)
+        //   - IL arg1: R8 -> [FP+32] (arg slot 2)
+        //   - etc.
+        // We need to adjust the IL index to account for this shift.
+        int physicalArgIndex = index;
+        if (_returnIsValueType && _returnTypeSize > 16)
+        {
+            physicalArgIndex = index + 1;
+        }
+
+        X64Emitter.LoadArgFromHome(ref _code, VReg.R0, physicalArgIndex);
 
         // Check if this arg is a value type - affects ldfld behavior
         byte stackType = StackType_Int;
@@ -1958,13 +1973,76 @@ public unsafe struct ILCompiler
         }
 
         byte stackType;
-        if (isValueType && typeSize > 8)
+        if (isValueType && typeSize > 16)
         {
-            // Large value type (>8 bytes): load ADDRESS instead of VALUE
-            // so ldfld can properly dereference [R0 + fieldOffset].
-            // Mark as StackType_Int (address) not StackType_ValueType (inline value).
-            X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-            stackType = StackType_Int;
+            // Large value type (>16 bytes): copy the full struct onto the eval stack
+            // This is needed for stfld to work correctly (it expects the value, not address)
+            // For efficiency, we copy 8 bytes at a time directly onto the eval stack
+            int alignedSize = (typeSize + 7) & ~7;
+            int slots = alignedSize / 8;
+
+            // Allocate space on eval stack
+            X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
+
+            // Copy from local to eval stack
+            int copyOffset = 0;
+            while (copyOffset + 8 <= typeSize)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R3);
+                copyOffset += 8;
+            }
+            // Handle remaining bytes if any
+            if (copyOffset + 4 <= typeSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R3);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= typeSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R3);
+                copyOffset += 2;
+            }
+            if (copyOffset < typeSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R3);
+            }
+
+            // Track eval stack depth (multiple slots)
+            for (int i = 0; i < slots; i++)
+                PushStackType(StackType_Int);
+
+            // Clear TOS caching since we manually pushed
+            _tosCached = false;
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            return true;
+        }
+        else if (isValueType && typeSize > 8)
+        {
+            // Medium value type (9-16 bytes): push onto eval stack as 2 slots
+            // Copy both 8-byte halves onto the eval stack
+            X64Emitter.SubRI(ref _code, VReg.SP, 16);
+
+            // First 8 bytes
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset);
+            X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R3);
+
+            // Second 8 bytes (or partial)
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset + 8);
+            X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R3);
+
+            // Track 2 slots on eval stack
+            PushStackType(StackType_Int);
+            PushStackType(StackType_Int);
+
+            _tosCached = false;
+            _tosIsConst = false;
+            _tos2IsConst = false;
+            return true;
         }
         else if (isValueType)
         {
@@ -3857,7 +3935,15 @@ public unsafe struct ILCompiler
     {
         // Pop from eval stack, store to argument home location
         PopToR0();  // Uses TOS cache if available
-        int offset = 16 + index * 8;  // Shadow space offset
+
+        // Adjust for hidden buffer parameter (see CompileLdarg for explanation)
+        int physicalArgIndex = index;
+        if (_returnIsValueType && _returnTypeSize > 16)
+        {
+            physicalArgIndex = index + 1;
+        }
+
+        int offset = 16 + physicalArgIndex * 8;  // Shadow space offset
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
         return true;
     }
@@ -3866,7 +3952,15 @@ public unsafe struct ILCompiler
     {
         // Load address of argument
         SpillTOSIfCached();  // Make room for new value
-        int offset = 16 + index * 8;
+
+        // Adjust for hidden buffer parameter (see CompileLdarg for explanation)
+        int physicalArgIndex = index;
+        if (_returnIsValueType && _returnTypeSize > 16)
+        {
+            physicalArgIndex = index + 1;
+        }
+
+        int offset = 16 + physicalArgIndex * 8;
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
         MarkR0AsTOS(StackType_Int);  // Address is treated as integer
         return true;
@@ -5974,6 +6068,7 @@ public unsafe struct ILCompiler
     /// <summary>
     /// Compile stfld - Store instance field.
     /// Stack: ..., obj, value -> ...
+    /// For large structs (>8 bytes), value occupies multiple eval stack slots.
     /// </summary>
     private bool CompileStfld(uint token)
     {
@@ -5992,6 +6087,69 @@ public unsafe struct ILCompiler
             DecodeFieldToken(token, out offset, out size, out _);
         }
 
+        // For large structs, the value takes multiple stack slots
+        // Stack layout for stfld of 32-byte struct:
+        //   [RSP+0]  = struct bytes 0-7
+        //   [RSP+8]  = struct bytes 8-15
+        //   [RSP+16] = struct bytes 16-23
+        //   [RSP+24] = struct bytes 24-31
+        //   [RSP+32] = obj pointer
+        // We need to copy the struct to [obj+offset] and clean up all slots
+
+        if (size > 16)
+        {
+            // Large struct: value is on stack, obj is below it
+            int valueSlots = (size + 7) / 8;
+            int valueBytes = valueSlots * 8;
+
+            // Load obj pointer (it's below the struct value)
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, valueBytes);  // RAX = obj
+
+            // Copy struct value to [obj+offset]
+            // For efficiency, copy 8 bytes at a time
+            for (int i = 0; i < valueSlots; i++)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, i * 8);  // load 8 bytes
+                X64Emitter.MovMR(ref _code, VReg.R0, offset + i * 8, VReg.R2);  // store to field
+            }
+
+            // Clean up stack: struct value + obj pointer
+            X64Emitter.AddRI(ref _code, VReg.SP, valueBytes + 8);
+
+            // Update eval stack depth (valueSlots for struct + 1 for obj)
+            for (int i = 0; i < valueSlots + 1; i++)
+                PopStackType();
+
+            return true;
+        }
+        else if (size > 8)
+        {
+            // Medium struct (9-16 bytes): 2 slots on stack + obj
+            // [RSP+0]  = struct bytes 0-7
+            // [RSP+8]  = struct bytes 8-15
+            // [RSP+16] = obj pointer
+
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 16);  // RAX = obj
+
+            // Copy first 8 bytes
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 0);
+            X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R2);
+
+            // Copy second 8 bytes (or partial for 9-15 byte structs)
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 8);
+            X64Emitter.MovMR(ref _code, VReg.R0, offset + 8, VReg.R2);
+
+            // Clean up stack: 2 value slots + obj pointer
+            X64Emitter.AddRI(ref _code, VReg.SP, 24);
+
+            PopStackType();
+            PopStackType();
+            PopStackType();
+
+            return true;
+        }
+
+        // Small values (1-8 bytes): single slot
         // Pop value and object reference
         X64Emitter.Pop(ref _code, VReg.R2);  // value
         X64Emitter.Pop(ref _code, VReg.R0);  // obj

@@ -364,11 +364,17 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
 
     #region VirtioDevice Implementation
 
-    protected override ulong DeviceFeatures =>
-        (ulong)(VirtioBlkFeatures.BlkSize |
-                VirtioBlkFeatures.Flush |
-                VirtioBlkFeatures.SizeMax |
-                VirtioBlkFeatures.SegMax);
+    /// <summary>
+    /// Constructor - sets wanted features before initialization.
+    /// </summary>
+    public VirtioBlkDevice()
+    {
+        // Set the features we want before Initialize() is called
+        _wantedFeatures = (ulong)(VirtioBlkFeatures.BlkSize |
+                                   VirtioBlkFeatures.Flush |
+                                   VirtioBlkFeatures.SizeMax |
+                                   VirtioBlkFeatures.SegMax);
+    }
 
     /// <summary>
     /// Complete device initialization after VirtioDevice.Initialize().

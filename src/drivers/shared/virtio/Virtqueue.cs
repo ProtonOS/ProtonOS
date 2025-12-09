@@ -151,26 +151,55 @@ public unsafe class Virtqueue : IDisposable
     /// </summary>
     public Virtqueue(ushort queueIndex, ushort queueSize)
     {
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00001u); // Virtqueue ctor entry
         _queueIndex = queueIndex;
         _queueSize = queueSize;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00002u); // Before newarr
         _descData = new void*[queueSize];
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00003u); // After newarr
 
         AllocateBuffers();
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00004u); // After AllocateBuffers
         InitializeFreeList();
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00005u); // After InitializeFreeList (ctor done)
     }
 
     private void AllocateBuffers()
     {
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00001u); // AllocateBuffers entry
         // Calculate sizes
         // Descriptor table: 16 bytes per entry
-        ulong descSize = (ulong)_queueSize * 16;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00002u); // Before reading _queueSize
+        ushort qs = _queueSize;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00003u); // After reading _queueSize
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)qs);
+        ulong descSize = (ulong)qs * 16;
         // Available ring: 4 bytes header + 2 bytes per entry + 2 bytes used_event
         ulong availSize = 4 + (ulong)_queueSize * 2 + 2;
         // Used ring: 4 bytes header + 8 bytes per entry + 2 bytes avail_event
         ulong usedSize = 4 + (ulong)_queueSize * 8 + 2;
 
         // Allocate aligned buffers
-        _descBuffer = DMA.Allocate(descSize);
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10001u); // Before DMA.Allocate for desc
+        DMABuffer descBuf = DMA.Allocate(descSize);
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10002u); // After DMA.Allocate for desc
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(descBuf.PhysicalAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)descBuf.PhysicalAddress);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)descBuf.VirtualAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descBuf.VirtualAddress);
+
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10003u); // Before stfld _descBuffer
+        _descBuffer = descBuf;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10004u); // After stfld _descBuffer
+
+        // Re-read to verify
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10005u); // Reading back _descBuffer
+        DMABuffer check = _descBuffer;
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(check.PhysicalAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)check.PhysicalAddress);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)check.VirtualAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)check.VirtualAddress);
+
         _availBuffer = DMA.Allocate(availSize);
         _usedBuffer = DMA.Allocate(usedSize);
 
@@ -180,7 +209,15 @@ public unsafe class Virtqueue : IDisposable
         DMA.Zero(_usedBuffer);
 
         // Set up pointers
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20001u); // Before setting _desc
         _desc = (VirtqDesc*)_descBuffer.VirtualAddress;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20002u); // After setting _desc
+
+        // Read back _desc to verify
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20003u); // Reading back _desc
+        VirtqDesc* descPtr = _desc;
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)descPtr >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descPtr);
 
         byte* avail = (byte*)_availBuffer.VirtualAddress;
         _availFlags = (ushort*)avail;
@@ -195,16 +232,38 @@ public unsafe class Virtqueue : IDisposable
 
     private void InitializeFreeList()
     {
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00001u); // InitializeFreeList entry
         // Initialize free list as a linked list through descriptors
-        for (ushort i = 0; i < _queueSize; i++)
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00002u); // Before reading _queueSize
+        ushort qs = _queueSize;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00003u); // After reading _queueSize
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)qs);
+
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00004u); // Before reading _desc
+        VirtqDesc* desc = _desc;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00005u); // After reading _desc
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)desc >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)desc);
+
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00010u); // Before loop
+        for (ushort i = 0; i < qs; i++)
         {
-            _desc[i].Next = (ushort)(i + 1);
+            desc[i].Next = (ushort)(i + 1);
         }
-        _desc[_queueSize - 1].Next = 0xFFFF; // End of list
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00006u); // After loop
+
+        // Re-read desc to see if it changed
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00011u); // Re-reading _desc
+        VirtqDesc* desc2 = _desc;
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)desc2 >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)desc2);
+
+        desc2[qs - 1].Next = 0xFFFF; // End of list
 
         _freeHead = 0;
-        _numFree = _queueSize;
+        _numFree = qs;
         _lastUsedIdx = 0;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00007u); // InitializeFreeList done
     }
 
     /// <summary>
@@ -312,10 +371,8 @@ public unsafe class Virtqueue : IDisposable
         ushort idx = *_availIdx;
         _availRing[idx % _queueSize] = (ushort)head;
 
-        // Memory barrier before updating index
-        // In C# we rely on volatile semantics
-        System.Threading.Thread.MemoryBarrier();
-
+        // On x86-64, stores have release semantics so explicit barrier not needed
+        // The volatile write ensures ordering for the index update
         *_availIdx = (ushort)(idx + 1);
     }
 
@@ -324,8 +381,8 @@ public unsafe class Virtqueue : IDisposable
     /// </summary>
     public bool HasUsedBuffers()
     {
-        // Memory barrier to ensure we see latest used_idx
-        System.Threading.Thread.MemoryBarrier();
+        // On x86-64, loads have acquire semantics so barrier not strictly needed
+        // Reading through pointer already provides necessary visibility
         return *_usedIdx != _lastUsedIdx;
     }
 
@@ -371,7 +428,7 @@ public unsafe class Virtqueue : IDisposable
     /// </summary>
     public bool NeedsNotification()
     {
-        System.Threading.Thread.MemoryBarrier();
+        // On x86-64, loads have acquire semantics
         return (*_usedFlags & (ushort)VirtqUsedFlags.NoNotify) == 0;
     }
 

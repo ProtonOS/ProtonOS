@@ -298,14 +298,20 @@ public unsafe class VirtioBlkDriver : VirtioDevice, IBlockDevice, IPciDriver
 
     #endregion
 
-    #region Protected Overrides
+    #region Constructor
 
-    protected override ulong DeviceFeatures =>
-        (ulong)(VirtioBlkFeatures.SizeMax |
-                VirtioBlkFeatures.SegMax |
-                VirtioBlkFeatures.BlkSize |
-                VirtioBlkFeatures.Flush |
-                VirtioBlkFeatures.ReadOnly);
+    /// <summary>
+    /// Constructor - sets wanted features before initialization.
+    /// </summary>
+    public VirtioBlkDriver()
+    {
+        // Set the features we want before Initialize() is called
+        _wantedFeatures = (ulong)(VirtioBlkFeatures.SizeMax |
+                                   VirtioBlkFeatures.SegMax |
+                                   VirtioBlkFeatures.BlkSize |
+                                   VirtioBlkFeatures.Flush |
+                                   VirtioBlkFeatures.ReadOnly);
+    }
 
     #endregion
 

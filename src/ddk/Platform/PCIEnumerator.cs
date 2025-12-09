@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using ProtonOS.DDK.Drivers;
+using ProtonOS.DDK.Kernel;
 
 namespace ProtonOS.DDK.Platform;
 
@@ -158,10 +159,13 @@ public static class PCIEnumerator
     /// </summary>
     private static void ReadBARs(byte bus, byte device, byte function, PciDeviceInfo info)
     {
+        Debug.WriteHex(0xDDB00000u); // ReadBARs entry
         for (int i = 0; i < 6; i++)
         {
             ushort offset = (ushort)(PCI.PCI_BAR0 + i * 4);
             uint bar = PCI.ReadConfig32(bus, device, function, offset);
+            Debug.WriteHex(0xDDB10000u | (uint)i); // BAR index
+            Debug.WriteHex(bar); // Raw BAR value
 
             if (bar == 0)
                 continue;
@@ -194,7 +198,12 @@ public static class PCIEnumerator
                     // 64-bit BAR
                     info.Bars[i].Is64Bit = true;
                     uint barHigh = PCI.ReadConfig32(bus, device, function, (ushort)(offset + 4));
-                    info.Bars[i].BaseAddress = (bar & 0xFFFFFFF0) | ((ulong)barHigh << 32);
+                    Debug.WriteHex(0xDDB20000u | (uint)i); // 64-bit BAR
+                    Debug.WriteHex(barHigh); // High 32 bits
+                    ulong baseAddr = (bar & 0xFFFFFFF0) | ((ulong)barHigh << 32);
+                    Debug.WriteHex((uint)(baseAddr >> 32));
+                    Debug.WriteHex((uint)baseAddr);
+                    info.Bars[i].BaseAddress = baseAddr;
 
                     // Determine size
                     PCI.WriteConfig32(bus, device, function, offset, 0xFFFFFFFF);

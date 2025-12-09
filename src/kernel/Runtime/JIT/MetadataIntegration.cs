@@ -1385,6 +1385,7 @@ public static unsafe class MetadataIntegration
             result.InterfaceMT = info->InterfaceMT;
             result.InterfaceMethodSlot = info->InterfaceMethodSlot;
             result.RegistryEntry = info;
+            TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
             success = true;
         }
         else
@@ -1448,7 +1449,11 @@ public static unsafe class MetadataIntegration
                             result.IsVirtual = info->IsVirtual;
                             result.VtableSlot = info->VtableSlot;
                             result.MethodTable = info->MethodTable;
+                            result.IsInterfaceMethod = info->IsInterfaceMethod;
+                            result.InterfaceMT = info->InterfaceMT;
+                            result.InterfaceMethodSlot = info->InterfaceMethodSlot;
                             result.RegistryEntry = info;
+                            TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
                             success = true;
                         }
                         else
@@ -1994,6 +1999,41 @@ public static unsafe class MetadataIntegration
             DebugConsole.WriteLine();
             return false;
         }
+    }
+
+    private static void TraceMemberRef(uint methodToken, uint asmId, ReturnKind kind, byte argCount)
+    {
+        if (asmId != 3 || _metadataRoot == null || _tablesHeader == null || _tableSizes == null)
+            return;
+
+        uint rid = methodToken & 0x00FFFFFF;
+        uint nameIdx = MetadataReader.GetMethodDefName(ref *_tablesHeader, ref *_tableSizes, rid);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+
+        if (NameEquals(name, "Initialize"))
+        {
+            DebugConsole.Write("[MetaInt] MemberRef Initialize token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" returnKind=");
+            DebugConsole.WriteDecimal((uint)kind);
+            DebugConsole.Write(" argCount=");
+            DebugConsole.WriteDecimal(argCount);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(asmId);
+            DebugConsole.WriteLine();
+        }
+    }
+
+    private static bool NameEquals(byte* name, string expected)
+    {
+        if (name == null)
+            return false;
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (name[i] != (byte)expected[i])
+                return false;
+        }
+        return name[expected.Length] == 0;
     }
 
     // ============================================================================

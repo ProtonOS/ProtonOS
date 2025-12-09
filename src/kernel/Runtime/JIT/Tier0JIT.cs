@@ -146,6 +146,21 @@ public static unsafe class Tier0JIT
         bool hasThis = false;
         if (sigBlob != null && sigLen > 0)
         {
+            // Targeted signature dump for VirtioDevice.Initialize (asm 3, token 0x06000015)
+            if (assemblyId == 3 && methodToken == 0x06000015)
+            {
+                DebugConsole.Write("[Tier0JIT] Sig dump len=");
+                DebugConsole.WriteDecimal((int)sigLen);
+                DebugConsole.Write(": ");
+                byte* p = sigBlob;
+                for (int i = 0; i < sigLen && i < 32; i++)
+                {
+                    DebugConsole.WriteHex((ulong)p[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+            }
+
             if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out var methodSig))
             {
                 paramCount = (int)methodSig.ParamCount;
@@ -189,6 +204,85 @@ public static unsafe class Tier0JIT
         DebugConsole.WriteDecimal((uint)localCount);
         DebugConsole.WriteLine();
 
+        if (assemblyId == 4 && methodToken == 0x0600002A)
+        {
+            DebugConsole.Write("[Tier0JIT] IL dump Bind size=");
+            DebugConsole.WriteDecimal((uint)body.CodeSize);
+            DebugConsole.WriteLine();
+            byte* ilPtr = body.ILCode;
+            int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
+            for (int i = 0; i < dumpLen; i++)
+            {
+                DebugConsole.WriteHex((ulong)ilPtr[i]);
+                DebugConsole.Write(" ");
+                if ((i & 0x0F) == 0x0F)
+                    DebugConsole.WriteLine();
+            }
+            if ((dumpLen & 0x0F) != 0)
+                DebugConsole.WriteLine();
+        }
+        else if (assemblyId == 3 && methodToken == 0x06000006)
+        {
+            DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.Initialize size=");
+            DebugConsole.WriteDecimal((uint)body.CodeSize);
+            DebugConsole.WriteLine();
+            byte* ilPtr = body.ILCode;
+            int dumpLen = body.CodeSize < 512 ? (int)body.CodeSize : 512;
+            for (int i = 0; i < dumpLen; i++)
+            {
+                DebugConsole.WriteHex((ulong)ilPtr[i]);
+                DebugConsole.Write(" ");
+                if ((i & 0x0F) == 0x0F)
+                    DebugConsole.WriteLine();
+            }
+            if ((dumpLen & 0x0F) != 0)
+                DebugConsole.WriteLine();
+        }
+        else if (assemblyId == 3 && (methodToken == 0x06000007 || methodToken == 0x06000008))
+        {
+            DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.InitializeVariant token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)body.CodeSize);
+            DebugConsole.WriteLine();
+            byte* ilPtr = body.ILCode;
+            int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
+            for (int i = 0; i < dumpLen; i++)
+            {
+                DebugConsole.WriteHex((ulong)ilPtr[i]);
+                DebugConsole.Write(" ");
+                if ((i & 0x0F) == 0x0F)
+                    DebugConsole.WriteLine();
+            }
+            if ((dumpLen & 0x0F) != 0)
+                DebugConsole.WriteLine();
+        }
+
+        // Fetch method name for targeted debugging
+        uint dbgMethodNameIdx = MetadataReader.GetMethodDefName(ref assembly->Tables, ref assembly->Sizes, methodRid);
+        byte* dbgMethodName = MetadataReader.GetString(ref assembly->Metadata, dbgMethodNameIdx);
+
+        if (assemblyId == 3 && NameEquals(dbgMethodName, "Initialize"))
+        {
+            DebugConsole.Write("[Tier0JIT] asm3 Initialize token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" returnKind=");
+            DebugConsole.WriteDecimal((uint)returnKind);
+            DebugConsole.Write(" paramCount=");
+            DebugConsole.WriteDecimal((uint)paramCount);
+            DebugConsole.WriteLine();
+        }
+
+        // Targeted debug: inspect VirtioDevice.Initialize (asm 3, token 0x06000015)
+        if (assemblyId == 3 && methodToken == 0x06000015)
+        {
+            DebugConsole.Write("[Tier0JIT] VirtioDevice.Initialize returnKind=");
+            DebugConsole.WriteDecimal((uint)returnKind);
+            DebugConsole.Write(" structSize=");
+            DebugConsole.WriteDecimal(returnStructSize);
+            DebugConsole.WriteLine();
+        }
+
         // Reserve the method slot BEFORE compilation (prevents infinite recursion)
         // Store paramCount (not including 'this') because CompileNewobj needs
         // to know how many explicit args to pop from the stack.
@@ -218,6 +312,7 @@ public static unsafe class Tier0JIT
 
         // Create IL compiler with jitArgCount (includes 'this' for instance methods)
         var compiler = ILCompiler.Create(body.ILCode, (int)body.CodeSize, jitArgCount, localCount);
+        compiler.SetDebugContext(assemblyId, methodToken);
 
         // Wire up resolvers
         MetadataIntegration.WireCompiler(ref compiler);
@@ -300,13 +395,40 @@ public static unsafe class Tier0JIT
 
         int codeSize = (int)compiler.CodeSize;
 
+        if ((assemblyId == 4 && methodToken == 0x0600002A) ||
+            (assemblyId == 3 && (methodToken == 0x06000006 || methodToken == 0x06000007 || methodToken == 0x06000008)))
+        {
+            DebugConsole.Write("[Tier0JIT] Code dump 0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)codeSize);
+            DebugConsole.WriteLine();
+            byte* codeBytes = (byte*)code;
+            int dumpLen = codeSize < 2048 ? codeSize : 2048;
+            for (int i = 0; i < dumpLen; i++)
+            {
+                DebugConsole.WriteHex((ulong)codeBytes[i]);
+                DebugConsole.Write(" ");
+                if ((i & 0x0F) == 0x0F)
+                    DebugConsole.WriteLine();
+            }
+            if ((dumpLen & 0x0F) != 0)
+                DebugConsole.WriteLine();
+        }
+
+        if ((assemblyId == 4 && methodToken == 0x0600002A) ||
+            (assemblyId == 3 && (methodToken == 0x06000006 || methodToken == 0x06000007 || methodToken == 0x06000008)))
+        {
+            DebugConsole.Write("[Tier0JIT] code ptr 0x");
+            DebugConsole.WriteHex((ulong)code);
+            DebugConsole.WriteLine();
+        }
+
         // Complete the compilation (sets native code and clears IsBeingCompiled)
         CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId);
 
         // If this is a constructor, set the MethodTable for newobj to use
-        uint methodNameIdx = MetadataReader.GetMethodDefName(ref assembly->Tables, ref assembly->Sizes, methodRid);
-        byte* methodName = MetadataReader.GetString(ref assembly->Metadata, methodNameIdx);
-        if (IsConstructor(methodName))
+        if (IsConstructor(dbgMethodName))
         {
             // Find the declaring type and set its MethodTable
             uint declaringTypeToken = AssemblyLoader.FindDeclaringType(assemblyId, methodToken);
@@ -1112,5 +1234,17 @@ public static unsafe class Tier0JIT
 
         // If we get here, the method wasn't found - return slot 0 as fallback
         return 0;
+    }
+
+    private static bool NameEquals(byte* name, string expected)
+    {
+        if (name == null)
+            return false;
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (name[i] != (byte)expected[i])
+                return false;
+        }
+        return name[expected.Length] == 0;
     }
 }

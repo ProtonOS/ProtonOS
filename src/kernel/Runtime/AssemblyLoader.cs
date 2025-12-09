@@ -1094,6 +1094,7 @@ public static unsafe class AssemblyLoader
         }
 
         // Sum up instance field sizes for THIS class only
+        // Must properly align each field to its natural alignment
         for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
         {
             // Get field flags
@@ -1112,12 +1113,20 @@ public static unsafe class AssemblyLoader
                 // Field signature: FIELD (0x06), followed by type
                 if (sig[0] == 0x06)
                 {
-                    size += GetFieldTypeSize(asm, sig + 1, sigLen - 1);
+                    uint fieldSize = GetFieldTypeSize(asm, sig + 1, sigLen - 1);
+                    // Align to field's natural alignment (min of field size and 8)
+                    uint align = fieldSize < 8 ? fieldSize : 8;
+                    if (align > 1)
+                    {
+                        size = (size + align - 1) & ~(align - 1);
+                    }
+                    size += fieldSize;
                 }
             }
             else
             {
-                // Unknown field, assume pointer size
+                // Unknown field, assume pointer size and alignment
+                size = (size + 7) & ~7u;
                 size += 8;
             }
         }
@@ -2072,6 +2081,28 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Compare two method signatures for overload resolution.
+    /// MemberRef signatures and MethodDef signatures should be identical for matching overloads.
+    /// </summary>
+    private static bool SignaturesMatch(byte* sig1, uint sig1Len, byte* sig2, uint sig2Len)
+    {
+        // Quick length check first
+        if (sig1Len != sig2Len)
+            return false;
+
+        if (sig1 == null || sig2 == null)
+            return sig1 == sig2;
+
+        // Byte-by-byte comparison
+        for (uint i = 0; i < sig1Len; i++)
+        {
+            if (sig1[i] != sig2[i])
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Find a MethodDef token by name within a specific type.
     /// </summary>
     private static uint FindMethodDefByName(LoadedAssembly* asm, uint typeDefToken, byte* methodName, byte* sig, uint sigLen)
@@ -2128,9 +2159,14 @@ public static unsafe class AssemblyLoader
 
             if (StringsEqual(methodName, defName))
             {
-                // TODO: Could also compare signatures for overload resolution
-                // For now, match by name only
-                return 0x06000000 | methodRow;  // MethodDef token
+                // Compare signatures for overload resolution
+                uint defSigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+                byte* defSig = MetadataReader.GetBlob(ref asm->Metadata, defSigIdx, out uint defSigLen);
+
+                if (SignaturesMatch(sig, sigLen, defSig, defSigLen))
+                {
+                    return 0x06000000 | methodRow;  // MethodDef token
+                }
             }
         }
 
