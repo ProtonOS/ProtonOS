@@ -14,6 +14,7 @@ public unsafe struct CodeBuffer
     private byte* _buffer;
     private int _size;
     private int _offset;
+    private bool _overflow;
 
     /// <summary>
     /// Initialize a code buffer with the specified capacity.
@@ -25,6 +26,7 @@ public unsafe struct CodeBuffer
         buf._buffer = CodeHeap.Alloc((ulong)capacity);
         buf._size = buf._buffer != null ? capacity : 0;
         buf._offset = 0;
+        buf._overflow = false;
         return buf;
     }
 
@@ -54,6 +56,11 @@ public unsafe struct CodeBuffer
     public bool IsValid => _buffer != null;
 
     /// <summary>
+    /// Check if buffer has overflowed (tried to emit more bytes than capacity)
+    /// </summary>
+    public bool HasOverflow => _overflow;
+
+    /// <summary>
     /// Emit a single byte
     /// </summary>
     public void EmitByte(byte b)
@@ -61,6 +68,10 @@ public unsafe struct CodeBuffer
         if (_offset < _size)
         {
             _buffer[_offset++] = b;
+        }
+        else
+        {
+            _overflow = true;
         }
     }
 
@@ -73,6 +84,10 @@ public unsafe struct CodeBuffer
         {
             _buffer[_offset++] = (byte)w;
             _buffer[_offset++] = (byte)(w >> 8);
+        }
+        else
+        {
+            _overflow = true;
         }
     }
 
@@ -87,6 +102,10 @@ public unsafe struct CodeBuffer
             _buffer[_offset++] = (byte)(d >> 8);
             _buffer[_offset++] = (byte)(d >> 16);
             _buffer[_offset++] = (byte)(d >> 24);
+        }
+        else
+        {
+            _overflow = true;
         }
     }
 
@@ -105,6 +124,10 @@ public unsafe struct CodeBuffer
             _buffer[_offset++] = (byte)(q >> 40);
             _buffer[_offset++] = (byte)(q >> 48);
             _buffer[_offset++] = (byte)(q >> 56);
+        }
+        else
+        {
+            _overflow = true;
         }
     }
 

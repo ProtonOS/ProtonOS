@@ -599,8 +599,17 @@ public unsafe struct ILCompiler
             compiler._localTypeSize = (ushort*)(p + 5568);     // offset 5568, 128 bytes
         }
 
-        // Create code buffer (4KB should be plenty for simple methods)
-        compiler._code = CodeBuffer.Create(4096);
+        // Create code buffer sized based on IL length
+        // The naive stack-based JIT generates ~8-16 bytes of x64 per IL byte
+        // (push/pop pairs, 10-byte movabs for addresses, etc.)
+        // Use 16x multiplier + 512 bytes overhead for prologue/epilogue
+        int estimatedCodeSize = (ilLength * 16) + 512;
+        // Minimum 4KB, round up to 4KB boundary for efficient allocation
+        if (estimatedCodeSize < 4096)
+            estimatedCodeSize = 4096;
+        else
+            estimatedCodeSize = (estimatedCodeSize + 4095) & ~4095;
+        compiler._code = CodeBuffer.Create(estimatedCodeSize);
 
         return compiler;
     }
@@ -945,6 +954,19 @@ public unsafe struct ILCompiler
 
         // Patch forward branches
         PatchBranches();
+
+        // Check for code buffer overflow
+        if (_code.HasOverflow)
+        {
+            DebugConsole.Write("[JIT] FATAL: Code buffer overflow! IL size=");
+            DebugConsole.WriteDecimal((uint)_ilLength);
+            DebugConsole.Write(" Buffer capacity=");
+            DebugConsole.WriteDecimal((uint)_code.Capacity);
+            DebugConsole.Write(" Used=");
+            DebugConsole.WriteDecimal((uint)_code.Position);
+            DebugConsole.WriteLine();
+            return null;
+        }
 
         return _code.GetFunctionPointer();
     }
@@ -2076,14 +2098,49 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
         }
 
-        // Large value type: copy the full struct from the eval stack into the local
+        // Check if TOS is a multi-slot value type (from stack type tracking)
+        // This handles cases where metadata didn't resolve the local's size (cross-assembly TypeRef)
+        byte tosType = PeekStackType();
+        int stackBasedSlots = 0;
+        if (tosType == StackType_ValueType && _evalStackDepth > 0)
+        {
+            stackBasedSlots = CountVTSlots(_evalStackDepth - 1);
+        }
+
+        // Use stack-based detection if metadata didn't provide size but stack says multi-slot VT
+        int effectiveSlots = 0;
+        int effectiveSize = (int)typeSize;
         if (isValueType && typeSize > 8)
+        {
+            // Metadata says large value type
+            effectiveSlots = ((typeSize + 7) & ~7) / 8;
+            effectiveSize = (int)typeSize;
+        }
+        // NOTE: No fallback for stack-based size detection needed when TypeRef resolution works properly.
+        // If typeSize > 0, metadata resolution succeeded and we use it (handled above).
+        // If typeSize == 0 for a VT, resolution failed - log error instead of guessing from stack.
+        else if (isValueType && typeSize == 0 && stackBasedSlots > 1)
+        {
+            // TypeRef resolution failed for this value type local - this is a bug we need to fix
+            DebugConsole.Write("[stloc ERROR] VT local idx=");
+            DebugConsole.WriteDecimal((uint)index);
+            DebugConsole.Write(" has typeSize=0 but stackSlots=");
+            DebugConsole.WriteDecimal((uint)stackBasedSlots);
+            DebugConsole.WriteLine(" - TypeRef resolution incomplete!");
+
+            // Still need to handle it somehow, use stack size as best effort
+            effectiveSlots = stackBasedSlots;
+            effectiveSize = stackBasedSlots * 8;
+        }
+
+        // Large value type: copy the full struct from the eval stack into the local
+        if (effectiveSlots > 1)
         {
                 int destOffset = X64Emitter.GetLocalOffset(index);
             DebugConsole.Write("[stloc VT] idx=");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal((uint)typeSize);
+            DebugConsole.WriteDecimal((uint)effectiveSize);
             DebugConsole.Write(" dest=[FP-");
             DebugConsole.WriteDecimal((uint)(-destOffset));
             DebugConsole.Write("] depth=");
@@ -2091,33 +2148,33 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
             // Use 16-byte alignment for structs > 16 bytes (matches call return buffer allocation)
             // This ensures we clean up any padding from the call's hidden buffer
-            int alignedSize = typeSize > 16 ? ((typeSize + 15) & ~15) : ((typeSize + 7) & ~7);
+            int alignedSize = effectiveSize > 16 ? ((effectiveSize + 15) & ~15) : ((effectiveSize + 7) & ~7);
             int slots = alignedSize / 8;
 
             // Copy from [RSP] (top of eval stack) into the local slot
             int copyOffset = 0;
-            while (copyOffset + 8 <= typeSize)
+            while (copyOffset + 8 <= effectiveSize)
             {
                 X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 8;
             }
 
-            if (copyOffset + 4 <= typeSize)
+            if (copyOffset + 4 <= effectiveSize)
             {
                 X64Emitter.MovRM32(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR32(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 4;
             }
 
-            if (copyOffset + 2 <= typeSize)
+            if (copyOffset + 2 <= effectiveSize)
             {
                 X64Emitter.MovRM16(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR16(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 2;
             }
 
-            if (copyOffset < typeSize)
+            if (copyOffset < effectiveSize)
             {
                 X64Emitter.MovRM8(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR8(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
@@ -3910,6 +3967,9 @@ public unsafe struct ILCompiler
         // Track bytes of large struct args left on stack (need cleanup after call)
         int largeStructArgBytes = 0;
 
+        // Track special allocation for 4-args + hidden buffer case
+        int fourArgsHiddenBufferCleanup = 0;
+
         if (totalArgs == 0 && !needsHiddenBuffer)
         {
             // No arguments - just call (shadow space allocated below)
@@ -3988,14 +4048,42 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 4 && needsHiddenBuffer)
         {
-            // Four normal args + hidden buffer: arg3 goes on stack, others shift
-            // TODO: Handle stack arg for this case
-            DebugConsole.WriteLine("[JIT] WARNING: 4 args + hidden buffer not fully implemented");
-            X64Emitter.Pop(ref _code, VReg.R4);    // arg3 (should go to stack)
+            // Four normal args + hidden buffer: 5 physical args total
+            // RCX = hidden buffer (set up after shadow space allocation)
+            // RDX = arg0, R8 = arg1, R9 = arg2, [RSP+32] = arg3
+            //
+            // Pop args in reverse order from eval stack
+            // arg3 goes to R10 temporarily, will be stored to stack after shadow space
+            X64Emitter.Pop(ref _code, VReg.R5);    // arg3 -> R10 (temp)
             X64Emitter.Pop(ref _code, VReg.R4);    // arg2 -> R9
             X64Emitter.Pop(ref _code, VReg.R3);    // arg1 -> R8
-            X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
+            X64Emitter.Pop(ref _code, VReg.R2);    // arg0 -> RDX
             _evalStackDepth -= 4;
+
+            // We need to handle this specially: allocate extra stack space for arg3
+            // Calculate total allocation: 32 (shadow) + 8 (arg3) + hiddenBufferSize
+            // But this needs to be 16-byte aligned, and we need to store arg3 at [RSP+32]
+            // Allocate: shadow (32) + stack arg slot (8) + hidden buffer (rounded to 16)
+            int bufferRounded = (hiddenBufferSize + 15) & ~15;
+            int totalAlloc = 32 + 8 + bufferRounded;
+            // Round up to 16-byte boundary
+            totalAlloc = (totalAlloc + 15) & ~15;
+
+            X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+            // Store arg3 at [RSP+32]
+            X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R5);
+
+            // Set RCX = buffer address (after shadow+stack args)
+            // Buffer is at RSP + 32 + 8 = RSP + 40
+            X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 40);
+
+            // Track cleanup amount: shadow (32) + stack arg (8) = 40
+            // The hidden buffer stays on stack for the return value
+            fourArgsHiddenBufferCleanup = 40;
+
+            // Mark that we handled shadow space allocation
+            needsShadowSpace = false;
         }
         else
         {
@@ -4110,6 +4198,14 @@ public unsafe struct ILCompiler
         if (method.NativeCode != null)
         {
             // Direct call - we already know the target address
+            if (_debugAssemblyId == 3)
+            {
+                DebugConsole.Write("[JIT call] direct tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" native=0x");
+                DebugConsole.WriteHex((ulong)method.NativeCode);
+                DebugConsole.WriteLine();
+            }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
         }
         else if (method.RegistryEntry != null)
@@ -4118,6 +4214,16 @@ public unsafe struct ILCompiler
             // The NativeCode will be filled in by the time the call actually executes
             // Layout: CompiledMethodInfo { uint Token; void* NativeCode; ... }
             // NativeCode is at offset 8 (after 4-byte Token + 4 bytes padding for alignment)
+            if (_debugAssemblyId == 3)
+            {
+                DebugConsole.Write("[JIT call] indirect tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" entry=0x");
+                DebugConsole.WriteHex((ulong)method.RegistryEntry);
+                DebugConsole.Write(" NativeCode@entry=0x");
+                DebugConsole.WriteHex((ulong)((CompiledMethodInfo*)method.RegistryEntry)->NativeCode);
+                DebugConsole.WriteLine();
+            }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.RegistryEntry);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);  // Load [RAX+8] = NativeCode
         }
@@ -4159,6 +4265,12 @@ public unsafe struct ILCompiler
         {
             // Only large struct args to clean up (no shadow space, no stack args)
             X64Emitter.AddRI(ref _code, VReg.SP, largeStructArgBytes);
+        }
+        else if (fourArgsHiddenBufferCleanup > 0)
+        {
+            // Special case: 4 args + hidden buffer - clean up shadow space + stack arg slot
+            // The hidden buffer stays on stack as the return value
+            X64Emitter.AddRI(ref _code, VReg.SP, fourArgsHiddenBufferCleanup);
         }
 
         // Handle return value
@@ -5337,10 +5449,38 @@ public unsafe struct ILCompiler
             DebugConsole.WriteDecimal(tosType);
             DebugConsole.Write(" off=");
             DebugConsole.WriteDecimal((uint)offset);
+            DebugConsole.Write(" d=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            // Dump first 8 type entries
+            DebugConsole.Write(" ty=[");
+            for (int i = 0; i < 8 && i < _evalStackDepth; i++)
+            {
+                if (i > 0) DebugConsole.Write(",");
+                DebugConsole.WriteDecimal(_evalStackTypes != null ? _evalStackTypes[i] : 99U);
+            }
+            DebugConsole.Write("]");
             DebugConsole.WriteLine();
         }
 
+        // Check if we have a multi-slot value type on the stack
+        // First try metadata-based detection, then fall back to stack analysis
+        int structSlots = 0;
+        int alignedSize = 0;
+
         if (isValueType && declaringTypeSize > 8 && tosType == StackType_ValueType)
+        {
+            // Metadata gives us declaring type size
+            alignedSize = (declaringTypeSize + 7) & ~7;
+            structSlots = alignedSize / 8;
+        }
+        else if (tosType == StackType_ValueType && declaringTypeSize == 0)
+        {
+            // Metadata didn't resolve size, but stack says VT - count slots from stack
+            structSlots = CountVTSlots(_evalStackDepth - 1);
+            alignedSize = structSlots * 8;
+        }
+
+        if (structSlots > 1)
         {
             // Debug: log when taking the inline large VT path
             if (_debugAssemblyId == 3)
@@ -5351,10 +5491,10 @@ public unsafe struct ILCompiler
                 DebugConsole.WriteDecimal((uint)size);
                 DebugConsole.Write(" declSz=");
                 DebugConsole.WriteDecimal((uint)declaringTypeSize);
+                DebugConsole.Write(" slots=");
+                DebugConsole.WriteDecimal((uint)structSlots);
                 DebugConsole.WriteLine();
             }
-            int alignedSize = (declaringTypeSize + 7) & ~7;
-            int structSlots = alignedSize / 8;
 
             // The field is at [RSP + fieldOffset], not requiring a dereference of a pointer
             // Load the field value directly from the stack

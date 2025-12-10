@@ -1321,7 +1321,29 @@ public static unsafe class AssemblyLoader
                 {
                     return ComputeInstanceSize(targetAsm, typeDefRow, true);
                 }
+                else
+                {
+                    DebugConsole.Write("[GetFieldTypeSize] TypeRef resolved but invalid: targetAsm=");
+                    DebugConsole.WriteHex((ulong)targetAsm);
+                    DebugConsole.Write(" typeDefRow=");
+                    DebugConsole.WriteDecimal(typeDefRow);
+                    DebugConsole.WriteLine();
+                }
             }
+            else
+            {
+                DebugConsole.Write("[GetFieldTypeSize] FAILED to resolve TypeRef row=");
+                DebugConsole.WriteDecimal(row);
+                DebugConsole.Write(" in asm=");
+                DebugConsole.WriteDecimal(asm->AssemblyId);
+                DebugConsole.WriteLine();
+            }
+        }
+        else if (table == 2)  // TypeSpec - needs more complex handling
+        {
+            DebugConsole.Write("[GetFieldTypeSize] TypeSpec table not fully supported, row=");
+            DebugConsole.WriteDecimal(row);
+            DebugConsole.WriteLine();
         }
 
         return 8;  // Fallback
@@ -1358,35 +1380,91 @@ public static unsafe class AssemblyLoader
         CodedIndex resScope = MetadataReader.GetTypeRefResolutionScope(
             ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
 
+        // Get the type name and namespace from the TypeRef
+        uint nameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        uint nsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        byte* name = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        byte* ns = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
+
+        // Debug: Log the type being resolved
+        DebugConsole.Write("[AsmLoader] ResolveTypeRef 0x");
+        DebugConsole.WriteHex(typeRefToken);
+        DebugConsole.Write(" srcAsm=");
+        DebugConsole.WriteDecimal(sourceAsm->AssemblyId);
+        DebugConsole.Write(" scope=");
+        DebugConsole.WriteDecimal((uint)resScope.Table);
+        DebugConsole.Write(":");
+        DebugConsole.WriteDecimal(resScope.RowId);
+        DebugConsole.Write(" type=");
+        if (ns != null && ns[0] != 0)
+        {
+            for (int i = 0; ns[i] != 0 && i < 24; i++)
+                DebugConsole.WriteChar((char)ns[i]);
+            DebugConsole.WriteChar('.');
+        }
+        if (name != null)
+        {
+            for (int i = 0; name[i] != 0 && i < 24; i++)
+                DebugConsole.WriteChar((char)name[i]);
+        }
+        DebugConsole.WriteLine();
+
         // ResolutionScope points to Module, ModuleRef, AssemblyRef, or TypeRef
         if (resScope.Table == MetadataTableId.AssemblyRef)
         {
-            // Get the type name and namespace from the TypeRef
-            uint nameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
-            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
-            byte* name = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
-            byte* ns = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
-
             // Check for well-known primitive types that are type forwarders in System.Runtime
             // These types are defined in korlib (AOT kernel) and need special handling
             MethodTable* wellKnownMT = TryResolveWellKnownType(name, ns);
             if (wellKnownMT != null)
+            {
+                DebugConsole.WriteLine("  -> well-known type");
                 return wellKnownMT;
+            }
 
             // Find the target assembly
             uint targetAsmId = ResolveAssemblyRef(sourceAsm, resScope.RowId);
             if (targetAsmId == InvalidAssemblyId)
+            {
+                DebugConsole.WriteLine("  -> FAILED: assembly ref not resolved");
                 return null;
+            }
 
             LoadedAssembly* targetAsm = GetAssembly(targetAsmId);
             if (targetAsm == null)
+            {
+                DebugConsole.Write("  -> FAILED: target asm ");
+                DebugConsole.WriteDecimal(targetAsmId);
+                DebugConsole.WriteLine(" not found");
                 return null;
+            }
+
+            DebugConsole.Write("  -> target asm ");
+            DebugConsole.WriteDecimal(targetAsmId);
+            DebugConsole.WriteLine("");
 
             // Find the matching TypeDef in the target assembly
-            return FindTypeDefByName(targetAsm, nameIdx, nsIdx, &sourceAsm->Metadata);
+            MethodTable* result = FindTypeDefByName(targetAsm, nameIdx, nsIdx, &sourceAsm->Metadata);
+            if (result == null)
+            {
+                DebugConsole.WriteLine("  -> FAILED: type not found in target asm");
+            }
+            else
+            {
+                DebugConsole.Write("  -> resolved MT=0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.Write(" isVT=");
+                DebugConsole.WriteDecimal(result->IsValueType ? 1u : 0u);
+                DebugConsole.Write(" size=");
+                DebugConsole.WriteDecimal(result->_uBaseSize);
+                DebugConsole.WriteLine();
+            }
+            return result;
         }
 
         // Other resolution scopes not yet implemented
+        DebugConsole.Write("  -> FAILED: unsupported scope ");
+        DebugConsole.WriteDecimal((uint)resScope.Table);
+        DebugConsole.WriteLine();
         return null;
     }
 
