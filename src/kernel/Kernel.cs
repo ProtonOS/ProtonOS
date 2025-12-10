@@ -153,9 +153,6 @@ public static unsafe class Kernel
         // Second-stage arch init (timers, enable interrupts)
         CurrentArch.InitStage2();
 
-        // Run kernel tests
-        Tests.Run();
-
         // Initialize String MethodTable for JIT ldstr support
         Runtime.MetadataReader.InitStringMethodTable();
 
@@ -246,13 +243,6 @@ public static unsafe class Kernel
         // Register well-known AOT types (System.String, etc.)
         MetadataIntegration.RegisterWellKnownTypes();
 
-        // Test CPU features and dynamic code execution (JIT prerequisites)
-        // Tests.TestCPUFeatures();
-        // Tests.TestDynamicCodeExecution();
-
-        // Test IL JIT compiler (legacy tests - replaced by FullTest assembly)
-        // Tests.TestILCompiler();
-
         // Initialize DDK (Driver Development Kit)
         RunDDKInit();
 
@@ -265,12 +255,6 @@ public static unsafe class Kernel
 
         // Bind drivers to detected PCI devices
         BindDrivers();
-
-        // Run FullTest assembly via JIT
-        // DISABLED: RunFullTestAssembly();
-
-        // Run GC tests (after runtime is fully initialized)
-        // DISABLED: Tests.RunGCTests();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
