@@ -435,6 +435,137 @@ public unsafe struct ResolvedField
 public unsafe delegate bool FieldResolver(uint token, out ResolvedField result);
 
 /// <summary>
+/// Stack entry kinds for the JIT eval stack.
+/// These represent the CLI type system categories plus additional distinctions
+/// useful for correct code generation.
+/// </summary>
+public enum EvalStackKind : byte
+{
+    /// <summary>Unknown or uninitialized entry.</summary>
+    Unknown = 0,
+
+    /// <summary>32-bit integer (int32, bool, char, etc). Always 8 bytes on stack (zero-extended).</summary>
+    Int32 = 1,
+
+    /// <summary>64-bit integer (int64, native int). 8 bytes on stack.</summary>
+    Int64 = 2,
+
+    /// <summary>Native-sized integer (IntPtr, UIntPtr). 8 bytes on x64.</summary>
+    NativeInt = 3,
+
+    /// <summary>32-bit float. 8 bytes on stack (stored in low 32 bits or XMM).</summary>
+    Float32 = 4,
+
+    /// <summary>64-bit float. 8 bytes on stack.</summary>
+    Float64 = 5,
+
+    /// <summary>Object reference (class instance, array, string). 8 bytes on x64. GC-tracked.</summary>
+    ObjectRef = 6,
+
+    /// <summary>Managed pointer (ref, out parameters, ldloca, ldarga). 8 bytes. Points to GC-tracked memory.</summary>
+    ManagedPtr = 7,
+
+    /// <summary>Unmanaged pointer (void*, int*, etc). 8 bytes. Not GC-tracked.</summary>
+    UnmanagedPtr = 8,
+
+    /// <summary>
+    /// Value type stored inline on the eval stack. Size varies.
+    /// The ByteSize field contains the actual size of the struct.
+    /// </summary>
+    ValueType = 9,
+}
+
+/// <summary>
+/// Represents a single entry on the JIT evaluation stack.
+/// Tracks both the semantic type and the physical byte size on the stack.
+/// </summary>
+public struct EvalStackEntry
+{
+    /// <summary>The kind of value stored in this entry.</summary>
+    public EvalStackKind Kind;
+
+    /// <summary>
+    /// The size in bytes this entry occupies on the physical RSP-based stack.
+    /// For most types this is 8. For ValueType, this is the actual struct size (8-byte aligned).
+    /// </summary>
+    public ushort ByteSize;
+
+    /// <summary>
+    /// The actual semantic size of the value (before alignment).
+    /// Int32 = 4, Int64 = 8, Float32 = 4, etc.
+    /// For ValueType: the original struct size.
+    /// </summary>
+    public ushort RawSize;
+
+    /// <summary>
+    /// Create an entry with explicit sizes.
+    /// </summary>
+    public static EvalStackEntry Create(EvalStackKind kind, int rawSize, int alignedSize)
+    {
+        EvalStackEntry e;
+        e.Kind = kind;
+        e.RawSize = (ushort)rawSize;
+        e.ByteSize = (ushort)alignedSize;
+        return e;
+    }
+
+    /// <summary>
+    /// Create an entry for a value type with the given size.
+    /// ByteSize is aligned to 8 bytes for stack alignment.
+    /// </summary>
+    public static EvalStackEntry Struct(int rawSize)
+    {
+        EvalStackEntry e;
+        e.Kind = EvalStackKind.ValueType;
+        e.RawSize = (ushort)rawSize;
+        e.ByteSize = (ushort)((rawSize + 7) & ~7);  // 8-byte aligned
+        return e;
+    }
+
+    /// <summary>Create an entry for a 32-bit integer. Raw size 4, stack size 8.</summary>
+    public static EvalStackEntry Int32 => Create(EvalStackKind.Int32, 4, 8);
+
+    /// <summary>Create an entry for a 64-bit integer. Raw size 8, stack size 8.</summary>
+    public static EvalStackEntry Int64 => Create(EvalStackKind.Int64, 8, 8);
+
+    /// <summary>Create an entry for a native integer (IntPtr). Raw and stack size 8 on x64.</summary>
+    public static EvalStackEntry NativeInt => Create(EvalStackKind.NativeInt, 8, 8);
+
+    /// <summary>Create an entry for a 32-bit float. Raw size 4, stack size 8.</summary>
+    public static EvalStackEntry Float32 => Create(EvalStackKind.Float32, 4, 8);
+
+    /// <summary>Create an entry for a 64-bit float. Raw size 8, stack size 8.</summary>
+    public static EvalStackEntry Float64 => Create(EvalStackKind.Float64, 8, 8);
+
+    /// <summary>Create an entry for an object reference. Raw and stack size 8.</summary>
+    public static EvalStackEntry ObjRef => Create(EvalStackKind.ObjectRef, 8, 8);
+
+    /// <summary>Create an entry for a managed pointer (ref/out/ldloca). Raw and stack size 8.</summary>
+    public static EvalStackEntry ByRef => Create(EvalStackKind.ManagedPtr, 8, 8);
+
+    /// <summary>Create an entry for an unmanaged pointer. Raw and stack size 8.</summary>
+    public static EvalStackEntry Ptr => Create(EvalStackKind.UnmanagedPtr, 8, 8);
+
+    /// <summary>Returns true if this is a GC-trackable reference (object or managed pointer).</summary>
+    public bool IsGCRef => Kind == EvalStackKind.ObjectRef || Kind == EvalStackKind.ManagedPtr;
+
+    /// <summary>Returns true if this is a floating-point type.</summary>
+    public bool IsFloat => Kind == EvalStackKind.Float32 || Kind == EvalStackKind.Float64;
+
+    /// <summary>Returns true if this is a pointer type (managed or unmanaged).</summary>
+    public bool IsPointer => Kind == EvalStackKind.ManagedPtr || Kind == EvalStackKind.UnmanagedPtr;
+
+    /// <summary>Returns true if this is a value type taking multiple slots (>8 bytes).</summary>
+    public bool IsMultiSlotValueType => Kind == EvalStackKind.ValueType && ByteSize > 8;
+
+    /// <summary>Returns true if this is an integer type (32-bit, 64-bit, or native).</summary>
+    public bool IsInteger => Kind == EvalStackKind.Int32 || Kind == EvalStackKind.Int64 || Kind == EvalStackKind.NativeInt;
+
+    /// <summary>Returns true if this is any reference/pointer type (object, managed ptr, or unmanaged ptr).</summary>
+    public bool IsRefOrPtr => Kind == EvalStackKind.ObjectRef || Kind == EvalStackKind.ManagedPtr || Kind == EvalStackKind.UnmanagedPtr;
+}
+
+/// <summary>
 /// Naive IL to x64 compiler.
 /// Uses a stack-based approach where the IL evaluation stack is
 /// simulated using x64 registers and memory.
@@ -460,13 +591,12 @@ public unsafe struct ILCompiler
     // GC info builder for stack root enumeration
     private JITGCInfo _gcInfo;
 
-    // Evaluation stack tracking (naive approach: just track depth)
-    // For a more sophisticated approach, track register allocation
-    private int _evalStackDepth;
-
-    // Stack type tracking for float support (0=int, 1=float32, 2=float64)
+    // Evaluation stack tracking with rich type information
+    // Each entry tracks both the semantic type and physical byte size on stack
     private const int MaxStackDepth = 32;
-    private byte* _evalStackTypes;  // heap-allocated [MaxStackDepth]
+    private int _evalStackDepth;                  // Number of entries (not bytes!)
+    private EvalStackEntry* _evalStack;           // heap-allocated [MaxStackDepth] - rich type info per entry
+    private int _evalStackByteSize;               // Total bytes currently on physical RSP stack
 
     // Arrays for branch targets (heap-allocated to reduce stack usage during nested JIT)
     private const int MaxBranches = 64;
@@ -517,10 +647,13 @@ public unsafe struct ILCompiler
     }
 
     // Buffer size constants for heap allocation
-    // Layout: evalStackTypes[32] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
+    // EvalStackEntry is 5 bytes (Kind:1 + ByteSize:2 + RawSize:2) but we use 8 for alignment
+    private const int EvalStackEntrySize = 8;  // sizeof(EvalStackEntry) with padding
+    // Layout: evalStack[256] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
     //       + branchTargetStackDepth[64] + labelILOffset[2048] + labelCodeOffset[2048] + ehClauseData[320] + funcletInfo[192]
     //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128]
-    private const int HeapBufferSize = 32 + 256 + 256 + 256 + 64 + 2048 + 2048 + 320 + 192 + 64 + 32 + 128; // 5696 bytes
+    // Note: evalStack = MaxStackDepth(32) * 8 bytes = 256 bytes for rich type tracking
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 320 + 192 + 64 + 32 + 128; // 5920 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -566,7 +699,8 @@ public unsafe struct ILCompiler
 
         // Initialize all pointer fields to null first (required for struct initialization)
         compiler._heapBuffers = null;
-        compiler._evalStackTypes = null;
+        compiler._evalStack = null;
+        compiler._evalStackByteSize = 0;
         compiler._branchSources = null;
         compiler._branchTargetIL = null;
         compiler._branchPatchOffset = null;
@@ -584,19 +718,20 @@ public unsafe struct ILCompiler
         if (compiler._heapBuffers != null)
         {
             // Set up pointers into the heap buffer
+            // Layout with evalStack at offset 0
             byte* p = compiler._heapBuffers;
-            compiler._evalStackTypes = p;                      // offset 0, 32 bytes
-            compiler._branchSources = (int*)(p + 32);          // offset 32, 256 bytes
-            compiler._branchTargetIL = (int*)(p + 288);        // offset 288, 256 bytes
-            compiler._branchPatchOffset = (int*)(p + 544);     // offset 544, 256 bytes
-            compiler._branchTargetStackDepth = p + 800;        // offset 800, 64 bytes
-            compiler._labelILOffset = (int*)(p + 864);         // offset 864, 2048 bytes
-            compiler._labelCodeOffset = (int*)(p + 2912);      // offset 2912, 2048 bytes
-            compiler._ehClauseData = (int*)(p + 4960);         // offset 4960, 320 bytes
-            compiler._funcletInfo = (int*)(p + 5280);          // offset 5280, 192 bytes
-            compiler._localIsValueType = (bool*)(p + 5472);    // offset 5472, 64 bytes
-            compiler._argIsValueType = (bool*)(p + 5536);      // offset 5536, 32 bytes
-            compiler._localTypeSize = (ushort*)(p + 5568);     // offset 5568, 128 bytes
+            compiler._evalStack = (EvalStackEntry*)p;          // offset 0, 256 bytes (32 * 8)
+            compiler._branchSources = (int*)(p + 256);         // offset 256, 256 bytes
+            compiler._branchTargetIL = (int*)(p + 512);        // offset 512, 256 bytes
+            compiler._branchPatchOffset = (int*)(p + 768);     // offset 768, 256 bytes
+            compiler._branchTargetStackDepth = p + 1024;       // offset 1024, 64 bytes
+            compiler._labelILOffset = (int*)(p + 1088);        // offset 1088, 2048 bytes
+            compiler._labelCodeOffset = (int*)(p + 3136);      // offset 3136, 2048 bytes
+            compiler._ehClauseData = (int*)(p + 5184);         // offset 5184, 320 bytes
+            compiler._funcletInfo = (int*)(p + 5504);          // offset 5504, 192 bytes
+            compiler._localIsValueType = (bool*)(p + 5696);    // offset 5696, 64 bytes
+            compiler._argIsValueType = (bool*)(p + 5760);      // offset 5760, 32 bytes
+            compiler._localTypeSize = (ushort*)(p + 5792);     // offset 5792, 128 bytes
         }
 
         // Create code buffer sized based on IL length
@@ -1897,7 +2032,7 @@ public unsafe struct ILCompiler
         // Push constant onto eval stack (sign-extended to 64-bit)
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)(long)value);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.Int32);
         return true;
     }
 
@@ -1921,12 +2056,16 @@ public unsafe struct ILCompiler
         X64Emitter.LoadArgFromHome(ref _code, VReg.R0, physicalArgIndex);
 
         // Check if this arg is a value type - affects ldfld behavior
-        byte stackType = StackType_Int;
+        // For ldarg, we load a pointer to the arg (even for value types), so it's NativeInt
+        // The arg type tracking (_argIsValueType) is used later by ldfld to know the source is a value type
+        EvalStackEntry entry = EvalStackEntry.NativeInt;
         if (_argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index])
         {
-            stackType = StackType_ValueType;
+            // Still NativeInt because we're loading a pointer/reference to the value type
+            // The ValueType entry kind is for inline value types on the stack (e.g., from ldloc of a struct)
+            entry = EvalStackEntry.NativeInt;
         }
-        PushR0(stackType);
+        PushR0(entry);
         return true;
     }
 
@@ -2011,43 +2150,41 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R0);
             }
 
-            // Track each 8-byte slot as an inline value type so downstream ldfld
-            // knows the struct is sitting on the eval stack (not a pointer).
-            for (int i = 0; i < slots; i++)
-            {
-                PushStackType(StackType_ValueType);
-            }
+            // Track as ONE entry with actual byte size (not N slots!)
+            PushEntry(EvalStackEntry.Struct(typeSize));
             return true;
         }
         else if (isValueType && typeSize > 8)
         {
-            // Medium value type (9-16 bytes): push as 16 bytes (2 slots)
-            // This matches what stobj expects for medium structs.
-            X64Emitter.SubRI(ref _code, VReg.SP, 16);
+            // Medium value type (9-16 bytes): push as 16 bytes (aligned)
+            int alignedSize = (typeSize + 7) & ~7;
+            X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
             X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R0);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset + 8);
             X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R0);
-            PushStackType(StackType_ValueType);
-            PushStackType(StackType_ValueType);
+            // Track as ONE entry with actual byte size
+            PushEntry(EvalStackEntry.Struct(typeSize));
             return true;
         }
         else if (isValueType && typeSize > 0)
         {
-            // Small value type (1-8 bytes): load VALUE directly
-            // Mark as StackType_ValueType so ldfld knows to extract field by bit shifting
+            // Small value type (1-8 bytes): load VALUE directly, push with size
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
-            stackType = StackType_ValueType;
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushEntry(EvalStackEntry.Struct(typeSize));
+            return true;
         }
         else
         {
             // Type info not available: primitive, reference type
             // Load VALUE directly (8 bytes)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
-            stackType = StackType_Int;
         }
 
-        PushR0(stackType);
+        // Default: push as Int32 (primitives, references)
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.Int32);
         if (debugBind)
         {
             DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
@@ -2098,102 +2235,86 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
         }
 
-        // Check if TOS is a multi-slot value type (from stack type tracking)
-        // This handles cases where metadata didn't resolve the local's size (cross-assembly TypeRef)
-        byte tosType = PeekStackType();
-        int stackBasedSlots = 0;
-        if (tosType == StackType_ValueType && _evalStackDepth > 0)
-        {
-            stackBasedSlots = CountVTSlots(_evalStackDepth - 1);
-        }
+        // Use new type system: PeekEntry tells us the actual byte size on stack
+        EvalStackEntry tosEntry = PeekEntry();
+        int stackByteSize = tosEntry.ByteSize;  // Actual bytes this entry occupies on RSP
 
-        // Use stack-based detection if metadata didn't provide size but stack says multi-slot VT
-        int effectiveSlots = 0;
+        // Determine the size to copy into the local
+        // Prefer metadata size if available, otherwise use stack entry size
         int effectiveSize = (int)typeSize;
-        if (isValueType && typeSize > 8)
+        if (effectiveSize == 0 && tosEntry.Kind == EvalStackKind.ValueType)
         {
-            // Metadata says large value type
-            effectiveSlots = ((typeSize + 7) & ~7) / 8;
-            effectiveSize = (int)typeSize;
-        }
-        // NOTE: No fallback for stack-based size detection needed when TypeRef resolution works properly.
-        // If typeSize > 0, metadata resolution succeeded and we use it (handled above).
-        // If typeSize == 0 for a VT, resolution failed - log error instead of guessing from stack.
-        else if (isValueType && typeSize == 0 && stackBasedSlots > 1)
-        {
-            // TypeRef resolution failed for this value type local - this is a bug we need to fix
-            DebugConsole.Write("[stloc ERROR] VT local idx=");
+            // TypeRef resolution failed - use stack entry's tracked size
+            effectiveSize = tosEntry.RawSize;
+            DebugConsole.Write("[stloc WARN] VT local idx=");
             DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" has typeSize=0 but stackSlots=");
-            DebugConsole.WriteDecimal((uint)stackBasedSlots);
-            DebugConsole.WriteLine(" - TypeRef resolution incomplete!");
-
-            // Still need to handle it somehow, use stack size as best effort
-            effectiveSlots = stackBasedSlots;
-            effectiveSize = stackBasedSlots * 8;
+            DebugConsole.Write(" typeSize=0, using stack rawSize=");
+            DebugConsole.WriteDecimal((uint)effectiveSize);
+            DebugConsole.WriteLine();
         }
 
-        // Large value type: copy the full struct from the eval stack into the local
-        if (effectiveSlots > 1)
+        // Large value type (>8 bytes): copy full struct from eval stack into local
+        if (effectiveSize > 8 || stackByteSize > 8)
         {
-                int destOffset = X64Emitter.GetLocalOffset(index);
+            int destOffset = X64Emitter.GetLocalOffset(index);
+            int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
             DebugConsole.Write("[stloc VT] idx=");
             DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal((uint)effectiveSize);
+            DebugConsole.Write(" copySize=");
+            DebugConsole.WriteDecimal((uint)copySize);
+            DebugConsole.Write(" stackBytes=");
+            DebugConsole.WriteDecimal((uint)stackByteSize);
             DebugConsole.Write(" dest=[FP-");
             DebugConsole.WriteDecimal((uint)(-destOffset));
-            DebugConsole.Write("] depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.Write("]");
             DebugConsole.WriteLine();
-            // Use 16-byte alignment for structs > 16 bytes (matches call return buffer allocation)
-            // This ensures we clean up any padding from the call's hidden buffer
-            int alignedSize = effectiveSize > 16 ? ((effectiveSize + 15) & ~15) : ((effectiveSize + 7) & ~7);
-            int slots = alignedSize / 8;
 
             // Copy from [RSP] (top of eval stack) into the local slot
             int copyOffset = 0;
-            while (copyOffset + 8 <= effectiveSize)
+            while (copyOffset + 8 <= copySize)
             {
                 X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 8;
             }
 
-            if (copyOffset + 4 <= effectiveSize)
+            if (copyOffset + 4 <= copySize)
             {
                 X64Emitter.MovRM32(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR32(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 4;
             }
 
-            if (copyOffset + 2 <= effectiveSize)
+            if (copyOffset + 2 <= copySize)
             {
                 X64Emitter.MovRM16(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR16(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
                 copyOffset += 2;
             }
 
-            if (copyOffset < effectiveSize)
+            if (copyOffset < copySize)
             {
                 X64Emitter.MovRM8(ref _code, VReg.R3, VReg.SP, copyOffset);
                 X64Emitter.MovMR8(ref _code, VReg.FP, destOffset + copyOffset, VReg.R3);
             }
 
-            // Pop the struct off the eval stack (aligned slots)
-            if (alignedSize > 0)
+            // Pop the entry off the eval stack (uses tracked ByteSize)
+            if (stackByteSize > 0)
             {
-                X64Emitter.AddRI(ref _code, VReg.SP, alignedSize);
+                X64Emitter.AddRI(ref _code, VReg.SP, stackByteSize);
             }
-            for (int i = 0; i < slots; i++)
-            {
-                PopStackType();
-            }
+            PopEntry();
             return true;
         }
 
-        // Pop from eval stack, store to local
-        PopR0();
+        // Small value (≤8 bytes): pop single slot, store to local
+        EvalStackEntry entry = PopEntry();
+        X64Emitter.Pop(ref _code, VReg.R0);
+        // Adjust RSP if entry was larger than 8 bytes (shouldn't happen here but safe)
+        if (entry.ByteSize > 8)
+        {
+            X64Emitter.AddRI(ref _code, VReg.SP, entry.ByteSize - 8);
+        }
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
 
@@ -2212,116 +2333,128 @@ public unsafe struct ILCompiler
 
     private bool CompileDup()
     {
-        // Count consecutive StackType_ValueType entries to determine if TOS is a multi-slot value type
-        int vtSlots = 0;
-        for (int i = _evalStackDepth - 1; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
-            vtSlots++;
+        // Use new type system: PeekEntry tells us actual byte size
+        EvalStackEntry tosEntry = PeekEntry();
+        int byteSize = tosEntry.ByteSize;
 
-        if (vtSlots > 1)
+        // Make room for the duplicate
+        X64Emitter.SubRI(ref _code, VReg.SP, byteSize);
+
+        // Copy bytes from [SP + byteSize] to [SP]
+        int copyOffset = 0;
+        while (copyOffset + 8 <= byteSize)
         {
-            // Multi-slot value type: duplicate all slots
-            int byteSize = vtSlots * 8;
-
-            // Make room for the duplicate
-            X64Emitter.SubRI(ref _code, VReg.SP, byteSize);
-
-            // Copy each 8-byte slot from [SP + byteSize + offset] to [SP + offset]
-            for (int i = 0; i < vtSlots; i++)
-            {
-                int offset = i * 8;
-                X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, byteSize + offset);
-                X64Emitter.MovMR(ref _code, VReg.SP, offset, VReg.R0);
-            }
-
-            // Push type entries for all slots
-            for (int i = 0; i < vtSlots; i++)
-                PushStackType(StackType_ValueType);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, byteSize + copyOffset);
+            X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R0);
+            copyOffset += 8;
         }
-        else
+        // Handle trailing bytes (4, 2, 1) if any
+        if (copyOffset + 4 <= byteSize)
         {
-            // Single slot: original behavior
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);
-            X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(PeekStackType());
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.SP, byteSize + copyOffset);
+            X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R0);
+            copyOffset += 4;
         }
+        if (copyOffset + 2 <= byteSize)
+        {
+            X64Emitter.MovRM16(ref _code, VReg.R0, VReg.SP, byteSize + copyOffset);
+            X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R0);
+            copyOffset += 2;
+        }
+        if (copyOffset < byteSize)
+        {
+            X64Emitter.MovRM8(ref _code, VReg.R0, VReg.SP, byteSize + copyOffset);
+            X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R0);
+        }
+
+        // Push duplicate entry (same type as original)
+        PushEntry(tosEntry);
         return true;
     }
 
     private bool CompilePop()
     {
-        // Count consecutive StackType_ValueType entries to determine if TOS is a multi-slot value type
-        int vtSlots = 0;
-        for (int i = _evalStackDepth - 1; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
-            vtSlots++;
-
-        if (vtSlots > 1)
-        {
-            // Multi-slot value type: discard all slots
-            int byteSize = vtSlots * 8;
-            X64Emitter.AddRI(ref _code, VReg.SP, byteSize);
-            for (int i = 0; i < vtSlots; i++)
-                PopStackType();
-        }
-        else
-        {
-            // Single slot: original behavior
-            X64Emitter.AddRI(ref _code, VReg.SP, 8);
-            PopStackType();
-        }
+        // Use new type system: PopEntry tells us actual byte size to deallocate
+        EvalStackEntry entry = PopEntry();
+        int byteSize = entry.ByteSize;
+        X64Emitter.AddRI(ref _code, VReg.SP, byteSize);
         return true;
     }
 
-    // Stack type constants
-    private const byte StackType_Int = 0;
-    private const byte StackType_Float32 = 1;
-    private const byte StackType_Float64 = 2;
-    private const byte StackType_ValueType = 3;  // Inline value type (not a pointer)
+    // === Rich Eval Stack Type System ===
+    // Each entry is ONE value with tracked byte size.
+    // A 32-byte struct is ONE entry with ByteSize=32, not 4 separate entries.
 
-    // Helper to push a type onto the type stack
-    private void PushStackType(byte type)
+    /// <summary>
+    /// Push an entry onto the eval stack.
+    /// This does NOT emit any machine code - use with machine code emission helpers.
+    /// </summary>
+    private void PushEntry(EvalStackEntry entry)
     {
-        if (_evalStackDepth < MaxStackDepth && _evalStackTypes != null)
-        {
-            _evalStackTypes[_evalStackDepth] = type;
-        }
+        if (_evalStackDepth < MaxStackDepth && _evalStack != null)
+            _evalStack[_evalStackDepth] = entry;
         _evalStackDepth++;
+        _evalStackByteSize += entry.ByteSize;
     }
 
-    // Helper to pop a type from the type stack
-    private byte PopStackType()
+    /// <summary>
+    /// Pop an entry from the rich eval stack.
+    /// Returns the entry that was popped. Does NOT emit machine code.
+    /// </summary>
+    private EvalStackEntry PopEntry()
     {
         if (_evalStackDepth > 0)
         {
             _evalStackDepth--;
-            if (_evalStackTypes != null)
-                return _evalStackTypes[_evalStackDepth];
+            if (_evalStack != null)
+            {
+                var entry = _evalStack[_evalStackDepth];
+                _evalStackByteSize -= entry.ByteSize;
+                return entry;
+            }
         }
-        return StackType_Int;
+        // Return a default Int32 entry if stack is empty
+        return EvalStackEntry.Int32;
     }
-
-    // Helper to peek at the top type
-    private byte PeekStackType()
-    {
-        if (_evalStackDepth > 0 && _evalStackTypes != null)
-            return _evalStackTypes[_evalStackDepth - 1];
-        return StackType_Int;
-    }
-
-    // Check if type is float (single or double)
-    private bool IsFloatType(byte type) => type == StackType_Float32 || type == StackType_Float64;
 
     /// <summary>
-    /// Count consecutive StackType_ValueType entries ending at a given stack position.
-    /// Used to detect multi-slot value types on the eval stack.
+    /// Peek at the top entry without removing it.
     /// </summary>
-    /// <param name="stackPos">The stack position to start counting from (0 = bottom, _evalStackDepth-1 = top)</param>
-    /// <returns>Number of consecutive VT slots (1 for single values, >1 for multi-slot structs)</returns>
-    private int CountVTSlots(int stackPos)
+    private EvalStackEntry PeekEntry()
     {
-        int vtSlots = 0;
-        for (int i = stackPos; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
-            vtSlots++;
-        return vtSlots > 0 ? vtSlots : 1;  // At least 1 slot
+        if (_evalStackDepth > 0 && _evalStack != null)
+            return _evalStack[_evalStackDepth - 1];
+        return EvalStackEntry.Int32;
+    }
+
+    /// <summary>
+    /// Peek at entry at a specific depth from top (0 = top, 1 = second from top, etc.)
+    /// </summary>
+    private EvalStackEntry PeekEntryAt(int depthFromTop)
+    {
+        int idx = _evalStackDepth - 1 - depthFromTop;
+        if (idx >= 0 && _evalStack != null)
+            return _evalStack[idx];
+        return EvalStackEntry.Int32;
+    }
+
+    /// <summary>
+    /// Get the total byte size of all entries on the eval stack.
+    /// </summary>
+    private int GetEvalStackByteSize() => _evalStackByteSize;
+
+    /// <summary>
+    /// Get the byte offset from RSP to a specific entry (0 = top of stack).
+    /// This is the actual physical offset accounting for all entry sizes.
+    /// </summary>
+    private int GetEntryRspOffset(int depthFromTop)
+    {
+        int offset = 0;
+        for (int i = 0; i < depthFromTop && i < _evalStackDepth; i++)
+        {
+            offset += _evalStack[_evalStackDepth - 1 - i].ByteSize;
+        }
+        return offset;
     }
 
     private bool IsDebugBindMethod() => _debugAssemblyId == 4 && _debugMethodToken == 0x0600002A;
@@ -2336,10 +2469,10 @@ public unsafe struct ILCompiler
     /// <summary>
     /// Push R0 onto the eval stack and track the type.
     /// </summary>
-    private void PushR0(byte stackType = 0)
+    private void PushR0(EvalStackEntry entry)
     {
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(stackType);
+        PushEntry(entry);
     }
 
     /// <summary>
@@ -2348,7 +2481,7 @@ public unsafe struct ILCompiler
     private void PopR0()
     {
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
     }
 
     /// <summary>
@@ -2357,27 +2490,27 @@ public unsafe struct ILCompiler
     private void PopReg(VReg dst)
     {
         X64Emitter.Pop(ref _code, dst);
-        PopStackType();
+        PopEntry();
     }
 
     /// <summary>
     /// Load a constant into R0 and push it onto the eval stack.
     /// </summary>
-    private void PushConst(long value, byte stackType = 0)
+    private void PushConst(long value, EvalStackEntry entry)
     {
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(stackType);
+        PushEntry(entry);
     }
 
     private bool CompileAdd()
     {
         // Pop two values, add, push result
         // Peek at types to determine float vs int (without popping yet)
-        byte type2 = PeekStackTypeAt(0);  // Top
-        byte type1 = PeekStackTypeAt(1);  // Second from top
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top
 
-        if (IsFloatType(type1) || IsFloatType(type2))
+        if (IsFloatEntry(entry1) || IsFloatEntry(entry2))
         {
             // Float arithmetic with peephole optimization
             // Pop operands into registers
@@ -2385,7 +2518,7 @@ public unsafe struct ILCompiler
             PopR0();          // First operand (bits) -> R0
 
             // Determine if single or double precision (use widest type)
-            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+            bool isDouble = (entry1.Kind == EvalStackKind.Float64 || entry2.Kind == EvalStackKind.Float64);
 
             if (isDouble)
             {
@@ -2396,7 +2529,7 @@ public unsafe struct ILCompiler
                 X64Emitter.AddsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float64);
+                PushR0(EvalStackEntry.Float64);
             }
             else
             {
@@ -2407,7 +2540,7 @@ public unsafe struct ILCompiler
                 X64Emitter.AddssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 // Move result bits back
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float32);
+                PushR0(EvalStackEntry.Float32);
             }
         }
         else
@@ -2416,38 +2549,31 @@ public unsafe struct ILCompiler
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
             X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(StackType_Int);
+            PushR0(EvalStackEntry.NativeInt);
         }
         return true;
     }
 
     /// <summary>
-    /// Peek at stack type at given depth (0 = top, 1 = second from top, etc.)
+    /// Check if an entry is a floating-point type
     /// </summary>
-    private byte PeekStackTypeAt(int depth)
-    {
-        int index = _evalStackDepth - 1 - depth;
-        if (index >= 0 && index < MaxStackDepth && _evalStackTypes != null)
-        {
-            return _evalStackTypes[index];
-        }
-        return StackType_Int;
-    }
+    private bool IsFloatEntry(EvalStackEntry entry) =>
+        entry.Kind == EvalStackKind.Float32 || entry.Kind == EvalStackKind.Float64;
 
     private bool CompileSub()
     {
         // Pop two values, subtract, push result
         // Peek at types to determine float vs int (without popping yet)
-        byte type2 = PeekStackTypeAt(0);  // Top
-        byte type1 = PeekStackTypeAt(1);  // Second from top
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top
 
-        if (IsFloatType(type1) || IsFloatType(type2))
+        if (IsFloatEntry(entry1) || IsFloatEntry(entry2))
         {
             // Float arithmetic with peephole optimization
             PopReg(VReg.R2);  // Second operand (bits) -> R2
             PopR0();          // First operand (bits) -> R0
 
-            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+            bool isDouble = (entry1.Kind == EvalStackKind.Float64 || entry2.Kind == EvalStackKind.Float64);
 
             if (isDouble)
             {
@@ -2455,7 +2581,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.SubsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float64);
+                PushR0(EvalStackEntry.Float64);
             }
             else
             {
@@ -2463,7 +2589,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.SubssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float32);
+                PushR0(EvalStackEntry.Float32);
             }
         }
         else
@@ -2472,7 +2598,7 @@ public unsafe struct ILCompiler
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
             X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(StackType_Int);
+            PushR0(EvalStackEntry.NativeInt);
         }
         return true;
     }
@@ -2481,16 +2607,16 @@ public unsafe struct ILCompiler
     {
         // Pop two values, multiply, push result
         // Peek at types to determine float vs int (without popping yet)
-        byte type2 = PeekStackTypeAt(0);  // Top
-        byte type1 = PeekStackTypeAt(1);  // Second from top
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top
 
-        if (IsFloatType(type1) || IsFloatType(type2))
+        if (IsFloatEntry(entry1) || IsFloatEntry(entry2))
         {
             // Float arithmetic with peephole optimization
             PopReg(VReg.R2);  // Second operand (bits) -> R2
             PopR0();          // First operand (bits) -> R0
 
-            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+            bool isDouble = (entry1.Kind == EvalStackKind.Float64 || entry2.Kind == EvalStackKind.Float64);
 
             if (isDouble)
             {
@@ -2498,7 +2624,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.MulsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float64);
+                PushR0(EvalStackEntry.Float64);
             }
             else
             {
@@ -2506,7 +2632,7 @@ public unsafe struct ILCompiler
                 X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
                 X64Emitter.MulssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
-                PushR0(StackType_Float32);
+                PushR0(EvalStackEntry.Float32);
             }
         }
         else
@@ -2515,7 +2641,7 @@ public unsafe struct ILCompiler
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
             X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(StackType_Int);
+            PushR0(EvalStackEntry.NativeInt);
         }
         return true;
     }
@@ -2550,12 +2676,12 @@ public unsafe struct ILCompiler
     {
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
-        _evalStackDepth -= 2;
+        PopEntry(); PopEntry();
         X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2563,12 +2689,12 @@ public unsafe struct ILCompiler
     {
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (subtrahend)
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand (minuend)
-        _evalStackDepth -= 2;
+        PopEntry(); PopEntry();
         X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1 = borrow)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2576,7 +2702,7 @@ public unsafe struct ILCompiler
     {
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
-        _evalStackDepth -= 2;
+        PopEntry(); PopEntry();
 
         if (unsigned)
         {
@@ -2597,7 +2723,7 @@ public unsafe struct ILCompiler
         }
 
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2610,7 +2736,7 @@ public unsafe struct ILCompiler
     {
         // Pop value into RAX (it stays on the logical stack, we just peek and check)
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopEntry();
 
         // For double: exponent is bits 52-62 (11 bits)
         // Value is NOT finite if exponent == 0x7FF (all 1s)
@@ -2648,7 +2774,7 @@ public unsafe struct ILCompiler
 
         // Restore original value and push back
         X64Emitter.Push(ref _code, VReg.R2);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.Float64);
         return true;
     }
 
@@ -2657,7 +2783,7 @@ public unsafe struct ILCompiler
         // Unary op: pop one, negate, push result
         PopR0();
         X64Emitter.Neg(ref _code, VReg.R0);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2667,7 +2793,7 @@ public unsafe struct ILCompiler
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.AndRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2677,7 +2803,7 @@ public unsafe struct ILCompiler
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.OrRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2687,7 +2813,7 @@ public unsafe struct ILCompiler
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2696,7 +2822,7 @@ public unsafe struct ILCompiler
         // Unary op: pop one, NOT, push result
         PopR0();
         X64Emitter.Not(ref _code, VReg.R0);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2704,18 +2830,18 @@ public unsafe struct ILCompiler
     {
         // Division: dividend / divisor
         // IL stack: [..., dividend, divisor] -> [..., quotient]
-        byte type2 = PeekStackTypeAt(0);  // Top (divisor)
-        byte type1 = PeekStackTypeAt(1);  // Second from top (dividend)
-        PopStackType();  // type2
-        PopStackType();  // type1
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top (divisor)
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top (dividend)
+        PopEntry();  // entry2
+        PopEntry();  // entry1
 
-        if (IsFloatType(type1) || IsFloatType(type2))
+        if (IsFloatEntry(entry1) || IsFloatEntry(entry2))
         {
             // Float division - use SSE
             X64Emitter.Pop(ref _code, VReg.R1);  // Divisor (bits)
             X64Emitter.Pop(ref _code, VReg.R0);  // Dividend (bits)
 
-            bool isDouble = (type1 == StackType_Float64 || type2 == StackType_Float64);
+            bool isDouble = (entry1.Kind == EvalStackKind.Float64 || entry2.Kind == EvalStackKind.Float64);
 
             if (isDouble)
             {
@@ -2724,7 +2850,7 @@ public unsafe struct ILCompiler
                 X64Emitter.DivsdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float64);
+                PushEntry(EvalStackEntry.Float64);
             }
             else
             {
@@ -2733,7 +2859,7 @@ public unsafe struct ILCompiler
                 X64Emitter.DivssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                PushStackType(StackType_Float32);
+                PushEntry(EvalStackEntry.Float32);
             }
         }
         else
@@ -2763,7 +2889,7 @@ public unsafe struct ILCompiler
 
             // Quotient is in RAX
             X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);
+            PushEntry(EvalStackEntry.NativeInt);
         }
         return true;
     }
@@ -2774,7 +2900,7 @@ public unsafe struct ILCompiler
         // IL stack: [..., dividend, divisor] -> [..., remainder]
         X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX
         X64Emitter.Pop(ref _code, VReg.R0);  // Dividend to RAX
-        _evalStackDepth -= 2;
+        PopEntry(); PopEntry();
 
         if (signed)
         {
@@ -2792,7 +2918,7 @@ public unsafe struct ILCompiler
 
         // Remainder is in RDX
         X64Emitter.Push(ref _code, VReg.R2);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2803,7 +2929,7 @@ public unsafe struct ILCompiler
         PopReg(VReg.R1);  // Shift amount to CL (part of RCX)
         PopR0();          // Value to shift
         X64Emitter.ShlCL(ref _code, VReg.R0);
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -2823,7 +2949,7 @@ public unsafe struct ILCompiler
             X64Emitter.ShrCL(ref _code, VReg.R0);  // Logical shift (zero-fill)
         }
 
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3162,7 +3288,7 @@ public unsafe struct ILCompiler
         // Load 64-bit constant
         X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)value);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3172,7 +3298,7 @@ public unsafe struct ILCompiler
         // Float is 4 bytes, but we push 8 bytes (zero-extended)
         X64Emitter.MovRI32(ref _code, VReg.R0, (int)bits);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Float32);
+        PushEntry(EvalStackEntry.Float32);
         return true;
     }
 
@@ -3181,7 +3307,7 @@ public unsafe struct ILCompiler
         // Load double constant - push 64-bit pattern to stack
         X64Emitter.MovRI64(ref _code, VReg.R0, bits);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Float64);
+        PushEntry(EvalStackEntry.Float64);
         return true;
     }
 
@@ -3190,14 +3316,14 @@ public unsafe struct ILCompiler
         // Convert integer to float (single precision)
         // Pop value, convert to float, push back as 32-bit pattern (zero-extended)
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();  // Pop whatever type was there
+        PopEntry();  // Pop whatever type was there
         // Use 32-bit source for proper signed int32 semantics
         // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
         X64Emitter.Cvtsi2ssXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
         // MOVD eax, xmm0 - move float bits to integer reg
         X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Float32);
+        PushEntry(EvalStackEntry.Float32);
         return true;
     }
 
@@ -3206,14 +3332,14 @@ public unsafe struct ILCompiler
         // Convert integer to double precision
         // Pop value, convert to double, push back as 64-bit pattern
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();  // Pop whatever type was there
+        PopEntry();  // Pop whatever type was there
         // Use 32-bit source for proper signed int32 semantics
         // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
         X64Emitter.Cvtsi2sdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
         // MOVQ rax, xmm0 - move double bits to integer reg
         X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Float64);
+        PushEntry(EvalStackEntry.Float64);
         return true;
     }
 
@@ -3233,7 +3359,7 @@ public unsafe struct ILCompiler
         //   Else: Convert as (value >> 1) | (value & 1), multiply by 2
         //
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
 
         // TEST rax, rax (check sign bit)
         X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
@@ -3272,7 +3398,7 @@ public unsafe struct ILCompiler
         // Move result to integer register for stack
         X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Float64);
+        PushEntry(EvalStackEntry.Float64);
         return true;
     }
 
@@ -3281,7 +3407,7 @@ public unsafe struct ILCompiler
         // Load null reference (0)
         X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.ObjRef);
         return true;
     }
 
@@ -3314,7 +3440,7 @@ public unsafe struct ILCompiler
 
         int offset = 16 + physicalArgIndex * 8;
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-        PushR0(StackType_Int);  // Address is treated as integer
+        PushR0(EvalStackEntry.NativeInt);  // Address is treated as integer
         return true;
     }
 
@@ -3323,7 +3449,7 @@ public unsafe struct ILCompiler
         // Load address of local variable
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-        PushR0(StackType_Int);  // Address is treated as integer
+        PushR0(EvalStackEntry.NativeInt);  // Address is treated as integer
         return true;
     }
 
@@ -3349,20 +3475,16 @@ public unsafe struct ILCompiler
             // For large structs, TOS contains the ADDRESS of the value, not the value itself
             if (_returnIsValueType && _returnTypeSize > 8)
             {
-                // Most producers place the VALUE inline on the eval stack (ldloc, call with hidden buffer).
-                // Detect inline layout via the stack type: StackType_ValueType means contiguous value slots.
-                // Hidden-buffer call results currently push default StackType_Int entries but still place
-                // the VALUE on the stack (padded to 16 bytes in CompileCall). We pick the stack size
-                // accordingly so we pop the right number of slots and copy the correct bytes.
-                int alignedSize = (_returnTypeSize + 7) & ~7;   // round up to 8 bytes for copy/pops
-                int stackSize = alignedSize;
-                byte topType = PeekStackType();
+                // Use new type system: PeekEntry tells us exact byte size on stack
+                EvalStackEntry tosEntry = PeekEntry();
+                int stackSize = tosEntry.ByteSize;  // Actual bytes this entry occupies
 
-                // Calls that used a hidden return buffer align to 16 bytes. Inline value types keep 8-byte alignment.
-                if (_returnTypeSize > 16 && topType != StackType_ValueType)
-                    stackSize = (alignedSize + 15) & ~15;
-
-                int slots = stackSize / 8;
+                // If ByteSize seems wrong (8 for multi-byte struct), fall back to metadata
+                if (stackSize <= 8 && _returnTypeSize > 8)
+                {
+                    int alignedSize = (_returnTypeSize + 7) & ~7;
+                    stackSize = _returnTypeSize > 16 ? ((alignedSize + 15) & ~15) : alignedSize;
+                }
 
                 if (_returnTypeSize <= 16)
                 {
@@ -3374,8 +3496,7 @@ public unsafe struct ILCompiler
 
                     // Pop the struct value from the eval stack
                     X64Emitter.AddRI(ref _code, VReg.SP, stackSize);
-                    for (int i = 0; i < slots; i++)
-                        PopStackType();
+                    PopEntry();  // ONE entry, not multiple slots
                 }
                 else
                 {
@@ -3386,8 +3507,8 @@ public unsafe struct ILCompiler
                     DebugConsole.WriteDecimal((uint)_argCount);
                     DebugConsole.Write(" depth=");
                     DebugConsole.WriteDecimal((uint)_evalStackDepth);
-                    DebugConsole.Write(" topType=");
-                    DebugConsole.WriteHex(topType);
+                    DebugConsole.Write(" stackBytes=");
+                    DebugConsole.WriteDecimal((uint)stackSize);
                     DebugConsole.WriteLine();
 
                     X64Emitter.LoadArg(ref _code, VReg.R5, 0);  // R5 = hidden buffer pointer
@@ -3411,8 +3532,7 @@ public unsafe struct ILCompiler
 
                     // Pop the struct value (including any padding we reserved)
                     X64Emitter.AddRI(ref _code, VReg.SP, stackSize);
-                    for (int i = 0; i < slots; i++)
-                        PopStackType();
+                    PopEntry();  // ONE entry represents entire struct in new type system
 
                     // Return the buffer address (same as what was passed by caller)
                     X64Emitter.MovRR(ref _code, VReg.R0, VReg.R5);  // RAX = buffer address
@@ -3538,7 +3658,7 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);  // ModRM: mod=11, reg=RAX, r/m=AL
 
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3560,7 +3680,7 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);
 
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3582,7 +3702,7 @@ public unsafe struct ILCompiler
         _code.EmitByte(0xB6);
         _code.EmitByte(0xC0);
 
-        PushR0(StackType_Int);
+        PushR0(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3641,7 +3761,7 @@ public unsafe struct ILCompiler
     {
         // Pop address from stack into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopEntry();
 
         // Load value from [RAX] into RAX
         // mov rax, [rax] (with appropriate size)
@@ -3697,7 +3817,7 @@ public unsafe struct ILCompiler
 
         // Push result back onto stack
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(size <= 4 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -3710,11 +3830,11 @@ public unsafe struct ILCompiler
     {
         // Pop value into RDX
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop address into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopEntry();
 
         // Store value to [RAX] with appropriate size
         switch (size)
@@ -3754,7 +3874,7 @@ public unsafe struct ILCompiler
     {
         // Pop address from stack into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopEntry();
 
         // Load float value from [RAX] into XMM0
         if (size == 4)
@@ -3774,7 +3894,7 @@ public unsafe struct ILCompiler
 
         // Push result back onto stack
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(size == 4 ? EvalStackEntry.Float32 : EvalStackEntry.Float64);
 
         return true;
     }
@@ -3787,11 +3907,11 @@ public unsafe struct ILCompiler
     {
         // Pop value into RDX
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop address into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
+        PopEntry();
 
         // Move value to XMM0 and store to memory
         if (size == 4)
@@ -3981,45 +4101,45 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 1 && !needsHiddenBuffer)
         {
-            // Single arg: check if it's a multi-slot value type
-            int vtSlots = CountVTSlots(_evalStackDepth - 1);
-            if (vtSlots > 1)
+            // Single arg: check if it's a multi-slot value type using new type system
+            EvalStackEntry argEntry = PeekEntry();
+            if (argEntry.ByteSize > 8)
             {
                 // Large struct: pass pointer to stack data in RCX
                 // The struct is already at [RSP], so RSP is the pointer
                 X64Emitter.MovRR(ref _code, VReg.R1, VReg.SP);  // RCX = RSP (pointer to struct)
                 // Track that we need to clean up the struct after the call
-                largeStructArgBytes = vtSlots * 8;
+                largeStructArgBytes = argEntry.ByteSize;
                 // Don't pop the stack yet - callee needs access to the struct data
-                // But do decrement eval stack depth tracking
-                _evalStackDepth -= vtSlots;
+                // But do remove from tracking
+                PopEntry();
             }
             else
             {
                 // Single slot: pop to RCX
                 X64Emitter.Pop(ref _code, VReg.R1);
-                _evalStackDepth--;
+                PopEntry();
             }
         }
         else if (totalArgs == 1 && needsHiddenBuffer)
         {
             // One normal arg + hidden buffer: pop arg to RDX (shifted), buffer goes in RCX
             X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
-            _evalStackDepth--;
+            PopEntry();
         }
         else if (totalArgs == 2 && !needsHiddenBuffer)
         {
             // Two args: pop to RDX (arg1), then RCX (arg0)
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 2;
+            PopEntry(); PopEntry();
         }
         else if (totalArgs == 2 && needsHiddenBuffer)
         {
             // Two normal args + hidden buffer: shift args by 1
             X64Emitter.Pop(ref _code, VReg.R3);   // arg1 -> R8
             X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
-            _evalStackDepth -= 2;
+            PopEntry(); PopEntry();
         }
         else if (totalArgs == 3 && !needsHiddenBuffer)
         {
@@ -4027,7 +4147,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 3;
+            PopEntry(); PopEntry(); PopEntry();
         }
         else if (totalArgs == 3 && needsHiddenBuffer)
         {
@@ -4035,7 +4155,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R4);    // arg2 -> R9
             X64Emitter.Pop(ref _code, VReg.R3);    // arg1 -> R8
             X64Emitter.Pop(ref _code, VReg.R2);   // arg0 -> RDX
-            _evalStackDepth -= 3;
+            PopEntry(); PopEntry(); PopEntry();
         }
         else if (totalArgs == 4 && !needsHiddenBuffer)
         {
@@ -4044,7 +4164,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 4;
+            PopEntry(); PopEntry(); PopEntry(); PopEntry();
         }
         else if (totalArgs == 4 && needsHiddenBuffer)
         {
@@ -4058,7 +4178,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R4);    // arg2 -> R9
             X64Emitter.Pop(ref _code, VReg.R3);    // arg1 -> R8
             X64Emitter.Pop(ref _code, VReg.R2);    // arg0 -> RDX
-            _evalStackDepth -= 4;
+            PopEntry(); PopEntry(); PopEntry(); PopEntry();
 
             // We need to handle this specially: allocate extra stack space for arg3
             // Calculate total allocation: 32 (shadow) + 8 (arg3) + hiddenBufferSize
@@ -4167,7 +4287,7 @@ public unsafe struct ILCompiler
                 DebugConsole.WriteLine("[JIT]   arg5 stored to [RSP+40] from R11");
             }
 
-            _evalStackDepth -= totalArgs;
+            for (int i = 0; i < totalArgs; i++) PopEntry();
             // For >4 args, we already allocated shadow space as part of callFrameSize
             needsShadowSpace = false;
         }
@@ -4288,14 +4408,14 @@ public unsafe struct ILCompiler
                 _code.EmitByte(0x63);  // MOVSXD
                 _code.EmitByte(0xC0);  // ModRM: RAX, EAX
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
                 // Return value in RAX - push directly
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.NativeInt);
                 break;
 
             case ReturnKind.Float32:
@@ -4303,7 +4423,7 @@ public unsafe struct ILCompiler
                 // movd eax, xmm0
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float32);
                 break;
 
             case ReturnKind.Float64:
@@ -4311,7 +4431,7 @@ public unsafe struct ILCompiler
                 // movq rax, xmm0
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float64);
                 break;
 
             case ReturnKind.Struct:
@@ -4323,7 +4443,7 @@ public unsafe struct ILCompiler
                 {
                     // Small struct (1-8 bytes): value in RAX, push directly
                     X64Emitter.Push(ref _code, VReg.R0);
-                    _evalStackDepth++;
+                    PushEntry(EvalStackEntry.Struct(8));
                 }
                 else if (method.ReturnStructSize <= 16)
                 {
@@ -4335,8 +4455,8 @@ public unsafe struct ILCompiler
                     X64Emitter.Push(ref _code, VReg.R2);  // RDX = bytes 8-15 (pushed first, ends up at RSP+8)
                     X64Emitter.Push(ref _code, VReg.R0);  // RAX = bytes 0-7 (pushed second, ends up at RSP)
                     // Track as multi-slot value type so stloc knows to copy 16 bytes
-                    PushStackType(StackType_ValueType);
-                    PushStackType(StackType_ValueType);
+                    PushEntry(EvalStackEntry.Struct(8));
+                    PushEntry(EvalStackEntry.Struct(8));
                 }
                 else
                 {
@@ -4352,10 +4472,10 @@ public unsafe struct ILCompiler
                     int bufferSize8 = (method.ReturnStructSize + 7) & ~7;
                     int allocatedBuffer = (bufferSize8 + 15) & ~15;
                     int bufferSlots = allocatedBuffer / 8;
-                    // CRITICAL: Mark each slot as StackType_ValueType so stloc/ldfld
+                    // CRITICAL: Push each slot as ValueType so stloc/ldfld
                     // know this is a multi-slot value type and copy the correct size
                     for (int i = 0; i < bufferSlots; i++)
-                        PushStackType(StackType_ValueType);
+                        PushEntry(EvalStackEntry.Struct(8));
                 }
                 break;
         }
@@ -4445,14 +4565,14 @@ public unsafe struct ILCompiler
         {
             // Single arg (this): pop to RCX
             X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth--;
+            PopEntry();
         }
         else if (totalArgs == 2)
         {
             // Two args: pop to RDX (arg1), then RCX (this)
             X64Emitter.Pop(ref _code, VReg.R2);
             X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth -= 2;
+            PopEntry(); PopEntry();
         }
         else if (totalArgs == 3)
         {
@@ -4460,7 +4580,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R3);
             X64Emitter.Pop(ref _code, VReg.R2);
             X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth -= 3;
+            PopEntry(); PopEntry(); PopEntry();
         }
         else if (totalArgs == 4)
         {
@@ -4469,7 +4589,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R3);
             X64Emitter.Pop(ref _code, VReg.R2);
             X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth -= 4;
+            PopEntry(); PopEntry(); PopEntry(); PopEntry();
         }
         else
         {
@@ -4503,7 +4623,7 @@ public unsafe struct ILCompiler
                 X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
             }
 
-            _evalStackDepth -= totalArgs;
+            for (int i = 0; i < totalArgs; i++) PopEntry();
         }
 
         // Allocate shadow space (x64 ABI ALWAYS requires 32 bytes)
@@ -4619,30 +4739,30 @@ public unsafe struct ILCompiler
                 _code.EmitByte(0x63);  // MOVSXD
                 _code.EmitByte(0xC0);  // ModRM: RAX, EAX
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.NativeInt);
                 break;
 
             case ReturnKind.Float32:
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float32);
                 break;
 
             case ReturnKind.Float64:
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float64);
                 break;
 
             case ReturnKind.Struct:
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Struct(8));
                 break;
         }
 
@@ -4695,7 +4815,7 @@ public unsafe struct ILCompiler
         // First, pop the function pointer from the top of the stack into a safe register
         // We'll use R11 since it's caller-saved and won't be clobbered by arg setup
         X64Emitter.Pop(ref _code, VReg.R6);  // ftnPtr
-        _evalStackDepth--;
+        PopEntry();
 
         // Calculate stack args needed (args beyond the first 4 go on stack)
         int stackArgs = argCount > 4 ? argCount - 4 : 0;
@@ -4711,20 +4831,20 @@ public unsafe struct ILCompiler
         else if (argCount == 1)
         {
             X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth--;
+            PopEntry();
         }
         else if (argCount == 2)
         {
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 2;
+            PopEntry(); PopEntry();
         }
         else if (argCount == 3)
         {
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 3;
+            PopEntry(); PopEntry(); PopEntry();
         }
         else if (argCount == 4)
         {
@@ -4732,7 +4852,7 @@ public unsafe struct ILCompiler
             X64Emitter.Pop(ref _code, VReg.R3);    // arg2
             X64Emitter.Pop(ref _code, VReg.R2);   // arg1
             X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            _evalStackDepth -= 4;
+            PopEntry(); PopEntry(); PopEntry(); PopEntry();
         }
         else
         {
@@ -4782,7 +4902,7 @@ public unsafe struct ILCompiler
                 X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
             }
 
-            _evalStackDepth -= argCount;
+            for (int i = 0; i < argCount; i++) PopEntry();
         }
 
         // Allocate shadow space for calls with 0-4 args
@@ -4825,30 +4945,30 @@ public unsafe struct ILCompiler
                 _code.EmitByte(0x63);  // MOVSXD
                 _code.EmitByte(0xC0);  // ModRM: RAX, EAX
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
 
             case ReturnKind.Int64:
             case ReturnKind.IntPtr:
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.NativeInt);
                 break;
 
             case ReturnKind.Float32:
                 X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float32);
                 break;
 
             case ReturnKind.Float64:
                 X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Float64);
                 break;
 
             case ReturnKind.Struct:
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Struct(8));
                 break;
         }
 
@@ -4870,15 +4990,15 @@ public unsafe struct ILCompiler
 
         // Pop size into R8 (third arg)
         X64Emitter.Pop(ref _code, VReg.R3);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop srcAddr into RDX (second arg)
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop destAddr into RCX (first arg)
         X64Emitter.Pop(ref _code, VReg.R1);
-        _evalStackDepth--;
+        PopEntry();
 
         // Call CPU.MemCopy(dest, src, count)
         delegate*<void*, void*, ulong, void*> memcopyFn = &CPU.MemCopy;
@@ -4905,16 +5025,16 @@ public unsafe struct ILCompiler
 
         // Pop size into R8 (third arg)
         X64Emitter.Pop(ref _code, VReg.R3);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop value into RDX (second arg) - note: IL has int32, MemSet takes byte
         // We just pass it through - the native function will use the low byte
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop addr into RCX (first arg)
         X64Emitter.Pop(ref _code, VReg.R1);
-        _evalStackDepth--;
+        PopEntry();
 
         // Call CPU.MemSet(dest, value, count)
         delegate*<void*, byte, ulong, void*> memsetFn = &CPU.MemSet;
@@ -4954,7 +5074,7 @@ public unsafe struct ILCompiler
 
         // Pop addr into RCX (first arg for MemSet)
         X64Emitter.Pop(ref _code, VReg.R1);
-        _evalStackDepth--;
+        PopEntry();
 
         // Value = 0 (second arg)
         X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
@@ -4987,7 +5107,7 @@ public unsafe struct ILCompiler
         // Push size as int32 constant
         X64Emitter.MovRI32(ref _code, VReg.R0, size);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.Int32);
 
         return true;
     }
@@ -5010,7 +5130,7 @@ public unsafe struct ILCompiler
 
         // Pop addr into R2 (we'll use R0/R3 for the copy)
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Load value based on size
         switch (size)
@@ -5018,28 +5138,27 @@ public unsafe struct ILCompiler
             case 1:
                 X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R2, 0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
             case 2:
                 X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R2, 0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
             case 4:
                 X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R2, 0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.Int32);
                 break;
             case 8:
                 X64Emitter.MovRM(ref _code, VReg.R0, VReg.R2, 0);
                 X64Emitter.Push(ref _code, VReg.R0);
-                _evalStackDepth++;
+                PushEntry(EvalStackEntry.NativeInt);
                 break;
             default:
                 // Large struct: allocate stack space and copy data
                 // Round size up to 8-byte alignment for stack
                 int alignedSize = (size + 7) & ~7;
-                int slots = alignedSize / 8;
 
                 // Allocate stack space (decrement RSP)
                 X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
@@ -5080,8 +5199,8 @@ public unsafe struct ILCompiler
                     X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
                 }
 
-                // Track the slots on the eval stack
-                _evalStackDepth += slots;
+                // NEW TYPE SYSTEM: Push ONE entry with the actual byte size
+                PushEntry(EvalStackEntry.Struct(alignedSize));
                 break;
         }
 
@@ -5118,15 +5237,19 @@ public unsafe struct ILCompiler
         // - Medium (9-16 bytes): ALWAYS 2 slots (16 bytes on stack)
         // - Large (>16 bytes): N slots where N = alignedSize/8
 
+        // NEW TYPE SYSTEM: Use PeekEntry to get byte sizes from the rich type stack
+        EvalStackEntry srcEntry = PeekEntryAt(0);   // TOS = src value
+        EvalStackEntry destEntry = PeekEntryAt(1);  // TOS-1 = dest address
+        int srcByteSize = srcEntry.ByteSize;
+
         if (size > 16)
         {
-            // Large struct (>16 bytes): struct data takes alignedSize bytes
+            // Large struct (>16 bytes): struct data takes alignedSize bytes on physical stack
             int alignedSize = (size + 7) & ~7;
-            int slots = alignedSize / 8;
 
             // RSP points to struct data, dest addr is below it
             X64Emitter.MovRR(ref _code, VReg.R2, VReg.SP);  // R2 = source address
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, alignedSize);  // R0 = dest address
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, srcByteSize);  // R0 = dest address (use actual stack size)
 
             // Copy from [R2] (src on stack) to [R0] (dest)
             int offset = 0;
@@ -5154,16 +5277,18 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
             }
 
-            // Pop struct data (alignedSize) + dest address (8 bytes)
-            X64Emitter.AddRI(ref _code, VReg.SP, alignedSize + 8);
-            _evalStackDepth -= (slots + 1);
+            // Pop struct data + dest address from physical stack
+            X64Emitter.AddRI(ref _code, VReg.SP, srcByteSize + 8);
+            // Pop 2 ENTRIES from eval stack (not slots!)
+            PopEntry();  // src value (1 entry)
+            PopEntry();  // dest addr (1 entry)
         }
         else if (size > 8)
         {
-            // Medium struct (9-16 bytes): ALWAYS 16 bytes on stack (2 slots)
+            // Medium struct (9-16 bytes): 16 bytes on stack
             // RSP points to 16 bytes of struct data, dest addr is at RSP+16
             X64Emitter.MovRR(ref _code, VReg.R2, VReg.SP);  // R2 = source address
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 16);  // R0 = dest address
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, srcByteSize);  // R0 = dest address (use actual stack size)
 
             // Copy 16 bytes (even if struct is smaller, ldloc pushed 16)
             X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, 0);
@@ -5171,20 +5296,22 @@ public unsafe struct ILCompiler
             X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, 8);
             X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
 
-            // Pop struct data (16 bytes) + dest address (8 bytes) = 24 bytes
-            X64Emitter.AddRI(ref _code, VReg.SP, 24);
-            _evalStackDepth -= 3;  // 2 slots for struct + 1 for address
+            // Pop struct data + dest address from physical stack
+            X64Emitter.AddRI(ref _code, VReg.SP, srcByteSize + 8);
+            // Pop 2 ENTRIES from eval stack (not slots!)
+            PopEntry();  // src value (1 entry)
+            PopEntry();  // dest addr (1 entry)
         }
         else
         {
             // Small struct (<=8 bytes): value fits in a register
             // Pop src value into R2
             X64Emitter.Pop(ref _code, VReg.R2);
-            _evalStackDepth--;
+            PopEntry();
 
             // Pop dest address into R0
             X64Emitter.Pop(ref _code, VReg.R0);
-            _evalStackDepth--;
+            PopEntry();
 
             // Store value based on size
             switch (size)
@@ -5224,11 +5351,11 @@ public unsafe struct ILCompiler
 
         // Pop srcAddr into RDX (second arg for MemCopy)
         X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        PopEntry();
 
         // Pop destAddr into RCX (first arg for MemCopy)
         X64Emitter.Pop(ref _code, VReg.R1);
-        _evalStackDepth--;
+        PopEntry();
 
         // Size in R8 (third arg)
         X64Emitter.MovRI64(ref _code, VReg.R3, (ulong)size);
@@ -5280,7 +5407,7 @@ public unsafe struct ILCompiler
 
         // Pop exception object into RCX (first arg for RhpThrowEx)
         X64Emitter.Pop(ref _code, VReg.R1);
-        _evalStackDepth--;
+        PopEntry();
 
         // Call RhpThrowEx (defined in native.asm)
         // This captures context and dispatches the exception
@@ -5418,11 +5545,16 @@ public unsafe struct ILCompiler
         }
 
         // Check if TOS is a value type (pushed by ldloc on a struct)
-        byte tosType = PeekStackType();
+        // Use new type system for accurate size tracking
+        EvalStackEntry tosEntry = PeekEntry();
+        bool tosIsValueType = tosEntry.Kind == EvalStackKind.ValueType;
+
         if (isDebugMapBars)
         {
-            DebugConsole.Write("[LdfldDbg] tosType=");
-            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write("[LdfldDbg] tosIsVT=");
+            DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
+            DebugConsole.Write(" tosBytes=");
+            DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
             DebugConsole.Write(" depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.WriteLine();
@@ -5445,42 +5577,33 @@ public unsafe struct ILCompiler
             DebugConsole.WriteDecimal((uint)size);
             DebugConsole.Write(" fldVT=");
             DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-            DebugConsole.Write(" tos=");
-            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write(" tosKind=");
+            DebugConsole.WriteDecimal((byte)tosEntry.Kind);
+            DebugConsole.Write(" tosBytes=");
+            DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
             DebugConsole.Write(" off=");
             DebugConsole.WriteDecimal((uint)offset);
             DebugConsole.Write(" d=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            // Dump first 8 type entries
-            DebugConsole.Write(" ty=[");
-            for (int i = 0; i < 8 && i < _evalStackDepth; i++)
-            {
-                if (i > 0) DebugConsole.Write(",");
-                DebugConsole.WriteDecimal(_evalStackTypes != null ? _evalStackTypes[i] : 99U);
-            }
-            DebugConsole.Write("]");
             DebugConsole.WriteLine();
         }
 
-        // Check if we have a multi-slot value type on the stack
-        // First try metadata-based detection, then fall back to stack analysis
-        int structSlots = 0;
-        int alignedSize = 0;
+        // Check if we have a multi-slot value type on the stack using new type system
+        // The entry's ByteSize tells us directly - no need to iterate slots
+        int structByteSize = 0;
 
-        if (isValueType && declaringTypeSize > 8 && tosType == StackType_ValueType)
+        if (tosEntry.Kind == EvalStackKind.ValueType && tosEntry.ByteSize > 8)
         {
-            // Metadata gives us declaring type size
-            alignedSize = (declaringTypeSize + 7) & ~7;
-            structSlots = alignedSize / 8;
+            // New type system tells us directly
+            structByteSize = tosEntry.ByteSize;
         }
-        else if (tosType == StackType_ValueType && declaringTypeSize == 0)
+        else if (isValueType && declaringTypeSize > 8 && tosEntry.Kind == EvalStackKind.ValueType)
         {
-            // Metadata didn't resolve size, but stack says VT - count slots from stack
-            structSlots = CountVTSlots(_evalStackDepth - 1);
-            alignedSize = structSlots * 8;
+            // Metadata gives us declaring type size (legacy fallback)
+            structByteSize = (declaringTypeSize + 7) & ~7;
         }
 
-        if (structSlots > 1)
+        if (structByteSize > 8)
         {
             // Debug: log when taking the inline large VT path
             if (_debugAssemblyId == 3)
@@ -5491,8 +5614,8 @@ public unsafe struct ILCompiler
                 DebugConsole.WriteDecimal((uint)size);
                 DebugConsole.Write(" declSz=");
                 DebugConsole.WriteDecimal((uint)declaringTypeSize);
-                DebugConsole.Write(" slots=");
-                DebugConsole.WriteDecimal((uint)structSlots);
+                DebugConsole.Write(" stackBytes=");
+                DebugConsole.WriteDecimal((uint)structByteSize);
                 DebugConsole.WriteLine();
             }
 
@@ -5524,26 +5647,25 @@ public unsafe struct ILCompiler
                     break;
             }
 
-            // Clean up the entire struct from the stack
-            X64Emitter.AddRI(ref _code, VReg.SP, alignedSize);
+            // Clean up the entire struct from the stack using tracked ByteSize
+            X64Emitter.AddRI(ref _code, VReg.SP, tosEntry.ByteSize);
 
-            // Pop the stack type entries for all struct slots
-            for (int i = 0; i < structSlots; i++)
-                PopStackType();
+            // Pop the struct entry (ONE entry, not multiple slots)
+            PopEntry();
 
             // Push the field value result
             X64Emitter.Push(ref _code, VReg.R0);
             if (fieldTypeIsValueType && size > 0 && size <= 8)
-                PushStackType(StackType_ValueType);
+                PushEntry(EvalStackEntry.Struct(size));
             else
-                PushStackType(StackType_Int);
+                PushEntry(EvalStackEntry.Int32);
 
             return true;
         }
 
         // Pop the value/reference into R0
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
 
         // Debug: always log the conditions for ldfld (compile-time)
         if (_debugAssemblyId == 3)
@@ -5552,8 +5674,8 @@ public unsafe struct ILCompiler
             DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
             DebugConsole.Write(" size=");
             DebugConsole.WriteDecimal((uint)size);
-            DebugConsole.Write(" tosType=");
-            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write(" tosIsVT=");
+            DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
             DebugConsole.Write(" off=");
             DebugConsole.WriteDecimal((uint)offset);
             DebugConsole.WriteLine();
@@ -5561,7 +5683,7 @@ public unsafe struct ILCompiler
 
         // If the field itself is a large value type (>8 bytes) and we have an object/pointer on the stack,
         // copy the entire struct to the eval stack (similar to ldobj).
-        if (fieldTypeIsValueType && size > 8 && tosType != StackType_ValueType)
+        if (fieldTypeIsValueType && size > 8 && !tosIsValueType)
         {
             // Debug: emit JIT compile-time trace for large struct field load
             DebugConsole.Write("[ldfld VT path] off=");
@@ -5606,8 +5728,9 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R1);
             }
 
-            for (int i = 0; i < fieldSlots; i++)
-                PushStackType(StackType_ValueType);
+            // Push ONE entry with the actual byte size (not N slots!)
+            // This is the key fix: large struct is one logical value with known size.
+            PushEntry(EvalStackEntry.Struct(size));
 
             return true;
         }
@@ -5616,9 +5739,9 @@ public unsafe struct ILCompiler
         // When a small struct is loaded with ldloc, the VALUE is on the stack, not a pointer.
         // We need to extract the field by bit shifting, not by memory dereference.
         //
-        // Detection: TOS is explicitly marked as StackType_ValueType (from ldloc on a value type).
-        // If TOS is StackType_Int (from ldloca, ldarg for byref, etc), it's a pointer and we dereference.
-        bool treatAsInlineValue = (tosType == StackType_ValueType) &&
+        // Detection: TOS is explicitly a ValueType (from ldloc on a value type).
+        // If TOS is a pointer/ref type (from ldloca, ldarg for byref, etc), we dereference.
+        bool treatAsInlineValue = tosIsValueType &&
                                    isValueType && declaringTypeSize > 0 && declaringTypeSize <= 8;
 
         if (treatAsInlineValue)
@@ -5699,9 +5822,9 @@ public unsafe struct ILCompiler
         // If loading a small value type field, mark TOS as value type so subsequent ldfld
         // knows to treat it as inline data, not a pointer
         if (fieldTypeIsValueType && size > 0 && size <= 8)
-            PushStackType(StackType_ValueType);
+            PushEntry(EvalStackEntry.Struct(size));
         else
-            PushStackType(StackType_Int);
+            PushEntry(EvalStackEntry.Int32);
 
         return true;
     }
@@ -5726,7 +5849,7 @@ public unsafe struct ILCompiler
 
         // Pop object reference
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
 
         // Compute field address: obj + offset
         if (offset != 0)
@@ -5734,9 +5857,9 @@ public unsafe struct ILCompiler
             X64Emitter.AddRI(ref _code, VReg.R0, offset);
         }
 
-        // Push address
+        // Push address (pointer type)
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.Ptr);
 
         return true;
     }
@@ -5773,9 +5896,11 @@ public unsafe struct ILCompiler
 
         if (size > 16)
         {
-            // Large struct: value is on stack, obj is below it
-            int valueSlots = (size + 7) / 8;
-            int valueBytes = valueSlots * 8;
+            // Large struct: value is on stack (TOS), obj is below it (TOS-1)
+            // Use new type system to get actual sizes
+            var valueEntry = PeekEntry();     // TOS = struct value
+            var objEntry = PeekEntryAt(1);    // TOS-1 = object pointer
+            int valueBytes = valueEntry.ByteSize;  // Actual bytes from type system
 
             // Load obj pointer (it's below the struct value)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, valueBytes);  // RAX = obj
@@ -5801,6 +5926,7 @@ public unsafe struct ILCompiler
 
             // Copy struct value to [obj+offset]
             // For efficiency, copy 8 bytes at a time
+            int valueSlots = valueBytes / 8;
             for (int i = 0; i < valueSlots; i++)
             {
                 X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, i * 8);  // load 8 bytes
@@ -5808,22 +5934,24 @@ public unsafe struct ILCompiler
             }
 
             // Clean up stack: struct value + obj pointer
-            X64Emitter.AddRI(ref _code, VReg.SP, valueBytes + 8);
+            int totalStackBytes = valueBytes + objEntry.ByteSize;
+            X64Emitter.AddRI(ref _code, VReg.SP, totalStackBytes);
 
-            // Update eval stack depth (valueSlots for struct + 1 for obj)
-            for (int i = 0; i < valueSlots + 1; i++)
-                PopStackType();
+            // Pop both entries from type system
+            PopEntry();  // struct value
+            PopEntry();  // obj pointer
 
             return true;
         }
         else if (size > 8)
         {
-            // Medium struct (9-16 bytes): 2 slots on stack + obj
-            // [RSP+0]  = struct bytes 0-7
-            // [RSP+8]  = struct bytes 8-15
-            // [RSP+16] = obj pointer
+            // Medium struct (9-16 bytes): value on stack + obj below
+            // Use new type system for accurate sizes
+            var valueEntry = PeekEntry();
+            var objEntry = PeekEntryAt(1);
+            int valueBytes = valueEntry.ByteSize;
 
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 16);  // RAX = obj
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, valueBytes);  // RAX = obj
 
             // Copy first 8 bytes
             X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 0);
@@ -5833,12 +5961,12 @@ public unsafe struct ILCompiler
             X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 8);
             X64Emitter.MovMR(ref _code, VReg.R0, offset + 8, VReg.R2);
 
-            // Clean up stack: 2 value slots + obj pointer
-            X64Emitter.AddRI(ref _code, VReg.SP, 24);
+            // Clean up stack using actual entry sizes
+            int totalStackBytes = valueBytes + objEntry.ByteSize;
+            X64Emitter.AddRI(ref _code, VReg.SP, totalStackBytes);
 
-            PopStackType();
-            PopStackType();
-            PopStackType();
+            PopEntry();  // struct value
+            PopEntry();  // obj pointer
 
             return true;
         }
@@ -5847,8 +5975,8 @@ public unsafe struct ILCompiler
         // Pop value and object reference
         X64Emitter.Pop(ref _code, VReg.R2);  // value
         X64Emitter.Pop(ref _code, VReg.R0);  // obj
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
 
         // === RUNTIME DEBUG: Emit call to DebugStfld(objPtr, offset) ===
         // Trace all stfld operations to debug null pointer crash
@@ -5953,7 +6081,7 @@ public unsafe struct ILCompiler
         }
 
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -5979,7 +6107,7 @@ public unsafe struct ILCompiler
 
         X64Emitter.MovRI64(ref _code, VReg.R0, staticAddr);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -6008,7 +6136,7 @@ public unsafe struct ILCompiler
 
         // Pop value
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
 
         // Load static address and store
         X64Emitter.MovRI64(ref _code, VReg.R2, staticAddr);
@@ -6051,14 +6179,14 @@ public unsafe struct ILCompiler
     {
         // Pop array reference
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();
+        PopEntry();
 
         // Load length from array+8
         X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, ArrayLengthOffset);
 
         // Push length
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -6072,8 +6200,8 @@ public unsafe struct ILCompiler
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + 16 + index * elemSize
         // For now, use shift for power-of-2 sizes
@@ -6120,7 +6248,7 @@ public unsafe struct ILCompiler
 
         // Push value
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -6135,9 +6263,9 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R2);  // value
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + 16 + index * elemSize
         switch (elemSize)
@@ -6180,8 +6308,8 @@ public unsafe struct ILCompiler
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + 16 + index * elemSize
         if (elemSize == 4)
@@ -6209,7 +6337,7 @@ public unsafe struct ILCompiler
 
         // Push value
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(elemSize == 4 ? StackType_Float32 : StackType_Float64);
+        PushEntry(elemSize == 4 ? EvalStackEntry.Float32 : EvalStackEntry.Float64);
 
         return true;
     }
@@ -6224,9 +6352,9 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R2);  // value (float/double bit pattern)
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + 16 + index * elemSize
         if (elemSize == 4)
@@ -6267,8 +6395,8 @@ public unsafe struct ILCompiler
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + ArrayDataOffset + index * elemSize
         // For generic sizes, use imul: R1 = index * elemSize
@@ -6302,7 +6430,7 @@ public unsafe struct ILCompiler
 
         // Push address
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -6374,7 +6502,7 @@ public unsafe struct ILCompiler
             for (int i = ctorArgs - 1; i >= 0; i--)
             {
                 X64Emitter.Pop(ref _code, tempRegs[i]);
-                PopStackType();  // PopStackType already decrements _evalStackDepth
+                PopEntry();
             }
 
             // CRITICAL: Reserve shadow space to protect any live eval stack data.
@@ -6469,7 +6597,7 @@ public unsafe struct ILCompiler
             // Push result onto eval stack
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, newobjTempOffset);
             X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
+            PushEntry(EvalStackEntry.NativeInt);
 
             return true;
         }
@@ -6496,7 +6624,7 @@ public unsafe struct ILCompiler
 
         // Push the allocated object reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -6537,7 +6665,7 @@ public unsafe struct ILCompiler
 
         // Pop numElements from stack into RDX (second arg)
         X64Emitter.Pop(ref _code, VReg.R2);
-        PopStackType();  // PopStackType already decrements _evalStackDepth
+        PopEntry();
 
         // Load MethodTable* into RCX (first arg for RhpNewArray)
         X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
@@ -6561,7 +6689,7 @@ public unsafe struct ILCompiler
 
         // Push the allocated array reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // PushStackType already increments _evalStackDepth
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -6620,7 +6748,7 @@ public unsafe struct ILCompiler
         // For small structs (<=8 bytes): R3 contains the VALUE
         // For large structs (>8 bytes): R3 contains the ADDRESS of the value
         X64Emitter.Pop(ref _code, VReg.R3);
-        PopStackType();  // PopStackType already decrements _evalStackDepth
+        PopEntry();
 
         // Save R3 (the value/address to box) on the stack - R8 is caller-saved and will be clobbered
         X64Emitter.Push(ref _code, VReg.R3);
@@ -6688,8 +6816,7 @@ public unsafe struct ILCompiler
 
         // Push the boxed object reference onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Objects are 64-bit pointers
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.ObjRef);
 
         return true;
     }
@@ -6724,7 +6851,7 @@ public unsafe struct ILCompiler
 
         // Pop object reference from stack
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopStackType();  // PopStackType already decrements _evalStackDepth
+        PopEntry();
 
         // Calculate pointer to value: obj + 8 (skip MT pointer)
         // lea RAX, [RAX + 8]
@@ -6732,8 +6859,7 @@ public unsafe struct ILCompiler
 
         // Push the value pointer onto eval stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Managed pointers are 64-bit
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.ByRef);
 
         return true;
     }
@@ -6789,7 +6915,7 @@ public unsafe struct ILCompiler
 
         // Pop object reference from stack into R3 (source address)
         X64Emitter.Pop(ref _code, VReg.R3);
-        PopStackType();  // PopStackType already decrements _evalStackDepth
+        PopEntry();
 
         // Value data is at [R3 + 8] (after MT pointer)
         if (valueSize <= 8)
@@ -6797,15 +6923,13 @@ public unsafe struct ILCompiler
             // Small struct: load value directly into R0 and push
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8);
             X64Emitter.Push(ref _code, VReg.R0);
-            PushStackType(StackType_Int);
-            _evalStackDepth++;
+            PushEntry(EvalStackEntry.Struct(8));
         }
         else
         {
             // Large struct: allocate space on eval stack and copy the full data
             // Calculate aligned size for stack (8-byte aligned)
             int alignedSize = ((int)valueSize + 7) & ~7;
-            int slots = alignedSize / 8;
 
             // Allocate space on the stack
             X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
@@ -6837,12 +6961,8 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R0);
             }
 
-            // Track stack slots (all as Int for simplicity)
-            for (int i = 0; i < slots; i++)
-            {
-                PushStackType(StackType_Int);
-                _evalStackDepth++;
-            }
+            // Track as a single struct entry (not multiple slots)
+            PushEntry(EvalStackEntry.Struct(alignedSize));
         }
 
         return true;
@@ -6941,7 +7061,7 @@ public unsafe struct ILCompiler
 
         // Pop object from stack into R12 (callee-saved, survives call)
         X64Emitter.Pop(ref _code, VReg.R0);  // Load obj
-        PopStackType();
+        PopEntry();
         X64Emitter.MovRR(ref _code, VReg.R8, VReg.R0);  // Save obj in R12
 
         // Result in R13, start with null
@@ -6976,7 +7096,7 @@ public unsafe struct ILCompiler
 
         // Push result (obj or null in R13)
         X64Emitter.Push(ref _code, VReg.R9);
-        PushStackType(StackType_Int);  // Objects are 64-bit pointers
+        PushEntry(EvalStackEntry.NativeInt);  // Objects are 64-bit pointers
 
         return true;
     }
@@ -7011,8 +7131,7 @@ public unsafe struct ILCompiler
         // Push the function pointer onto the stack
         X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Function pointers are native int
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);  // Function pointers are native int
 
         return true;
     }
@@ -7044,8 +7163,7 @@ public unsafe struct ILCompiler
 
         // Pop the object reference into RAX
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
-        PopStackType();
+        PopEntry();
 
         // For testing: token is the function pointer address
         // In production: would use method resolver to get address, then vtable lookup
@@ -7093,8 +7211,7 @@ public unsafe struct ILCompiler
 
         // Push the function pointer onto the stack
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Function pointers are native int
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);  // Function pointers are native int
 
         return true;
     }
@@ -7123,7 +7240,7 @@ public unsafe struct ILCompiler
     {
         // Pop the size from the evaluation stack
         X64Emitter.Pop(ref _code, VReg.R1);  // RCX = size in bytes
-        PopStackType();  // PopStackType already decrements _evalStackDepth
+        PopEntry();
 
         // Add 8 for the result pointer we need to push, then align to 16
         // RCX = ((RCX + 8) + 15) & ~15 = (RCX + 23) & ~15
@@ -7141,8 +7258,7 @@ public unsafe struct ILCompiler
         // Push the result pointer - this writes to [RSP-8] then decrements RSP
         // So the allocated buffer starts at what was RSP+8, now at RSP+16
         X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(StackType_Int);  // Pointer type
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.Ptr);  // Pointer type
 
         return true;
     }
@@ -7203,7 +7319,7 @@ public unsafe struct ILCompiler
         // Push the string object reference (or null if unresolved)
         X64Emitter.MovRI64(ref _code, VReg.R0, stringPtr);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.ObjRef);
 
         return true;
     }
@@ -7246,7 +7362,7 @@ public unsafe struct ILCompiler
         // Push the handle onto the stack
         X64Emitter.MovRI64(ref _code, VReg.R0, handleValue);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
+        PushEntry(EvalStackEntry.NativeInt);  // Runtime handles are native int
 
         return true;
     }
@@ -7276,8 +7392,8 @@ public unsafe struct ILCompiler
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
-        PopStackType();
-        PopStackType();
+        PopEntry();
+        PopEntry();
 
         // Compute element address: array + ArrayDataOffset + index * elemSize
         // R0 = array, R1 = index
@@ -7332,7 +7448,7 @@ public unsafe struct ILCompiler
         // Push multiple stack type entries for multi-slot structs
         for (int i = 0; i < slots; i++)
         {
-            PushStackType(StackType_ValueType);
+            PushEntry(EvalStackEntry.Struct(8));
         }
 
         return true;
@@ -7447,7 +7563,10 @@ public unsafe struct ILCompiler
 
         // Pop all slots: struct data (alignedSize) + index (8) + array (8)
         X64Emitter.AddRI(ref _code, VReg.SP, alignedSize + 16);
-        _evalStackDepth -= (structSlots + 2);
+        // NEW TYPE SYSTEM: Pop 3 entries (struct value, index, array)
+        PopEntry();  // struct value (1 entry regardless of byte size)
+        PopEntry();  // index
+        PopEntry();  // array
 
         return true;
     }
@@ -7472,8 +7591,7 @@ public unsafe struct ILCompiler
 
         // Pop the filter result into RAX (return value)
         X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
-        PopStackType();
+        PopEntry();  // Only need PopEntry, not both
 
         // Return from the filter funclet
         X64Emitter.EmitEpilogue(ref _code, _stackAdjust);
@@ -7575,8 +7693,7 @@ public unsafe struct ILCompiler
 
         // Pop the pointer value
         X64Emitter.Pop(ref _code, VReg.R0);  // RAX = value pointer
-        _evalStackDepth--;
-        PopStackType();
+        PopEntry();
 
         // TypedReference is 16 bytes - we push both parts onto the stack
         // The layout is: [Value pointer][Type pointer]
@@ -7588,10 +7705,8 @@ public unsafe struct ILCompiler
         // Push value pointer (already in RAX)
         X64Emitter.Push(ref _code, VReg.R0);
 
-        // TypedReference takes 2 stack slots
-        _evalStackDepth += 2;
-        PushStackType(StackType_Int);  // Value part
-        PushStackType(StackType_Int);  // Type part
+        // TypedReference takes 2 stack slots - push as struct entry
+        PushEntry(EvalStackEntry.Struct(16));  // TypedReference is 16 bytes (2 slots)
 
         return true;
     }
@@ -7610,20 +7725,16 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // TypedReference is 16 bytes (2 stack slots)
-        // mkrefany pushed: Type first, Value second (Value is TOS)
-        // So we pop: Value first, then Type
+        // TypedReference is 16 bytes (2 stack slots) - tracked as single entry
+        // mkrefany pushed it as one Struct entry with ByteSize=16
+        // So we pop: first 8 bytes (Value), then next 8 bytes (Type)
         X64Emitter.Pop(ref _code, VReg.R0);  // RAX = value pointer (TOS)
-        _evalStackDepth--;
-        PopStackType();
         X64Emitter.Pop(ref _code, VReg.R1);  // RCX = type pointer (currently unused for validation)
-        _evalStackDepth--;
-        PopStackType();
+        PopEntry();  // Pop the single TypedReference entry
 
         // Push just the value pointer
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.ByRef);
 
         // Note: In a full implementation, we would validate that typeToken matches
         // the Type field of the TypedReference and throw InvalidCastException if not.
@@ -7646,20 +7757,16 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // TypedReference is 16 bytes (2 stack slots)
-        // mkrefany pushed: Type first, Value second (Value is TOS)
-        // So we pop: Value first (discard), then Type
+        // TypedReference is 16 bytes (2 stack slots) - tracked as single entry
+        // mkrefany pushed it as one Struct entry with ByteSize=16
+        // So we pop: first 8 bytes (Value), then next 8 bytes (Type)
         X64Emitter.Pop(ref _code, VReg.R1);  // RCX = value pointer (discarded, TOS)
-        _evalStackDepth--;
-        PopStackType();
         X64Emitter.Pop(ref _code, VReg.R0);  // RAX = type pointer
-        _evalStackDepth--;
-        PopStackType();
+        PopEntry();  // Pop the single TypedReference entry
 
         // Push the type pointer as RuntimeTypeHandle
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
@@ -7689,8 +7796,7 @@ public unsafe struct ILCompiler
         X64Emitter.MovRR(ref _code, VReg.R0, VReg.FP);
         X64Emitter.AddRI(ref _code, VReg.R0, varargOffset);
         X64Emitter.Push(ref _code, VReg.R0);
-        _evalStackDepth++;
-        PushStackType(StackType_Int);
+        PushEntry(EvalStackEntry.NativeInt);
 
         return true;
     }
