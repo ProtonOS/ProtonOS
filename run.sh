@@ -26,13 +26,15 @@ if [ ! -f "$TEST_DISK" ]; then
     dd if=/dev/zero of="$TEST_DISK" bs=1M count=32 status=none
     mformat -i "$TEST_DISK" -F -v TESTDISK ::
     # Create a test file
-    echo "Hello from ProtonOS test disk!" > /tmp/hello.txt
-    echo "This is a test file for virtio-blk driver testing." >> /tmp/hello.txt
-    mcopy -i "$TEST_DISK" /tmp/hello.txt ::/hello.txt
+    TMPFILE="$SCRIPT_DIR/build/hello.txt"
+    echo "Hello from ProtonOS test disk!" > "$TMPFILE"
+    echo "This is a test file for virtio-blk driver testing." >> "$TMPFILE"
+    mcopy -i "$TEST_DISK" "$TMPFILE" ::/hello.txt
     # Create a directory with more files
     mmd -i "$TEST_DISK" ::/testdir
-    echo "File in subdirectory" > /tmp/subfile.txt
-    mcopy -i "$TEST_DISK" /tmp/subfile.txt ::/testdir/subfile.txt
+    echo "File in subdirectory" > "$TMPFILE"
+    mcopy -i "$TEST_DISK" "$TMPFILE" ::/testdir/subfile.txt
+    rm -f "$TMPFILE"
     echo "Test disk created: $TEST_DISK"
 fi
 

@@ -1,20 +1,25 @@
 #!/bin/bash
-# ProtonOS build script - kills containers, cleans, and builds
+# ProtonOS build script - cleans and builds (native, no Docker)
+
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Kill any running containers first (leftover QEMU instances, etc.)
+# Kill any running QEMU instances
 "$SCRIPT_DIR/kill.sh" 2>/dev/null || true
 
-# Use -it only if we have a TTY
-if [ -t 0 ]; then
-    DOCKER_FLAGS="-it"
-else
-    DOCKER_FLAGS=""
-fi
+# Clean build directory
+"$SCRIPT_DIR/clean.sh"
 
-# Run clean.sh then make image inside container
-docker run $DOCKER_FLAGS --rm \
-    -v "${SCRIPT_DIR}:/usr/src/protonos" \
-    -w /usr/src/protonos \
-    protonos-dev bash -c "./clean.sh && make image"
+# Build
+make image
+
+# Generate IL disassembly for all runtime assemblies
+echo "Generating IL disassembly..."
+dotnet ildasm build/x64/FullTest.dll -o build/x64/FullTest.il 2>/dev/null || true
+dotnet ildasm build/x64/System.Runtime.dll -o build/x64/System.Runtime.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.DDK.dll -o build/x64/ProtonOS.DDK.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.Virtio.dll -o build/x64/ProtonOS.Drivers.Virtio.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Drivers.VirtioBlk.il 2>/dev/null || true
+echo "IL disassembly complete: FullTest.il, System.Runtime.il, ProtonOS.DDK.il, ProtonOS.Drivers.Virtio.il, ProtonOS.Drivers.VirtioBlk.il"
