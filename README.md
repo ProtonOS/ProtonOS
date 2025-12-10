@@ -16,7 +16,8 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 - **NUMA Awareness** - Topology detection and NUMA-aware memory allocation
 - **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues
 - **Virtual Memory** - 4-level paging with higher-half kernel
-- **Tier 0 JIT** - Load and execute .NET assemblies with TOS caching and constant folding
+- **Tier 0 JIT** - Naive stack-based IL compiler with full x64 calling convention support
+- **Cross-Assembly Loading** - Load and link multiple .NET assemblies at runtime
 
 ## Current Status
 
@@ -35,29 +36,42 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | Tier 0 JIT compiler | Complete |
 | PE/Metadata reader | Complete |
 | Assembly loading and execution | Complete |
+| Cross-assembly type resolution | Complete |
 | Reflection API | Complete |
 | Driver Development Kit (DDK) | In Progress |
+| VirtIO drivers | In Progress |
+
+### JIT Test Results
+
+The JIT runs a comprehensive test suite on boot: **44/48 tests passing**
+
+Tests cover: arithmetic, comparisons, bitwise ops, control flow, locals, method calls, conversions, arrays, fields, structs (small/medium/large), exception handling, boxing, generics, and cross-assembly type resolution.
 
 ## Building
 
 ### Prerequisites
 
-- Docker (for the build environment)
-- QEMU (for testing)
+- **bflat** - C# to Native AOT compiler ([bflat.io](https://flattened.net))
+- **.NET SDK 10.0** - For building test assemblies
+- **NASM** - x86-64 assembler
+- **LLD** - LLVM linker (lld-link)
+- **QEMU** - Emulation with OVMF firmware
+- **mtools** - FAT filesystem utilities (mformat, mcopy)
 
 ### Build and Run
 
 ```bash
-./build.sh          # Build the kernel
-./dev.sh ./run.sh   # Run in QEMU
-./kill.sh           # Stop QEMU containers
+./build.sh    # Build the kernel and assemblies
+./run.sh      # Run in QEMU (boots in ~3 seconds)
+./kill.sh     # Kill running QEMU instances
 ```
 
-The build uses a Docker container with:
-- **bflat 10.0.0** - C# to Native AOT compiler
-- **NASM** - x86-64 assembler
-- **lld-link** - LLVM PE/COFF linker
-- **QEMU** - Emulation with OVMF firmware
+### Toolchain
+
+- **bflat 10.0.0** - Compiles kernel C# to native UEFI executable
+- **dotnet** - Builds driver and test assemblies as standard .NET DLLs
+- **NASM** - Assembles low-level x64 code (interrupts, context switch)
+- **lld-link** - Links final UEFI PE executable
 
 ### Output
 
@@ -83,6 +97,15 @@ src/
 │   ├── Runtime/         # PE loader, metadata reader, JIT compiler
 │   ├── Threading/       # Scheduler, threads, per-CPU state
 │   └── x64/             # x64-specific (GDT, IDT, APIC, SMP, assembly)
+├── ddk/                 # Driver Development Kit (loaded by JIT)
+│   ├── Platform/        # DMA, PCI, ACPI access for drivers
+│   ├── Drivers/         # Driver manager, device enumeration
+│   └── Kernel/          # Kernel service exports (Memory, Debug, etc.)
+├── drivers/             # Device drivers (JIT-compiled)
+│   └── shared/
+│       ├── virtio/      # VirtIO common infrastructure
+│       └── storage/     # Block device drivers (virtio-blk)
+├── SystemRuntime/       # Cross-assembly type definitions
 └── FullTest/            # JIT test assembly (runs on boot)
 ```
 
