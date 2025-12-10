@@ -999,7 +999,7 @@ public static unsafe class MetadataReader
         DebugConsole.WriteLine();
 
         // Heap size info
-        DebugConsole.Write("[Meta]   Heap indexes: Strings=");
+        // DebugConsole.Write("[Meta]   Heap indexes: Strings=");
         DebugConsole.WriteDecimal((header.HeapSizes & HeapSizeFlags.StringHeapLarge) != 0 ? 4 : 2);
         DebugConsole.Write(", GUID=");
         DebugConsole.WriteDecimal((header.HeapSizes & HeapSizeFlags.GuidHeapLarge) != 0 ? 4 : 2);
@@ -1272,7 +1272,7 @@ public static unsafe class MetadataReader
     {
         if (tables.RowCounts[(int)MetadataTableId.Module] == 0)
         {
-            DebugConsole.WriteLine("[Meta] No Module table");
+            // DebugConsole.WriteLine("[Meta] No Module table");
             return;
         }
 
@@ -1322,7 +1322,7 @@ public static unsafe class MetadataReader
         uint rowCount = tables.RowCounts[(int)MetadataTableId.TypeDef];
         if (rowCount == 0)
         {
-            DebugConsole.WriteLine("[Meta] No TypeDef table");
+            // DebugConsole.WriteLine("[Meta] No TypeDef table");
             return;
         }
 
@@ -1368,7 +1368,7 @@ public static unsafe class MetadataReader
         int typeRefRowSize = resScopeSize + stringIndexSize + stringIndexSize;
         ptr += typeRefRowSize * tables.RowCounts[(int)MetadataTableId.TypeRef];
 
-        DebugConsole.Write("[Meta] TypeDef table (");
+        // DebugConsole.Write("[Meta] TypeDef table (");
         DebugConsole.WriteDecimal(rowCount);
         DebugConsole.WriteLine(" rows):");
 
@@ -1682,13 +1682,13 @@ public static unsafe class MetadataReader
         uint rowCount = tables.RowCounts[(int)MetadataTableId.TypeRef];
         if (rowCount == 0)
         {
-            DebugConsole.WriteLine("[Meta] No TypeRef table");
+            // DebugConsole.WriteLine("[Meta] No TypeRef table");
             return;
         }
 
         var sizes = TableSizes.Calculate(ref tables);
 
-        DebugConsole.Write("[Meta] TypeRef table (");
+        // DebugConsole.Write("[Meta] TypeRef table (");
         DebugConsole.WriteDecimal(rowCount);
         DebugConsole.WriteLine(" rows):");
 
@@ -1721,13 +1721,13 @@ public static unsafe class MetadataReader
         uint rowCount = tables.RowCounts[(int)MetadataTableId.MethodDef];
         if (rowCount == 0)
         {
-            DebugConsole.WriteLine("[Meta] No MethodDef table");
+            // DebugConsole.WriteLine("[Meta] No MethodDef table");
             return;
         }
 
         var sizes = TableSizes.Calculate(ref tables);
 
-        DebugConsole.Write("[Meta] MethodDef table (");
+        // DebugConsole.Write("[Meta] MethodDef table (");
         DebugConsole.WriteDecimal(rowCount);
         DebugConsole.WriteLine(" rows):");
 
@@ -1797,13 +1797,13 @@ public static unsafe class MetadataReader
         uint rowCount = tables.RowCounts[(int)MetadataTableId.MemberRef];
         if (rowCount == 0)
         {
-            DebugConsole.WriteLine("[Meta] No MemberRef table");
+            // DebugConsole.WriteLine("[Meta] No MemberRef table");
             return;
         }
 
         var sizes = TableSizes.Calculate(ref tables);
 
-        DebugConsole.Write("[Meta] MemberRef table (");
+        // DebugConsole.Write("[Meta] MemberRef table (");
         DebugConsole.WriteDecimal(rowCount);
         DebugConsole.WriteLine(" rows):");
 
@@ -2031,13 +2031,13 @@ public static unsafe class MetadataReader
         uint rowCount = tables.RowCounts[(int)MetadataTableId.AssemblyRef];
         if (rowCount == 0)
         {
-            DebugConsole.WriteLine("[Meta] No AssemblyRef table");
+            // DebugConsole.WriteLine("[Meta] No AssemblyRef table");
             return;
         }
 
         var sizes = TableSizes.Calculate(ref tables);
 
-        DebugConsole.Write("[Meta] AssemblyRef table (");
+        // DebugConsole.Write("[Meta] AssemblyRef table (");
         DebugConsole.WriteDecimal(rowCount);
         DebugConsole.WriteLine(" rows):");
 
@@ -3218,11 +3218,11 @@ public static unsafe class MetadataReader
     {
         if (body.IsTiny)
         {
-            DebugConsole.Write("[IL] Tiny format, ");
+            // DebugConsole.Write("[IL] Tiny format, ");
         }
         else
         {
-            DebugConsole.Write("[IL] Fat format, ");
+            // DebugConsole.Write("[IL] Fat format, ");
             if (body.InitLocals)
                 DebugConsole.Write("initlocals, ");
             if (body.HasMoreSections)
@@ -3242,7 +3242,7 @@ public static unsafe class MetadataReader
         DebugConsole.WriteLine();
 
         // Dump first few bytes of IL
-        DebugConsole.Write("[IL] Code: ");
+        // DebugConsole.Write("[IL] Code: ");
         int bytesToShow = body.CodeSize > 16 ? 16 : (int)body.CodeSize;
         for (int i = 0; i < bytesToShow; i++)
         {
@@ -3661,7 +3661,7 @@ public static unsafe class MetadataReader
         uint programType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "Program");
         if (programType != 0)
         {
-            DebugConsole.Write("[Meta]   Found MetadataTest.Program at TypeDef row ");
+            // DebugConsole.Write("[Meta]   Found MetadataTest.Program at TypeDef row ");
             DebugConsole.WriteDecimal(programType);
             DebugConsole.WriteLine();
 
@@ -3677,7 +3677,7 @@ public static unsafe class MetadataReader
             uint mainMethod = FindMethodByName(ref root, ref tables, ref sizes, programType, "Main");
             if (mainMethod != 0)
             {
-                DebugConsole.Write("[Meta]     Found Main at MethodDef row ");
+                // DebugConsole.Write("[Meta]     Found Main at MethodDef row ");
                 DebugConsole.WriteDecimal(mainMethod);
                 DebugConsole.WriteLine();
             }
@@ -3691,14 +3691,14 @@ public static unsafe class MetadataReader
         uint outerType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "OuterClass");
         if (outerType != 0)
         {
-            DebugConsole.Write("[Meta]   Found MetadataTest.OuterClass at TypeDef row ");
+            // DebugConsole.Write("[Meta]   Found MetadataTest.OuterClass at TypeDef row ");
             DebugConsole.WriteDecimal(outerType);
             DebugConsole.WriteLine();
 
             uint nestedType = FindNestedTypeDef(ref root, ref tables, ref sizes, outerType, "NestedClass");
             if (nestedType != 0)
             {
-                DebugConsole.Write("[Meta]     Found nested NestedClass at TypeDef row ");
+                // DebugConsole.Write("[Meta]     Found nested NestedClass at TypeDef row ");
                 DebugConsole.WriteDecimal(nestedType);
                 DebugConsole.WriteLine();
             }
@@ -3708,7 +3708,7 @@ public static unsafe class MetadataReader
         uint fieldSigType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "FieldSignatures");
         if (fieldSigType != 0)
         {
-            DebugConsole.Write("[Meta]   Found MetadataTest.FieldSignatures at TypeDef row ");
+            // DebugConsole.Write("[Meta]   Found MetadataTest.FieldSignatures at TypeDef row ");
             DebugConsole.WriteDecimal(fieldSigType);
             DebugConsole.WriteLine();
 
@@ -3723,7 +3723,7 @@ public static unsafe class MetadataReader
             uint intField = FindFieldByName(ref root, ref tables, ref sizes, fieldSigType, "IntField");
             if (intField != 0)
             {
-                DebugConsole.Write("[Meta]     Found IntField at Field row ");
+                // DebugConsole.Write("[Meta]     Found IntField at Field row ");
                 DebugConsole.WriteDecimal(intField);
                 DebugConsole.WriteLine();
             }
@@ -3733,7 +3733,7 @@ public static unsafe class MetadataReader
         uint derivedType = FindTypeDef(ref root, ref tables, ref sizes, "MetadataTest", "DerivedClass");
         if (derivedType != 0)
         {
-            DebugConsole.Write("[Meta]   Found MetadataTest.DerivedClass at TypeDef row ");
+            // DebugConsole.Write("[Meta]   Found MetadataTest.DerivedClass at TypeDef row ");
             DebugConsole.WriteDecimal(derivedType);
             DebugConsole.WriteLine();
 

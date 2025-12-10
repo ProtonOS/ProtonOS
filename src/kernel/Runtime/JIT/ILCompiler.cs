@@ -1091,7 +1091,7 @@ public unsafe struct ILCompiler
 
             if (IsDebugBoolBugMethod())
             {
-                DebugConsole.Write("[BindDbg] IL op il=0x");
+                // DebugConsole.Write("[BindDbg] IL op il=0x");
                 DebugConsole.WriteHex((ulong)(_ilOffset - 1));
                 DebugConsole.Write(" opcode=0x");
                 DebugConsole.WriteHex(opcode);
@@ -1182,7 +1182,7 @@ public unsafe struct ILCompiler
         bool debug = IsDebugBoolBugMethod() || IsDebugBarMethod();
         if (debug)
         {
-            DebugConsole.Write("[BindDbg] patch branches count=");
+            // DebugConsole.Write("[BindDbg] patch branches count=");
             DebugConsole.WriteDecimal((uint)_branchCount);
             DebugConsole.WriteLine();
         }
@@ -1194,7 +1194,7 @@ public unsafe struct ILCompiler
 
             if (debug)
             {
-                DebugConsole.Write("[BindDbg] patch idx=");
+                // DebugConsole.Write("[BindDbg] patch idx=");
                 DebugConsole.WriteDecimal((uint)i);
                 DebugConsole.Write(" tgtIL=0x");
                 DebugConsole.WriteHex((ulong)targetIL);
@@ -2119,7 +2119,7 @@ public unsafe struct ILCompiler
         // Debug: Log large struct ldloc
         if (typeSize > 8)
         {
-            DebugConsole.Write("[ldloc] idx=");
+            // DebugConsole.Write("[ldloc] idx=");
             DebugConsole.WriteHex((ulong)index);
             DebugConsole.Write(" isVT=");
             DebugConsole.WriteHex(isValueType ? 1UL : 0UL);
@@ -2130,7 +2130,7 @@ public unsafe struct ILCompiler
 
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] ldloc.4 il=0x");
+            // DebugConsole.Write("[BindDbg] ldloc.4 il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" codePos=");
             DebugConsole.WriteHex((ulong)_code.Position);
@@ -2148,7 +2148,7 @@ public unsafe struct ILCompiler
             int alignedSize = (typeSize + 7) & ~7;
             int slots = alignedSize / 8;
 
-            DebugConsole.Write("[ldloc VT] idx=");
+            // DebugConsole.Write("[ldloc VT] idx=");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" size=");
             DebugConsole.WriteDecimal((uint)typeSize);
@@ -2224,7 +2224,7 @@ public unsafe struct ILCompiler
         PushEntry(EvalStackEntry.Int32);
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
+            // DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.WriteLine();
         }
@@ -2240,7 +2240,7 @@ public unsafe struct ILCompiler
         // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
         if (_debugAssemblyId == 3 && _debugMethodToken == 0x0600001D)
         {
-            DebugConsole.Write("[AllocBuf stloc] idx=");
+            // DebugConsole.Write("[AllocBuf stloc] idx=");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" isVT=");
             DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
@@ -2257,7 +2257,7 @@ public unsafe struct ILCompiler
 
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] stloc.");
+            // DebugConsole.Write("[BindDbg] stloc.");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
@@ -2283,7 +2283,7 @@ public unsafe struct ILCompiler
         {
             // TypeRef resolution failed - use stack entry's tracked size
             effectiveSize = tosEntry.RawSize;
-            DebugConsole.Write("[stloc WARN] VT local idx=");
+            // DebugConsole.Write("[stloc WARN] VT local idx=");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" typeSize=0, using stack rawSize=");
             DebugConsole.WriteDecimal((uint)effectiveSize);
@@ -2295,7 +2295,7 @@ public unsafe struct ILCompiler
         {
             int destOffset = X64Emitter.GetLocalOffset(index);
             int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
-            DebugConsole.Write("[stloc VT] idx=");
+            // DebugConsole.Write("[stloc VT] idx=");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" copySize=");
             DebugConsole.WriteDecimal((uint)copySize);
@@ -2357,7 +2357,7 @@ public unsafe struct ILCompiler
 
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] stloc.");
+            // DebugConsole.Write("[BindDbg] stloc.");
             DebugConsole.WriteDecimal((uint)index);
             DebugConsole.Write(" stored offset=");
             DebugConsole.WriteDecimal((uint)offset);
@@ -2995,7 +2995,7 @@ public unsafe struct ILCompiler
         // Debug: Log conv for the bool bug method at IL offset 0x197
         if (IsDebugBoolBugMethod() && _ilOffset >= 0x195 && _ilOffset <= 0x19A)
         {
-            DebugConsole.Write("[conv] IL=0x");
+            // DebugConsole.Write("[conv] IL=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" bytes=");
             DebugConsole.WriteDecimal((uint)targetBytes);
@@ -3514,7 +3514,7 @@ public unsafe struct ILCompiler
     {
         if (IsDebugBoolBugMethod())
         {
-            DebugConsole.Write("[BindDbg] ret il=0x");
+            // DebugConsole.Write("[BindDbg] ret il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
@@ -3558,7 +3558,7 @@ public unsafe struct ILCompiler
                 else
                 {
                     // Large struct (>16 bytes): copy VALUE from [RSP] to hidden buffer (arg0)
-                    DebugConsole.Write("[ret>16] size=");
+                    // DebugConsole.Write("[ret>16] size=");
                     DebugConsole.WriteDecimal((uint)_returnTypeSize);
                     DebugConsole.Write(" argCnt=");
                     DebugConsole.WriteDecimal((uint)_argCount);
@@ -3612,7 +3612,7 @@ public unsafe struct ILCompiler
         bool debugBind = IsDebugBarMethod();
         if (debugBind)
         {
-            DebugConsole.Write("[BarDbg] br il=0x");
+            // DebugConsole.Write("[BarDbg] br il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" target=0x");
             DebugConsole.WriteHex((ulong)targetIL);
@@ -3630,7 +3630,7 @@ public unsafe struct ILCompiler
         bool debugBind = IsDebugBindMethod() || IsDebugBarMethod();
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] brfalse il=0x");
+            // DebugConsole.Write("[BindDbg] brfalse il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" target=0x");
             DebugConsole.WriteHex((ulong)targetIL);
@@ -3645,7 +3645,7 @@ public unsafe struct ILCompiler
         RecordBranch(_ilOffset, targetIL, patchOffset);
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] brfalse patchOff=0x");
+            // DebugConsole.Write("[BindDbg] brfalse patchOff=0x");
             DebugConsole.WriteHex((ulong)patchOffset);
             DebugConsole.Write(" codePos=0x");
             DebugConsole.WriteHex((ulong)_code.Position);
@@ -3684,7 +3684,7 @@ public unsafe struct ILCompiler
         bool debugThis = IsDebugBoolBugMethod();
         if (debugThis)
         {
-            DebugConsole.Write("[ceq-pre] IL=0x");
+            // DebugConsole.Write("[ceq-pre] IL=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
@@ -3696,7 +3696,7 @@ public unsafe struct ILCompiler
 
         if (debugThis)
         {
-            DebugConsole.Write("[ceq-post] depth=");
+            // DebugConsole.Write("[ceq-post] depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.WriteLine();
         }
@@ -4009,7 +4009,7 @@ public unsafe struct ILCompiler
         CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(token);
         if (info == null)
         {
-            DebugConsole.Write("[JIT] Method token 0x");
+            // DebugConsole.Write("[JIT] Method token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine(" not found in registry");
             return false;
@@ -4044,7 +4044,7 @@ public unsafe struct ILCompiler
         else
         {
             // Method is reserved but not being compiled - this shouldn't happen
-            DebugConsole.Write("[JIT] Method token 0x");
+            // DebugConsole.Write("[JIT] Method token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine(" not yet compiled");
             return false;
@@ -4076,7 +4076,7 @@ public unsafe struct ILCompiler
         // Resolve the method
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
-            DebugConsole.Write("[JIT] ResolveMethod failed for call 0x");
+            // DebugConsole.Write("[JIT] ResolveMethod failed for call 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
             return false;
@@ -4110,7 +4110,7 @@ public unsafe struct ILCompiler
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalArgs)
         {
-            DebugConsole.Write("[JIT] Call 0x");
+            // DebugConsole.Write("[JIT] Call 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.Write(" at IL ");
             DebugConsole.WriteDecimal((uint)(_ilOffset - 4));  // -4 because token was already read
@@ -4296,7 +4296,7 @@ public unsafe struct ILCompiler
 
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
 
-            DebugConsole.Write("[JIT] >4 args: totalArgs=");
+            // DebugConsole.Write("[JIT] >4 args: totalArgs=");
             DebugConsole.WriteDecimal((uint)totalArgs);
             DebugConsole.Write(" stackArgs=");
             DebugConsole.WriteDecimal((uint)stackArgs);
@@ -4312,13 +4312,13 @@ public unsafe struct ILCompiler
             {
                 // arg4 is at [RSP+0] (top of stack)
                 X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, 0);  // R10 = arg4 (VReg.R5 = R10)
-                DebugConsole.WriteLine("[JIT]   arg4 saved to R10 from [RSP+0]");
+                // DebugConsole.WriteLine("[JIT]   arg4 saved to R10 from [RSP+0]");
             }
             if (stackArgs >= 2)
             {
                 // arg5 is at [RSP+8]
                 X64Emitter.MovRM(ref _code, VReg.R6, VReg.SP, 8);  // R11 = arg5 (VReg.R6 = R11)
-                DebugConsole.WriteLine("[JIT]   arg5 saved to R11 from [RSP+8]");
+                // DebugConsole.WriteLine("[JIT]   arg5 saved to R11 from [RSP+8]");
             }
 
             // Step 2: Load register args from eval stack
@@ -4340,12 +4340,12 @@ public unsafe struct ILCompiler
             if (stackArgs >= 1)
             {
                 X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R5);  // [RSP+32] = R10 (arg4)
-                DebugConsole.WriteLine("[JIT]   arg4 stored to [RSP+32] from R10");
+                // DebugConsole.WriteLine("[JIT]   arg4 stored to [RSP+32] from R10");
             }
             if (stackArgs >= 2)
             {
                 X64Emitter.MovMR(ref _code, VReg.SP, 40, VReg.R6);  // [RSP+40] = R11 (arg5)
-                DebugConsole.WriteLine("[JIT]   arg5 stored to [RSP+40] from R11");
+                // DebugConsole.WriteLine("[JIT]   arg5 stored to [RSP+40] from R11");
             }
 
             for (int i = 0; i < totalArgs; i++) PopEntry();
@@ -4388,7 +4388,7 @@ public unsafe struct ILCompiler
             // Direct call - we already know the target address
             if (_debugAssemblyId == 3)
             {
-                DebugConsole.Write("[JIT call] direct tok=0x");
+                // DebugConsole.Write("[JIT call] direct tok=0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.Write(" native=0x");
                 DebugConsole.WriteHex((ulong)method.NativeCode);
@@ -4404,7 +4404,7 @@ public unsafe struct ILCompiler
             // NativeCode is at offset 8 (after 4-byte Token + 4 bytes padding for alignment)
             if (_debugAssemblyId == 3)
             {
-                DebugConsole.Write("[JIT call] indirect tok=0x");
+                // DebugConsole.Write("[JIT call] indirect tok=0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.Write(" entry=0x");
                 DebugConsole.WriteHex((ulong)method.RegistryEntry);
@@ -4504,7 +4504,7 @@ public unsafe struct ILCompiler
 
             case ReturnKind.Struct:
                 // Handle struct returns based on size
-                DebugConsole.Write("[JIT] Call struct return: size=");
+                // DebugConsole.Write("[JIT] Call struct return: size=");
                 DebugConsole.WriteDecimal(method.ReturnStructSize);
                 DebugConsole.WriteLine();
                 if (method.ReturnStructSize <= 8)
@@ -4582,7 +4582,7 @@ public unsafe struct ILCompiler
 
         if (!ResolveMethod(token, out ResolvedMethod method))
         {
-            DebugConsole.Write("[JIT] ResolveMethod failed for callvirt 0x");
+            // DebugConsole.Write("[JIT] ResolveMethod failed for callvirt 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
             return false;
@@ -4597,7 +4597,7 @@ public unsafe struct ILCompiler
         bool debugBind = IsDebugBindMethod();
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] callvirt il=0x");
+            // DebugConsole.Write("[BindDbg] callvirt il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" token=0x");
             DebugConsole.WriteHex(token);
@@ -4611,7 +4611,7 @@ public unsafe struct ILCompiler
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalArgs)
         {
-            DebugConsole.Write("[JIT] Callvirt: insufficient stack depth ");
+            // DebugConsole.Write("[JIT] Callvirt: insufficient stack depth ");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.Write(" for ");
             DebugConsole.WriteDecimal((uint)totalArgs);
@@ -4836,7 +4836,7 @@ public unsafe struct ILCompiler
 
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] callvirt done il=0x");
+            // DebugConsole.Write("[BindDbg] callvirt done il=0x");
             DebugConsole.WriteHex((ulong)_ilOffset);
             DebugConsole.Write(" codePos=");
             DebugConsole.WriteHex((ulong)_code.Position);
@@ -4872,7 +4872,7 @@ public unsafe struct ILCompiler
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalStackItems)
         {
-            DebugConsole.Write("[JIT] Calli: insufficient stack depth ");
+            // DebugConsole.Write("[JIT] Calli: insufficient stack depth ");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.Write(" for ");
             DebugConsole.WriteDecimal((uint)totalStackItems);
@@ -5052,7 +5052,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 3)
         {
-            DebugConsole.WriteLine("[JIT] cpblk: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] cpblk: insufficient stack depth");
             return false;
         }
 
@@ -5087,7 +5087,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 3)
         {
-            DebugConsole.WriteLine("[JIT] initblk: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] initblk: insufficient stack depth");
             return false;
         }
 
@@ -5134,7 +5134,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 1)
         {
-            DebugConsole.WriteLine("[JIT] initobj: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] initobj: insufficient stack depth");
             return false;
         }
 
@@ -5190,7 +5190,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 1)
         {
-            DebugConsole.WriteLine("[JIT] ldobj: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] ldobj: insufficient stack depth");
             return false;
         }
 
@@ -5283,7 +5283,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 2)
         {
-            DebugConsole.WriteLine("[JIT] stobj: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] stobj: insufficient stack depth");
             return false;
         }
 
@@ -5411,7 +5411,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 2)
         {
-            DebugConsole.WriteLine("[JIT] cpobj: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] cpobj: insufficient stack depth");
             return false;
         }
 
@@ -5469,7 +5469,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth < 1)
         {
-            DebugConsole.WriteLine("[JIT] throw: insufficient stack depth");
+            // DebugConsole.WriteLine("[JIT] throw: insufficient stack depth");
             return false;
         }
 
@@ -5527,7 +5527,7 @@ public unsafe struct ILCompiler
     {
         if (_evalStackDepth != 0)
         {
-            DebugConsole.Write("[JIT] endfinally: stack not empty (depth=");
+            // DebugConsole.Write("[JIT] endfinally: stack not empty (depth=");
             DebugConsole.WriteDecimal((uint)_evalStackDepth);
             DebugConsole.WriteLine(")");
             return false;
@@ -5592,7 +5592,7 @@ public unsafe struct ILCompiler
             fieldTypeIsValueType = field.IsFieldTypeValueType;
             if (isDebugMapBars)
             {
-                DebugConsole.Write("[LdfldDbg] tok=0x");
+                // DebugConsole.Write("[LdfldDbg] tok=0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.Write(" off=");
                 DebugConsole.WriteDecimal((uint)offset);
@@ -5619,7 +5619,7 @@ public unsafe struct ILCompiler
 
         if (isDebugMapBars)
         {
-            DebugConsole.Write("[LdfldDbg] tosIsVT=");
+            // DebugConsole.Write("[LdfldDbg] tosIsVT=");
             DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
             DebugConsole.Write(" tosBytes=");
             DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
@@ -5637,7 +5637,7 @@ public unsafe struct ILCompiler
         // Debug: log all ldfld calls for assembly 3
         if (_debugAssemblyId == 3)
         {
-            DebugConsole.Write("[ldfld all] declVT=");
+            // DebugConsole.Write("[ldfld all] declVT=");
             DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
             DebugConsole.Write(" declSz=");
             DebugConsole.WriteDecimal((uint)declaringTypeSize);
@@ -5676,7 +5676,7 @@ public unsafe struct ILCompiler
             // Debug: log when taking the inline large VT path
             if (_debugAssemblyId == 3)
             {
-                DebugConsole.Write("[ldfld inline VT] off=");
+                // DebugConsole.Write("[ldfld inline VT] off=");
                 DebugConsole.WriteDecimal((uint)offset);
                 DebugConsole.Write(" sz=");
                 DebugConsole.WriteDecimal((uint)size);
@@ -5738,7 +5738,7 @@ public unsafe struct ILCompiler
         // Debug: always log the conditions for ldfld (compile-time)
         if (_debugAssemblyId == 3)
         {
-            DebugConsole.Write("[ldfld chk] fieldVT=");
+            // DebugConsole.Write("[ldfld chk] fieldVT=");
             DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
             DebugConsole.Write(" size=");
             DebugConsole.WriteDecimal((uint)size);
@@ -5754,7 +5754,7 @@ public unsafe struct ILCompiler
         if (fieldTypeIsValueType && size > 8 && !tosIsValueType)
         {
             // Debug: emit JIT compile-time trace for large struct field load
-            DebugConsole.Write("[ldfld VT path] off=");
+            // DebugConsole.Write("[ldfld VT path] off=");
             DebugConsole.WriteDecimal((uint)offset);
             DebugConsole.Write(" size=");
             DebugConsole.WriteDecimal((uint)size);
@@ -6530,7 +6530,7 @@ public unsafe struct ILCompiler
         // Try to resolve as a registered constructor
         ResolvedMethod ctor;
         bool resolved = ResolveMethod(token, out ctor);
-        DebugConsole.Write("[JIT newobj] token=0x");
+        // DebugConsole.Write("[JIT newobj] token=0x");
         DebugConsole.WriteHex(token);
         DebugConsole.Write(" resolved=");
         DebugConsole.Write(resolved ? "Y" : "N");
@@ -6546,7 +6546,7 @@ public unsafe struct ILCompiler
             MethodTable* mt = (MethodTable*)ctor.MethodTable;
             bool isValueType = mt->IsValueType;
 
-            DebugConsole.Write("[JIT newobj] isValueType=");
+            // DebugConsole.Write("[JIT newobj] isValueType=");
             DebugConsole.Write(isValueType ? "Y" : "N");
             DebugConsole.Write(" baseSize=");
             DebugConsole.WriteDecimal(mt->BaseSize);
@@ -6606,7 +6606,7 @@ public unsafe struct ILCompiler
             else
             {
                 // REFERENCE TYPE: Allocate on heap via RhpNewFast
-                DebugConsole.Write("[JIT newobj] refType: RhpNewFast=0x");
+                // DebugConsole.Write("[JIT newobj] refType: RhpNewFast=0x");
                 DebugConsole.WriteHex((ulong)_rhpNewFast);
                 DebugConsole.Write(" MT=0x");
                 DebugConsole.WriteHex((ulong)ctor.MethodTable);
@@ -6649,7 +6649,7 @@ public unsafe struct ILCompiler
             }
 
             // Call the constructor
-            DebugConsole.Write("[JIT newobj] calling ctor at 0x");
+            // DebugConsole.Write("[JIT newobj] calling ctor at 0x");
             DebugConsole.WriteHex((ulong)ctor.NativeCode);
             DebugConsole.Write(" args=");
             DebugConsole.WriteDecimal((uint)ctorArgs);
@@ -6657,7 +6657,7 @@ public unsafe struct ILCompiler
 
             if (ctor.NativeCode == null)
             {
-                DebugConsole.WriteLine("[JIT newobj] ERROR: ctor.NativeCode is null!");
+                // DebugConsole.WriteLine("[JIT newobj] ERROR: ctor.NativeCode is null!");
                 return false;
             }
 

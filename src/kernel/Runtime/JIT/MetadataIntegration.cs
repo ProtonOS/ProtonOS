@@ -598,7 +598,7 @@ public static unsafe class MetadataIntegration
         // Debug: Log type size requests for TypeRef (cross-assembly types)
         if (tableId == 0x01)
         {
-            DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+            // DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.Write(" (asm=");
             DebugConsole.WriteDecimal(_currentAssemblyId);
@@ -610,7 +610,7 @@ public static unsafe class MetadataIntegration
         if (!ResolveType(token, out mtPtr) || mtPtr == null)
         {
             // If we can't resolve, fall back to pointer size
-            DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
+            // DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.Write(" table=0x");
             DebugConsole.WriteHex(tableId);
@@ -629,7 +629,7 @@ public static unsafe class MetadataIntegration
             // Debug: Log successful type size resolution for TypeRef
             if (tableId == 0x01)
             {
-                DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+                // DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.Write(" resolved to VT size=");
                 DebugConsole.WriteDecimal(baseSize);
@@ -1173,7 +1173,7 @@ public static unsafe class MetadataIntegration
         // Debug: Log MemberRef field resolution
         if (success)
         {
-            DebugConsole.Write("[MemberRefField] asm=");
+            // DebugConsole.Write("[MemberRefField] asm=");
             DebugConsole.WriteDecimal((int)savedAsmId);
             DebugConsole.Write(" token=0x");
             DebugConsole.WriteHex(token);
@@ -1209,7 +1209,7 @@ public static unsafe class MetadataIntegration
 
         if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
         {
-            DebugConsole.Write("[AotMemberRef] No metadata for token 0x");
+            // DebugConsole.Write("[AotMemberRef] No metadata for token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
             return false;
@@ -1252,7 +1252,7 @@ public static unsafe class MetadataIntegration
         }
         else
         {
-            DebugConsole.Write("[AotMemberRef] Token 0x");
+            // DebugConsole.Write("[AotMemberRef] Token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.Write(" classRef.Table=");
             DebugConsole.WriteDecimal((int)classRef.Table);
@@ -1266,7 +1266,7 @@ public static unsafe class MetadataIntegration
         if (!AotMethodRegistry.IsWellKnownAotType(typeName))
         {
             // Debug: show the type name that wasn't recognized
-            DebugConsole.Write("[AotMemberRef] Token 0x");
+            // DebugConsole.Write("[AotMemberRef] Token 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.Write(" type '");
             WriteByteString(typeName);
@@ -1291,7 +1291,7 @@ public static unsafe class MetadataIntegration
         // Try to look up in the AOT registry (pass paramCount, not including 'this')
         if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry))
         {
-            DebugConsole.Write("[AotMemberRef] Found AOT method: ");
+            // DebugConsole.Write("[AotMemberRef] Found AOT method: ");
             WriteByteString(typeName);
             DebugConsole.Write(".");
             WriteByteString(memberName);
@@ -1315,7 +1315,7 @@ public static unsafe class MetadataIntegration
         }
 
         // Debug: TryLookup failed
-        DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
+        // DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
         WriteByteString(typeName);
         DebugConsole.Write(".");
         WriteByteString(memberName);
@@ -1470,7 +1470,7 @@ public static unsafe class MetadataIntegration
                     byte retType = sigBlob[sigPos];
 
                     // JIT compile the method
-                    DebugConsole.Write("[MetaInt] Before JIT asm ");
+                    // DebugConsole.Write("[MetaInt] Before JIT asm ");
                     DebugConsole.WriteDecimal(targetAsmId);
                     DebugConsole.Write(" ctx=");
                     DebugConsole.WriteDecimal(_currentAssemblyId);
@@ -1478,7 +1478,7 @@ public static unsafe class MetadataIntegration
 
                     JitResult jitResult = Tier0JIT.CompileMethod(targetAsmId, methodToken);
 
-                    DebugConsole.Write("[MetaInt] After JIT asm ");
+                    // DebugConsole.Write("[MetaInt] After JIT asm ");
                     DebugConsole.WriteDecimal(targetAsmId);
                     DebugConsole.Write(" ctx=");
                     DebugConsole.WriteDecimal(_currentAssemblyId);
@@ -1775,7 +1775,7 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
-        DebugConsole.Write("[CalcFieldOff] fld=");
+        // DebugConsole.Write("[CalcFieldOff] fld=");
         DebugConsole.WriteDecimal(fieldRow);
         DebugConsole.Write(" type=");
         DebugConsole.WriteDecimal(typeRow);
@@ -1941,7 +1941,7 @@ public static unsafe class MetadataIntegration
                 // Method is being compiled - this is a recursive call
                 // We need to emit an indirect call through the registry entry
                 // The native code will be filled in when compilation completes
-                DebugConsole.Write("[MetaInt] RECURSIVE CALL detected for token 0x");
+                // DebugConsole.Write("[MetaInt] RECURSIVE CALL detected for token 0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.WriteLine(" - using indirect call");
                 result.NativeCode = null;  // Will be filled in later
@@ -1970,7 +1970,7 @@ public static unsafe class MetadataIntegration
             // JIT compile the method
             if (_currentAssemblyId == 0)
             {
-                DebugConsole.WriteLine("[MetaInt] No current assembly set for JIT");
+                // DebugConsole.WriteLine("[MetaInt] No current assembly set for JIT");
                 return false;
             }
 
@@ -1990,7 +1990,7 @@ public static unsafe class MetadataIntegration
                     result.RegistryEntry = info;  // Important: set registry entry for indirect call
                     return true;
                 }
-                DebugConsole.Write("[MetaInt] Failed to JIT compile method 0x");
+                // DebugConsole.Write("[MetaInt] Failed to JIT compile method 0x");
                 DebugConsole.WriteHex(token);
                 DebugConsole.WriteLine();
                 return false;

@@ -1323,7 +1323,7 @@ public static unsafe class AssemblyLoader
                 }
                 else
                 {
-                    DebugConsole.Write("[GetFieldTypeSize] TypeRef resolved but invalid: targetAsm=");
+                    // DebugConsole.Write("[GetFieldTypeSize] TypeRef resolved but invalid: targetAsm=");
                     DebugConsole.WriteHex((ulong)targetAsm);
                     DebugConsole.Write(" typeDefRow=");
                     DebugConsole.WriteDecimal(typeDefRow);
@@ -1332,7 +1332,7 @@ public static unsafe class AssemblyLoader
             }
             else
             {
-                DebugConsole.Write("[GetFieldTypeSize] FAILED to resolve TypeRef row=");
+                // DebugConsole.Write("[GetFieldTypeSize] FAILED to resolve TypeRef row=");
                 DebugConsole.WriteDecimal(row);
                 DebugConsole.Write(" in asm=");
                 DebugConsole.WriteDecimal(asm->AssemblyId);
@@ -1341,7 +1341,7 @@ public static unsafe class AssemblyLoader
         }
         else if (table == 2)  // TypeSpec - needs more complex handling
         {
-            DebugConsole.Write("[GetFieldTypeSize] TypeSpec table not fully supported, row=");
+            // DebugConsole.Write("[GetFieldTypeSize] TypeSpec table not fully supported, row=");
             DebugConsole.WriteDecimal(row);
             DebugConsole.WriteLine();
         }
@@ -1387,7 +1387,7 @@ public static unsafe class AssemblyLoader
         byte* ns = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
 
         // Debug: Log the type being resolved
-        DebugConsole.Write("[AsmLoader] ResolveTypeRef 0x");
+        // DebugConsole.Write("[AsmLoader] ResolveTypeRef 0x");
         DebugConsole.WriteHex(typeRefToken);
         DebugConsole.Write(" srcAsm=");
         DebugConsole.WriteDecimal(sourceAsm->AssemblyId);
@@ -1495,7 +1495,7 @@ public static unsafe class AssemblyLoader
             byte* typeNs = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
 
             // Debug: Print what we're looking up
-            DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
+            // DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
             DebugConsole.WriteDecimal(typeRefRow);
             DebugConsole.Write(" asmRef=");
             DebugConsole.WriteDecimal(resScope.RowId);
@@ -1533,7 +1533,7 @@ public static unsafe class AssemblyLoader
             uint typeDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
 
             // Debug: Show TypeDef search parameters
-            DebugConsole.Write("[AsmLoader] Searching asm ");
+            // DebugConsole.Write("[AsmLoader] Searching asm ");
             DebugConsole.WriteDecimal(targetAsm->AssemblyId);
             DebugConsole.Write(" TypeDef table (");
             DebugConsole.WriteDecimal(typeDefCount);
@@ -1617,7 +1617,7 @@ public static unsafe class AssemblyLoader
             sourceAsm->Dependencies[assemblyRefRow - 1] != InvalidAssemblyId)
         {
             uint cachedId = sourceAsm->Dependencies[assemblyRefRow - 1];
-            DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
+            // DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
             DebugConsole.WriteDecimal(assemblyRefRow);
             DebugConsole.Write(" -> cached asm ");
             DebugConsole.WriteDecimal(cachedId);
@@ -1633,7 +1633,7 @@ public static unsafe class AssemblyLoader
             return InvalidAssemblyId;
 
         // Debug: Print what we're looking up
-        DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
+        // DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
         DebugConsole.WriteDecimal(assemblyRefRow);
         DebugConsole.Write(" name='");
         for (int i = 0; name[i] != 0 && i < 32; i++)
@@ -2037,7 +2037,7 @@ public static unsafe class AssemblyLoader
             ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
 
         // Debug: Print MemberRef resolution info
-        DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
+        // DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
         DebugConsole.WriteHex(memberRefToken);
         DebugConsole.Write(" from asm ");
         DebugConsole.WriteDecimal(sourceAsmId);
@@ -2126,7 +2126,7 @@ public static unsafe class AssemblyLoader
         targetAsmId = targetAsm->AssemblyId;
 
         // Debug: Print resolved target
-        DebugConsole.Write("[AsmLoader] -> resolved to asm ");
+        // DebugConsole.Write("[AsmLoader] -> resolved to asm ");
         DebugConsole.WriteDecimal(targetAsmId);
         DebugConsole.Write(" (");
         if (targetAsm->Name != null)
@@ -2496,7 +2496,7 @@ public static unsafe class AssemblyLoader
         }
 
         // Debug: Show method range
-        DebugConsole.Write("[AsmLoader] FindMethod in type row ");
+        // DebugConsole.Write("[AsmLoader] FindMethod in type row ");
         DebugConsole.WriteDecimal(typeRow);
         DebugConsole.Write(": methodStart=");
         DebugConsole.WriteDecimal(methodStart);
@@ -2863,7 +2863,7 @@ public static unsafe class AssemblyLoader
             _arrayMTCacheCount++;
         }
 
-        DebugConsole.Write("[AsmLoader] Created array MT 0x");
+        // DebugConsole.Write("[AsmLoader] Created array MT 0x");
         DebugConsole.WriteHex((ulong)arrayMT);
         DebugConsole.Write(" elemSize=");
         DebugConsole.WriteDecimal(elementSize);

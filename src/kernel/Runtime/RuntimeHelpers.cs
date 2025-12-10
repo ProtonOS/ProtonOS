@@ -193,11 +193,11 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void DebugStfld(void* objPtr, int offset)
     {
-        DebugConsole.Write("[stfld RT] obj=0x");
-        DebugConsole.WriteHex((ulong)objPtr);
-        DebugConsole.Write(" off=");
-        DebugConsole.WriteDecimal((uint)offset);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[stfld RT] obj=0x");
+        // DebugConsole.WriteHex((ulong)objPtr);
+        // DebugConsole.Write(" off=");
+        // DebugConsole.WriteDecimal((uint)offset);
+        // DebugConsole.WriteLine();
     }
 
     // Debug helper pointer for stelem
@@ -215,15 +215,15 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void DebugStelemStack(void* srcAddr, ulong index, void* array, int elemSize)
     {
-        DebugConsole.Write("[stelem stack] src=0x");
-        DebugConsole.WriteHex((ulong)srcAddr);
-        DebugConsole.Write(" idx=");
-        DebugConsole.WriteHex(index);
-        DebugConsole.Write(" arr=0x");
-        DebugConsole.WriteHex((ulong)array);
-        DebugConsole.Write(" dest=0x");
-        DebugConsole.WriteHex((ulong)((byte*)array + 16 + (long)index * elemSize));
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[stelem stack] src=0x");
+        // DebugConsole.WriteHex((ulong)srcAddr);
+        // DebugConsole.Write(" idx=");
+        // DebugConsole.WriteHex(index);
+        // DebugConsole.Write(" arr=0x");
+        // DebugConsole.WriteHex((ulong)array);
+        // DebugConsole.Write(" dest=0x");
+        // DebugConsole.WriteHex((ulong)((byte*)array + 16 + (long)index * elemSize));
+        // DebugConsole.WriteLine();
     }
 
     #endregion
@@ -245,23 +245,23 @@ public static unsafe class RuntimeHelpers
             return null;
         }
 
-        DebugConsole.Write("[RhpNewFast] MT=0x");
-        DebugConsole.WriteHex((ulong)pMT);
-        DebugConsole.Write(" size=");
-        DebugConsole.WriteDecimal(pMT->BaseSize);
+        // DebugConsole.Write("[RhpNewFast] MT=0x");
+        // DebugConsole.WriteHex((ulong)pMT);
+        // DebugConsole.Write(" size=");
+        // DebugConsole.WriteDecimal(pMT->BaseSize);
 
         byte* result = (byte*)GCHeap.Alloc(pMT->BaseSize);
         if (result == null)
         {
-            DebugConsole.WriteLine(" ALLOC FAILED!");
+            // DebugConsole.WriteLine(" ALLOC FAILED!");
             return null;
         }
 
         *(MethodTable**)result = pMT;
 
-        DebugConsole.Write(" -> 0x");
-        DebugConsole.WriteHex((ulong)result);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write(" -> 0x");
+        // DebugConsole.WriteHex((ulong)result);
+        // DebugConsole.WriteLine();
 
         return result;
     }
@@ -283,35 +283,35 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void* RhpNewArray(MethodTable* pMT, int numElements)
     {
-        DebugConsole.Write("[RhpNewArray] MT=0x");
-        DebugConsole.WriteHex((ulong)pMT);
-        DebugConsole.Write(" count=");
-        DebugConsole.WriteDecimal((uint)numElements);
+        // DebugConsole.Write("[RhpNewArray] MT=0x");
+        // DebugConsole.WriteHex((ulong)pMT);
+        // DebugConsole.Write(" count=");
+        // DebugConsole.WriteDecimal((uint)numElements);
 
         if (pMT == null || numElements < 0)
         {
-            DebugConsole.WriteLine(" INVALID!");
+            // DebugConsole.WriteLine(" INVALID!");
             return null;
         }
 
         uint totalSize = pMT->BaseSize + (uint)numElements * pMT->ComponentSize;
 
-        DebugConsole.Write(" size=");
-        DebugConsole.WriteDecimal(totalSize);
+        // DebugConsole.Write(" size=");
+        // DebugConsole.WriteDecimal(totalSize);
 
         byte* result = (byte*)GCHeap.Alloc(totalSize);
         if (result == null)
         {
-            DebugConsole.WriteLine(" ALLOC FAILED!");
+            // DebugConsole.WriteLine(" ALLOC FAILED!");
             return null;
         }
 
         *(MethodTable**)result = pMT;
         *(int*)(result + 8) = numElements;
 
-        DebugConsole.Write(" -> 0x");
-        DebugConsole.WriteHex((ulong)result);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write(" -> 0x");
+        // DebugConsole.WriteHex((ulong)result);
+        // DebugConsole.WriteLine();
 
         return result;
     }
