@@ -108,6 +108,10 @@ public static class TestRunner
         // Regression: callvirt returning bool, store to local, branch on local
         // TEMPORARILY DISABLED - crashes with CR2=0xA
         // RecordResult(InstanceTests.TestCallvirtBoolBranchWithLargeLocals() == 2);
+
+        // Critical: Cross-assembly large struct return (hidden buffer convention)
+        RecordResult(InstanceTests.TestCrossAssemblyLargeStructReturn() == 42);
+        RecordResult(InstanceTests.TestCrossAssemblyLargeStructToClassField() == 42);
     }
 
     private static void RunExceptionTests()
@@ -285,6 +289,9 @@ public static class TestRunner
         // Nested field out/ref tests (class.struct.field pattern) - BISECTING
         // RecordResult(StructTests.TestNestedFieldOut() == 99);
         // RecordResult(StructTests.TestNestedFieldRef() == 110);
+
+        // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
+        RecordResult(VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
     }
 }
 
@@ -1616,6 +1623,102 @@ public struct DummyBar
     public int Flags;
 }
 
+// Struct to mirror EXACT DMABuffer layout (32 bytes = 4 ulongs)
+// MUST match the real DMABuffer in ddk/Platform/DMA.cs:
+// - PhysicalAddress: ulong (8 bytes)
+// - VirtualAddress: void* (8 bytes)
+// - Size: ulong (8 bytes)
+// - PageCount: ulong (8 bytes)
+public struct DMABufferMock
+{
+    public ulong PhysicalAddress;   // 8 bytes - must match real order!
+    public ulong VirtualAddress;    // 8 bytes (void* in real struct)
+    public ulong Size;              // 8 bytes
+    public ulong PageCount;         // 8 bytes - THIS WAS MISSING!
+}
+
+// Class that mirrors Virtqueue pattern - many fields including struct fields and pointers
+// This class has:
+// - readonly scalar fields
+// - multiple DMABuffer struct fields (32 bytes each) - EXACTLY matches real DMABuffer!
+// - multiple pointer fields
+// - scalar tracking fields
+// - array field
+public unsafe class VirtqueueMock
+{
+    // Field 0-1 (object header + method table - implicit)
+    private readonly ushort _queueIndex;   // offset ~8-10
+    private readonly ushort _queueSize;    // offset ~10-12
+    // 4 bytes padding to align struct to 8 bytes
+
+    // Large struct fields (32 bytes each) - SAME SIZE AS REAL DMABuffer!
+    private DMABufferMock _descBuffer;     // offset 16 (32 bytes)
+    private DMABufferMock _availBuffer;    // offset 48 (32 bytes)
+    private DMABufferMock _usedBuffer;     // offset 80 (32 bytes)
+
+    // Pointer fields - THIS IS WHERE THE CRASH HAPPENS
+    private ulong _desc;                   // offset 112 - SAME AS REAL VIRTQUEUE!
+    private ulong _availFlags;             // offset 120
+    private ulong _availIdx;               // offset 128
+    private ulong _availRing;              // offset 136
+
+    // More fields
+    private ushort _freeHead;
+    private ushort _numFree;
+    private ushort _lastUsedIdx;
+
+    public VirtqueueMock(ushort index, ushort size)
+    {
+        _queueIndex = index;
+        _queueSize = size;
+    }
+
+    // Method that mimics the crash pattern:
+    // 1. Read struct fields into locals
+    // 2. Extract pointer from struct field
+    // 3. Store to pointer field (stfld)
+    // 4. Read back from pointer field (ldfld) - CRASH HAPPENS HERE
+    public ulong TestFieldReadAfterStructCopy()
+    {
+        // Simulate initializing struct fields - match exact field order from real DMABuffer
+        _descBuffer.PhysicalAddress = 0x2000;
+        _descBuffer.VirtualAddress = 0x1000;
+        _descBuffer.Size = 0x100;
+        _descBuffer.PageCount = 1;
+
+        _availBuffer.PhysicalAddress = 0x4000;
+        _availBuffer.VirtualAddress = 0x3000;
+        _availBuffer.Size = 0x200;
+        _availBuffer.PageCount = 1;
+
+        _usedBuffer.PhysicalAddress = 0x6000;
+        _usedBuffer.VirtualAddress = 0x5000;
+        _usedBuffer.Size = 0x300;
+        _usedBuffer.PageCount = 1;
+
+        // Copy struct fields to locals (this is what the driver does)
+        // These are 32-byte structs (>16 bytes) - uses hidden buffer return convention
+        var descBufLocal = _descBuffer;
+        var availBufLocal = _availBuffer;
+        var usedBufLocal = _usedBuffer;
+
+        // Extract VirtualAddress and store to pointer field
+        _desc = descBufLocal.VirtualAddress;
+
+        // Read back _desc - THIS IS WHERE CRASH HAPPENS IN DRIVER
+        ulong descPtr = _desc;
+
+        // Also set other pointer fields
+        _availFlags = availBufLocal.VirtualAddress;
+        _availIdx = availBufLocal.VirtualAddress + 2;
+        _availRing = availBufLocal.VirtualAddress + 4;
+
+        return descPtr;
+    }
+
+    public ulong GetDesc() => _desc;
+}
+
 public static class InstanceTests
 {
     // Phase 5.1: Test instance field read/write
@@ -1651,6 +1754,16 @@ public static class InstanceTests
         return calc.AddToValue(20);  // Expected: 50 (30 + 20)
     }
 
+    // Regression test: Mirrors Virtqueue crash pattern
+    // Class with many fields, struct copy to locals, field store then read back
+    public static int TestVirtqueuePattern()
+    {
+        VirtqueueMock vq = new VirtqueueMock(0, 128);
+        ulong result = vq.TestFieldReadAfterStructCopy();
+        // Expected: 0x1000 (the VirtualAddress we set)
+        return result == 0x1000 ? 42 : 0;
+    }
+
     // Regression for callvirt bool -> stloc -> ldloc -> brfalse with many locals (mimics driver bug)
     public static int TestCallvirtBoolBranchWithLargeLocals()
     {
@@ -1676,6 +1789,135 @@ public static class InstanceTests
         }
 
         return 2;  // Success path
+    }
+
+    // Critical test: Cross-assembly large struct return (>16 bytes)
+    // This mimics DMA.Allocate() returning a DMABuffer from DDK assembly
+    // Uses hidden buffer convention for return values > 16 bytes
+    public static int TestCrossAssemblyLargeStructReturn()
+    {
+        // Call method in System.Runtime that returns a 32-byte struct
+        System.Runtime.LargeTestStruct result = System.Runtime.StructHelper.CreateLargeStruct(
+            0x1000, 0x2000, 0x3000, 0x4000);
+
+        // Verify the struct was returned correctly
+        if (result.A != 0x1000) return 1;
+        if (result.B != 0x2000) return 2;
+        if (result.C != 0x3000) return 3;
+        if (result.D != 0x4000) return 4;
+
+        return 42;  // Success
+    }
+
+    // Critical test: Copy cross-assembly large struct return to class field
+    // This mimics the exact driver pattern: DMABuffer descBuf = DMA.Allocate(size);
+    // followed by copying fields to class instance fields
+    public static int TestCrossAssemblyLargeStructToClassField()
+    {
+        CrossAssemblyStructHolder holder = new CrossAssemblyStructHolder();
+        holder.TestCopyFromCrossAssemblyReturn();
+
+        // Verify the struct was copied correctly to the class field
+        if (holder.GetA() != 0xAAAA) return 1;
+        if (holder.GetB() != 0xBBBB) return 2;
+        if (holder.GetC() != 0xCCCC) return 3;
+        if (holder.GetD() != 0xDDDD) return 4;
+
+        return 42;  // Success
+    }
+}
+
+// Class to hold cross-assembly struct return result - mimics Virtqueue
+public class CrossAssemblyStructHolder
+{
+    private System.Runtime.LargeTestStruct _stored;
+    private ulong _extractedA;
+
+    public void TestCopyFromCrossAssemblyReturn()
+    {
+        // This is the exact pattern that crashes in the driver:
+        // 1. Call cross-assembly method that returns large struct
+        // 2. Store result in local
+        // 3. Copy struct to class field
+        // 4. Extract value from struct and store in another field
+
+        System.Runtime.LargeTestStruct result = System.Runtime.StructHelper.CreateLargeStruct(
+            0xAAAA, 0xBBBB, 0xCCCC, 0xDDDD);
+
+        _stored = result;
+        _extractedA = result.A;
+    }
+
+    public ulong GetA() => _stored.A;
+    public ulong GetB() => _stored.B;
+    public ulong GetC() => _stored.C;
+    public ulong GetD() => _stored.D;
+}
+
+/// <summary>
+/// Class that mimics the EXACT Virtqueue driver pattern with:
+/// - THREE consecutive large struct returns (DMA.Allocate calls)
+/// - Storing struct fields to class instance fields
+/// - Extracting pointer field and storing to another pointer field
+/// - Reading back the stored pointer field (this is where the crash occurs)
+/// </summary>
+public unsafe class VirtqueueExactMimic
+{
+    // Mimic the three DMABuffer fields in Virtqueue
+    private System.Runtime.LargeTestStruct _descBuffer;   // offset 8
+    private System.Runtime.LargeTestStruct _availBuffer;  // offset 40
+    private System.Runtime.LargeTestStruct _usedBuffer;   // offset 72
+
+    // Mimic the pointer field that gets extracted from _descBuffer.B (VirtualAddress)
+    private ulong _desc;  // offset 104 (in real driver this is VirtqDesc*)
+
+    /// <summary>
+    /// Mimics InitializeBuffers() - the exact crash pattern
+    /// </summary>
+    public int TestThreeAllocationsAndReadBack()
+    {
+        // First allocation - DMA.Allocate(descSize)
+        System.Runtime.LargeTestStruct descBufAlloc = System.Runtime.StructHelper.CreateLargeStruct(
+            0xDEAD1000, 0xBEEF1000, 0x1000, 0x0001);
+        _descBuffer = descBufAlloc;
+
+        // Second allocation - DMA.Allocate(availSize)
+        System.Runtime.LargeTestStruct availBufAlloc = System.Runtime.StructHelper.CreateLargeStruct(
+            0xDEAD2000, 0xBEEF2000, 0x2000, 0x0002);
+        _availBuffer = availBufAlloc;
+
+        // Third allocation - DMA.Allocate(usedSize)
+        System.Runtime.LargeTestStruct usedBufAlloc = System.Runtime.StructHelper.CreateLargeStruct(
+            0xDEAD3000, 0xBEEF3000, 0x3000, 0x0003);
+        _usedBuffer = usedBufAlloc;
+
+        // Now the critical part - extracting pointer from struct and storing to field
+        // This is line 260 in Virtqueue.cs: _desc = (VirtqDesc*)descBufLocal.VirtualAddress;
+        var descBufLocal = _descBuffer;
+        _desc = descBufLocal.B;  // B = VirtualAddress in our mock
+
+        // THIS IS WHERE THE CRASH HAPPENS IN THE REAL DRIVER
+        // Line 265: VirtqDesc* descPtr = _desc;
+        ulong descPtr = _desc;
+
+        // Verify the value was stored and read correctly
+        if (descPtr != 0xBEEF1000) return 1;
+
+        // Verify all three buffers
+        if (_descBuffer.A != 0xDEAD1000) return 2;
+        if (_availBuffer.A != 0xDEAD2000) return 3;
+        if (_usedBuffer.A != 0xDEAD3000) return 4;
+
+        return 42;  // Success
+    }
+}
+
+public static class VirtqueueExactTests
+{
+    public static int TestThreeAllocationsAndReadBack()
+    {
+        VirtqueueExactMimic vq = new VirtqueueExactMimic();
+        return vq.TestThreeAllocationsAndReadBack();
     }
 }
 

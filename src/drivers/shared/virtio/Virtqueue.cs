@@ -151,88 +151,32 @@ public unsafe class Virtqueue : IDisposable
     /// </summary>
     public Virtqueue(ushort queueIndex, ushort queueSize)
     {
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00001u); // Virtqueue ctor entry
         _queueIndex = queueIndex;
         _queueSize = queueSize;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00002u); // Before newarr
         _descData = new void*[queueSize];
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00003u); // After newarr
 
         AllocateBuffers();
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00004u); // After AllocateBuffers
         InitializeFreeList();
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xAAA00005u); // After InitializeFreeList (ctor done)
     }
 
     private void AllocateBuffers()
     {
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00001u); // AllocateBuffers entry
         // Calculate sizes
         // Descriptor table: 16 bytes per entry
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00002u); // Before reading _queueSize
-        ushort qs = _queueSize;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB00003u); // After reading _queueSize
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)qs);
-        ulong descSize = (ulong)qs * 16;
+        ulong descSize = (ulong)_queueSize * 16;
         // Available ring: 4 bytes header + 2 bytes per entry + 2 bytes used_event
         ulong availSize = 4 + (ulong)_queueSize * 2 + 2;
         // Used ring: 4 bytes header + 8 bytes per entry + 2 bytes avail_event
         ulong usedSize = 4 + (ulong)_queueSize * 8 + 2;
 
         // Allocate aligned buffers
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10001u); // Before DMA.Allocate for desc
         DMABuffer descBuf = DMA.Allocate(descSize);
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10002u); // After DMA.Allocate for desc
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(descBuf.PhysicalAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)descBuf.PhysicalAddress);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)descBuf.VirtualAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descBuf.VirtualAddress);
 
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10003u); // Before stfld _descBuffer
         // Copy DMABuffer fields manually to avoid large-struct stfld bugs
         _descBuffer.PhysicalAddress = descBuf.PhysicalAddress;
         _descBuffer.VirtualAddress = descBuf.VirtualAddress;
         _descBuffer.Size = descBuf.Size;
         _descBuffer.PageCount = descBuf.PageCount;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10004u); // After stfld _descBuffer
-
-        // Re-read to verify using direct pointer access (bypass ldfld)
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10005u); // Reading back _descBuffer via pointer
-        fixed (DMABuffer* pDescBuf = &_descBuffer)
-        {
-            ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10006u); // Field address
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)pDescBuf >> 32));
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)pDescBuf);
-
-            ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10007u); // Reading via pointer
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(pDescBuf->PhysicalAddress >> 32));
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)pDescBuf->PhysicalAddress);
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)pDescBuf->VirtualAddress >> 32));
-            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)pDescBuf->VirtualAddress);
-        }
-
-        // Test 1: Simple separate field loads (WORKS)
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10008u);
-        ulong pa = _descBuffer.PhysicalAddress;
-        void* va = _descBuffer.VirtualAddress;
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(pa >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)pa);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)va >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)va);
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10009u);
-
-        // Test 2: Multiple fields from same loaded struct (uses dup - crashes?)
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Au);
-        DMABuffer check = _descBuffer;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Bu);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(check.PhysicalAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Cu);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)check.PhysicalAddress);
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Du);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)check.VirtualAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Eu);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)check.VirtualAddress);
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Fu);
 
         var availBufAlloc = DMA.Allocate(availSize);
         _availBuffer.PhysicalAddress = availBufAlloc.PhysicalAddress;
@@ -252,19 +196,11 @@ public unsafe class Virtqueue : IDisposable
         DMA.Zero(_usedBuffer);
 
         // Set up pointers
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20001u); // Before setting _desc
         var descBufLocal = _descBuffer;
         var availBufLocal = _availBuffer;
         var usedBufLocal = _usedBuffer;
 
         _desc = (VirtqDesc*)descBufLocal.VirtualAddress;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20002u); // After setting _desc
-
-        // Read back _desc to verify
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20003u); // Reading back _desc
-        VirtqDesc* descPtr = _desc;
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)descPtr >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descPtr);
 
         byte* avail = (byte*)availBufLocal.VirtualAddress;
         _availFlags = (ushort*)avail;
@@ -279,38 +215,20 @@ public unsafe class Virtqueue : IDisposable
 
     private void InitializeFreeList()
     {
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00001u); // InitializeFreeList entry
         // Initialize free list as a linked list through descriptors
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00002u); // Before reading _queueSize
         ushort qs = _queueSize;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00003u); // After reading _queueSize
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)qs);
-
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00004u); // Before reading _desc
         VirtqDesc* desc = _desc;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00005u); // After reading _desc
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)desc >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)desc);
 
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00010u); // Before loop
         for (ushort i = 0; i < qs; i++)
         {
             desc[i].Next = (ushort)(i + 1);
         }
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00006u); // After loop
 
-        // Re-read desc to see if it changed
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00011u); // Re-reading _desc
-        VirtqDesc* desc2 = _desc;
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)desc2 >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)desc2);
-
-        desc2[qs - 1].Next = 0xFFFF; // End of list
+        desc[qs - 1].Next = 0xFFFF; // End of list
 
         _freeHead = 0;
         _numFree = qs;
         _lastUsedIdx = 0;
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xCCC00007u); // InitializeFreeList done
     }
 
     /// <summary>

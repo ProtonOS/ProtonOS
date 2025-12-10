@@ -390,13 +390,18 @@ public static unsafe class Tier0JIT
         {
             const int MaxArgTypesOnStack = 32;
             bool* argTypes = stackalloc bool[MaxArgTypesOnStack];
+            ushort* argSizes = stackalloc ushort[MaxArgTypesOnStack];
             for (int i = 0; i < MaxArgTypesOnStack; i++)
+            {
                 argTypes[i] = false;
+                argSizes[i] = 0;
+            }
 
-            int parsedArgCount = ParseMethodSigArgTypes(sigBlob, sigLen, hasThis, paramCount, argTypes, MaxArgTypesOnStack);
+            int parsedArgCount = ParseMethodSigArgTypes(sigBlob, sigLen, hasThis, paramCount, argTypes, argSizes, MaxArgTypesOnStack);
             if (parsedArgCount > 0)
             {
                 compiler.SetArgTypes(argTypes, parsedArgCount);
+                compiler.SetArgTypeSizes(argSizes, parsedArgCount);
             }
         }
 
@@ -834,17 +839,18 @@ public static unsafe class Tier0JIT
     }
 
     /// <summary>
-    /// Parse method signature to determine which arguments are value types.
+    /// Parse method signature to determine which arguments are value types and their sizes.
     /// </summary>
     /// <param name="sigBlob">Pointer to signature blob</param>
     /// <param name="sigLen">Length of signature blob</param>
     /// <param name="hasThis">True if method has implicit 'this' parameter</param>
     /// <param name="paramCount">Number of explicit parameters (not including 'this')</param>
     /// <param name="isValueType">Output: true if arg at index is a value type</param>
+    /// <param name="typeSizes">Output: size of arg type (0 for non-value types), can be null</param>
     /// <param name="maxArgs">Maximum number of args to process</param>
     /// <returns>Number of args parsed (including 'this' if hasThis)</returns>
     private static int ParseMethodSigArgTypes(byte* sigBlob, uint sigLen, bool hasThis, int paramCount,
-                                               bool* isValueType, int maxArgs)
+                                               bool* isValueType, ushort* typeSizes, int maxArgs)
     {
         if (sigBlob == null || sigLen < 2 || isValueType == null)
             return 0;
@@ -854,7 +860,9 @@ public static unsafe class Tier0JIT
         // If hasThis, arg0 is 'this' which is always a reference (even for value types, it's a byref)
         if (hasThis && argIndex < maxArgs)
         {
-            isValueType[argIndex++] = false;
+            isValueType[argIndex] = false;
+            if (typeSizes != null) typeSizes[argIndex] = 0;
+            argIndex++;
         }
 
         // Parse signature: CallingConv, ParamCount, ReturnType, Params...
@@ -873,7 +881,11 @@ public static unsafe class Tier0JIT
         // Parse each parameter type
         for (int i = 0; i < paramCount && argIndex < maxArgs && ptr < end; i++)
         {
-            isValueType[argIndex] = IsValueTypeSig(ref ptr, end);
+            bool isVT;
+            ushort size;
+            GetValueTypeSigWithSize(ref ptr, end, out isVT, out size);
+            isValueType[argIndex] = isVT;
+            if (typeSizes != null) typeSizes[argIndex] = size;
             argIndex++;
         }
 
@@ -1052,6 +1064,135 @@ public static unsafe class Tier0JIT
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Check if the type at current position is a value type, returning both the flag and size.
+    /// </summary>
+    private static void GetValueTypeSigWithSize(ref byte* ptr, byte* end, out bool isValueType, out ushort typeSize)
+    {
+        isValueType = false;
+        typeSize = 0;
+
+        if (ptr >= end)
+            return;
+
+        // Handle BYREF modifier - byref is a pointer, not a value type
+        if (*ptr == 0x10) // ELEMENT_TYPE_BYREF
+        {
+            ptr++;
+            SkipTypeSig(ref ptr, end);
+            return;
+        }
+
+        byte elemType = *ptr++;
+
+        // ValueType (0x11) - read token and get size from metadata
+        if (elemType == 0x11)
+        {
+            isValueType = true;
+            uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+            // Convert TypeDefOrRef encoded token to full token
+            uint tag = typeDefOrRef & 0x03;
+            uint typeRid = typeDefOrRef >> 2;
+            uint fullToken = 0;
+            if (tag == 0)
+                fullToken = 0x02000000 | typeRid;  // TypeDef
+            else if (tag == 1)
+                fullToken = 0x01000000 | typeRid;  // TypeRef
+            else if (tag == 2)
+                fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+            typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
+            return;
+        }
+
+        // Primitive types (Boolean through R8) are value types
+        if (elemType >= 0x02 && elemType <= 0x0D)
+        {
+            isValueType = true;
+            switch (elemType)
+            {
+                case 0x02: typeSize = 1; break;  // Boolean
+                case 0x03: typeSize = 2; break;  // Char
+                case 0x04: typeSize = 1; break;  // I1
+                case 0x05: typeSize = 1; break;  // U1
+                case 0x06: typeSize = 2; break;  // I2
+                case 0x07: typeSize = 2; break;  // U2
+                case 0x08: typeSize = 4; break;  // I4
+                case 0x09: typeSize = 4; break;  // U4
+                case 0x0A: typeSize = 8; break;  // I8
+                case 0x0B: typeSize = 8; break;  // U8
+                case 0x0C: typeSize = 4; break;  // R4
+                case 0x0D: typeSize = 8; break;  // R8
+                default: typeSize = 8; break;
+            }
+            return;
+        }
+
+        // IntPtr, UIntPtr (native int) - 8 bytes on x64
+        if (elemType == 0x18 || elemType == 0x19)
+        {
+            isValueType = true;
+            typeSize = 8;
+            return;
+        }
+
+        // Class (0x12) - skip token, not a value type
+        if (elemType == 0x12)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr);
+            return;
+        }
+
+        // Generic instantiation
+        if (elemType == 0x15) // ELEMENT_TYPE_GENERICINST
+        {
+            if (ptr < end)
+            {
+                byte genKind = *ptr++;
+                isValueType = (genKind == 0x11);
+                // Skip TypeDefOrRef
+                uint typeDefOrRef = 0;
+                if (ptr < end)
+                {
+                    typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                    // Skip type arguments
+                    if (ptr < end)
+                    {
+                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        for (uint j = 0; j < argCount && ptr < end; j++)
+                        {
+                            SkipTypeSig(ref ptr, end);
+                        }
+                    }
+                }
+                if (isValueType)
+                {
+                    // Get size from the base generic type
+                    uint tag = typeDefOrRef & 0x03;
+                    uint typeRid = typeDefOrRef >> 2;
+                    uint fullToken = 0;
+                    if (tag == 0)
+                        fullToken = 0x02000000 | typeRid;
+                    else if (tag == 1)
+                        fullToken = 0x01000000 | typeRid;
+                    else if (tag == 2)
+                        fullToken = 0x1B000000 | typeRid;
+                    typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
+                }
+            }
+            return;
+        }
+
+        // For arrays, skip element type - not a value type
+        if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
+        {
+            SkipTypeSig(ref ptr, end);
+            return;
+        }
+
+        // Everything else (STRING, OBJECT, etc.) - not a value type
     }
 
     /// <summary>

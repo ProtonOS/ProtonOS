@@ -6,6 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Suppress CS0436: Our types intentionally shadow .NET BCL types -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference System.Runtime for cross-assembly testing -->
+    <ProjectReference Include="../SystemRuntime/System.Runtime.csproj" />
+  </ItemGroup>
 
 </Project>

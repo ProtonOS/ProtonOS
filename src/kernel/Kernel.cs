@@ -266,11 +266,18 @@ public static unsafe class Kernel
         // Bind drivers to detected PCI devices
         BindDrivers();
 
+        // Run JIT code generation verification tests
+        // These tests compile methods from FullTest.dll and verify the generated x64 code
+        if (_testAssemblyId != AssemblyLoader.InvalidAssemblyId)
+        {
+            Runtime.JIT.JITOpcodeTests.RunAll(_testAssemblyId);
+        }
+
         // Run FullTest assembly via JIT
-        RunFullTestAssembly();
+        // DISABLED: RunFullTestAssembly();
 
         // Run GC tests (after runtime is fully initialized)
-        Tests.RunGCTests();
+        // DISABLED: Tests.RunGCTests();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();

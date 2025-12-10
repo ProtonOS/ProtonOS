@@ -592,6 +592,19 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static uint GetTypeSize(uint token)
     {
+        // Extract table ID for debugging
+        byte tableId = (byte)(token >> 24);
+
+        // Debug: Log type size requests for TypeRef (cross-assembly types)
+        if (tableId == 0x01)
+        {
+            DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" (asm=");
+            DebugConsole.WriteDecimal(_currentAssemblyId);
+            DebugConsole.WriteLine(")");
+        }
+
         // Try to resolve the type to get its MethodTable
         void* mtPtr;
         if (!ResolveType(token, out mtPtr) || mtPtr == null)
@@ -599,6 +612,8 @@ public static unsafe class MetadataIntegration
             // If we can't resolve, fall back to pointer size
             DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
             DebugConsole.WriteHex(token);
+            DebugConsole.Write(" table=0x");
+            DebugConsole.WriteHex(tableId);
             DebugConsole.WriteLine(", defaulting to 8");
             return 8;
         }
@@ -611,6 +626,15 @@ public static unsafe class MetadataIntegration
         // This is how ComputeInstanceSize works in AssemblyLoader - value types start at size=0
         if (mt->IsValueType)
         {
+            // Debug: Log successful type size resolution for TypeRef
+            if (tableId == 0x01)
+            {
+                DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" resolved to VT size=");
+                DebugConsole.WriteDecimal(baseSize);
+                DebugConsole.WriteLine();
+            }
             // Value type - BaseSize is already the raw struct size
             return baseSize;
         }

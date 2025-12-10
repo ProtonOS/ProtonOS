@@ -621,6 +621,7 @@ public unsafe struct ILCompiler
     private bool* _localIsValueType;  // heap-allocated [MaxLocals] - true if local is a value type
     private bool* _argIsValueType;    // heap-allocated [MaxArgs] - true if arg is a value type
     private ushort* _localTypeSize;   // heap-allocated [MaxLocals] - size of local's type (for value types)
+    private ushort* _argTypeSize;     // heap-allocated [MaxArgs] - size of arg's type (for value types)
 
     // Return type tracking for struct return handling
     private bool _returnIsValueType;  // true if return type is a value type
@@ -651,9 +652,9 @@ public unsafe struct ILCompiler
     private const int EvalStackEntrySize = 8;  // sizeof(EvalStackEntry) with padding
     // Layout: evalStack[256] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
     //       + branchTargetStackDepth[64] + labelILOffset[2048] + labelCodeOffset[2048] + ehClauseData[320] + funcletInfo[192]
-    //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128]
+    //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128] + argTypeSize[64]
     // Note: evalStack = MaxStackDepth(32) * 8 bytes = 256 bytes for rich type tracking
-    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 320 + 192 + 64 + 32 + 128; // 5920 bytes
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 320 + 192 + 64 + 32 + 128 + 64; // 5984 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -712,6 +713,7 @@ public unsafe struct ILCompiler
         compiler._localIsValueType = null;
         compiler._argIsValueType = null;
         compiler._localTypeSize = null;
+        compiler._argTypeSize = null;
 
         // Allocate heap buffer for all arrays (reduces stack usage during nested JIT)
         compiler._heapBuffers = (byte*)HeapAllocator.AllocZeroed(HeapBufferSize);
@@ -732,6 +734,7 @@ public unsafe struct ILCompiler
             compiler._localIsValueType = (bool*)(p + 5696);    // offset 5696, 64 bytes
             compiler._argIsValueType = (bool*)(p + 5760);      // offset 5760, 32 bytes
             compiler._localTypeSize = (ushort*)(p + 5792);     // offset 5792, 128 bytes
+            compiler._argTypeSize = (ushort*)(p + 5920);       // offset 5920, 64 bytes (MaxArgs * 2)
         }
 
         // Create code buffer sized based on IL length
@@ -865,6 +868,27 @@ public unsafe struct ILCompiler
             for (int i = 0; i < copyCount; i++)
             {
                 _argIsValueType[i] = argTypes[i];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Set argument type sizes for value type handling in ldarg/ldfld.
+    /// </summary>
+    /// <param name="argSizes">Array of sizes for each arg (0 for non-value types)</param>
+    /// <param name="count">Number of args</param>
+    public void SetArgTypeSizes(ushort* argSizes, int count)
+    {
+        // Copy the type sizes for each arg
+        int copyCount = count < _argCount ? count : _argCount;
+        if (copyCount > MaxArgs)
+            copyCount = MaxArgs;
+
+        if (_argTypeSize != null && argSizes != null)
+        {
+            for (int i = 0; i < copyCount; i++)
+            {
+                _argTypeSize[i] = argSizes[i];
             }
         }
     }
@@ -2056,15 +2080,28 @@ public unsafe struct ILCompiler
         X64Emitter.LoadArgFromHome(ref _code, VReg.R0, physicalArgIndex);
 
         // Check if this arg is a value type - affects ldfld behavior
-        // For ldarg, we load a pointer to the arg (even for value types), so it's NativeInt
-        // The arg type tracking (_argIsValueType) is used later by ldfld to know the source is a value type
+        // In x64 calling convention:
+        // - Small value types (<=8 bytes) are passed BY VALUE in registers - the actual data
+        // - Large value types (>8 bytes) are passed by pointer
+        // So for small VT args, we're loading the VALUE directly, not a pointer.
+        // For large VT args, we're loading a pointer to the data.
         EvalStackEntry entry = EvalStackEntry.NativeInt;
-        if (_argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index])
+        bool isArgVT = _argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index];
+        ushort argSize = (_argTypeSize != null && index >= 0 && index < _argCount) ? _argTypeSize[index] : (ushort)0;
+
+        if (isArgVT && argSize > 0 && argSize <= 8)
         {
-            // Still NativeInt because we're loading a pointer/reference to the value type
-            // The ValueType entry kind is for inline value types on the stack (e.g., from ldloc of a struct)
+            // Small value type passed by value - the VALUE is in R0, not a pointer
+            // Mark as Struct so ldfld uses bit extraction instead of memory dereference
+            entry = EvalStackEntry.Struct(argSize);
+        }
+        else if (isArgVT && argSize > 8)
+        {
+            // Large value type passed by pointer - R0 contains a pointer to the data
             entry = EvalStackEntry.NativeInt;
         }
+        // else: non-VT arg or unknown size - treat as NativeInt (reference/pointer)
+
         PushR0(entry);
         return true;
     }
@@ -3438,8 +3475,28 @@ public unsafe struct ILCompiler
             physicalArgIndex = index + 1;
         }
 
+        // Check if this is a large value type argument (>8 bytes)
+        // For large VTs, the arg slot contains a POINTER to the struct data (passed by caller)
+        // So ldarga should return that pointer value directly, not the address of the slot
+        bool isLargeVT = false;
+        if (_argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index])
+        {
+            ushort argSize = (_argTypeSize != null && index < _argCount) ? _argTypeSize[index] : (ushort)0;
+            if (argSize > 8)
+                isLargeVT = true;
+        }
+
         int offset = 16 + physicalArgIndex * 8;
-        X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
+        if (isLargeVT)
+        {
+            // Large VT: arg slot contains pointer to struct - load the pointer value
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
+        }
+        else
+        {
+            // Small VT or ref type: return address of the arg slot
+            X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
+        }
         PushR0(EvalStackEntry.NativeInt);  // Address is treated as integer
         return true;
     }
@@ -4087,6 +4144,9 @@ public unsafe struct ILCompiler
         // Track bytes of large struct args left on stack (need cleanup after call)
         int largeStructArgBytes = 0;
 
+        // Track whether we need to set up RCX with struct pointer after shadow space allocation
+        bool needsLargeStructPtrInRcx = false;
+
         // Track special allocation for 4-args + hidden buffer case
         int fourArgsHiddenBufferCleanup = 0;
 
@@ -4106,10 +4166,11 @@ public unsafe struct ILCompiler
             if (argEntry.ByteSize > 8)
             {
                 // Large struct: pass pointer to stack data in RCX
-                // The struct is already at [RSP], so RSP is the pointer
-                X64Emitter.MovRR(ref _code, VReg.R1, VReg.SP);  // RCX = RSP (pointer to struct)
+                // The struct is at [RSP] now, but after shadow space allocation it will be at [RSP + 32]
+                // So we defer setting RCX until after shadow space is allocated
                 // Track that we need to clean up the struct after the call
                 largeStructArgBytes = argEntry.ByteSize;
+                needsLargeStructPtrInRcx = true;
                 // Don't pop the stack yet - callee needs access to the struct data
                 // But do remove from tracking
                 PopEntry();
@@ -4310,6 +4371,13 @@ public unsafe struct ILCompiler
             else
             {
                 X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+                // If we deferred setting up RCX for a large struct pointer, do it now
+                // The struct data is at [RSP + 32] (just after shadow space)
+                if (needsLargeStructPtrInRcx)
+                {
+                    X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+                }
             }
         }
 
@@ -5789,30 +5857,36 @@ public unsafe struct ILCompiler
             // Standard case: R0 contains a pointer, dereference to get field
             // Load field at obj + offset
             // mov RAX, [RAX + offset]
-            switch (size)
+            // For sizes that don't match a native load size, use the next larger one.
+            // Sizes 3 should use 4-byte load; sizes 5,6,7 should use 8-byte load.
+            // The extra bytes loaded are garbage but won't affect the value type since
+            // subsequent field accesses use the correct byte offsets.
+            if (size == 1)
             {
-                case 1:
-                    if (signed)
-                        X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, offset);
-                    else
-                        X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, offset);
-                    break;
-                case 2:
-                    if (signed)
-                        X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, offset);
-                    else
-                        X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, offset);
-                    break;
-                case 4:
-                    if (signed)
-                        X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, offset);
-                    else
-                        X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, offset); // Zero-extends to 64-bit
-                    break;
-                case 8:
-                default:
-                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
-                    break;
+                if (signed)
+                    X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.R0, offset);
+                else
+                    X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.R0, offset);
+            }
+            else if (size == 2)
+            {
+                if (signed)
+                    X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.R0, offset);
+                else
+                    X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.R0, offset);
+            }
+            else if (size <= 4)
+            {
+                // Sizes 3 and 4 use 4-byte load
+                if (signed)
+                    X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.R0, offset);
+                else
+                    X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, offset); // Zero-extends to 64-bit
+            }
+            else
+            {
+                // Sizes 5, 6, 7, 8 use 8-byte load
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
             }
         }
 
