@@ -189,19 +189,62 @@ public unsafe class Virtqueue : IDisposable
         ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descBuf.VirtualAddress);
 
         ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10003u); // Before stfld _descBuffer
-        _descBuffer = descBuf;
+        // Copy DMABuffer fields manually to avoid large-struct stfld bugs
+        _descBuffer.PhysicalAddress = descBuf.PhysicalAddress;
+        _descBuffer.VirtualAddress = descBuf.VirtualAddress;
+        _descBuffer.Size = descBuf.Size;
+        _descBuffer.PageCount = descBuf.PageCount;
         ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10004u); // After stfld _descBuffer
 
-        // Re-read to verify
-        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10005u); // Reading back _descBuffer
-        DMABuffer check = _descBuffer;
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(check.PhysicalAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)check.PhysicalAddress);
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)check.VirtualAddress >> 32));
-        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)check.VirtualAddress);
+        // Re-read to verify using direct pointer access (bypass ldfld)
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10005u); // Reading back _descBuffer via pointer
+        fixed (DMABuffer* pDescBuf = &_descBuffer)
+        {
+            ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10006u); // Field address
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)pDescBuf >> 32));
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)pDescBuf);
 
-        _availBuffer = DMA.Allocate(availSize);
-        _usedBuffer = DMA.Allocate(usedSize);
+            ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10007u); // Reading via pointer
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(pDescBuf->PhysicalAddress >> 32));
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)pDescBuf->PhysicalAddress);
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)pDescBuf->VirtualAddress >> 32));
+            ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)pDescBuf->VirtualAddress);
+        }
+
+        // Test 1: Simple separate field loads (WORKS)
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10008u);
+        ulong pa = _descBuffer.PhysicalAddress;
+        void* va = _descBuffer.VirtualAddress;
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(pa >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)pa);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)va >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)va);
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB10009u);
+
+        // Test 2: Multiple fields from same loaded struct (uses dup - crashes?)
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Au);
+        DMABuffer check = _descBuffer;
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Bu);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(check.PhysicalAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Cu);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)check.PhysicalAddress);
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Du);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)check.VirtualAddress >> 32));
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Eu);
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)check.VirtualAddress);
+        ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB1000Fu);
+
+        var availBufAlloc = DMA.Allocate(availSize);
+        _availBuffer.PhysicalAddress = availBufAlloc.PhysicalAddress;
+        _availBuffer.VirtualAddress = availBufAlloc.VirtualAddress;
+        _availBuffer.Size = availBufAlloc.Size;
+        _availBuffer.PageCount = availBufAlloc.PageCount;
+
+        var usedBufAlloc = DMA.Allocate(usedSize);
+        _usedBuffer.PhysicalAddress = usedBufAlloc.PhysicalAddress;
+        _usedBuffer.VirtualAddress = usedBufAlloc.VirtualAddress;
+        _usedBuffer.Size = usedBufAlloc.Size;
+        _usedBuffer.PageCount = usedBufAlloc.PageCount;
 
         // Zero buffers
         DMA.Zero(_descBuffer);
@@ -210,7 +253,11 @@ public unsafe class Virtqueue : IDisposable
 
         // Set up pointers
         ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20001u); // Before setting _desc
-        _desc = (VirtqDesc*)_descBuffer.VirtualAddress;
+        var descBufLocal = _descBuffer;
+        var availBufLocal = _availBuffer;
+        var usedBufLocal = _usedBuffer;
+
+        _desc = (VirtqDesc*)descBufLocal.VirtualAddress;
         ProtonOS.DDK.Kernel.Debug.WriteHex(0xBBB20002u); // After setting _desc
 
         // Read back _desc to verify
@@ -219,12 +266,12 @@ public unsafe class Virtqueue : IDisposable
         ProtonOS.DDK.Kernel.Debug.WriteHex((uint)((ulong)descPtr >> 32));
         ProtonOS.DDK.Kernel.Debug.WriteHex((uint)(ulong)descPtr);
 
-        byte* avail = (byte*)_availBuffer.VirtualAddress;
+        byte* avail = (byte*)availBufLocal.VirtualAddress;
         _availFlags = (ushort*)avail;
         _availIdx = (ushort*)(avail + 2);
         _availRing = (ushort*)(avail + 4);
 
-        byte* used = (byte*)_usedBuffer.VirtualAddress;
+        byte* used = (byte*)usedBufLocal.VirtualAddress;
         _usedFlags = (ushort*)used;
         _usedIdx = (ushort*)(used + 2);
         _usedRing = (VirtqUsedElem*)(used + 4);

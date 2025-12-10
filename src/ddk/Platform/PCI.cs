@@ -128,6 +128,11 @@ public static unsafe class PCI
     /// </summary>
     public static ushort ReadConfig16(byte bus, byte device, byte function, ushort offset)
     {
+        Debug.WriteHex(0xD00DB001u);
+        Debug.WriteHex(_useEcam ? 0xD00DB002u : 0xD00DB003u);
+        Debug.WriteHex((uint)(_ecamVirtBase >> 32));
+        Debug.WriteHex((uint)_ecamVirtBase);
+
         if (_useEcam)
         {
             byte* addr = GetEcamAddress(bus, device, function, offset);
@@ -135,9 +140,16 @@ public static unsafe class PCI
                 return *(ushort*)addr;
         }
 
+        Debug.WriteHex(0xD00DB004u);
         uint address = MakeConfigAddress(bus, device, function, (byte)(offset & 0xFF));
+        Debug.WriteHex(address);
+        Debug.WriteHex(0xD00DB005u);
         PortIO.OutDword(PCI_CONFIG_ADDRESS, address);
-        return (ushort)(PortIO.InDword(PCI_CONFIG_DATA) >> ((offset & 2) * 8));
+        Debug.WriteHex(0xD00DB006u);
+        uint data = PortIO.InDword(PCI_CONFIG_DATA);
+        Debug.WriteHex(0xD00DB007u);
+        Debug.WriteHex(data);
+        return (ushort)(data >> ((offset & 2) * 8));
     }
 
     /// <summary>

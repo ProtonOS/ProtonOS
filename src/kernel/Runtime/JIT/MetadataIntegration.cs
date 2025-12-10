@@ -1146,6 +1146,32 @@ public static unsafe class MetadataIntegration
         _tablesHeader = savedTables;
         _tableSizes = savedSizes;
 
+        // Debug: Log MemberRef field resolution
+        if (success)
+        {
+            DebugConsole.Write("[MemberRefField] asm=");
+            DebugConsole.WriteDecimal((int)savedAsmId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" -> FieldDef=0x");
+            DebugConsole.WriteHex(fieldToken);
+            DebugConsole.Write(" offset=");
+            DebugConsole.WriteDecimal(result.Offset);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(result.Size);
+            DebugConsole.WriteLine();
+        }
+
+        // Cache with the original MemberRef token and original assembly ID
+        // so subsequent lookups don't need to re-resolve
+        if (success)
+        {
+            CacheFieldLayout(token, result.Offset, (byte)result.Size, result.IsSigned,
+                            result.IsStatic, result.IsGCRef, result.StaticAddress,
+                            result.IsDeclaringTypeValueType, result.DeclaringTypeSize,
+                            result.IsFieldTypeValueType);
+        }
+
         return success;
     }
 

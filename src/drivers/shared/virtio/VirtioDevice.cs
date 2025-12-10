@@ -95,10 +95,23 @@ public unsafe class VirtioDevice : IDisposable
     /// </summary>
     private bool InitializeModern()
     {
+        // Early markers to see if we enter the method before crashing
+        Debug.WriteHex(0xD00DA001u);
+
+        if (_pciDevice == null)
+        {
+            Debug.WriteHex(0xDEAD0000u); // _pciDevice is null
+            return false;
+        }
+        Debug.WriteHex(0xD00DA002u);
+
         // Enable memory space and bus mastering
         byte bus = _pciDevice.Address.Bus;
+        Debug.WriteHex(0xD00DA003u);
         byte device = _pciDevice.Address.Device;
+        Debug.WriteHex(0xD00DA004u);
         byte function = _pciDevice.Address.Function;
+        Debug.WriteHex(0xD00DA005u);
 
         ushort cmd = PCI.ReadConfig16(bus, device, function, PCI.PCI_COMMAND);
         cmd |= PCI.PCI_CMD_MEMORY_SPACE;

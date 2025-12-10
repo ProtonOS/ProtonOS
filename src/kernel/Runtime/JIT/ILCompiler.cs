@@ -554,7 +554,7 @@ public unsafe struct ILCompiler
         compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
         // Debug helpers
-        compiler._debugStfld = null; // RuntimeHelpers.GetDebugStfldPtr();
+        compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
         compiler._debugStelemStack = RuntimeHelpers.GetDebugStelemStackPtr();
         compiler._debugAssemblyId = 0;
         compiler._debugMethodToken = 0;
@@ -895,8 +895,14 @@ public unsafe struct ILCompiler
         _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes + structReturnTempBytes);
 
         // Home arguments to shadow space (so we can load them later)
-        if (_argCount > 0)
-            X64Emitter.HomeArguments(ref _code, _argCount);
+        // When returning a large struct (>16 bytes), the caller passes a hidden buffer
+        // pointer in RCX, shifting all IL arguments by 1 in the physical registers.
+        // We need to home _argCount + 1 physical arguments to include the hidden buffer.
+        int physicalArgCount = _argCount;
+        if (_returnIsValueType && _returnTypeSize > 16)
+            physicalArgCount = _argCount + 1;
+        if (physicalArgCount > 0)
+            X64Emitter.HomeArguments(ref _code, physicalArgCount);
 
         // Process IL
         while (_ilOffset < _ilLength)
@@ -992,7 +998,7 @@ public unsafe struct ILCompiler
 
     private void PatchBranches()
     {
-        bool debug = IsDebugBoolBugMethod();
+        bool debug = IsDebugBoolBugMethod() || IsDebugBarMethod();
         if (debug)
         {
             DebugConsole.Write("[BindDbg] patch branches count=");
@@ -1002,23 +1008,28 @@ public unsafe struct ILCompiler
         for (int i = 0; i < _branchCount; i++)
         {
             int targetIL = _branchTargetIL[i];
+            int patchOffset = _branchPatchOffset[i];
             int codeOffset = FindCodeOffset(targetIL);
+
+            if (debug)
+            {
+                DebugConsole.Write("[BindDbg] patch idx=");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write(" tgtIL=0x");
+                DebugConsole.WriteHex((ulong)targetIL);
+                DebugConsole.Write(" pOff=0x");
+                DebugConsole.WriteHex((ulong)patchOffset);
+                DebugConsole.Write(" cOff=");
+                DebugConsole.WriteDecimal((uint)codeOffset);
+            }
+
             if (codeOffset >= 0)
             {
-                int patchOffset = _branchPatchOffset[i];
                 // Calculate relative offset: target - (patch + 4)
                 int rel = codeOffset - (patchOffset + 4);
                 _code.PatchInt32(patchOffset, rel);
                 if (debug)
                 {
-                    DebugConsole.Write("[BindDbg] patch branch idx=");
-                    DebugConsole.WriteDecimal((uint)i);
-                    DebugConsole.Write(" patch=0x");
-                    DebugConsole.WriteHex((ulong)patchOffset);
-                    DebugConsole.Write(" targetIL=0x");
-                    DebugConsole.WriteHex((ulong)targetIL);
-                    DebugConsole.Write(" targetCode=0x");
-                    DebugConsole.WriteHex((ulong)codeOffset);
                     DebugConsole.Write(" rel=0x");
                     DebugConsole.WriteHex((ulong)(uint)rel);
                     DebugConsole.WriteLine();
@@ -1026,11 +1037,7 @@ public unsafe struct ILCompiler
             }
             else if (debug)
             {
-                DebugConsole.Write("[BindDbg] patch branch idx=");
-                DebugConsole.WriteDecimal((uint)i);
-                DebugConsole.Write(" targetIL=0x");
-                DebugConsole.WriteHex((ulong)targetIL);
-                DebugConsole.WriteLine(" unresolved");
+                DebugConsole.WriteLine(" UNRESOLVED");
             }
         }
     }
@@ -1937,76 +1944,83 @@ public unsafe struct ILCompiler
         byte stackType;
         if (isValueType && typeSize > 16)
         {
-            // Large value type (>16 bytes): copy the full struct onto the eval stack
-            // This is needed for stfld to work correctly (it expects the value, not address)
-            // For efficiency, we copy 8 bytes at a time directly onto the eval stack
+            // Large value type (>16 bytes): push the full struct value onto the stack
+            // This matches what stobj expects (a source VALUE, not a pointer).
+            // For stelem.any, we need special handling in CompileStelemToken.
             int alignedSize = (typeSize + 7) & ~7;
             int slots = alignedSize / 8;
 
-            // Allocate space on eval stack
+            DebugConsole.Write("[ldloc VT] idx=");
+            DebugConsole.WriteDecimal((uint)index);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)typeSize);
+            DebugConsole.Write(" src=[FP-");
+            DebugConsole.WriteDecimal((uint)(-offset));
+            DebugConsole.Write("] depth=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.WriteLine();
+
+            // Make room on eval stack
             X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
 
-            // Copy from local to eval stack
+            // Copy the struct from local to eval stack
             int copyOffset = 0;
             while (copyOffset + 8 <= typeSize)
             {
-                X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
-                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R3);
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R0);
                 copyOffset += 8;
             }
-            // Handle remaining bytes if any
             if (copyOffset + 4 <= typeSize)
             {
-                X64Emitter.MovRM32(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
-                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R3);
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R0);
                 copyOffset += 4;
             }
             if (copyOffset + 2 <= typeSize)
             {
-                X64Emitter.MovRM16(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
-                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R3);
+                X64Emitter.MovRM16(ref _code, VReg.R0, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R0);
                 copyOffset += 2;
             }
             if (copyOffset < typeSize)
             {
-                X64Emitter.MovRM8(ref _code, VReg.R3, VReg.FP, offset + copyOffset);
-                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R3);
+                X64Emitter.MovRM8(ref _code, VReg.R0, VReg.FP, offset + copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R0);
             }
 
-            // Track eval stack depth (multiple slots)
+            // Track each 8-byte slot as an inline value type so downstream ldfld
+            // knows the struct is sitting on the eval stack (not a pointer).
             for (int i = 0; i < slots; i++)
-                PushStackType(StackType_Int);
+            {
+                PushStackType(StackType_ValueType);
+            }
             return true;
         }
         else if (isValueType && typeSize > 8)
         {
-            // Medium value type (9-16 bytes): push onto eval stack as 2 slots
-            // Copy both 8-byte halves onto the eval stack
+            // Medium value type (9-16 bytes): push as 16 bytes (2 slots)
+            // This matches what stobj expects for medium structs.
             X64Emitter.SubRI(ref _code, VReg.SP, 16);
-
-            // First 8 bytes
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset);
-            X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R3);
-
-            // Second 8 bytes (or partial)
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.FP, offset + 8);
-            X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R3);
-
-            // Track 2 slots on eval stack
-            PushStackType(StackType_Int);
-            PushStackType(StackType_Int);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
+            X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R0);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset + 8);
+            X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R0);
+            PushStackType(StackType_ValueType);
+            PushStackType(StackType_ValueType);
             return true;
         }
-        else if (isValueType)
+        else if (isValueType && typeSize > 0)
         {
-            // Small value type (<=8 bytes): load VALUE directly
+            // Small value type (1-8 bytes): load VALUE directly
             // Mark as StackType_ValueType so ldfld knows to extract field by bit shifting
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
             stackType = StackType_ValueType;
         }
         else
         {
-            // Primitive or reference type: load VALUE directly
+            // Type info not available: primitive, reference type
+            // Load VALUE directly (8 bytes)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
             stackType = StackType_Int;
         }
@@ -2026,6 +2040,24 @@ public unsafe struct ILCompiler
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
         bool debugBind = IsDebugBindMethod();
+
+        // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
+        if (_debugAssemblyId == 3 && _debugMethodToken == 0x0600001D)
+        {
+            DebugConsole.Write("[AllocBuf stloc] idx=");
+            DebugConsole.WriteDecimal((uint)index);
+            DebugConsole.Write(" isVT=");
+            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+            DebugConsole.Write(" sz=");
+            DebugConsole.WriteDecimal(typeSize);
+            DebugConsole.Write(" _localIsVT=");
+            DebugConsole.WriteHex((ulong)(_localIsValueType != null ? 1 : 0));
+            DebugConsole.Write(" _localSz=");
+            DebugConsole.WriteHex((ulong)(_localTypeSize != null ? 1 : 0));
+            DebugConsole.Write(" cnt=");
+            DebugConsole.WriteDecimal((uint)_localCount);
+            DebugConsole.WriteLine();
+        }
 
         if (debugBind)
         {
@@ -2048,6 +2080,15 @@ public unsafe struct ILCompiler
         if (isValueType && typeSize > 8)
         {
                 int destOffset = X64Emitter.GetLocalOffset(index);
+            DebugConsole.Write("[stloc VT] idx=");
+            DebugConsole.WriteDecimal((uint)index);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)typeSize);
+            DebugConsole.Write(" dest=[FP-");
+            DebugConsole.WriteDecimal((uint)(-destOffset));
+            DebugConsole.Write("] depth=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.WriteLine();
             // Use 16-byte alignment for structs > 16 bytes (matches call return buffer allocation)
             // This ensures we clean up any padding from the call's hidden buffer
             int alignedSize = typeSize > 16 ? ((typeSize + 15) & ~15) : ((typeSize + 7) & ~7);
@@ -2114,18 +2155,62 @@ public unsafe struct ILCompiler
 
     private bool CompileDup()
     {
-        // Duplicate top of stack - read top value and push a copy
-        X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);
-        X64Emitter.Push(ref _code, VReg.R0);
-        PushStackType(PeekStackType());
+        // Count consecutive StackType_ValueType entries to determine if TOS is a multi-slot value type
+        int vtSlots = 0;
+        for (int i = _evalStackDepth - 1; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
+            vtSlots++;
+
+        if (vtSlots > 1)
+        {
+            // Multi-slot value type: duplicate all slots
+            int byteSize = vtSlots * 8;
+
+            // Make room for the duplicate
+            X64Emitter.SubRI(ref _code, VReg.SP, byteSize);
+
+            // Copy each 8-byte slot from [SP + byteSize + offset] to [SP + offset]
+            for (int i = 0; i < vtSlots; i++)
+            {
+                int offset = i * 8;
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, byteSize + offset);
+                X64Emitter.MovMR(ref _code, VReg.SP, offset, VReg.R0);
+            }
+
+            // Push type entries for all slots
+            for (int i = 0; i < vtSlots; i++)
+                PushStackType(StackType_ValueType);
+        }
+        else
+        {
+            // Single slot: original behavior
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushStackType(PeekStackType());
+        }
         return true;
     }
 
     private bool CompilePop()
     {
-        // Discard top of stack
-        X64Emitter.AddRI(ref _code, VReg.SP, 8);
-        PopStackType();
+        // Count consecutive StackType_ValueType entries to determine if TOS is a multi-slot value type
+        int vtSlots = 0;
+        for (int i = _evalStackDepth - 1; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
+            vtSlots++;
+
+        if (vtSlots > 1)
+        {
+            // Multi-slot value type: discard all slots
+            int byteSize = vtSlots * 8;
+            X64Emitter.AddRI(ref _code, VReg.SP, byteSize);
+            for (int i = 0; i < vtSlots; i++)
+                PopStackType();
+        }
+        else
+        {
+            // Single slot: original behavior
+            X64Emitter.AddRI(ref _code, VReg.SP, 8);
+            PopStackType();
+        }
         return true;
     }
 
@@ -2168,10 +2253,26 @@ public unsafe struct ILCompiler
     // Check if type is float (single or double)
     private bool IsFloatType(byte type) => type == StackType_Float32 || type == StackType_Float64;
 
+    /// <summary>
+    /// Count consecutive StackType_ValueType entries ending at a given stack position.
+    /// Used to detect multi-slot value types on the eval stack.
+    /// </summary>
+    /// <param name="stackPos">The stack position to start counting from (0 = bottom, _evalStackDepth-1 = top)</param>
+    /// <returns>Number of consecutive VT slots (1 for single values, >1 for multi-slot structs)</returns>
+    private int CountVTSlots(int stackPos)
+    {
+        int vtSlots = 0;
+        for (int i = stackPos; i >= 0 && _evalStackTypes[i] == StackType_ValueType; i--)
+            vtSlots++;
+        return vtSlots > 0 ? vtSlots : 1;  // At least 1 slot
+    }
+
     private bool IsDebugBindMethod() => _debugAssemblyId == 4 && _debugMethodToken == 0x0600002A;
     private bool IsDebugBoolBugMethod() =>
         (_debugAssemblyId == 4 && _debugMethodToken == 0x0600002A) ||
         (_debugAssemblyId == 3 && _debugMethodToken == 0x06000006);
+    // Debug ReadAndProgramBar: assembly 5 (VirtioBlk), find by IL size ~0x410
+    private bool IsDebugBarMethod() => _debugAssemblyId == 5 && _ilLength > 0x400;
 
     // === Stack Operations ===
 
@@ -3191,50 +3292,70 @@ public unsafe struct ILCompiler
             // For large structs, TOS contains the ADDRESS of the value, not the value itself
             if (_returnIsValueType && _returnTypeSize > 8)
             {
+                // Most producers place the VALUE inline on the eval stack (ldloc, call with hidden buffer).
+                // Detect inline layout via the stack type: StackType_ValueType means contiguous value slots.
+                // Hidden-buffer call results currently push default StackType_Int entries but still place
+                // the VALUE on the stack (padded to 16 bytes in CompileCall). We pick the stack size
+                // accordingly so we pop the right number of slots and copy the correct bytes.
+                int alignedSize = (_returnTypeSize + 7) & ~7;   // round up to 8 bytes for copy/pops
+                int stackSize = alignedSize;
+                byte topType = PeekStackType();
+
+                // Calls that used a hidden return buffer align to 16 bytes. Inline value types keep 8-byte alignment.
+                if (_returnTypeSize > 16 && topType != StackType_ValueType)
+                    stackSize = (alignedSize + 15) & ~15;
+
+                int slots = stackSize / 8;
+
                 if (_returnTypeSize <= 16)
                 {
-                    // Medium struct (9-16 bytes): Return in RAX:RDX
-                    // TOS contains the address of the struct
-                    PopR0();  // Get address of struct into RAX
+                    // Medium struct (9-16 bytes): value is sitting on the stack
+                    // Load first 8 bytes to RAX and second 8 (if present) to RDX
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);
+                    if (_returnTypeSize > 8)
+                        X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 8);
 
-                    // Load first 8 bytes from [RAX+0] into a temp register
-                    // mov RDX, [RAX+8]  - second 8 bytes
-                    X64Emitter.MovRM(ref _code, VReg.R2, VReg.R0, 8);  // RDX = [RAX+8] (VReg.R2 = RDX)
-                    // mov RAX, [RAX+0]  - first 8 bytes (do this second since we're using RAX as base)
-                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);  // RAX = [RAX+0]
+                    // Pop the struct value from the eval stack
+                    X64Emitter.AddRI(ref _code, VReg.SP, stackSize);
+                    for (int i = 0; i < slots; i++)
+                        PopStackType();
                 }
                 else
                 {
-                    // Large struct (>16 bytes): Copy to hidden buffer
-                    // TOS = address of struct to return
-                    // Hidden buffer pointer was passed as arg0, saved at [FP+16]
-                    PopR0();  // RAX = source address
+                    // Large struct (>16 bytes): copy VALUE from [RSP] to hidden buffer (arg0)
+                    DebugConsole.Write("[ret>16] size=");
+                    DebugConsole.WriteDecimal((uint)_returnTypeSize);
+                    DebugConsole.Write(" argCnt=");
+                    DebugConsole.WriteDecimal((uint)_argCount);
+                    DebugConsole.Write(" depth=");
+                    DebugConsole.WriteDecimal((uint)_evalStackDepth);
+                    DebugConsole.Write(" topType=");
+                    DebugConsole.WriteHex(topType);
+                    DebugConsole.WriteLine();
 
-                    // Load hidden buffer pointer (destination) from arg0 location
-                    // Using R5 (R10) as scratch for destination
-                    X64Emitter.LoadArg(ref _code, VReg.R5, 0);  // R5 = [FP+16] = hidden buffer ptr
+                    X64Emitter.LoadArg(ref _code, VReg.R5, 0);  // R5 = hidden buffer pointer
 
-                    // Copy _returnTypeSize bytes from [RAX] to [R5]
-                    // Copy 8 bytes at a time
                     int bytesToCopy = _returnTypeSize;
                     int offset = 0;
                     while (bytesToCopy >= 8)
                     {
-                        // mov R6, [RAX + offset]  ; load 8 bytes from source
-                        X64Emitter.MovRM(ref _code, VReg.R6, VReg.R0, offset);
-                        // mov [R5 + offset], R6   ; store to destination
+                        X64Emitter.MovRM(ref _code, VReg.R6, VReg.SP, offset);
                         X64Emitter.MovMR(ref _code, VReg.R5, offset, VReg.R6);
                         offset += 8;
                         bytesToCopy -= 8;
                     }
-                    // Handle remaining 4 bytes if any
                     if (bytesToCopy >= 4)
                     {
-                        X64Emitter.MovRM32(ref _code, VReg.R6, VReg.R0, offset);
+                        X64Emitter.MovRM32(ref _code, VReg.R6, VReg.SP, offset);
                         X64Emitter.MovMR32(ref _code, VReg.R5, offset, VReg.R6);
                         offset += 4;
                         bytesToCopy -= 4;
                     }
+
+                    // Pop the struct value (including any padding we reserved)
+                    X64Emitter.AddRI(ref _code, VReg.SP, stackSize);
+                    for (int i = 0; i < slots; i++)
+                        PopStackType();
 
                     // Return the buffer address (same as what was passed by caller)
                     X64Emitter.MovRR(ref _code, VReg.R0, VReg.R5);  // RAX = buffer address
@@ -3254,6 +3375,17 @@ public unsafe struct ILCompiler
 
     private bool CompileBr(int targetIL)
     {
+        bool debugBind = IsDebugBarMethod();
+        if (debugBind)
+        {
+            DebugConsole.Write("[BarDbg] br il=0x");
+            DebugConsole.WriteHex((ulong)_ilOffset);
+            DebugConsole.Write(" target=0x");
+            DebugConsole.WriteHex((ulong)targetIL);
+            DebugConsole.Write(" codeOff=0x");
+            DebugConsole.WriteHex((ulong)_code.Position);
+            DebugConsole.WriteLine();
+        }
         int patchOffset = X64Emitter.JmpRel32(ref _code);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
@@ -3261,7 +3393,7 @@ public unsafe struct ILCompiler
 
     private bool CompileBrfalse(int targetIL)
     {
-        bool debugBind = IsDebugBindMethod();
+        bool debugBind = IsDebugBindMethod() || IsDebugBarMethod();
         if (debugBind)
         {
             DebugConsole.Write("[BindDbg] brfalse il=0x");
@@ -3279,8 +3411,10 @@ public unsafe struct ILCompiler
         RecordBranch(_ilOffset, targetIL, patchOffset);
         if (debugBind)
         {
-            DebugConsole.Write("[BindDbg] brfalse patched depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.Write("[BindDbg] brfalse patchOff=0x");
+            DebugConsole.WriteHex((ulong)patchOffset);
+            DebugConsole.Write(" codePos=0x");
+            DebugConsole.WriteHex((ulong)_code.Position);
             DebugConsole.WriteLine();
         }
         return true;
@@ -3773,6 +3907,9 @@ public unsafe struct ILCompiler
         // The x64 ABI ALWAYS requires 32 bytes of shadow space for the callee to home register args
         bool needsShadowSpace = true;
 
+        // Track bytes of large struct args left on stack (need cleanup after call)
+        int largeStructArgBytes = 0;
+
         if (totalArgs == 0 && !needsHiddenBuffer)
         {
             // No arguments - just call (shadow space allocated below)
@@ -3784,9 +3921,25 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 1 && !needsHiddenBuffer)
         {
-            // Single arg: pop to RCX
-            X64Emitter.Pop(ref _code, VReg.R1);
-            _evalStackDepth--;
+            // Single arg: check if it's a multi-slot value type
+            int vtSlots = CountVTSlots(_evalStackDepth - 1);
+            if (vtSlots > 1)
+            {
+                // Large struct: pass pointer to stack data in RCX
+                // The struct is already at [RSP], so RSP is the pointer
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.SP);  // RCX = RSP (pointer to struct)
+                // Track that we need to clean up the struct after the call
+                largeStructArgBytes = vtSlots * 8;
+                // Don't pop the stack yet - callee needs access to the struct data
+                // But do decrement eval stack depth tracking
+                _evalStackDepth -= vtSlots;
+            }
+            else
+            {
+                // Single slot: pop to RCX
+                X64Emitter.Pop(ref _code, VReg.R1);
+                _evalStackDepth--;
+            }
         }
         else if (totalArgs == 1 && needsHiddenBuffer)
         {
@@ -3986,20 +4139,26 @@ public unsafe struct ILCompiler
                 // Only deallocate shadow space - keep the buffer on the stack!
                 // RAX points to the buffer which is now at RSP after this cleanup.
                 // The buffer will be tracked as part of evalStackDepth.
-                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+                X64Emitter.AddRI(ref _code, VReg.SP, 32 + largeStructArgBytes);
             }
             else
             {
                 // Deallocate the 32-byte shadow space we allocated for 0-4 args
-                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+                // Plus any large struct args that were passed by pointer
+                X64Emitter.AddRI(ref _code, VReg.SP, 32 + largeStructArgBytes);
             }
         }
         else if (stackArgs > 0)
         {
             // Deallocate the full call frame (shadow space + extra stack args space)
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
-            int callFrameSize = 32 + extraStackSpace;
+            int callFrameSize = 32 + extraStackSpace + largeStructArgBytes;
             X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);
+        }
+        else if (largeStructArgBytes > 0)
+        {
+            // Only large struct args to clean up (no shadow space, no stack args)
+            X64Emitter.AddRI(ref _code, VReg.SP, largeStructArgBytes);
         }
 
         // Handle return value
@@ -4063,7 +4222,9 @@ public unsafe struct ILCompiler
                     // push RAX  -> [RSP] = bytes 0-7, [RSP+8] = bytes 8-15
                     X64Emitter.Push(ref _code, VReg.R2);  // RDX = bytes 8-15 (pushed first, ends up at RSP+8)
                     X64Emitter.Push(ref _code, VReg.R0);  // RAX = bytes 0-7 (pushed second, ends up at RSP)
-                    _evalStackDepth += 2;  // Two 8-byte slots
+                    // Track as multi-slot value type so stloc knows to copy 16 bytes
+                    PushStackType(StackType_ValueType);
+                    PushStackType(StackType_ValueType);
                 }
                 else
                 {
@@ -4074,12 +4235,15 @@ public unsafe struct ILCompiler
                     // DON'T push anything - the data is already in the right place.
                     // stloc will copy from RSP to the local variable.
 
-                    // Track eval stack: just the buffer space (struct value on stack)
+                    // Track eval stack: buffer space (struct value on stack)
                     // Buffer was allocated as ((size+7)&~7) rounded to 16 bytes
                     int bufferSize8 = (method.ReturnStructSize + 7) & ~7;
                     int allocatedBuffer = (bufferSize8 + 15) & ~15;
                     int bufferSlots = allocatedBuffer / 8;
-                    _evalStackDepth += bufferSlots;  // struct data slots on stack
+                    // CRITICAL: Mark each slot as StackType_ValueType so stloc/ldfld
+                    // know this is a multi-slot value type and copy the correct size
+                    for (int i = 0; i < bufferSlots; i++)
+                        PushStackType(StackType_ValueType);
                 }
                 break;
         }
@@ -4818,7 +4982,6 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStobj(uint token)
     {
-
         if (_evalStackDepth < 2)
         {
             DebugConsole.WriteLine("[JIT] stobj: insufficient stack depth");
@@ -4827,73 +4990,107 @@ public unsafe struct ILCompiler
 
         int size = GetTypeSizeFromToken(token);
 
+        // Debug: log stobj size
+        DebugConsole.Write("[stobj] size=");
+        DebugConsole.WriteHex((ulong)size);
+        DebugConsole.Write(" depth=");
+        DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        DebugConsole.WriteLine();
+
         // CLI says stobj expects: ..., dest, src -> ...
         // In CLI notation, rightmost item (src) is TOS, dest is TOS-1
         // First pop (TOS) = src value, Second pop (TOS-1) = dest address
-        // Use same register pattern as stind for consistency:
-        // Pop src value into R2 (same as stind pops value to R2)
-        X64Emitter.Pop(ref _code, VReg.R2);
-        _evalStackDepth--;
+        //
+        // IMPORTANT: ldloc handles structs with three cases that we must match:
+        // - Small (<=8 bytes): 1 slot containing the value
+        // - Medium (9-16 bytes): ALWAYS 2 slots (16 bytes on stack)
+        // - Large (>16 bytes): N slots where N = alignedSize/8
 
-        // Pop dest address into R0 (same as stind pops addr to R0)
-        X64Emitter.Pop(ref _code, VReg.R0);
-        _evalStackDepth--;
-
-        // Store value based on size
-        // R0 = dest address, R2 = src value (same as stind)
-        switch (size)
+        if (size > 16)
         {
-            case 1:
-                X64Emitter.MovMR8(ref _code, VReg.R0, 0, VReg.R2);
-                break;
-            case 2:
-                X64Emitter.MovMR16(ref _code, VReg.R0, 0, VReg.R2);
-                break;
-            case 4:
-                X64Emitter.MovMR32(ref _code, VReg.R0, 0, VReg.R2);
-                break;
-            case 8:
-                X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
-                break;
-            default:
-                // Large struct: R0 = dest address, R2 = src address (for large structs)
-                // Need to copy 'size' bytes from [R2] to [R0]
-                // Use R3 (R8) for temp
+            // Large struct (>16 bytes): struct data takes alignedSize bytes
+            int alignedSize = (size + 7) & ~7;
+            int slots = alignedSize / 8;
 
-                // Copy 8 bytes at a time
-                int offset = 0;
-                while (offset + 8 <= size)
-                {
-                    // mov R3, [R2 + offset] - load from src
-                    X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, offset);
-                    // mov [R0 + offset], R3 - store to dest
-                    X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R3);
-                    offset += 8;
-                }
+            // RSP points to struct data, dest addr is below it
+            X64Emitter.MovRR(ref _code, VReg.R2, VReg.SP);  // R2 = source address
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, alignedSize);  // R0 = dest address
 
-                // Copy remaining 4 bytes if present
-                if (offset + 4 <= size)
-                {
-                    X64Emitter.MovRM32(ref _code, VReg.R3, VReg.R2, offset);
-                    X64Emitter.MovMR32(ref _code, VReg.R0, offset, VReg.R3);
-                    offset += 4;
-                }
+            // Copy from [R2] (src on stack) to [R0] (dest)
+            int offset = 0;
+            while (offset + 8 <= size)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, offset);
+                X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R3);
+                offset += 8;
+            }
+            if (offset + 4 <= size)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R3, VReg.R2, offset);
+                X64Emitter.MovMR32(ref _code, VReg.R0, offset, VReg.R3);
+                offset += 4;
+            }
+            if (offset + 2 <= size)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R3, VReg.R2, offset);
+                X64Emitter.MovMR16(ref _code, VReg.R0, offset, VReg.R3);
+                offset += 2;
+            }
+            if (offset < size)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R3, VReg.R2, offset);
+                X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
+            }
 
-                // Copy remaining 2 bytes if present
-                if (offset + 2 <= size)
-                {
-                    X64Emitter.MovRM16(ref _code, VReg.R3, VReg.R2, offset);
-                    X64Emitter.MovMR16(ref _code, VReg.R0, offset, VReg.R3);
-                    offset += 2;
-                }
+            // Pop struct data (alignedSize) + dest address (8 bytes)
+            X64Emitter.AddRI(ref _code, VReg.SP, alignedSize + 8);
+            _evalStackDepth -= (slots + 1);
+        }
+        else if (size > 8)
+        {
+            // Medium struct (9-16 bytes): ALWAYS 16 bytes on stack (2 slots)
+            // RSP points to 16 bytes of struct data, dest addr is at RSP+16
+            X64Emitter.MovRR(ref _code, VReg.R2, VReg.SP);  // R2 = source address
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 16);  // R0 = dest address
 
-                // Copy remaining 1 byte if present
-                if (offset < size)
-                {
-                    X64Emitter.MovRM8(ref _code, VReg.R3, VReg.R2, offset);
-                    X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
-                }
-                break;
+            // Copy 16 bytes (even if struct is smaller, ldloc pushed 16)
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, 0);
+            X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R3);
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.R2, 8);
+            X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
+
+            // Pop struct data (16 bytes) + dest address (8 bytes) = 24 bytes
+            X64Emitter.AddRI(ref _code, VReg.SP, 24);
+            _evalStackDepth -= 3;  // 2 slots for struct + 1 for address
+        }
+        else
+        {
+            // Small struct (<=8 bytes): value fits in a register
+            // Pop src value into R2
+            X64Emitter.Pop(ref _code, VReg.R2);
+            _evalStackDepth--;
+
+            // Pop dest address into R0
+            X64Emitter.Pop(ref _code, VReg.R0);
+            _evalStackDepth--;
+
+            // Store value based on size
+            switch (size)
+            {
+                case 1:
+                    X64Emitter.MovMR8(ref _code, VReg.R0, 0, VReg.R2);
+                    break;
+                case 2:
+                    X64Emitter.MovMR16(ref _code, VReg.R0, 0, VReg.R2);
+                    break;
+                case 4:
+                    X64Emitter.MovMR32(ref _code, VReg.R0, 0, VReg.R2);
+                    break;
+                case 8:
+                default:
+                    X64Emitter.MovMR(ref _code, VReg.R0, 0, VReg.R2);
+                    break;
+            }
         }
 
         return true;
@@ -5075,6 +5272,7 @@ public unsafe struct ILCompiler
         bool isValueType = false;
         int declaringTypeSize = 0;
         bool fieldTypeIsValueType = false;
+        bool isDebugMapBars = _debugAssemblyId == 3 && _debugMethodToken == 0x06000009;
 
         // Try field resolver first, fall back to test token encoding
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
@@ -5085,6 +5283,22 @@ public unsafe struct ILCompiler
             isValueType = field.IsDeclaringTypeValueType;
             declaringTypeSize = field.DeclaringTypeSize;
             fieldTypeIsValueType = field.IsFieldTypeValueType;
+            if (isDebugMapBars)
+            {
+                DebugConsole.Write("[LdfldDbg] tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" off=");
+                DebugConsole.WriteDecimal((uint)offset);
+                DebugConsole.Write(" size=");
+                DebugConsole.WriteDecimal((uint)size);
+                DebugConsole.Write(" declVT=");
+                DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+                DebugConsole.Write(" declSize=");
+                DebugConsole.WriteDecimal((uint)declaringTypeSize);
+                DebugConsole.Write(" fieldVT=");
+                DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+                DebugConsole.WriteLine();
+            }
         }
         else
         {
@@ -5093,10 +5307,170 @@ public unsafe struct ILCompiler
 
         // Check if TOS is a value type (pushed by ldloc on a struct)
         byte tosType = PeekStackType();
+        if (isDebugMapBars)
+        {
+            DebugConsole.Write("[LdfldDbg] tosType=");
+            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write(" depth=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.WriteLine();
+        }
+
+        // Handle large value types (>8 bytes) that are on the stack from ldloc
+        // For these, the struct data is spread across multiple 8-byte slots on the eval stack.
+        // We need to access the field directly from the stack, then clean up all slots.
+        // IMPORTANT: Only take this path if TOS is actually a value type (from ldloc on struct),
+        // NOT if TOS is a pointer (from ldarg.0 which passes 'this' by reference for structs).
+
+        // Debug: log all ldfld calls for assembly 3
+        if (_debugAssemblyId == 3)
+        {
+            DebugConsole.Write("[ldfld all] declVT=");
+            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+            DebugConsole.Write(" declSz=");
+            DebugConsole.WriteDecimal((uint)declaringTypeSize);
+            DebugConsole.Write(" fldSz=");
+            DebugConsole.WriteDecimal((uint)size);
+            DebugConsole.Write(" fldVT=");
+            DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+            DebugConsole.Write(" tos=");
+            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write(" off=");
+            DebugConsole.WriteDecimal((uint)offset);
+            DebugConsole.WriteLine();
+        }
+
+        if (isValueType && declaringTypeSize > 8 && tosType == StackType_ValueType)
+        {
+            // Debug: log when taking the inline large VT path
+            if (_debugAssemblyId == 3)
+            {
+                DebugConsole.Write("[ldfld inline VT] off=");
+                DebugConsole.WriteDecimal((uint)offset);
+                DebugConsole.Write(" sz=");
+                DebugConsole.WriteDecimal((uint)size);
+                DebugConsole.Write(" declSz=");
+                DebugConsole.WriteDecimal((uint)declaringTypeSize);
+                DebugConsole.WriteLine();
+            }
+            int alignedSize = (declaringTypeSize + 7) & ~7;
+            int structSlots = alignedSize / 8;
+
+            // The field is at [RSP + fieldOffset], not requiring a dereference of a pointer
+            // Load the field value directly from the stack
+            switch (size)
+            {
+                case 1:
+                    if (signed)
+                        X64Emitter.MovsxByte(ref _code, VReg.R0, VReg.SP, offset);
+                    else
+                        X64Emitter.MovzxByte(ref _code, VReg.R0, VReg.SP, offset);
+                    break;
+                case 2:
+                    if (signed)
+                        X64Emitter.MovsxWord(ref _code, VReg.R0, VReg.SP, offset);
+                    else
+                        X64Emitter.MovzxWord(ref _code, VReg.R0, VReg.SP, offset);
+                    break;
+                case 4:
+                    if (signed)
+                        X64Emitter.MovsxdRM(ref _code, VReg.R0, VReg.SP, offset);
+                    else
+                        X64Emitter.MovRM32(ref _code, VReg.R0, VReg.SP, offset);
+                    break;
+                case 8:
+                default:
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, offset);
+                    break;
+            }
+
+            // Clean up the entire struct from the stack
+            X64Emitter.AddRI(ref _code, VReg.SP, alignedSize);
+
+            // Pop the stack type entries for all struct slots
+            for (int i = 0; i < structSlots; i++)
+                PopStackType();
+
+            // Push the field value result
+            X64Emitter.Push(ref _code, VReg.R0);
+            if (fieldTypeIsValueType && size > 0 && size <= 8)
+                PushStackType(StackType_ValueType);
+            else
+                PushStackType(StackType_Int);
+
+            return true;
+        }
 
         // Pop the value/reference into R0
         X64Emitter.Pop(ref _code, VReg.R0);
         PopStackType();
+
+        // Debug: always log the conditions for ldfld (compile-time)
+        if (_debugAssemblyId == 3)
+        {
+            DebugConsole.Write("[ldfld chk] fieldVT=");
+            DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)size);
+            DebugConsole.Write(" tosType=");
+            DebugConsole.WriteDecimal(tosType);
+            DebugConsole.Write(" off=");
+            DebugConsole.WriteDecimal((uint)offset);
+            DebugConsole.WriteLine();
+        }
+
+        // If the field itself is a large value type (>8 bytes) and we have an object/pointer on the stack,
+        // copy the entire struct to the eval stack (similar to ldobj).
+        if (fieldTypeIsValueType && size > 8 && tosType != StackType_ValueType)
+        {
+            // Debug: emit JIT compile-time trace for large struct field load
+            DebugConsole.Write("[ldfld VT path] off=");
+            DebugConsole.WriteDecimal((uint)offset);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal((uint)size);
+            DebugConsole.Write(" aligned=");
+            DebugConsole.WriteDecimal((uint)((size + 7) & ~7));
+            DebugConsole.WriteLine();
+            int alignedFieldSize = (size + 7) & ~7;
+            int fieldSlots = alignedFieldSize / 8;
+
+            // R0 currently points to the object/struct; add field offset
+            if (offset != 0)
+                X64Emitter.AddRI(ref _code, VReg.R0, offset);
+
+            // Make room on the eval stack and copy the struct
+            X64Emitter.SubRI(ref _code, VReg.SP, alignedFieldSize);
+
+            int copyOffset = 0;
+            while (copyOffset + 8 <= size)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 8;
+            }
+            if (copyOffset + 4 <= size)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= size)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 2;
+            }
+            if (copyOffset < size)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R1);
+            }
+
+            for (int i = 0; i < fieldSlots; i++)
+                PushStackType(StackType_ValueType);
+
+            return true;
+        }
 
         // Handle value types that fit in a register (<=8 bytes)
         // When a small struct is loaded with ldloc, the VALUE is on the stack, not a pointer.
@@ -5265,6 +5639,25 @@ public unsafe struct ILCompiler
 
             // Load obj pointer (it's below the struct value)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, valueBytes);  // RAX = obj
+
+            // Optional runtime trace for large struct stfld
+            if (_debugStfld != null)
+            {
+                // Preserve R0 (obj) across the call
+                X64Emitter.Push(ref _code, VReg.R0);
+
+                // RCX = obj, RDX = offset
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);
+                X64Emitter.MovRI32(ref _code, VReg.R2, offset);
+
+                // Shadow space
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_debugStfld);
+                X64Emitter.CallR(ref _code, VReg.R0);
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+                X64Emitter.Pop(ref _code, VReg.R0);
+            }
 
             // Copy struct value to [obj+offset]
             // For efficiency, copy 8 bytes at a time
@@ -6828,65 +7221,68 @@ public unsafe struct ILCompiler
             return CompileStelem(elemSize);
         }
 
-        // For larger structs (>8 bytes), ldloc pushes an ADDRESS (pointer to local)
-        // not the actual value. So stack layout is:
-        // ..., array (8 bytes), index (8 bytes), srcAddress (8 bytes)
-        DebugConsole.Write("[stelem] Large struct, size=");
-        DebugConsole.WriteHex((ulong)elemSize);
-        DebugConsole.Write(" depth=");
-        DebugConsole.WriteHex((ulong)_evalStackDepth);
-        DebugConsole.WriteLine();
-        DebugConsole.Write("[stelem] After flush, depth=");
-        DebugConsole.WriteHex((ulong)_evalStackDepth);
-        DebugConsole.WriteLine();
+        // For larger structs (>8 bytes), the C# compiler typically generates:
+        //   ldarg.0 / ldloc (object/struct ref)
+        //   ldfld (array field)
+        //   ldloc (index)
+        //   ldloc (struct local) -- this SHOULD copy struct value, but if typeSize not known, just loads 8 bytes
+        //   stelem
+        //
+        // The problem: ldloc for a struct without proper type info just loads 8 bytes (first part of struct).
+        // This gives us garbage, not the actual struct data on the eval stack.
+        //
+        // SOLUTION: For large struct stelem, we need to get the struct's LOCAL VARIABLE ADDRESS
+        // and copy from there. We'll look at what ldloc actually pushed (which is garbage/partial data)
+        // and IGNORE it, instead using ldloca-style behavior.
+        //
+        // However, we don't know at stelem time which local was loaded. So we need a different approach:
+        // We'll interpret what's on the stack as a POINTER to the struct (which is what ldloca would push).
+        // Since ldloc without type info loads 8 bytes from the local, and structs are at negative RBP offsets,
+        // that value is actually part of the struct data (not a valid pointer).
+        //
+        // The REAL fix is in CompileLdloc: when the local is a struct but typeSize is unknown,
+        // push the ADDRESS of the local instead of trying to copy its value.
+        //
+        // For now, we'll use a hybrid approach:
+        // Stack has: [value-or-pointer, index, array] (3 slots minimum)
+        // Pop all 3, compute element address, and copy from the SOURCE.
+        //
+        // To determine if 'value-or-pointer' is actually struct data or a pointer:
+        // - If _evalStackDepth >= structSlots + 2, we have VALUE on stack
+        // - Otherwise, we have POINTER (or garbage that we treat as pointer)
 
-        // Stack layout with address-based ldloc for large structs:
-        // RSP+0:  srcAddress (pointer to struct data)
-        // RSP+8:  index
-        // RSP+16: array
+        int alignedSize = (elemSize + 7) & ~7;
+        int structSlots = alignedSize / 8;
 
-        // === RUNTIME DEBUG: Call DebugStelemStack to trace stack values ===
-        if (_debugStelemStack != null)
-        {
-            // Stack is: RSP+0=srcAddr, RSP+8=index, RSP+16=array
-            // Set up args: RCX=srcAddr, RDX=index, R8=array
-            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, 0);   // RCX = srcAddr
-            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 8);   // RDX = index
-            // Use Arg2 register (VReg.R3 -> x64 R8) for the array argument
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, 16);  // R8 = array
-            // ElemSize goes in Arg3 (VReg.R4 -> x64 R9)
-            X64Emitter.MovRI32(ref _code, VReg.R4, elemSize);
+        // With our ldloc fix, large structs push full VALUE onto the stack.
+        // Stack layout: [struct_value (structSlots slots), index, array]
+        // Total slots = structSlots + 2
+        //
+        // We need to:
+        // 1. Get index and array from the bottom of the sequence
+        // 2. Use RSP (pointing to struct data) as source
+        // 3. Compute element address
+        // 4. Copy struct data to element
 
-            // Reserve shadow space
-            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+        // RSP points to start of struct value
+        // index is at RSP + alignedSize
+        // array is at RSP + alignedSize + 8
 
-            // Call DebugStelemStack
-            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_debugStelemStack);
-            X64Emitter.CallR(ref _code, VReg.R0);
+        // First, save RSP as source address
+        X64Emitter.MovRR(ref _code, VReg.R2, VReg.SP);  // R2 = source address (struct data on stack)
 
-            // Restore shadow space
-            X64Emitter.AddRI(ref _code, VReg.SP, 32);
-        }
-        // === END RUNTIME DEBUG ===
-
-        // Load srcAddress into R2 (source pointer)
-        PopReg(VReg.R2);
-
-        // Load index into R1
-        PopReg(VReg.R1);
-
-        // Load array into R0
-        PopReg(VReg.R0);
+        // Load index and array from below struct data
+        X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, alignedSize);      // R1 = index
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, alignedSize + 8);  // R0 = array
 
         // Compute element address: array + ArrayDataOffset + index * elemSize
-        // R3 = index * elemSize
         X64Emitter.MovRR(ref _code, VReg.R3, VReg.R1);
         X64Emitter.ImulRI(ref _code, VReg.R3, elemSize);
         X64Emitter.AddRR(ref _code, VReg.R0, VReg.R3);
         X64Emitter.AddRI(ref _code, VReg.R0, ArrayDataOffset);
-        // Now R0 = element address (dest), R2 = source address
+        // Now R0 = element address (dest), R2 = source struct address (on stack)
 
-        // Copy from [R2] (source address) to [R0] (element address)
+        // Copy struct data from [R2] to element address [R0]
         int offset = 0;
         while (offset + 8 <= elemSize)
         {
@@ -6894,29 +7290,27 @@ public unsafe struct ILCompiler
             X64Emitter.MovMR(ref _code, VReg.R0, offset, VReg.R3);
             offset += 8;
         }
-
-        // Copy remaining 4 bytes if present
         if (offset + 4 <= elemSize)
         {
             X64Emitter.MovRM32(ref _code, VReg.R3, VReg.R2, offset);
             X64Emitter.MovMR32(ref _code, VReg.R0, offset, VReg.R3);
             offset += 4;
         }
-
-        // Copy remaining 2 bytes if present
         if (offset + 2 <= elemSize)
         {
             X64Emitter.MovRM16(ref _code, VReg.R3, VReg.R2, offset);
             X64Emitter.MovMR16(ref _code, VReg.R0, offset, VReg.R3);
             offset += 2;
         }
-
-        // Copy remaining 1 byte if present
         if (offset < elemSize)
         {
             X64Emitter.MovRM8(ref _code, VReg.R3, VReg.R2, offset);
             X64Emitter.MovMR8(ref _code, VReg.R0, offset, VReg.R3);
         }
+
+        // Pop all slots: struct data (alignedSize) + index (8) + array (8)
+        X64Emitter.AddRI(ref _code, VReg.SP, alignedSize + 16);
+        _evalStackDepth -= (structSlots + 2);
 
         return true;
     }
