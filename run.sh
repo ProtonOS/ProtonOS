@@ -22,8 +22,8 @@ fi
 # Create test disk if it doesn't exist
 if [ ! -f "$TEST_DISK" ]; then
     echo "Creating test disk image..."
-    # Create 32MB FAT32 disk image
-    dd if=/dev/zero of="$TEST_DISK" bs=1M count=32 status=none
+    # Create 64MB FAT32 disk image (FAT32 needs at least ~33MB)
+    dd if=/dev/zero of="$TEST_DISK" bs=1M count=64 status=none
     mformat -i "$TEST_DISK" -F -v TESTDISK ::
     # Create a test file
     TMPFILE="$SCRIPT_DIR/build/hello.txt"
