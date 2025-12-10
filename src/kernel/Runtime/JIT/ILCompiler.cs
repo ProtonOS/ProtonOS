@@ -5854,27 +5854,24 @@ public unsafe struct ILCompiler
         // Trace all stfld operations to debug null pointer crash
         if (_debugStfld != null)
         {
-            // Save R0 (obj) and R2 (value) - they get clobbered by calls
-            X64Emitter.Push(ref _code, VReg.R0);
-            X64Emitter.Push(ref _code, VReg.R2);
+            // Allocate shadow space + save area FIRST to avoid corruption
+            // Layout: [RSP+0..31] = shadow space, [RSP+32] = saved value, [RSP+40] = saved obj
+            X64Emitter.SubRI(ref _code, VReg.SP, 48);  // 32 shadow + 16 save area
+            X64Emitter.MovMR(ref _code, VReg.SP, 40, VReg.R0);  // save obj at [RSP+40]
+            X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R2);  // save value at [RSP+32]
 
             // Set up args: RCX = objPtr (from R0), RDX = offset
             X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);  // RCX = RAX (obj)
             X64Emitter.MovRI32(ref _code, VReg.R2, offset);  // RDX = offset
 
-            // Reserve shadow space
-            X64Emitter.SubRI(ref _code, VReg.SP, 32);
-
-            // Call DebugStfld
+            // Call DebugStfld (shadow space already allocated)
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_debugStfld);
             X64Emitter.CallR(ref _code, VReg.R0);
 
-            // Restore shadow space
-            X64Emitter.AddRI(ref _code, VReg.SP, 32);
-
-            // Restore R2 (value) and R0 (obj)
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R0);
+            // Restore saved values and deallocate
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, 32);  // restore value
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 40);  // restore obj
+            X64Emitter.AddRI(ref _code, VReg.SP, 48);
         }
         // === END RUNTIME DEBUG ===
 
