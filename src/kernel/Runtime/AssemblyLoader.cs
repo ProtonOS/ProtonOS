@@ -896,14 +896,96 @@ public static unsafe class AssemblyLoader
         // Similar to MVAR but for generic types instead of generic methods
         if (elementType == 0x13)
         {
+            // Read the type parameter index (compressed uint)
+            uint index = 0;
+            if (pos < (int)sigLen)
+            {
+                byte b = sig[pos++];
+                if ((b & 0x80) == 0)
+                    index = b;
+                else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    index = ((uint)(b & 0x3F) << 8) | sig[pos++];
+            }
             // For now, treat type parameters as Object (reference types)
             // Full implementation would need type instantiation context
-            DebugConsole.WriteLine("[AsmLoader] TypeSpec VAR - using Object as placeholder");
+            // DebugConsole.Write("[AsmLoader] TypeSpec VAR !");
+            // DebugConsole.WriteDecimal(index);
+            // DebugConsole.WriteLine(" - using Object as placeholder");
             return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
-        // ELEMENT_TYPE_GENERICINST = 0x15 - generic instantiation
-        // Not yet implemented - would need to parse generic type and type arguments
+        // ELEMENT_TYPE_GENERICINST = 0x15 - generic type instantiation
+        // Format: 0x15 (CLASS=0x12 | VALUETYPE=0x11) TypeDefOrRefOrSpec GenArgCount Type1 Type2 ...
+        if (elementType == 0x15)
+        {
+            if (pos >= (int)sigLen)
+            {
+                DebugConsole.WriteLine("[AsmLoader] TypeSpec GENERICINST: unexpected end of signature");
+                return null;
+            }
+
+            // Read CLASS (0x12) or VALUETYPE (0x11)
+            byte classOrValueType = sig[pos++];
+            bool isValueType = (classOrValueType == 0x11);
+
+            // Decode the generic type definition token (TypeDefOrRefOrSpec)
+            uint genericTypeToken = DecodeTypeDefOrRefOrSpec(sig, ref pos, sigLen);
+            if (genericTypeToken == 0)
+            {
+                DebugConsole.WriteLine("[AsmLoader] TypeSpec GENERICINST: failed to decode generic type token");
+                return null;
+            }
+
+            // Read the generic argument count (compressed uint)
+            uint genArgCount = 0;
+            if (pos < (int)sigLen)
+            {
+                byte b = sig[pos++];
+                if ((b & 0x80) == 0)
+                    genArgCount = b;
+                else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    genArgCount = ((uint)(b & 0x3F) << 8) | sig[pos++];
+            }
+
+            // For now, we'll use the open generic type's MethodTable
+            // This works for most scenarios where we just need the type identity
+            // Full generic instantiation would create specialized MethodTables
+            MethodTable* genericMt = ResolveType(asm->AssemblyId, genericTypeToken);
+            if (genericMt != null)
+            {
+                // Skip over the type arguments (we're not using them yet for full instantiation)
+                for (uint i = 0; i < genArgCount && pos < (int)sigLen; i++)
+                {
+                    SkipTypeInSignature(sig, ref pos, sigLen);
+                }
+                return genericMt;
+            }
+
+            // Fallback: for reference types use Object, for value types we need the actual type
+            if (!isValueType)
+            {
+                // Skip type arguments
+                for (uint i = 0; i < genArgCount && pos < (int)sigLen; i++)
+                {
+                    SkipTypeInSignature(sig, ref pos, sigLen);
+                }
+                return GetPrimitiveMethodTable(0x1C);  // Object
+            }
+
+            DebugConsole.Write("[AsmLoader] TypeSpec GENERICINST: failed to resolve generic type 0x");
+            DebugConsole.WriteHex(genericTypeToken);
+            DebugConsole.WriteLine();
+            return null;
+        }
+
+        // ELEMENT_TYPE_BYREF = 0x10 - by-reference type
+        // Treat as pointer-sized (IntPtr)
+        if (elementType == 0x10)
+        {
+            // Skip the referenced type
+            SkipTypeInSignature(sig, ref pos, sigLen);
+            return GetPrimitiveMethodTable(0x18);  // IntPtr
+        }
 
         DebugConsole.Write("[AsmLoader] TypeSpec unhandled elementType 0x");
         DebugConsole.WriteHex((uint)elementType);
@@ -1051,6 +1133,172 @@ public static unsafe class AssemblyLoader
             case 2: return 0x1B000000 | row;  // TypeSpec
             default: return 0;
         }
+    }
+
+    /// <summary>
+    /// Skip over a type in a signature blob without parsing it.
+    /// Used when we need to advance past type arguments we're not using.
+    /// </summary>
+    private static void SkipTypeInSignature(byte* sig, ref int pos, uint sigLen)
+    {
+        if (pos >= (int)sigLen)
+            return;
+
+        byte elementType = sig[pos++];
+
+        switch (elementType)
+        {
+            // Primitives - no additional data
+            case 0x01: // VOID
+            case 0x02: // BOOLEAN
+            case 0x03: // CHAR
+            case 0x04: // I1
+            case 0x05: // U1
+            case 0x06: // I2
+            case 0x07: // U2
+            case 0x08: // I4
+            case 0x09: // U4
+            case 0x0A: // I8
+            case 0x0B: // U8
+            case 0x0C: // R4
+            case 0x0D: // R8
+            case 0x0E: // STRING
+            case 0x18: // I (IntPtr)
+            case 0x19: // U (UIntPtr)
+            case 0x1C: // OBJECT
+            case 0x16: // TYPEDBYREF
+                break;
+
+            // Types with TypeDefOrRefOrSpec
+            case 0x11: // VALUETYPE
+            case 0x12: // CLASS
+                SkipCompressedUInt(sig, ref pos, sigLen);
+                break;
+
+            // Types with a single nested type
+            case 0x0F: // PTR
+            case 0x10: // BYREF
+            case 0x1D: // SZARRAY
+            case 0x45: // PINNED
+                SkipTypeInSignature(sig, ref pos, sigLen);
+                break;
+
+            // VAR and MVAR - followed by compressed uint (index)
+            case 0x13: // VAR
+            case 0x1E: // MVAR
+                SkipCompressedUInt(sig, ref pos, sigLen);
+                break;
+
+            // GENERICINST: CLASS/VALUETYPE TypeDefOrRefOrSpec GenArgCount Type*
+            case 0x15:
+                if (pos < (int)sigLen)
+                {
+                    pos++; // Skip CLASS/VALUETYPE byte
+                    SkipCompressedUInt(sig, ref pos, sigLen); // TypeDefOrRefOrSpec
+                    uint genArgCount = ReadCompressedUInt(sig, ref pos, sigLen);
+                    for (uint i = 0; i < genArgCount; i++)
+                    {
+                        SkipTypeInSignature(sig, ref pos, sigLen);
+                    }
+                }
+                break;
+
+            // ARRAY: ElementType Rank NumSizes Size* NumLoBounds LoBound*
+            case 0x14:
+                SkipTypeInSignature(sig, ref pos, sigLen); // Element type
+                uint rank = ReadCompressedUInt(sig, ref pos, sigLen);
+                uint numSizes = ReadCompressedUInt(sig, ref pos, sigLen);
+                for (uint i = 0; i < numSizes; i++)
+                    SkipCompressedUInt(sig, ref pos, sigLen);
+                uint numLoBounds = ReadCompressedUInt(sig, ref pos, sigLen);
+                for (uint i = 0; i < numLoBounds; i++)
+                    SkipCompressedInt(sig, ref pos, sigLen);
+                break;
+
+            // FNPTR: MethodSig (complex, skip for now by reading until reasonable end)
+            case 0x1B:
+                // Function pointer - skip calling convention, param count, return type, params
+                if (pos < (int)sigLen)
+                {
+                    pos++; // calling convention
+                    uint paramCount = ReadCompressedUInt(sig, ref pos, sigLen);
+                    SkipTypeInSignature(sig, ref pos, sigLen); // return type
+                    for (uint i = 0; i < paramCount; i++)
+                        SkipTypeInSignature(sig, ref pos, sigLen);
+                }
+                break;
+
+            // CMOD_REQD, CMOD_OPT: TypeDefOrRefOrSpec followed by Type
+            case 0x1F: // CMOD_REQD
+            case 0x20: // CMOD_OPT
+                SkipCompressedUInt(sig, ref pos, sigLen);
+                SkipTypeInSignature(sig, ref pos, sigLen);
+                break;
+
+            default:
+                // Unknown element type - can't skip safely
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Skip a compressed unsigned integer in a signature blob.
+    /// </summary>
+    private static void SkipCompressedUInt(byte* sig, ref int pos, uint sigLen)
+    {
+        if (pos >= (int)sigLen)
+            return;
+
+        byte b = sig[pos++];
+        if ((b & 0x80) == 0)
+        {
+            // 1-byte encoding - already consumed
+        }
+        else if ((b & 0xC0) == 0x80)
+        {
+            // 2-byte encoding
+            if (pos < (int)sigLen) pos++;
+        }
+        else if ((b & 0xE0) == 0xC0)
+        {
+            // 4-byte encoding
+            if (pos + 2 < (int)sigLen) pos += 3;
+        }
+    }
+
+    /// <summary>
+    /// Skip a compressed signed integer in a signature blob.
+    /// </summary>
+    private static void SkipCompressedInt(byte* sig, ref int pos, uint sigLen)
+    {
+        // Compressed signed ints use the same encoding as unsigned
+        SkipCompressedUInt(sig, ref pos, sigLen);
+    }
+
+    /// <summary>
+    /// Read a compressed unsigned integer from a signature blob.
+    /// </summary>
+    private static uint ReadCompressedUInt(byte* sig, ref int pos, uint sigLen)
+    {
+        if (pos >= (int)sigLen)
+            return 0;
+
+        byte b = sig[pos++];
+        if ((b & 0x80) == 0)
+        {
+            return b;
+        }
+        else if ((b & 0xC0) == 0x80)
+        {
+            if (pos >= (int)sigLen) return 0;
+            return ((uint)(b & 0x3F) << 8) | sig[pos++];
+        }
+        else if ((b & 0xE0) == 0xC0)
+        {
+            if (pos + 2 >= (int)sigLen) return 0;
+            return ((uint)(b & 0x1F) << 24) | ((uint)sig[pos++] << 16) | ((uint)sig[pos++] << 8) | sig[pos++];
+        }
+        return 0;
     }
 
     /// <summary>
@@ -2617,6 +2865,18 @@ public static unsafe class AssemblyLoader
 
             int tsPos = 0;
             byte elementType = tsSig[tsPos++];
+
+            // ELEMENT_TYPE_GENERICINST (0x15) - generic type instantiation
+            // Format: 0x15 (CLASS=0x12 | VALUETYPE=0x11) TypeDefOrRefOrSpec GenArgCount Type1 Type2 ...
+            if (elementType == 0x15)
+            {
+                if (tsPos >= (int)tsSigLen)
+                    return false;
+                // Skip the CLASS/VALUETYPE byte
+                tsPos++;
+                // Now decode the underlying type token
+                elementType = 0x12;  // Treat as CLASS for the rest of the logic
+            }
 
             // ELEMENT_TYPE_VALUETYPE (0x11) or ELEMENT_TYPE_CLASS (0x12) - followed by TypeDefOrRef
             if (elementType == 0x11 || elementType == 0x12)

@@ -122,8 +122,7 @@ public static class TestRunner
         RecordResult("InstanceTests.TestInstanceMethodWithThis", InstanceTests.TestInstanceMethodWithThis() == 50);
 
         // Regression: callvirt returning bool, store to local, branch on local
-        // TEMPORARILY DISABLED - crashes with CR2=0xA
-        // RecordResult("InstanceTests.TestCallvirtBoolBranchWithLargeLocals", InstanceTests.TestCallvirtBoolBranchWithLargeLocals() == 2);
+        RecordResult("InstanceTests.TestCallvirtBoolBranchWithLargeLocals", InstanceTests.TestCallvirtBoolBranchWithLargeLocals() == 2);
 
         // Critical: Cross-assembly large struct return (hidden buffer convention)
         RecordResult("InstanceTests.TestCrossAssemblyLargeStructReturn", InstanceTests.TestCrossAssemblyLargeStructReturn() == 42);
@@ -141,7 +140,7 @@ public static class TestRunner
     {
         RecordResult("GenericTests.TestGenericMethod", GenericTests.TestGenericMethod() == 42);
         // TestGenericClass requires TypeSpec (0x1B) support for generic type instantiation
-        // RecordResult("GenericTests.TestGenericClass", GenericTests.TestGenericClass() == 42);
+        RecordResult("GenericTests.TestGenericClass", GenericTests.TestGenericClass() == 42);
     }
 
     private static void RunStringInterpolationTests()
@@ -296,26 +295,26 @@ public static class TestRunner
         RecordResult("StructTests.TestStructArrayCopy", StructTests.TestStructArrayCopy() == 100);
         RecordResult("StructTests.TestStructArrayMultiple", StructTests.TestStructArrayMultiple() == 111);
 
-        // Large struct tests (structs > 8 bytes) - DISABLED: CR2=0xA crash
-        // RecordResult("StructTests.TestLargeStructFields", StructTests.TestLargeStructFields() == 60);
-        // RecordResult("StructTests.TestLargeStructCopy", StructTests.TestLargeStructCopy() == 600);
-        // RecordResult("StructTests.TestLargeStructArrayStore", StructTests.TestLargeStructArrayStore() == 1);  // Struct first, array second
-        // RecordResult("StructTests.TestLargeStructArrayLoad", StructTests.TestLargeStructArrayLoad() == 60);
-        // RecordResult("StructTests.TestLargeStructArrayCopy", StructTests.TestLargeStructArrayCopy() == 100);
+        // Large struct tests (structs > 8 bytes)
+        RecordResult("StructTests.TestLargeStructFields", StructTests.TestLargeStructFields() == 60);
+        RecordResult("StructTests.TestLargeStructCopy", StructTests.TestLargeStructCopy() == 600);
+        RecordResult("StructTests.TestLargeStructArrayStore", StructTests.TestLargeStructArrayStore() == 1);
+        RecordResult("StructTests.TestLargeStructArrayLoad", StructTests.TestLargeStructArrayLoad() == 60);
+        RecordResult("StructTests.TestLargeStructArrayCopy", StructTests.TestLargeStructArrayCopy() == 100);
 
-        // Struct return value tests (2.1) - BISECTING
-        // RecordResult("StructTests.TestSmallStructReturn", StructTests.TestSmallStructReturn() == 30);
-        // RecordResult("StructTests.TestMediumStructReturn", StructTests.TestMediumStructReturn() == 300);
-        // RecordResult("StructTests.TestLargeStructReturn", StructTests.TestLargeStructReturn() == 6);
+        // Struct return value tests (2.1)
+        RecordResult("StructTests.TestSmallStructReturn", StructTests.TestSmallStructReturn() == 30);
+        RecordResult("StructTests.TestMediumStructReturn", StructTests.TestMediumStructReturn() == 300);
+        RecordResult("StructTests.TestLargeStructReturn", StructTests.TestLargeStructReturn() == 6);
 
-        // ref/out parameter tests (2.3) - BISECTING
-        // RecordResult("StructTests.TestSimpleOutParam", StructTests.TestSimpleOutParam() == 42);
-        // RecordResult("StructTests.TestRefParam", StructTests.TestRefParam() == 20);
-        // RecordResult("StructTests.TestRefParamMultiple", StructTests.TestRefParamMultiple() == 45);
+        // ref/out parameter tests (2.3)
+        RecordResult("StructTests.TestSimpleOutParam", StructTests.TestSimpleOutParam() == 42);
+        RecordResult("StructTests.TestRefParam", StructTests.TestRefParam() == 20);
+        RecordResult("StructTests.TestRefParamMultiple", StructTests.TestRefParamMultiple() == 45);
 
-        // Nested field out/ref tests (class.struct.field pattern) - BISECTING
-        // RecordResult("StructTests.TestNestedFieldOut", StructTests.TestNestedFieldOut() == 99);
-        // RecordResult("StructTests.TestNestedFieldRef", StructTests.TestNestedFieldRef() == 110);
+        // Nested field out/ref tests (class.struct.field pattern)
+        RecordResult("StructTests.TestNestedFieldOut", StructTests.TestNestedFieldOut() == 99);
+        RecordResult("StructTests.TestNestedFieldRef", StructTests.TestNestedFieldRef() == 110);
 
         // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
         RecordResult("VirtqueueExactTests.TestThreeAllocationsAndReadBack", VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);

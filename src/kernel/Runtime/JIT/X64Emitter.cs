@@ -751,6 +751,29 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(ModRM(0b11, 7, (byte)v));
     }
 
+    public static void ShiftRightSigned32(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        if (s != Reg64.RCX)
+        {
+            // Move shift amount to CL (32-bit move is fine)
+            if ((byte)s >= 8)
+            {
+                code.EmitByte(0x44);  // REX.R for source register
+            }
+            code.EmitByte(0x89);
+            EmitModRMReg(ref code, s, Reg64.RCX);
+        }
+        // 32-bit SAR: no REX.W prefix (or only REX.B if register >= R8)
+        if ((byte)v >= 8)
+        {
+            code.EmitByte(0x41);  // REX.B
+        }
+        code.EmitByte(0xD3);  // SAR r/m32, CL
+        code.EmitByte(ModRM(0b11, 7, (byte)((byte)v & 7)));
+    }
+
     public static void ShiftRightUnsigned(ref CodeBuffer code, VReg value, VReg shiftAmount)
     {
         var v = Map(value);
@@ -764,6 +787,29 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         EmitRexSingle(ref code, true, v);
         code.EmitByte(0xD3);  // SHR r/m64, CL
         code.EmitByte(ModRM(0b11, 5, (byte)v));
+    }
+
+    public static void ShiftRightUnsigned32(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        if (s != Reg64.RCX)
+        {
+            // Move shift amount to CL (32-bit move is fine)
+            if ((byte)s >= 8)
+            {
+                code.EmitByte(0x44);  // REX.R for source register
+            }
+            code.EmitByte(0x89);
+            EmitModRMReg(ref code, s, Reg64.RCX);
+        }
+        // 32-bit SHR: no REX.W prefix (or only REX.B if register >= R8)
+        if ((byte)v >= 8)
+        {
+            code.EmitByte(0x41);  // REX.B
+        }
+        code.EmitByte(0xD3);  // SHR r/m32, CL
+        code.EmitByte(ModRM(0b11, 5, (byte)((byte)v & 7)));
     }
 
     // === Comparison ===

@@ -2110,7 +2110,42 @@ public unsafe struct ILCompiler
         else if (isArgVT && argSize > 8)
         {
             // Large value type passed by pointer - R0 contains a pointer to the data
-            entry = EvalStackEntry.NativeInt;
+            // We need to push the actual VALUE onto the eval stack, not the pointer
+            // This matches what stobj/stelem.any expects.
+            int alignedSize = (argSize + 7) & ~7;
+
+            // Make room on eval stack
+            X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
+
+            // R0 has the pointer to struct data - copy from [R0] to [RSP]
+            int copyOffset = 0;
+            while (copyOffset + 8 <= argSize)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 8;
+            }
+            if (copyOffset + 4 <= argSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= argSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, copyOffset, VReg.R1);
+                copyOffset += 2;
+            }
+            if (copyOffset < argSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R1, VReg.R0, copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, copyOffset, VReg.R1);
+            }
+
+            // Track as ONE entry with actual byte size
+            PushEntry(EvalStackEntry.Struct(argSize));
+            return true;
         }
         // else: non-VT arg or unknown size - treat as NativeInt (reference/pointer)
 
@@ -2986,41 +3021,43 @@ public unsafe struct ILCompiler
     {
         // Shift right: value >> shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
+
+        // Check the type of the value being shifted (second from top, under shiftAmount)
+        EvalStackEntry valueEntry = PeekEntryAt(1);
+        bool is32Bit = (valueEntry.Kind == EvalStackKind.Int32);
+
         PopReg(VReg.R1);  // Shift amount to CL (part of RCX)
         PopR0();          // Value to shift
 
         if (signed)
         {
-            X64Emitter.SarCL(ref _code, VReg.R0);  // Arithmetic shift (preserves sign)
+            if (is32Bit)
+                X64Emitter.ShiftRightSigned32(ref _code, VReg.R0, VReg.R1);
+            else
+                X64Emitter.SarCL(ref _code, VReg.R0);  // Arithmetic shift (preserves sign)
         }
         else
         {
-            X64Emitter.ShrCL(ref _code, VReg.R0);  // Logical shift (zero-fill)
+            if (is32Bit)
+                X64Emitter.ShiftRightUnsigned32(ref _code, VReg.R0, VReg.R1);
+            else
+                X64Emitter.ShrCL(ref _code, VReg.R0);  // Logical shift (zero-fill)
         }
 
-        PushR0(EvalStackEntry.NativeInt);
+        // Result type matches input type
+        PushR0(is32Bit ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileConv(int targetBytes, bool signed)
     {
-        // Debug: Log conv for the bool bug method at IL offset 0x197
-        // if (IsDebugBoolBugMethod() && _ilOffset >= 0x195 && _ilOffset <= 0x19A)
-        // {
-        //     DebugConsole.Write("[conv] IL=0x");
-        //     DebugConsole.WriteHex((ulong)_ilOffset);
-        //     DebugConsole.Write(" bytes=");
-        //     DebugConsole.WriteDecimal((uint)targetBytes);
-        //     DebugConsole.Write(" signed=");
-        //     DebugConsole.WriteDecimal(signed ? 1U : 0U);
-        //     DebugConsole.Write(" depth=");
-        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
-        //     DebugConsole.WriteLine();
-        // }
-
         // Convert top of stack to different size
-        // For naive JIT, we just mask/sign-extend as needed
+        // Check source type to determine proper extension
+        EvalStackEntry srcEntry = PeekEntryAt(0);
+        bool srcIs32Bit = (srcEntry.Kind == EvalStackKind.Int32);
+
         X64Emitter.Pop(ref _code, VReg.R0);
+        PopEntry();
 
         switch (targetBytes)
         {
@@ -3077,10 +3114,8 @@ public unsafe struct ILCompiler
                 break;
 
             case 8:
-                // conv.i (signed): sign-extend from 32-bit to 64-bit
-                // conv.u (unsigned): no-op on 64-bit platform
-                // Note: ldc.i4 uses MOV r32, imm32 which zero-extends, so we need
-                // to explicitly sign-extend for conv.i
+                // conv.i8 (signed): sign-extend from 32-bit to 64-bit
+                // conv.u8 (unsigned): zero-extend from 32-bit to 64-bit
                 if (signed)
                 {
                     // MOVSXD RAX, EAX - sign-extend dword to qword
@@ -3088,13 +3123,21 @@ public unsafe struct ILCompiler
                     _code.EmitByte(0x63);
                     _code.EmitByte(0xC0);  // ModRM: RAX, EAX
                 }
-                // For conv.u: no-op - if source was 32-bit, upper bits are already 0
-                // If source was 64-bit, we must preserve the full value
-                // The previous MOV EAX, EAX was WRONG - it truncated 64-bit values!
+                else if (srcIs32Bit)
+                {
+                    // conv.u8 from Int32: zero-extend by clearing upper 32 bits
+                    // MOV EAX, EAX - writing to 32-bit reg zeros upper 32 bits
+                    _code.EmitByte(0x89);
+                    _code.EmitByte(0xC0);  // ModRM: EAX, EAX
+                }
+                // For conv.u8 from 64-bit source: no-op, preserve full value
                 break;
         }
 
         X64Emitter.Push(ref _code, VReg.R0);
+        // Determine result type based on target size
+        EvalStackEntry resultType = targetBytes <= 4 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt;
+        PushEntry(resultType);
         return true;
     }
 
@@ -4156,8 +4199,9 @@ public unsafe struct ILCompiler
         // Track bytes of large struct args left on stack (need cleanup after call)
         int largeStructArgBytes = 0;
 
-        // Track whether we need to set up RCX with struct pointer after shadow space allocation
+        // Track whether we need to set up RCX or RDX with struct pointer after shadow space allocation
         bool needsLargeStructPtrInRcx = false;
+        bool needsLargeStructPtrInRdx = false;
 
         // Track special allocation for 4-args + hidden buffer case
         int fourArgsHiddenBufferCleanup = 0;
@@ -4202,10 +4246,55 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 2 && !needsHiddenBuffer)
         {
-            // Two args: pop to RDX (arg1), then RCX (arg0)
-            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
-            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            PopEntry(); PopEntry();
+            // Two args: check if arg1 (TOS) is a large struct
+            EvalStackEntry arg1Entry = PeekEntryAt(0);  // TOS = arg1
+            EvalStackEntry arg0Entry = PeekEntryAt(1);  // TOS-1 = arg0
+
+            if (arg1Entry.ByteSize > 8)
+            {
+                // arg1 is a large struct: pass by pointer
+                // Stack layout: [RSP] = struct (24 bytes), [RSP+structSize] = arg0 (8 bytes)
+                // After shadow space: RCX = arg0, RDX = pointer to struct
+
+                // Load arg0 from [RSP + structSize] into R1 (RCX)
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, arg1Entry.ByteSize);
+
+                // Now move the struct data down by 8 bytes to close the gap left by arg0
+                // This way, after removing 8 bytes from stack, struct is at correct position
+                // Actually, easier: keep struct in place, remove arg0, point RDX to struct after shadow
+                //
+                // Layout now: [RSP]=struct, [RSP+structSize]=arg0
+                // We want to remove arg0 but it's at the bottom. Instead:
+                // - Keep everything, track total size as structSize + 8
+                // - After shadow space allocation, RCX is already set, LEA RDX to struct
+                // - Clean up structSize + 8 after call
+
+                largeStructArgBytes = arg1Entry.ByteSize + 8;  // struct + arg0
+                needsLargeStructPtrInRdx = true;
+
+                // Don't remove anything from physical stack yet
+                PopEntry(); PopEntry();
+            }
+            else if (arg0Entry.ByteSize > 8)
+            {
+                // arg0 is a large struct: pass by pointer
+                // This is unusual but handle it: struct in RCX by pointer, arg1 in RDX
+                // arg1 at TOS, struct below it
+                X64Emitter.Pop(ref _code, VReg.R2);   // RDX = arg1
+                PopEntry();
+
+                // Now struct is at TOS - pass pointer in RCX
+                largeStructArgBytes = arg0Entry.ByteSize;
+                needsLargeStructPtrInRcx = true;
+                PopEntry();
+            }
+            else
+            {
+                // Both args are small: pop to RDX (arg1), then RCX (arg0)
+                X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+                X64Emitter.Pop(ref _code, VReg.R1);   // arg0
+                PopEntry(); PopEntry();
+            }
         }
         else if (totalArgs == 2 && needsHiddenBuffer)
         {
@@ -4389,6 +4478,11 @@ public unsafe struct ILCompiler
                 if (needsLargeStructPtrInRcx)
                 {
                     X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+                }
+                // If we deferred setting up RDX for a large struct pointer (2-arg case), do it now
+                if (needsLargeStructPtrInRdx)
+                {
+                    X64Emitter.Lea(ref _code, VReg.R2, VReg.SP, 32);
                 }
             }
         }
@@ -7818,12 +7912,8 @@ public unsafe struct ILCompiler
             X64Emitter.MovMR8(ref _code, VReg.SP, offset, VReg.R3);
         }
 
-        // Track the slots on the eval stack
-        // Push multiple stack type entries for multi-slot structs
-        for (int i = 0; i < slots; i++)
-        {
-            PushEntry(EvalStackEntry.Struct(8));
-        }
+        // Track as ONE entry with the full byte size (matching ldloc behavior for large structs)
+        PushEntry(EvalStackEntry.Struct(elemSize));
 
         return true;
     }
