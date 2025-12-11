@@ -279,19 +279,19 @@ public static unsafe class CPUTopology
         DebugConsole.WriteDecimal(_overrideCount);
         DebugConsole.WriteLine(" IRQ override(s)");
 
-        // Log each CPU
-        for (int i = 0; i < _cpuCount; i++)
-        {
-            DebugConsole.Write("[CPUTopology]   CPU ");
-            DebugConsole.WriteDecimal(i);
-            DebugConsole.Write(": APIC ID ");
-            DebugConsole.WriteDecimal((int)_cpus[i].ApicId);
-            if (_cpus[i].IsBsp)
-                DebugConsole.Write(" (BSP)");
-            if (!_cpus[i].IsEnabled)
-                DebugConsole.Write(" (disabled)");
-            DebugConsole.WriteLine();
-        }
+        // Log each CPU (verbose - commented out)
+        // for (int i = 0; i < _cpuCount; i++)
+        // {
+        //     DebugConsole.Write("[CPUTopology]   CPU ");
+        //     DebugConsole.WriteDecimal(i);
+        //     DebugConsole.Write(": APIC ID ");
+        //     DebugConsole.WriteDecimal((int)_cpus[i].ApicId);
+        //     if (_cpus[i].IsBsp)
+        //         DebugConsole.Write(" (BSP)");
+        //     if (!_cpus[i].IsEnabled)
+        //         DebugConsole.Write(" (disabled)");
+        //     DebugConsole.WriteLine();
+        // }
 
         _initialized = true;
         return true;
@@ -359,15 +359,16 @@ public static unsafe class CPUTopology
         _ioApics[_ioApicCount].Address = entry->IOApicAddress;
         _ioApics[_ioApicCount].GsiBase = entry->GlobalSystemInterruptBase;
 
-        DebugConsole.Write("[CPUTopology]   I/O APIC ");
-        DebugConsole.WriteDecimal(_ioApicCount);
-        DebugConsole.Write(": ID ");
-        DebugConsole.WriteDecimal(entry->IOApicId);
-        DebugConsole.Write(" at 0x");
-        DebugConsole.WriteHex(entry->IOApicAddress);
-        DebugConsole.Write(" GSI base ");
-        DebugConsole.WriteDecimal((int)entry->GlobalSystemInterruptBase);
-        DebugConsole.WriteLine();
+        // I/O APIC detail debug (verbose - commented out)
+        // DebugConsole.Write("[CPUTopology]   I/O APIC ");
+        // DebugConsole.WriteDecimal(_ioApicCount);
+        // DebugConsole.Write(": ID ");
+        // DebugConsole.WriteDecimal(entry->IOApicId);
+        // DebugConsole.Write(" at 0x");
+        // DebugConsole.WriteHex(entry->IOApicAddress);
+        // DebugConsole.Write(" GSI base ");
+        // DebugConsole.WriteDecimal((int)entry->GlobalSystemInterruptBase);
+        // DebugConsole.WriteLine();
 
         _ioApicCount++;
     }
@@ -449,16 +450,17 @@ public static unsafe class CPUTopology
             _cpus[i].NumaNode = NumaTopology.GetNodeForApicId(_cpus[i].ApicId);
         }
 
-        DebugConsole.WriteLine("[CPUTopology] Updated NUMA node assignments:");
-        for (int i = 0; i < _cpuCount; i++)
-        {
-            DebugConsole.Write("[CPUTopology]   CPU ");
-            DebugConsole.WriteDecimal(i);
-            DebugConsole.Write(" (APIC ");
-            DebugConsole.WriteDecimal((int)_cpus[i].ApicId);
-            DebugConsole.Write(") -> Node ");
-            DebugConsole.WriteDecimal((int)_cpus[i].NumaNode);
-            DebugConsole.WriteLine();
-        }
+        // NUMA node assignment debug (verbose - commented out)
+        // DebugConsole.WriteLine("[CPUTopology] Updated NUMA node assignments:");
+        // for (int i = 0; i < _cpuCount; i++)
+        // {
+        //     DebugConsole.Write("[CPUTopology]   CPU ");
+        //     DebugConsole.WriteDecimal(i);
+        //     DebugConsole.Write(" (APIC ");
+        //     DebugConsole.WriteDecimal((int)_cpus[i].ApicId);
+        //     DebugConsole.Write(") -> Node ");
+        //     DebugConsole.WriteDecimal((int)_cpus[i].NumaNode);
+        //     DebugConsole.WriteLine();
+        // }
     }
 }

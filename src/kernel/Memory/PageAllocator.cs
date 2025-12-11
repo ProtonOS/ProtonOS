@@ -162,11 +162,12 @@ public static unsafe class PageAllocator
                 return false;
             }
 
-            DebugConsole.Write("[PageAlloc] Memory map: ");
-            DebugConsole.WriteHex((ushort)entryCount);
-            DebugConsole.Write(" entries, descriptor size ");
-            DebugConsole.WriteHex((ushort)descriptorSize);
-            DebugConsole.WriteLine();
+            // Memory map debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Memory map: ");
+            // DebugConsole.WriteHex((ushort)entryCount);
+            // DebugConsole.Write(" entries, descriptor size ");
+            // DebugConsole.WriteHex((ushort)descriptorSize);
+            // DebugConsole.WriteLine();
 
             // Find kernel extent from LoaderCode/LoaderData regions
             ulong kernelBase = 0xFFFFFFFFFFFFFFFF;
@@ -190,11 +191,12 @@ public static unsafe class PageAllocator
 
             ulong kernelSize = (kernelTop > kernelBase) ? kernelTop - kernelBase : 0;
 
-            DebugConsole.Write("[PageAlloc] Kernel at 0x");
-            DebugConsole.WriteHex(kernelBase);
-            DebugConsole.Write(" size ");
-            DebugConsole.WriteHex(kernelSize / 1024);
-            DebugConsole.WriteLine(" KB");
+            // Kernel location debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Kernel at 0x");
+            // DebugConsole.WriteHex(kernelBase);
+            // DebugConsole.Write(" size ");
+            // DebugConsole.WriteHex(kernelSize / 1024);
+            // DebugConsole.WriteLine(" KB");
 
             // Find the highest physical address
             _topAddress = 0;
@@ -217,17 +219,19 @@ public static unsafe class PageAllocator
             _bitmapSize = (_totalPages + 7) / 8;  // Round up to bytes
             _bitmapPages = (_bitmapSize + PageSize - 1) / PageSize;  // Round up to pages
 
-            DebugConsole.Write("[PageAlloc] Top address: 0x");
-            DebugConsole.WriteHex(_topAddress);
-            DebugConsole.Write(", tracking ");
-            DebugConsole.WriteHex(_totalPages);
-            DebugConsole.WriteLine(" pages");
+            // Top address debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Top address: 0x");
+            // DebugConsole.WriteHex(_topAddress);
+            // DebugConsole.Write(", tracking ");
+            // DebugConsole.WriteHex(_totalPages);
+            // DebugConsole.WriteLine(" pages");
 
-            DebugConsole.Write("[PageAlloc] Bitmap needs ");
-            DebugConsole.WriteHex(_bitmapSize);
-            DebugConsole.Write(" bytes (");
-            DebugConsole.WriteHex(_bitmapPages);
-            DebugConsole.WriteLine(" pages)");
+            // Bitmap size debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Bitmap needs ");
+            // DebugConsole.WriteHex(_bitmapSize);
+            // DebugConsole.Write(" bytes (");
+            // DebugConsole.WriteHex(_bitmapPages);
+            // DebugConsole.WriteLine(" pages)");
 
             // Allocate bitmap from UEFI
             void* bitmapPtr = null;
@@ -245,9 +249,10 @@ public static unsafe class PageAllocator
             }
 
             _bitmap = (byte*)bitmapPtr;
-            DebugConsole.Write("[PageAlloc] Bitmap at 0x");
-            DebugConsole.WriteHex((ulong)_bitmap);
-            DebugConsole.WriteLine();
+            // Bitmap address debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Bitmap at 0x");
+            // DebugConsole.WriteHex((ulong)_bitmap);
+            // DebugConsole.WriteLine();
 
             // Initialize bitmap: all pages start as USED (0)
             for (ulong i = 0; i < _bitmapSize; i++)
@@ -269,9 +274,10 @@ public static unsafe class PageAllocator
                 }
             }
 
-            DebugConsole.Write("[PageAlloc] Free pages after marking conventional: ");
-            DebugConsole.WriteHex(_freePages);
-            DebugConsole.WriteLine();
+            // Free pages debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Free pages after marking conventional: ");
+            // DebugConsole.WriteHex(_freePages);
+            // DebugConsole.WriteLine();
 
             // Reserve critical regions
             ulong bitmapStartPage = (ulong)_bitmap / PageSize;
@@ -288,11 +294,12 @@ public static unsafe class PageAllocator
 
             _initialized = true;
 
-            DebugConsole.Write("[PageAlloc] Initialized: ");
-            DebugConsole.WriteHex(_freePages);
-            DebugConsole.Write(" free pages (");
-            DebugConsole.WriteHex(_freePages * PageSize / (1024 * 1024));
-            DebugConsole.WriteLine(" MB)");
+            // Initialized summary debug (verbose - commented out)
+            // DebugConsole.Write("[PageAlloc] Initialized: ");
+            // DebugConsole.WriteHex(_freePages);
+            // DebugConsole.Write(" free pages (");
+            // DebugConsole.WriteHex(_freePages * PageSize / (1024 * 1024));
+            // DebugConsole.WriteLine(" MB)");
 
             return true;
         }
@@ -331,13 +338,14 @@ public static unsafe class PageAllocator
             }
         }
 
-        if (reserved > 0)
-        {
-            DebugConsole.Write("[PageAlloc] Reserved ");
-            DebugConsole.WriteHex(reserved);
-            DebugConsole.Write(" pages for ");
-            DebugConsole.WriteLine(name);
-        }
+        // Reserved pages debug (verbose - commented out)
+        // if (reserved > 0)
+        // {
+        //     DebugConsole.Write("[PageAlloc] Reserved ");
+        //     DebugConsole.WriteHex(reserved);
+        //     DebugConsole.Write(" pages for ");
+        //     DebugConsole.WriteLine(name);
+        // }
     }
 
     /// <summary>

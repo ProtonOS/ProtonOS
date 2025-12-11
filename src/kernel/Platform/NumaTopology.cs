@@ -224,35 +224,36 @@ public static unsafe class NumaTopology
         DebugConsole.WriteDecimal(_cpuAffinityCount);
         DebugConsole.WriteLine(" CPU affinity entries");
 
-        for (int i = 0; i < _nodeCount; i++)
-        {
-            if (_nodes[i].IsValid)
-            {
-                DebugConsole.Write("[NUMA]   Node ");
-                DebugConsole.WriteDecimal((int)_nodes[i].NodeId);
-                DebugConsole.Write(": ");
-                DebugConsole.WriteDecimal((int)(_nodes[i].TotalMemory / (1024 * 1024)));
-                DebugConsole.Write(" MB, ");
-                DebugConsole.WriteDecimal((int)_nodes[i].CpuCount);
-                DebugConsole.WriteLine(" CPU(s)");
-            }
-        }
+        // Per-node details debug (verbose - commented out)
+        // for (int i = 0; i < _nodeCount; i++)
+        // {
+        //     if (_nodes[i].IsValid)
+        //     {
+        //         DebugConsole.Write("[NUMA]   Node ");
+        //         DebugConsole.WriteDecimal((int)_nodes[i].NodeId);
+        //         DebugConsole.Write(": ");
+        //         DebugConsole.WriteDecimal((int)(_nodes[i].TotalMemory / (1024 * 1024)));
+        //         DebugConsole.Write(" MB, ");
+        //         DebugConsole.WriteDecimal((int)_nodes[i].CpuCount);
+        //         DebugConsole.WriteLine(" CPU(s)");
+        //     }
+        // }
 
-        // Log distance matrix if available
-        if (_hasDistances && _nodeCount > 1)
-        {
-            DebugConsole.WriteLine("[NUMA] Distance matrix:");
-            for (int i = 0; i < _nodeCount; i++)
-            {
-                DebugConsole.Write("[NUMA]   ");
-                for (int j = 0; j < _nodeCount; j++)
-                {
-                    DebugConsole.WriteDecimal(GetNodeDistance(i, j));
-                    DebugConsole.Write(" ");
-                }
-                DebugConsole.WriteLine();
-            }
-        }
+        // Distance matrix debug (verbose - commented out)
+        // if (_hasDistances && _nodeCount > 1)
+        // {
+        //     DebugConsole.WriteLine("[NUMA] Distance matrix:");
+        //     for (int i = 0; i < _nodeCount; i++)
+        //     {
+        //         DebugConsole.Write("[NUMA]   ");
+        //         for (int j = 0; j < _nodeCount; j++)
+        //         {
+        //             DebugConsole.WriteDecimal(GetNodeDistance(i, j));
+        //             DebugConsole.Write(" ");
+        //         }
+        //         DebugConsole.WriteLine();
+        //     }
+        // }
 
         _initialized = true;
         return true;

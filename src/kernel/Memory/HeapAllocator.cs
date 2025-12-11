@@ -442,9 +442,10 @@ public static unsafe class HeapAllocator
             InsertFreeBlock(block);
             CoalesceBlocks();
 
-            DebugConsole.Write("[Heap] Grew by ");
-            DebugConsole.WriteHex(growSize / 1024);
-            DebugConsole.WriteLine(" KB (contiguous)");
+            // Heap growth debug (verbose - commented out)
+            // DebugConsole.Write("[Heap] Grew by ");
+            // DebugConsole.WriteHex(growSize / 1024);
+            // DebugConsole.WriteLine(" KB (contiguous)");
         }
         else
         {
@@ -459,9 +460,10 @@ public static unsafe class HeapAllocator
             _totalFree += growSize - (ulong)sizeof(HeapBlock);
             InsertFreeBlock(block);
 
-            DebugConsole.Write("[Heap] Grew by ");
-            DebugConsole.WriteHex(growSize / 1024);
-            DebugConsole.WriteLine(" KB (non-contiguous)");
+            // Heap growth debug (verbose - commented out)
+            // DebugConsole.Write("[Heap] Grew by ");
+            // DebugConsole.WriteHex(growSize / 1024);
+            // DebugConsole.WriteLine(" KB (non-contiguous)");
         }
 
         return true;

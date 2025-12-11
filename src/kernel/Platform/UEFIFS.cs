@@ -155,10 +155,10 @@ public static unsafe class UEFIFS
         var fileInfo = (EFIFileInfo*)infoBuffer;
         fileSize = fileInfo->FileSize;
 
-        DebugConsole.Write("[FS] File size: ");
-        DebugConsole.WriteHex(fileSize);
-        DebugConsole.Write(" bytes");
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[FS] File size: ");
+        // DebugConsole.WriteHex(fileSize);
+        // DebugConsole.Write(" bytes");
+        // DebugConsole.WriteLine();
 
         if (fileSize == 0)
         {
@@ -191,10 +191,10 @@ public static unsafe class UEFIFS
             return null;
         }
 
-        DebugConsole.Write("[FS] Read ");
-        DebugConsole.WriteHex(bytesRead);
-        DebugConsole.Write(" bytes");
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[FS] Read ");
+        // DebugConsole.WriteHex(bytesRead);
+        // DebugConsole.Write(" bytes");
+        // DebugConsole.WriteLine();
 
         // Close the file
         file->Close(file);

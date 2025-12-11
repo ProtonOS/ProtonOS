@@ -309,54 +309,56 @@ public static unsafe class PCI
                         _deviceCount++;
                     }
 
-                    DebugConsole.Write("[PCI]   ");
-                    DebugConsole.WriteHex(bus);
-                    DebugConsole.Write(":");
-                    DebugConsole.WriteHex(device);
-                    DebugConsole.Write(".");
-                    DebugConsole.WriteHex(function);
-                    DebugConsole.Write(" - Vendor:");
-                    DebugConsole.WriteHex(vendorId);
-                    DebugConsole.Write(" Device:");
-                    DebugConsole.WriteHex(pciDeviceId);
-                    DebugConsole.Write(" Class:");
-                    DebugConsole.WriteHex(baseClass);
-                    DebugConsole.Write(":");
-                    DebugConsole.WriteHex(subClass);
-                    DebugConsole.Write(":");
-                    DebugConsole.WriteHex(progIF);
+                    // Per-device debug (verbose - commented out)
+                    // DebugConsole.Write("[PCI]   ");
+                    // DebugConsole.WriteHex(bus);
+                    // DebugConsole.Write(":");
+                    // DebugConsole.WriteHex(device);
+                    // DebugConsole.Write(".");
+                    // DebugConsole.WriteHex(function);
+                    // DebugConsole.Write(" - Vendor:");
+                    // DebugConsole.WriteHex(vendorId);
+                    // DebugConsole.Write(" Device:");
+                    // DebugConsole.WriteHex(pciDeviceId);
+                    // DebugConsole.Write(" Class:");
+                    // DebugConsole.WriteHex(baseClass);
+                    // DebugConsole.Write(":");
+                    // DebugConsole.WriteHex(subClass);
+                    // DebugConsole.Write(":");
+                    // DebugConsole.WriteHex(progIF);
 
                     // Check for virtio devices
                     if (vendorId == 0x1AF4)
                     {
-                        DebugConsole.Write(" [VIRTIO");
-                        if (pciDeviceId >= 0x1000 && pciDeviceId <= 0x107F)
-                        {
-                            // Legacy device IDs
-                            if (pciDeviceId == 0x1001) DebugConsole.Write("-BLK");
-                            else if (pciDeviceId == 0x1000) DebugConsole.Write("-NET");
-                            else if (pciDeviceId == 0x1002) DebugConsole.Write("-BAL");
-                            else if (pciDeviceId == 0x1003) DebugConsole.Write("-CON");
-                            else if (pciDeviceId == 0x1005) DebugConsole.Write("-RNG");
-                            else if (pciDeviceId == 0x1009) DebugConsole.Write("-9P");
-                        }
-                        else if (pciDeviceId >= 0x1040 && pciDeviceId <= 0x107F)
-                        {
-                            // Modern device IDs
-                            ushort type = (ushort)(pciDeviceId - 0x1040);
-                            if (type == 1) DebugConsole.Write("-NET");
-                            else if (type == 2) DebugConsole.Write("-BLK");
-                            else if (type == 3) DebugConsole.Write("-CON");
-                            else if (type == 4) DebugConsole.Write("-RNG");
-                        }
-                        DebugConsole.Write("]");
+                        // Per-device virtio debug (verbose - commented out)
+                        // DebugConsole.Write(" [VIRTIO");
+                        // if (pciDeviceId >= 0x1000 && pciDeviceId <= 0x107F)
+                        // {
+                        //     // Legacy device IDs
+                        //     if (pciDeviceId == 0x1001) DebugConsole.Write("-BLK");
+                        //     else if (pciDeviceId == 0x1000) DebugConsole.Write("-NET");
+                        //     else if (pciDeviceId == 0x1002) DebugConsole.Write("-BAL");
+                        //     else if (pciDeviceId == 0x1003) DebugConsole.Write("-CON");
+                        //     else if (pciDeviceId == 0x1005) DebugConsole.Write("-RNG");
+                        //     else if (pciDeviceId == 0x1009) DebugConsole.Write("-9P");
+                        // }
+                        // else if (pciDeviceId >= 0x1040 && pciDeviceId <= 0x107F)
+                        // {
+                        //     // Modern device IDs
+                        //     ushort type = (ushort)(pciDeviceId - 0x1040);
+                        //     if (type == 1) DebugConsole.Write("-NET");
+                        //     else if (type == 2) DebugConsole.Write("-BLK");
+                        //     else if (type == 3) DebugConsole.Write("-CON");
+                        //     else if (type == 4) DebugConsole.Write("-RNG");
+                        // }
+                        // DebugConsole.Write("]");
                         virtioCount++;
                     }
 
-                    // Print device class name
-                    PrintClassName(baseClass, subClass);
+                    // Print device class name - commented out
+                    // PrintClassName(baseClass, subClass);
 
-                    DebugConsole.WriteLine();
+                    // DebugConsole.WriteLine();
                     deviceCount++;
                 }
             }
