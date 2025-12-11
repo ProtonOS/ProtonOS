@@ -1470,19 +1470,19 @@ public static unsafe class MetadataIntegration
                     byte retType = sigBlob[sigPos];
 
                     // JIT compile the method
-                    // DebugConsole.Write("[MetaInt] Before JIT asm ");
-                    DebugConsole.WriteDecimal(targetAsmId);
-                    DebugConsole.Write(" ctx=");
-                    DebugConsole.WriteDecimal(_currentAssemblyId);
-                    DebugConsole.WriteLine();
+                    // JIT context debug (verbose - commented out)
+                    // DebugConsole.WriteDecimal(targetAsmId);
+                    // DebugConsole.Write(" ctx=");
+                    // DebugConsole.WriteDecimal(_currentAssemblyId);
+                    // DebugConsole.WriteLine();
 
                     JitResult jitResult = Tier0JIT.CompileMethod(targetAsmId, methodToken);
 
-                    // DebugConsole.Write("[MetaInt] After JIT asm ");
-                    DebugConsole.WriteDecimal(targetAsmId);
-                    DebugConsole.Write(" ctx=");
-                    DebugConsole.WriteDecimal(_currentAssemblyId);
-                    DebugConsole.WriteLine();
+                    // JIT context debug (verbose - commented out)
+                    // DebugConsole.WriteDecimal(targetAsmId);
+                    // DebugConsole.Write(" ctx=");
+                    // DebugConsole.WriteDecimal(_currentAssemblyId);
+                    // DebugConsole.WriteLine();
 
                     if (jitResult.Success)
                     {
@@ -1754,8 +1754,9 @@ public static unsafe class MetadataIntegration
         {
             MethodTable* mt = (MethodTable*)baseMT;
             uint baseSize = mt->_uBaseSize;
-            DebugConsole.Write(" base=");
-            DebugConsole.WriteDecimal(baseSize);
+            // Base class size debug (verbose - commented out)
+            // DebugConsole.Write(" base=");
+            // DebugConsole.WriteDecimal(baseSize);
             return baseSize;
         }
 
@@ -1775,12 +1776,13 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
+        // Field calculation debug (verbose - commented out)
         // DebugConsole.Write("[CalcFieldOff] fld=");
-        DebugConsole.WriteDecimal(fieldRow);
-        DebugConsole.Write(" type=");
-        DebugConsole.WriteDecimal(typeRow);
-        DebugConsole.Write(" asm=");
-        DebugConsole.WriteDecimal(_currentAssemblyId);
+        // DebugConsole.WriteDecimal(fieldRow);
+        // DebugConsole.Write(" type=");
+        // DebugConsole.WriteDecimal(typeRow);
+        // DebugConsole.Write(" asm=");
+        // DebugConsole.WriteDecimal(_currentAssemblyId);
 
         // Check if this is a value type (struct/enum)
         // Value types accessed via byref don't have an MT pointer, so offsets start at 0
@@ -1869,9 +1871,10 @@ public static unsafe class MetadataIntegration
             offset = (offset + alignment - 1) & ~(alignment - 1);
         }
 
-        DebugConsole.Write(" -> offset=");
-        DebugConsole.WriteDecimal((uint)offset);
-        DebugConsole.WriteLine();
+        // Field offset debug (verbose - commented out)
+        // DebugConsole.Write(" -> offset=");
+        // DebugConsole.WriteDecimal((uint)offset);
+        // DebugConsole.WriteLine();
         return offset;
     }
 

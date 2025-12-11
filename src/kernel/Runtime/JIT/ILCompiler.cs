@@ -4296,13 +4296,13 @@ public unsafe struct ILCompiler
 
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
 
-            // DebugConsole.Write("[JIT] >4 args: totalArgs=");
-            DebugConsole.WriteDecimal((uint)totalArgs);
-            DebugConsole.Write(" stackArgs=");
-            DebugConsole.WriteDecimal((uint)stackArgs);
-            DebugConsole.Write(" extraStackSpace=");
-            DebugConsole.WriteDecimal((uint)extraStackSpace);
-            DebugConsole.WriteLine();
+            // Stack args debug (verbose - commented out)
+            // DebugConsole.WriteDecimal((uint)totalArgs);
+            // DebugConsole.Write(" stackArgs=");
+            // DebugConsole.WriteDecimal((uint)stackArgs);
+            // DebugConsole.Write(" extraStackSpace=");
+            // DebugConsole.WriteDecimal((uint)extraStackSpace);
+            // DebugConsole.WriteLine();
 
             // Step 1: Save stack args to scratch registers (R10, R11)
             // Stack args are at [RSP+0], [RSP+8], ... (top of eval stack)
@@ -5590,22 +5590,23 @@ public unsafe struct ILCompiler
             isValueType = field.IsDeclaringTypeValueType;
             declaringTypeSize = field.DeclaringTypeSize;
             fieldTypeIsValueType = field.IsFieldTypeValueType;
-            if (isDebugMapBars)
-            {
-                // DebugConsole.Write("[LdfldDbg] tok=0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" off=");
-                DebugConsole.WriteDecimal((uint)offset);
-                DebugConsole.Write(" size=");
-                DebugConsole.WriteDecimal((uint)size);
-                DebugConsole.Write(" declVT=");
-                DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-                DebugConsole.Write(" declSize=");
-                DebugConsole.WriteDecimal((uint)declaringTypeSize);
-                DebugConsole.Write(" fieldVT=");
-                DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-                DebugConsole.WriteLine();
-            }
+            // ldfld field resolver debug (verbose - commented out)
+            // if (isDebugMapBars)
+            // {
+            //     DebugConsole.Write("[LdfldDbg] tok=0x");
+            //     DebugConsole.WriteHex(token);
+            //     DebugConsole.Write(" off=");
+            //     DebugConsole.WriteDecimal((uint)offset);
+            //     DebugConsole.Write(" size=");
+            //     DebugConsole.WriteDecimal((uint)size);
+            //     DebugConsole.Write(" declVT=");
+            //     DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+            //     DebugConsole.Write(" declSize=");
+            //     DebugConsole.WriteDecimal((uint)declaringTypeSize);
+            //     DebugConsole.Write(" fieldVT=");
+            //     DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+            //     DebugConsole.WriteLine();
+            // }
         }
         else
         {
@@ -5617,16 +5618,16 @@ public unsafe struct ILCompiler
         EvalStackEntry tosEntry = PeekEntry();
         bool tosIsValueType = tosEntry.Kind == EvalStackKind.ValueType;
 
-        if (isDebugMapBars)
-        {
-            // DebugConsole.Write("[LdfldDbg] tosIsVT=");
-            DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
-            DebugConsole.Write(" tosBytes=");
-            DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // ldfld TOS debug (verbose - commented out)
+        // if (isDebugMapBars)
+        // {
+        //     DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
+        //     DebugConsole.Write(" tosBytes=");
+        //     DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Handle large value types (>8 bytes) that are on the stack from ldloc
         // For these, the struct data is spread across multiple 8-byte slots on the eval stack.
@@ -5634,27 +5635,26 @@ public unsafe struct ILCompiler
         // IMPORTANT: Only take this path if TOS is actually a value type (from ldloc on struct),
         // NOT if TOS is a pointer (from ldarg.0 which passes 'this' by reference for structs).
 
-        // Debug: log all ldfld calls for assembly 3
-        if (_debugAssemblyId == 3)
-        {
-            // DebugConsole.Write("[ldfld all] declVT=");
-            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-            DebugConsole.Write(" declSz=");
-            DebugConsole.WriteDecimal((uint)declaringTypeSize);
-            DebugConsole.Write(" fldSz=");
-            DebugConsole.WriteDecimal((uint)size);
-            DebugConsole.Write(" fldVT=");
-            DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-            DebugConsole.Write(" tosKind=");
-            DebugConsole.WriteDecimal((byte)tosEntry.Kind);
-            DebugConsole.Write(" tosBytes=");
-            DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
-            DebugConsole.Write(" off=");
-            DebugConsole.WriteDecimal((uint)offset);
-            DebugConsole.Write(" d=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // Debug: log all ldfld calls for assembly 3 (verbose - commented out)
+        // if (_debugAssemblyId == 3)
+        // {
+        //     DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+        //     DebugConsole.Write(" declSz=");
+        //     DebugConsole.WriteDecimal((uint)declaringTypeSize);
+        //     DebugConsole.Write(" fldSz=");
+        //     DebugConsole.WriteDecimal((uint)size);
+        //     DebugConsole.Write(" fldVT=");
+        //     DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+        //     DebugConsole.Write(" tosKind=");
+        //     DebugConsole.WriteDecimal((byte)tosEntry.Kind);
+        //     DebugConsole.Write(" tosBytes=");
+        //     DebugConsole.WriteDecimal((uint)tosEntry.ByteSize);
+        //     DebugConsole.Write(" off=");
+        //     DebugConsole.WriteDecimal((uint)offset);
+        //     DebugConsole.Write(" d=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Check if we have a multi-slot value type on the stack using new type system
         // The entry's ByteSize tells us directly - no need to iterate slots
@@ -5673,19 +5673,18 @@ public unsafe struct ILCompiler
 
         if (structByteSize > 8)
         {
-            // Debug: log when taking the inline large VT path
-            if (_debugAssemblyId == 3)
-            {
-                // DebugConsole.Write("[ldfld inline VT] off=");
-                DebugConsole.WriteDecimal((uint)offset);
-                DebugConsole.Write(" sz=");
-                DebugConsole.WriteDecimal((uint)size);
-                DebugConsole.Write(" declSz=");
-                DebugConsole.WriteDecimal((uint)declaringTypeSize);
-                DebugConsole.Write(" stackBytes=");
-                DebugConsole.WriteDecimal((uint)structByteSize);
-                DebugConsole.WriteLine();
-            }
+            // Debug: log when taking the inline large VT path (verbose - commented out)
+            // if (_debugAssemblyId == 3)
+            // {
+            //     DebugConsole.WriteDecimal((uint)offset);
+            //     DebugConsole.Write(" sz=");
+            //     DebugConsole.WriteDecimal((uint)size);
+            //     DebugConsole.Write(" declSz=");
+            //     DebugConsole.WriteDecimal((uint)declaringTypeSize);
+            //     DebugConsole.Write(" stackBytes=");
+            //     DebugConsole.WriteDecimal((uint)structByteSize);
+            //     DebugConsole.WriteLine();
+            // }
 
             // The field is at [RSP + fieldOffset], not requiring a dereference of a pointer
             // Load the field value directly from the stack
@@ -5735,32 +5734,30 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);
         PopEntry();
 
-        // Debug: always log the conditions for ldfld (compile-time)
-        if (_debugAssemblyId == 3)
-        {
-            // DebugConsole.Write("[ldfld chk] fieldVT=");
-            DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal((uint)size);
-            DebugConsole.Write(" tosIsVT=");
-            DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
-            DebugConsole.Write(" off=");
-            DebugConsole.WriteDecimal((uint)offset);
-            DebugConsole.WriteLine();
-        }
+        // ldfld conditions debug (verbose - commented out)
+        // if (_debugAssemblyId == 3)
+        // {
+        //     DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal((uint)size);
+        //     DebugConsole.Write(" tosIsVT=");
+        //     DebugConsole.WriteDecimal(tosIsValueType ? 1U : 0U);
+        //     DebugConsole.Write(" off=");
+        //     DebugConsole.WriteDecimal((uint)offset);
+        //     DebugConsole.WriteLine();
+        // }
 
         // If the field itself is a large value type (>8 bytes) and we have an object/pointer on the stack,
         // copy the entire struct to the eval stack (similar to ldobj).
         if (fieldTypeIsValueType && size > 8 && !tosIsValueType)
         {
-            // Debug: emit JIT compile-time trace for large struct field load
-            // DebugConsole.Write("[ldfld VT path] off=");
-            DebugConsole.WriteDecimal((uint)offset);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal((uint)size);
-            DebugConsole.Write(" aligned=");
-            DebugConsole.WriteDecimal((uint)((size + 7) & ~7));
-            DebugConsole.WriteLine();
+            // Large struct field debug (verbose - commented out)
+            // DebugConsole.WriteDecimal((uint)offset);
+            // DebugConsole.Write(" size=");
+            // DebugConsole.WriteDecimal((uint)size);
+            // DebugConsole.Write(" aligned=");
+            // DebugConsole.WriteDecimal((uint)((size + 7) & ~7));
+            // DebugConsole.WriteLine();
             int alignedFieldSize = (size + 7) & ~7;
             int fieldSlots = alignedFieldSize / 8;
 
@@ -6530,15 +6527,15 @@ public unsafe struct ILCompiler
         // Try to resolve as a registered constructor
         ResolvedMethod ctor;
         bool resolved = ResolveMethod(token, out ctor);
-        // DebugConsole.Write("[JIT newobj] token=0x");
-        DebugConsole.WriteHex(token);
-        DebugConsole.Write(" resolved=");
-        DebugConsole.Write(resolved ? "Y" : "N");
-        DebugConsole.Write(" valid=");
-        DebugConsole.Write(ctor.IsValid ? "Y" : "N");
-        DebugConsole.Write(" MT=0x");
-        DebugConsole.WriteHex((ulong)ctor.MethodTable);
-        DebugConsole.WriteLine();
+        // newobj token debug (verbose - commented out)
+        // DebugConsole.WriteHex(token);
+        // DebugConsole.Write(" resolved=");
+        // DebugConsole.Write(resolved ? "Y" : "N");
+        // DebugConsole.Write(" valid=");
+        // DebugConsole.Write(ctor.IsValid ? "Y" : "N");
+        // DebugConsole.Write(" MT=0x");
+        // DebugConsole.WriteHex((ulong)ctor.MethodTable);
+        // DebugConsole.WriteLine();
 
         if (resolved && ctor.IsValid && ctor.MethodTable != null)
         {
@@ -6546,11 +6543,11 @@ public unsafe struct ILCompiler
             MethodTable* mt = (MethodTable*)ctor.MethodTable;
             bool isValueType = mt->IsValueType;
 
-            // DebugConsole.Write("[JIT newobj] isValueType=");
-            DebugConsole.Write(isValueType ? "Y" : "N");
-            DebugConsole.Write(" baseSize=");
-            DebugConsole.WriteDecimal(mt->BaseSize);
-            DebugConsole.WriteLine();
+            // newobj value type debug (verbose - commented out)
+            // DebugConsole.Write(isValueType ? "Y" : "N");
+            // DebugConsole.Write(" baseSize=");
+            // DebugConsole.WriteDecimal(mt->BaseSize);
+            // DebugConsole.WriteLine();
 
             // We have a constructor with MethodTable - full newobj implementation
             // Stack before: ..., arg1, ..., argN (constructor args, not including 'this')
@@ -6606,11 +6603,12 @@ public unsafe struct ILCompiler
             else
             {
                 // REFERENCE TYPE: Allocate on heap via RhpNewFast
+                // newobj reference type debug (verbose - commented out)
                 // DebugConsole.Write("[JIT newobj] refType: RhpNewFast=0x");
-                DebugConsole.WriteHex((ulong)_rhpNewFast);
-                DebugConsole.Write(" MT=0x");
-                DebugConsole.WriteHex((ulong)ctor.MethodTable);
-                DebugConsole.WriteLine();
+                // DebugConsole.WriteHex((ulong)_rhpNewFast);
+                // DebugConsole.Write(" MT=0x");
+                // DebugConsole.WriteHex((ulong)ctor.MethodTable);
+                // DebugConsole.WriteLine();
 
                 X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)ctor.MethodTable);
                 X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
@@ -6648,12 +6646,11 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R10);  // shadow space [rsp+32]
             }
 
-            // Call the constructor
-            // DebugConsole.Write("[JIT newobj] calling ctor at 0x");
-            DebugConsole.WriteHex((ulong)ctor.NativeCode);
-            DebugConsole.Write(" args=");
-            DebugConsole.WriteDecimal((uint)ctorArgs);
-            DebugConsole.WriteLine();
+            // newobj ctor call debug (verbose - commented out)
+            // DebugConsole.WriteHex((ulong)ctor.NativeCode);
+            // DebugConsole.Write(" args=");
+            // DebugConsole.WriteDecimal((uint)ctorArgs);
+            // DebugConsole.WriteLine();
 
             if (ctor.NativeCode == null)
             {

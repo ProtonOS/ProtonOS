@@ -772,13 +772,14 @@ public static unsafe class AssemblyLoader
 
         // Get the TypeSpec signature blob
         uint sigIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
-        DebugConsole.Write("[AsmLoader] TypeSpec 0x");
-        DebugConsole.WriteHex(token);
-        DebugConsole.Write(" asm=");
-        DebugConsole.WriteDecimal(asm->AssemblyId);
-        DebugConsole.Write(" blobIdx=");
-        DebugConsole.WriteHex(sigIdx);
-        DebugConsole.WriteLine("");
+        // TypeSpec debug (verbose - commented out)
+        // DebugConsole.Write("[AsmLoader] TypeSpec 0x");
+        // DebugConsole.WriteHex(token);
+        // DebugConsole.Write(" asm=");
+        // DebugConsole.WriteDecimal(asm->AssemblyId);
+        // DebugConsole.Write(" blobIdx=");
+        // DebugConsole.WriteHex(sigIdx);
+        // DebugConsole.WriteLine("");
 
         byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
         if (sig == null || sigLen == 0)
@@ -789,13 +790,14 @@ public static unsafe class AssemblyLoader
             return null;
         }
 
-        DebugConsole.Write("[AsmLoader] TypeSpec sig[0]=0x");
-        DebugConsole.WriteHex((uint)sig[0]);
-        DebugConsole.Write(" sig[1]=0x");
-        DebugConsole.WriteHex((uint)sig[1]);
-        DebugConsole.Write(" len=");
-        DebugConsole.WriteDecimal(sigLen);
-        DebugConsole.WriteLine("");
+        // TypeSpec signature debug (verbose - commented out)
+        // DebugConsole.Write("[AsmLoader] TypeSpec sig[0]=0x");
+        // DebugConsole.WriteHex((uint)sig[0]);
+        // DebugConsole.Write(" sig[1]=0x");
+        // DebugConsole.WriteHex((uint)sig[1]);
+        // DebugConsole.Write(" len=");
+        // DebugConsole.WriteDecimal(sigLen);
+        // DebugConsole.WriteLine("");
 
         int pos = 0;
         byte elementType = sig[pos++];
@@ -827,7 +829,7 @@ public static unsafe class AssemblyLoader
                 DebugConsole.WriteLine("[AsmLoader] TypeSpec PTR: IntPtr MT not found");
                 return null;
             }
-            DebugConsole.WriteLine("[AsmLoader] TypeSpec PTR resolved to IntPtr");
+            // DebugConsole.WriteLine("[AsmLoader] TypeSpec PTR resolved to IntPtr");
             return ptrMt;
         }
 
@@ -854,9 +856,10 @@ public static unsafe class AssemblyLoader
         }
 
         byte elementType = sig[pos++];
-        DebugConsole.Write("[AsmLoader] ParseType elementType=0x");
-        DebugConsole.WriteHex((uint)elementType);
-        DebugConsole.WriteLine("");
+        // ParseType debug (verbose - commented out)
+        // DebugConsole.Write("[AsmLoader] ParseType elementType=0x");
+        // DebugConsole.WriteHex((uint)elementType);
+        // DebugConsole.WriteLine("");
 
         // ELEMENT_TYPE_CLASS or ELEMENT_TYPE_VALUETYPE - followed by TypeDefOrRefOrSpecEncoded
         if (elementType == 0x12 || elementType == 0x11)  // CLASS=0x12, VALUETYPE=0x11
@@ -1066,10 +1069,11 @@ public static unsafe class AssemblyLoader
             {
                 // Get the base class's method table to get its size
                 uint baseSize = GetBaseClassSize(asm, extendsIdx);
-                DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
-                DebugConsole.WriteDecimal(typeDefRow);
-                DebugConsole.Write(" baseSize=");
-                DebugConsole.WriteDecimal(baseSize);
+                // Instance size base class debug (verbose - commented out)
+                // DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
+                // DebugConsole.WriteDecimal(typeDefRow);
+                // DebugConsole.Write(" baseSize=");
+                // DebugConsole.WriteDecimal(baseSize);
                 if (baseSize > 8)
                 {
                     // Base class size already includes the object header
@@ -1138,9 +1142,10 @@ public static unsafe class AssemblyLoader
         // Align to 8 bytes
         size = (size + 7) & ~7u;
 
-        DebugConsole.Write(" finalSize=");
-        DebugConsole.WriteDecimal(size);
-        DebugConsole.WriteLine();
+        // Instance size debug (verbose - commented out)
+        // DebugConsole.Write(" finalSize=");
+        // DebugConsole.WriteDecimal(size);
+        // DebugConsole.WriteLine();
 
         return size;
     }
@@ -2863,17 +2868,17 @@ public static unsafe class AssemblyLoader
             _arrayMTCacheCount++;
         }
 
-        // DebugConsole.Write("[AsmLoader] Created array MT 0x");
-        DebugConsole.WriteHex((ulong)arrayMT);
-        DebugConsole.Write(" elemSize=");
-        DebugConsole.WriteDecimal(elementSize);
-        DebugConsole.Write(" for elem MT 0x");
-        DebugConsole.WriteHex((ulong)elementMT);
-        DebugConsole.Write(" baseSize=");
-        DebugConsole.WriteDecimal(elementMT->BaseSize);
-        DebugConsole.Write(" isVal=");
-        DebugConsole.Write(elementMT->IsValueType ? "Y" : "N");
-        DebugConsole.WriteLine();
+        // Array MT debug (verbose - commented out)
+        // DebugConsole.WriteHex((ulong)arrayMT);
+        // DebugConsole.Write(" elemSize=");
+        // DebugConsole.WriteDecimal(elementSize);
+        // DebugConsole.Write(" for elem MT 0x");
+        // DebugConsole.WriteHex((ulong)elementMT);
+        // DebugConsole.Write(" baseSize=");
+        // DebugConsole.WriteDecimal(elementMT->BaseSize);
+        // DebugConsole.Write(" isVal=");
+        // DebugConsole.Write(elementMT->IsValueType ? "Y" : "N");
+        // DebugConsole.WriteLine();
 
         return arrayMT;
     }
