@@ -22,6 +22,9 @@
 
 using System.Runtime.InteropServices;
 
+using ProtonOS.Platform;
+using ProtonOS.Runtime.JIT;
+
 namespace ProtonOS.Runtime;
 
 /// <summary>
@@ -427,6 +430,9 @@ public static unsafe class TypeHelpers
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
         if (slot < 0)
             return null;
+
+        // Ensure the vtable slot is compiled (may be lazy-compiled)
+        JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);
 
         return (void*)objectMT->GetVtableSlot(slot);
     }

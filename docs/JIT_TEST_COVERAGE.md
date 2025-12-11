@@ -52,7 +52,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Virtual method dispatch (callvirt)
 - ✅ Override resolution
 - ✅ Constrained calls on value types (ToString, etc.)
-- ❌ Interface dispatch (callvirt on interface type)
+- ✅ Interface dispatch (callvirt on interface type)
 
 ### Special Calls
 - ⚠️ Tail calls (tail. prefix parsed but ignored)
@@ -225,9 +225,12 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ## 9. Interfaces
 
 ### Interface Dispatch
-- ❌ callvirt on interface method
-- ❌ Interface method resolution
-- ❌ Explicit interface implementation
+- ✅ callvirt on interface method (GetInterfaceMethod runtime helper)
+- ✅ Interface method resolution (InterfaceMap in MethodTable)
+- ✅ Interface map population from InterfaceImpl metadata table
+- ✅ Lazy JIT compilation of interface implementations
+- ⚠️ Explicit interface implementation (same mechanism, untested)
+- ⚠️ Multiple interfaces on same type (map populated, untested)
 
 ### Interface Casting
 - ❌ Cast to interface type
@@ -293,8 +296,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ## Priority Order for Testing
 
 ### P0 - Critical for Drivers
-1. Exception handling (try/catch/finally)
-2. Interface dispatch
+1. ✅ Exception handling (try/catch/finally)
+2. ✅ Interface dispatch
 3. Nullable<T> (used extensively in APIs)
 
 ### P1 - Important for Robustness
@@ -324,6 +327,16 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 110 passing
+- Current test count: 111 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
+
+## Recent Updates
+
+### Interface Dispatch (2024-12)
+Implemented interface dispatch via `callvirt` on interface types:
+- Added `IsInterfaceMethod()` / `IsMethodDefInterfaceMethod()` to detect interface method calls
+- Added `CountInterfacesForType()` / `PopulateInterfaceMap()` to build interface maps in MethodTables
+- Added `RegisterNewVirtualMethodsForLazyJit()` to register interface implementations for lazy JIT
+- Modified `GetInterfaceMethod()` to call `EnsureVtableSlotCompiled()` for lazy compilation
+- Test: `InterfaceTests.TestSimpleInterface()` - IValue interface with ValueImpl implementation

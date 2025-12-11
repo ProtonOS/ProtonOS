@@ -1459,8 +1459,15 @@ public static unsafe class AssemblyLoader
         // Total vtable slots = inherited + new
         ushort totalVtableSlots = (ushort)(baseVtableSlots + newVirtualSlots);
 
-        // Allocate MethodTable with vtable space
-        ulong mtSize = (ulong)(MethodTable.HeaderSize + totalVtableSlots * sizeof(nint));
+        // Count interfaces implemented by this type (for interface map)
+        ushort numInterfaces = 0;
+        if (!isInterface)
+        {
+            numInterfaces = CountInterfacesForType(asm, rowId);
+        }
+
+        // Allocate MethodTable with vtable space AND interface map space
+        ulong mtSize = (ulong)(MethodTable.HeaderSize + totalVtableSlots * sizeof(nint) + numInterfaces * InterfaceMapEntry.Size);
         MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed(mtSize);
         if (mt == null)
             return null;
@@ -1476,7 +1483,7 @@ public static unsafe class AssemblyLoader
         mt->_uBaseSize = instanceSize;
         mt->_relatedType = baseMT;  // Point to base class MT
         mt->_usNumVtableSlots = totalVtableSlots;
-        mt->_usNumInterfaces = 0;
+        mt->_usNumInterfaces = numInterfaces;
         mt->_uHashCode = token;  // Use token as hash for now
 
         // Get bitmask of slots that this type overrides - leave those as 0 for lazy JIT
@@ -1531,7 +1538,69 @@ public static unsafe class AssemblyLoader
             RegisterOverrideMethodsForLazyJit(asm, rowId, mt, overriddenSlots);
         }
 
+        // Register new virtual methods (newslot) for lazy JIT compilation
+        // These are methods introduced by this type (like interface implementations)
+        if (newVirtualSlots > 0)
+        {
+            RegisterNewVirtualMethodsForLazyJit(asm, rowId, mt, baseVtableSlots);
+        }
+
+        // Populate interface map if this type implements interfaces
+        // The interface method implementations start after inherited and new virtual slots.
+        // For simple cases, interface methods are the "newslot virtual" methods.
+        if (numInterfaces > 0)
+        {
+            // Interface methods start at baseVtableSlots (after Object methods)
+            // For types like ValueImpl : IValue, the GetValue() method is at slot 3
+            // (after ToString=0, Equals=1, GetHashCode=2)
+            PopulateInterfaceMap(asm, rowId, mt, baseVtableSlots);
+        }
+
         return mt;
+    }
+
+    /// <summary>
+    /// Register new virtual methods (newslot) for lazy JIT compilation.
+    /// These are methods introduced by this type that need their own vtable slots.
+    /// </summary>
+    private static void RegisterNewVirtualMethodsForLazyJit(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, ushort baseVtableSlots)
+    {
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        short currentSlot = (short)baseVtableSlots;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            // Look for virtual methods WITH newslot flag (new virtual methods)
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+            bool isAbstract = (methodFlags & MethodDefFlags.Abstract) != 0;
+
+            if (isVirtual && isNewSlot && !isStatic && !isAbstract)
+            {
+                // Register this new virtual method for lazy JIT
+                uint methodToken = 0x06000000 | methodRow;
+                JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                    methodToken, asm->AssemblyId, mt, currentSlot);
+                currentSlot++;
+            }
+            else if (isVirtual && isNewSlot && !isStatic && isAbstract)
+            {
+                // Abstract methods also consume a slot but can't be compiled
+                currentSlot++;
+            }
+        }
     }
 
     /// <summary>
@@ -1740,6 +1809,90 @@ public static unsafe class AssemblyLoader
                 return false;
         }
         return name[expected.Length] == 0;
+    }
+
+    /// <summary>
+    /// Count the number of interfaces implemented directly by a TypeDef.
+    /// Scans the InterfaceImpl table for entries pointing to this type.
+    /// </summary>
+    private static ushort CountInterfacesForType(LoadedAssembly* asm, uint typeDefRow)
+    {
+        uint interfaceImplCount = asm->Tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
+        ushort count = 0;
+
+        for (uint i = 1; i <= interfaceImplCount; i++)
+        {
+            uint classRowId = MetadataReader.GetInterfaceImplClass(ref asm->Tables, ref asm->Sizes, i);
+            if (classRowId == typeDefRow)
+                count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Populate the interface map for a MethodTable.
+    /// For each interface, records the interface MT and the starting vtable slot.
+    /// </summary>
+    /// <param name="asm">The assembly containing the type</param>
+    /// <param name="typeDefRow">The TypeDef row ID</param>
+    /// <param name="mt">The MethodTable to populate</param>
+    /// <param name="interfaceStartSlot">The first vtable slot for interface methods</param>
+    private static void PopulateInterfaceMap(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, ushort interfaceStartSlot)
+    {
+        uint interfaceImplCount = asm->Tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int mapIndex = 0;
+        ushort currentSlot = interfaceStartSlot;
+
+        for (uint i = 1; i <= interfaceImplCount; i++)
+        {
+            uint classRowId = MetadataReader.GetInterfaceImplClass(ref asm->Tables, ref asm->Sizes, i);
+            if (classRowId != typeDefRow)
+                continue;
+
+            // Get the interface TypeDefOrRef
+            uint rawInterface = MetadataReader.GetInterfaceImplInterface(ref asm->Tables, ref asm->Sizes, i);
+
+            // Decode TypeDefOrRef coded index (2-bit tag)
+            uint tag = rawInterface & 0x03;
+            uint rowId = rawInterface >> 2;
+
+            MethodTable* interfaceMT = null;
+
+            if (tag == 0)  // TypeDef
+            {
+                uint interfaceToken = 0x02000000 | rowId;
+                interfaceMT = asm->Types.Lookup(interfaceToken);
+                if (interfaceMT == null)
+                    interfaceMT = CreateTypeDefMethodTable(asm, interfaceToken);
+            }
+            else if (tag == 1)  // TypeRef
+            {
+                // Resolve TypeRef to another assembly's TypeDef
+                LoadedAssembly* targetAsm = null;
+                uint targetToken = 0;
+                if (ResolveTypeRefToTypeDef(asm, rowId, out targetAsm, out targetToken) && targetAsm != null)
+                {
+                    interfaceMT = targetAsm->Types.Lookup(targetToken);
+                    if (interfaceMT == null)
+                        interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                }
+            }
+            // TypeSpec (tag == 2) not supported for now
+
+            if (interfaceMT != null)
+            {
+                map[mapIndex].InterfaceMT = interfaceMT;
+                map[mapIndex].StartSlot = currentSlot;
+
+                // Advance slot by number of methods in the interface
+                // For now, just use 1 (most interfaces have few methods)
+                // TODO: Get actual method count from interface's MT
+                currentSlot++;
+                mapIndex++;
+            }
+        }
     }
 
     /// <summary>
@@ -3154,6 +3307,207 @@ public static unsafe class AssemblyLoader
         }
 
         return methodToken != 0;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef token refers to an interface method.
+    /// If so, returns the interface MethodTable and method slot within the interface.
+    /// </summary>
+    /// <param name="sourceAsmId">Source assembly ID where the MemberRef is defined</param>
+    /// <param name="memberRefToken">The MemberRef token (0x0A table)</param>
+    /// <param name="interfaceMT">Output: the interface's MethodTable (if interface method)</param>
+    /// <param name="methodSlot">Output: the method's slot index within the interface (0-based)</param>
+    /// <returns>True if this is an interface method</returns>
+    public static bool IsInterfaceMethod(uint sourceAsmId, uint memberRefToken,
+                                          out MethodTable* interfaceMT, out short methodSlot)
+    {
+        interfaceMT = null;
+        methodSlot = -1;
+
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+            return false;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        // Get member name and signature for method lookup
+        uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        if (memberName == null)
+            return false;
+
+        // Resolve the containing type
+        LoadedAssembly* targetAsm = null;
+        uint typeDefToken = 0;
+
+        if (classRef.Table == MetadataTableId.TypeRef)
+        {
+            // MemberRef in another assembly via TypeRef
+            if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
+                return false;
+        }
+        else if (classRef.Table == MetadataTableId.TypeDef)
+        {
+            // MemberRef in same assembly
+            targetAsm = sourceAsm;
+            typeDefToken = 0x02000000 | classRef.RowId;
+        }
+        else
+        {
+            // TypeSpec or other - not interface
+            return false;
+        }
+
+        if (targetAsm == null || typeDefToken == 0)
+            return false;
+
+        // Get the TypeDef flags to check if it's an interface
+        uint typeDefRow = typeDefToken & 0x00FFFFFF;
+        uint typeFlags = MetadataReader.GetTypeDefFlags(ref targetAsm->Tables, ref targetAsm->Sizes, typeDefRow);
+
+        // Check for interface flag (tdInterface = 0x20 in TypeAttributes)
+        const uint tdInterface = 0x20;
+        if ((typeFlags & 0x20) != tdInterface)
+            return false;  // Not an interface
+
+        // This is an interface method - get the interface's MethodTable
+        interfaceMT = targetAsm->Types.Lookup(typeDefToken);
+        if (interfaceMT == null)
+        {
+            // Not created yet - create on demand
+            interfaceMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+        }
+        if (interfaceMT == null)
+        {
+            DebugConsole.Write("[AsmLoader] IsInterfaceMethod: failed to get interface MT for 0x");
+            DebugConsole.WriteHex(typeDefToken);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Find the method slot within the interface
+        // Interface methods start at slot 0 (no Object vtable inheritance for interfaces)
+        // We need to iterate through MethodDef rows belonging to this TypeDef
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref targetAsm->Tables, ref targetAsm->Sizes, typeDefRow);
+        uint methodEnd;
+        uint typeDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref targetAsm->Tables, ref targetAsm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = targetAsm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+        short slot = 0;
+        for (uint m = methodStart; m < methodEnd; m++)
+        {
+            uint mNameIdx = MetadataReader.GetMethodDefName(ref targetAsm->Tables, ref targetAsm->Sizes, m);
+            byte* mName = MetadataReader.GetString(ref targetAsm->Metadata, mNameIdx);
+            if (mName != null && StringEquals(memberName, mName))
+            {
+                methodSlot = slot;
+                return true;
+            }
+            slot++;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Compare two null-terminated byte strings for equality.
+    /// </summary>
+    private static bool StringEquals(byte* a, byte* b)
+    {
+        if (a == null || b == null)
+            return a == b;
+        while (*a != 0 && *b != 0)
+        {
+            if (*a != *b)
+                return false;
+            a++;
+            b++;
+        }
+        return *a == *b;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef token belongs to an interface type (same assembly).
+    /// If so, returns interface dispatch info so callvirt can resolve at runtime.
+    /// </summary>
+    /// <param name="asmId">Assembly ID containing the MethodDef</param>
+    /// <param name="methodDefToken">MethodDef token (0x06xxxxxx)</param>
+    /// <param name="interfaceMT">Output: the interface's MethodTable (if interface method)</param>
+    /// <param name="methodSlot">Output: the method's slot index within the interface (0-based)</param>
+    /// <returns>True if this is an interface method</returns>
+    public static bool IsMethodDefInterfaceMethod(uint asmId, uint methodDefToken,
+                                                   out MethodTable* interfaceMT, out short methodSlot)
+    {
+        interfaceMT = null;
+        methodSlot = -1;
+
+        LoadedAssembly* asm = GetAssembly(asmId);
+        if (asm == null)
+            return false;
+
+        uint methodRow = methodDefToken & 0x00FFFFFF;
+        if (methodRow == 0)
+            return false;
+
+        // Find which TypeDef owns this MethodDef by iterating through all TypeDefs
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint ownerTypeRow = 0;
+
+        for (uint t = 1; t <= typeDefCount; t++)
+        {
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t);
+            uint methodEnd;
+            if (t < typeDefCount)
+                methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t + 1);
+            else
+                methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+            if (methodRow >= methodStart && methodRow < methodEnd)
+            {
+                ownerTypeRow = t;
+                break;
+            }
+        }
+
+        if (ownerTypeRow == 0)
+            return false;  // Couldn't find owner TypeDef
+
+        // Check if the owner type is an interface
+        uint typeFlags = MetadataReader.GetTypeDefFlags(ref asm->Tables, ref asm->Sizes, ownerTypeRow);
+        const uint tdInterface = 0x20;
+        if ((typeFlags & 0x20) != tdInterface)
+            return false;  // Not an interface
+
+        // This is an interface method - get the interface's MethodTable
+        uint typeDefToken = 0x02000000 | ownerTypeRow;
+        interfaceMT = asm->Types.Lookup(typeDefToken);
+        if (interfaceMT == null)
+        {
+            // Not created yet - create on demand
+            interfaceMT = CreateTypeDefMethodTable(asm, typeDefToken);
+        }
+        if (interfaceMT == null)
+        {
+            DebugConsole.Write("[AsmLoader] IsMethodDefInterfaceMethod: failed to get interface MT for 0x");
+            DebugConsole.WriteHex(typeDefToken);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Find the method slot within the interface (0-based from first method)
+        uint methodStart2 = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, ownerTypeRow);
+        methodSlot = (short)(methodRow - methodStart2);
+
+        return true;
     }
 
     /// <summary>

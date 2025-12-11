@@ -1616,6 +1616,28 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
+        // Check if this MemberRef is an interface method call
+        // If so, we don't try to JIT compile the abstract method - instead we return
+        // interface dispatch info so callvirt can resolve at runtime
+        MethodTable* interfaceMT;
+        short interfaceSlot;
+        if (AssemblyLoader.IsInterfaceMethod(_currentAssemblyId, token, out interfaceMT, out interfaceSlot))
+        {
+            result.IsValid = true;
+            result.IsInterfaceMethod = true;
+            result.InterfaceMT = interfaceMT;
+            result.InterfaceMethodSlot = interfaceSlot;
+            result.NativeCode = null;  // Will be resolved at runtime via interface dispatch
+            result.HasThis = true;  // Interface methods are always instance methods
+            result.ArgCount = 0;  // Will be determined at call site from signature
+            result.ReturnKind = ReturnKind.IntPtr;  // Generic fallback, actual return handled by call
+            result.IsVirtual = true;
+            result.VtableSlot = -1;  // Not a direct vtable slot
+            result.MethodTable = null;
+            result.RegistryEntry = null;
+            return true;
+        }
+
         // Check if this MemberRef is on a generic instantiation (e.g., SimpleList<int>)
         // If so, get the instantiated MethodTable which has the type argument info
         MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);
@@ -2916,6 +2938,28 @@ public static unsafe class MetadataIntegration
             {
                 // DebugConsole.WriteLine("[MetaInt] No current assembly set for JIT");
                 return false;
+            }
+
+            // Check if this MethodDef belongs to an interface type
+            // Interface methods are abstract and cannot be JIT compiled directly.
+            // We return interface dispatch info so callvirt can resolve at runtime.
+            MethodTable* interfaceMT;
+            short interfaceSlot;
+            if (AssemblyLoader.IsMethodDefInterfaceMethod(_currentAssemblyId, token, out interfaceMT, out interfaceSlot))
+            {
+                result.IsValid = true;
+                result.IsInterfaceMethod = true;
+                result.InterfaceMT = interfaceMT;
+                result.InterfaceMethodSlot = interfaceSlot;
+                result.NativeCode = null;  // Will be resolved at runtime via interface dispatch
+                result.HasThis = true;  // Interface methods are always instance methods
+                result.ArgCount = 0;  // Will be determined at call site from signature
+                result.ReturnKind = ReturnKind.IntPtr;  // Generic fallback, actual return handled by call
+                result.IsVirtual = true;
+                result.VtableSlot = -1;  // Not a direct vtable slot
+                result.MethodTable = null;
+                result.RegistryEntry = null;
+                return true;
             }
 
             var jitResult = Tier0JIT.CompileMethod(_currentAssemblyId, token);

@@ -80,6 +80,9 @@ public static class TestRunner
         // String interpolation tests - requires MethodSpec (0x2B), MVAR, and cross-assembly TypeRef resolution
         RunStringInterpolationTests();
 
+        // Interface tests - tests interface dispatch via callvirt
+        RunInterfaceTests();
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -151,6 +154,11 @@ public static class TestRunner
         RecordResult("StringInterpolationTests.TestSimpleInterpolation", StringInterpolationTests.TestSimpleInterpolation() == 9);     // "Value: 42"
         RecordResult("StringInterpolationTests.TestMultipleValues", StringInterpolationTests.TestMultipleValues() == 12);         // "10 + 20 = 30"
         RecordResult("StringInterpolationTests.TestStringValues", StringInterpolationTests.TestStringValues() == 12);           // "Hello, Test!"
+    }
+
+    private static void RunInterfaceTests()
+    {
+        RecordResult("InterfaceTests.TestSimpleInterface", InterfaceTests.TestSimpleInterface() == 42);
     }
 
     private static void RecordResult(string testName, bool passed)
@@ -2156,6 +2164,40 @@ public static class StringInterpolationTests
     }
 }
 
+// =============================================================================
+// Interface Tests - Test interface dispatch via callvirt
+// =============================================================================
+
+/// <summary>
+/// Simple interface for testing basic dispatch.
+/// </summary>
+public interface IValue
+{
+    int GetValue();
+}
+
+/// <summary>
+/// Implementation of IValue that returns 42.
+/// </summary>
+public class ValueImpl : IValue
+{
+    public int GetValue() => 42;
+}
+
+public static class InterfaceTests
+{
+    /// <summary>
+    /// Test basic interface method call through interface reference.
+    /// This requires:
+    /// 1. Interface method token resolution (MemberRef with interface parent)
+    /// 2. Interface dispatch at runtime (finding vtable slot for interface method)
+    /// </summary>
+    public static int TestSimpleInterface()
+    {
+        IValue v = new ValueImpl();
+        return v.GetValue();  // Should return 42
+    }
+}
 
 // =============================================================================
 // Entry Point (required for valid assembly)
