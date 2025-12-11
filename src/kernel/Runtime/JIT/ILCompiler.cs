@@ -1056,6 +1056,11 @@ public unsafe struct ILCompiler
     public byte PrologSize => _labelCount > 0 ? (byte)_labelCodeOffset[0] : (byte)0;
 
     /// <summary>
+    /// Get the stack space allocated in the prologue (for unwind codes).
+    /// </summary>
+    public int StackAdjust => _stackAdjust;
+
+    /// <summary>
     /// Compile the IL method to native code.
     /// Returns function pointer or null on failure.
     /// </summary>
@@ -5689,10 +5694,21 @@ public unsafe struct ILCompiler
         // target IL expects an empty stack
         _evalStackDepth = 0;
 
-        // Emit unconditional jump to target
-        // This is the same as br but conceptually different - it's for exiting protected regions
-        int patchOffset = X64Emitter.JmpRel32(ref _code);
-        RecordBranch(_ilOffset, targetIL, patchOffset);
+        if (_compilingFunclet)
+        {
+            // In a funclet, leave exits by returning from the funclet.
+            // The exception dispatch code sets up the return address to be
+            // the leave target address, so we just do pop rbp; ret
+            // Note: The runtime also needs to pass the leave target correctly!
+            _code.EmitByte(0x5D);  // pop rbp
+            _code.EmitByte(0xC3);  // ret
+        }
+        else
+        {
+            // In main method, emit unconditional jump to target
+            int patchOffset = X64Emitter.JmpRel32(ref _code);
+            RecordBranch(_ilOffset, targetIL, patchOffset);
+        }
 
         return true;
     }
@@ -8460,9 +8476,22 @@ public unsafe struct ILCompiler
 
                 // Reset label tracking for funclet
                 // (branches within funclet are relative to funclet)
+                // Important: We need to save main method labels because funclet compilation
+                // will overwrite them, and we need them later for GetNativeOffset
                 int saveLabelCount = _labelCount;
-                _labelCount = 0;
                 int saveBranchCount = _branchCount;
+
+                // Save main method labels to stack (up to 32 to avoid huge stack usage)
+                int savedLabelDataCount = saveLabelCount < 32 ? saveLabelCount : 32;
+                int* savedLabelIL = stackalloc int[savedLabelDataCount];
+                int* savedLabelCode = stackalloc int[savedLabelDataCount];
+                for (int j = 0; j < savedLabelDataCount; j++)
+                {
+                    savedLabelIL[j] = _labelILOffset[j];
+                    savedLabelCode[j] = _labelCodeOffset[j];
+                }
+
+                _labelCount = 0;
                 _branchCount = 0;
 
                 // Compile handler IL
@@ -8502,7 +8531,12 @@ public unsafe struct ILCompiler
                 _funcletInfo[funcIdx + 2] = i;  // clause index
                 _funcletCount++;
 
-                // Restore label/branch tracking
+                // Restore main method labels from saved data
+                for (int j = 0; j < savedLabelDataCount; j++)
+                {
+                    _labelILOffset[j] = savedLabelIL[j];
+                    _labelCodeOffset[j] = savedLabelCode[j];
+                }
                 _labelCount = saveLabelCount;
                 _branchCount = saveBranchCount;
             }
@@ -8523,6 +8557,9 @@ public unsafe struct ILCompiler
             5, // RBP
             0
         );
+
+        // Add standard unwind codes for proper stack unwinding
+        methodInfo.AddStandardUnwindCodes(_stackAdjust);
 
         // Allocate funclets in method info
         if (_funcletCount > 0 && _funcletInfo != null && _ehClauseData != null)
@@ -8556,8 +8593,23 @@ public unsafe struct ILCompiler
                 int tryEndIL = _ehClauseData[ehIdx + 2];
 
                 // Get native try offsets
-                uint nativeTryStart = (uint)GetNativeOffset(tryStartIL);
-                uint nativeTryEnd = (uint)GetNativeOffset(tryEndIL);
+                int nativeTryStartInt = GetNativeOffset(tryStartIL);
+                int nativeTryEndInt = GetNativeOffset(tryEndIL);
+
+                DebugConsole.Write("[CompileWithFunclets] EH clause ");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write(": IL try=[");
+                DebugConsole.WriteDecimal((uint)tryStartIL);
+                DebugConsole.Write("-");
+                DebugConsole.WriteDecimal((uint)tryEndIL);
+                DebugConsole.Write("] -> native=[");
+                DebugConsole.WriteDecimal((uint)nativeTryStartInt);
+                DebugConsole.Write("-");
+                DebugConsole.WriteDecimal((uint)nativeTryEndInt);
+                DebugConsole.WriteLine("]");
+
+                uint nativeTryStart = (uint)nativeTryStartInt;
+                uint nativeTryEnd = (uint)nativeTryEndInt;
 
                 // Handler offset is the funclet's code offset
                 uint nativeHandlerStart = 0;
@@ -8575,6 +8627,11 @@ public unsafe struct ILCompiler
                     }
                 }
 
+                // The leave target is typically the first instruction after the try/catch block.
+                // In IL, this is usually the tryEnd offset (where leave instructions jump to).
+                // For catch handlers, the leave target is tryEndIL.
+                uint nativeLeaveTarget = nativeTryEnd;
+
                 JITExceptionClause clause;
                 clause.Flags = (ILExceptionClauseFlags)flags;
                 clause.TryStartOffset = nativeTryStart;
@@ -8582,6 +8639,7 @@ public unsafe struct ILCompiler
                 clause.HandlerStartOffset = nativeHandlerStart;
                 clause.HandlerEndOffset = nativeHandlerEnd;
                 clause.ClassTokenOrFilterOffset = 0;
+                clause.LeaveTargetOffset = nativeLeaveTarget;
                 clause.IsValid = true;
 
                 nativeClauses.AddClause(clause);

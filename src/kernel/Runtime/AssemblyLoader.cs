@@ -2338,31 +2338,17 @@ public static unsafe class AssemblyLoader
             // actual type is defined in korlib (e.g., System.String, System.Object, etc.)
             if (IsSystemNamespace(targetNs))
             {
-                // Check if this is a well-known type that might be in korlib
+                // Check if this is a well-known type from the AOT kernel
+                // Well-known types have synthetic tokens (0xF0xxxxxx) and don't have
+                // searchable metadata tables - use the token directly
                 uint wellKnownToken = GetWellKnownTypeToken(targetName);
                 if (wellKnownToken != 0)
                 {
-                    // Search the kernel assembly for the actual TypeDef by name
-                    LoadedAssembly* kernelAsm = GetAssembly(KernelAssemblyId);
-                    if (kernelAsm != null)
-                    {
-                        uint kernelTypeDefCount = kernelAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
-                        for (uint row = 1; row <= kernelTypeDefCount; row++)
-                        {
-                            uint defNameIdx = MetadataReader.GetTypeDefName(ref kernelAsm->Tables, ref kernelAsm->Sizes, row);
-                            uint defNsIdx = MetadataReader.GetTypeDefNamespace(ref kernelAsm->Tables, ref kernelAsm->Sizes, row);
-
-                            byte* defName = MetadataReader.GetString(ref kernelAsm->Metadata, defNameIdx);
-                            byte* defNs = MetadataReader.GetString(ref kernelAsm->Metadata, defNsIdx);
-
-                            if (StringsEqual(targetName, defName) && StringsEqual(targetNs, defNs))
-                            {
-                                targetAsm = kernelAsm;
-                                typeDefToken = 0x02000000 | row;
-                                return true;
-                            }
-                        }
-                    }
+                    // Return the well-known token directly - these are synthetic tokens
+                    // registered by MetadataIntegration.RegisterWellKnownTypes() that map
+                    // to MethodTables extracted from live AOT objects
+                    typeDefToken = wellKnownToken;
+                    return true;
                 }
             }
 
@@ -2636,6 +2622,73 @@ public static unsafe class AssemblyLoader
                 if (name[1] == 'b' && name[2] == 'j' && name[3] == 'e' && name[4] == 'c' &&
                     name[5] == 't' && name[6] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.Object;
+                break;
+
+            case (byte)'E':  // Exception
+                if (name[1] == 'x' && name[2] == 'c' && name[3] == 'e' && name[4] == 'p' &&
+                    name[5] == 't' && name[6] == 'i' && name[7] == 'o' && name[8] == 'n' && name[9] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Exception;
+                break;
+
+            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException
+                if (name[1] == 'r' && name[2] == 'g' && name[3] == 'u' && name[4] == 'm' &&
+                    name[5] == 'e' && name[6] == 'n' && name[7] == 't')
+                {
+                    // ArgumentException
+                    if (name[8] == 'E' && name[9] == 'x' && name[10] == 'c' && name[11] == 'e' &&
+                        name[12] == 'p' && name[13] == 't' && name[14] == 'i' && name[15] == 'o' &&
+                        name[16] == 'n' && name[17] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentException;
+                    // ArgumentNullException
+                    if (name[8] == 'N' && name[9] == 'u' && name[10] == 'l' && name[11] == 'l' &&
+                        name[12] == 'E' && name[13] == 'x' && name[14] == 'c' && name[15] == 'e' &&
+                        name[16] == 'p' && name[17] == 't' && name[18] == 'i' && name[19] == 'o' &&
+                        name[20] == 'n' && name[21] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentNullException;
+                    // ArgumentOutOfRangeException
+                    if (name[8] == 'O' && name[9] == 'u' && name[10] == 't' && name[11] == 'O' &&
+                        name[12] == 'f' && name[13] == 'R' && name[14] == 'a' && name[15] == 'n' &&
+                        name[16] == 'g' && name[17] == 'e' && name[18] == 'E' && name[19] == 'x' &&
+                        name[20] == 'c' && name[21] == 'e' && name[22] == 'p' && name[23] == 't' &&
+                        name[24] == 'i' && name[25] == 'o' && name[26] == 'n' && name[27] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentOutOfRangeException;
+                }
+                break;
+
+            case (byte)'N':  // NotSupportedException, NotImplementedException, NullReferenceException
+                if (name[1] == 'o' && name[2] == 't')
+                {
+                    // NotSupportedException
+                    if (name[3] == 'S' && name[4] == 'u' && name[5] == 'p' && name[6] == 'p' &&
+                        name[7] == 'o' && name[8] == 'r' && name[9] == 't' && name[10] == 'e' &&
+                        name[11] == 'd' && name[12] == 'E' && name[13] == 'x' && name[14] == 'c' &&
+                        name[15] == 'e' && name[16] == 'p' && name[17] == 't' && name[18] == 'i' &&
+                        name[19] == 'o' && name[20] == 'n' && name[21] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.NotSupportedException;
+                    // NotImplementedException
+                    if (name[3] == 'I' && name[4] == 'm' && name[5] == 'p' && name[6] == 'l' &&
+                        name[7] == 'e' && name[8] == 'm' && name[9] == 'e' && name[10] == 'n' &&
+                        name[11] == 't' && name[12] == 'e' && name[13] == 'd' && name[14] == 'E' &&
+                        name[15] == 'x' && name[16] == 'c' && name[17] == 'e' && name[18] == 'p' &&
+                        name[19] == 't' && name[20] == 'i' && name[21] == 'o' && name[22] == 'n' && name[23] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.NotImplementedException;
+                }
+                // NullReferenceException
+                if (name[1] == 'u' && name[2] == 'l' && name[3] == 'l' && name[4] == 'R' &&
+                    name[5] == 'e' && name[6] == 'f' && name[7] == 'e' && name[8] == 'r' &&
+                    name[9] == 'e' && name[10] == 'n' && name[11] == 'c' && name[12] == 'e' &&
+                    name[13] == 'E' && name[14] == 'x' && name[15] == 'c' && name[16] == 'e' &&
+                    name[17] == 'p' && name[18] == 't' && name[19] == 'i' && name[20] == 'o' &&
+                    name[21] == 'n' && name[22] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.NullReferenceException;
+                break;
+
+            case (byte)'F':  // FormatException
+                if (name[1] == 'o' && name[2] == 'r' && name[3] == 'm' && name[4] == 'a' &&
+                    name[5] == 't' && name[6] == 'E' && name[7] == 'x' && name[8] == 'c' &&
+                    name[9] == 'e' && name[10] == 'p' && name[11] == 't' && name[12] == 'i' &&
+                    name[13] == 'o' && name[14] == 'n' && name[15] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.FormatException;
                 break;
         }
 

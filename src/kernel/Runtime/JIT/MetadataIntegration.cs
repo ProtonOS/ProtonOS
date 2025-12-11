@@ -4,6 +4,7 @@
 //
 // Phase 2: Routes type/field resolution through AssemblyLoader's per-assembly registries.
 
+using System;
 using ProtonOS.Memory;
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
@@ -258,6 +259,7 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static class WellKnownTypes
     {
+        // Primitive types
         public const uint Object = 0xF0000001;
         public const uint String = 0xF0000002;
         public const uint Int32 = 0xF0000003;
@@ -274,6 +276,19 @@ public static unsafe class MetadataIntegration
         public const uint IntPtr = 0xF000000E;
         public const uint UIntPtr = 0xF000000F;
         public const uint SByte = 0xF0000010;
+
+        // Exception types - for JIT assemblies to reference AOT exception classes
+        public const uint Exception = 0xF0000020;
+        public const uint ArgumentException = 0xF0000021;
+        public const uint ArgumentNullException = 0xF0000022;
+        public const uint ArgumentOutOfRangeException = 0xF0000023;
+        public const uint InvalidOperationException = 0xF0000024;
+        public const uint NotSupportedException = 0xF0000025;
+        public const uint NotImplementedException = 0xF0000026;
+        public const uint IndexOutOfRangeException = 0xF0000027;
+        public const uint NullReferenceException = 0xF0000028;
+        public const uint InvalidCastException = 0xF0000029;
+        public const uint FormatException = 0xF000002A;
     }
 
     /// <summary>
@@ -309,6 +324,10 @@ public static unsafe class MetadataIntegration
         // Arrays are reference types, so we can create them without boxing.
         // The array's _relatedType field points to the element type's MethodTable.
         count += RegisterPrimitiveTypesFromArrays();
+
+        // Exception types: extract MethodTables from instances
+        // This allows JIT code to reference exception types from korlib
+        count += RegisterExceptionTypes();
 
         DebugConsole.Write("[MetaInt] Registered ");
         DebugConsole.WriteDecimal((uint)count);
@@ -554,6 +573,84 @@ public static unsafe class MetadataIntegration
         mt = GetPrimitiveMT(13);
         InitPrimitiveMT(mt, 1, 9, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.SByte, mt)) count++;
+
+        return count;
+    }
+
+    /// <summary>
+    /// Register exception types by extracting their MethodTables from instances.
+    /// This allows JIT code to reference exception types defined in korlib.
+    /// </summary>
+    private static int RegisterExceptionTypes()
+    {
+        int count = 0;
+
+        // Create exception instances and extract their MethodTables
+        // We use try to create minimal instances just to get MTs
+
+        // Base Exception type
+        var ex = new Exception();
+        MethodTable* exMT = (MethodTable*)ex.m_pMethodTable;
+        if (exMT != null && RegisterType(WellKnownTypes.Exception, exMT))
+            count++;
+
+        // ArgumentException hierarchy
+        var argEx = new ArgumentException();
+        MethodTable* argExMT = (MethodTable*)argEx.m_pMethodTable;
+        if (argExMT != null && RegisterType(WellKnownTypes.ArgumentException, argExMT))
+            count++;
+
+        var argNullEx = new ArgumentNullException();
+        MethodTable* argNullExMT = (MethodTable*)argNullEx.m_pMethodTable;
+        if (argNullExMT != null && RegisterType(WellKnownTypes.ArgumentNullException, argNullExMT))
+            count++;
+
+        var argRangeEx = new ArgumentOutOfRangeException();
+        MethodTable* argRangeExMT = (MethodTable*)argRangeEx.m_pMethodTable;
+        if (argRangeExMT != null && RegisterType(WellKnownTypes.ArgumentOutOfRangeException, argRangeExMT))
+            count++;
+
+        // InvalidOperationException
+        var invalidOpEx = new InvalidOperationException();
+        MethodTable* invalidOpExMT = (MethodTable*)invalidOpEx.m_pMethodTable;
+        if (invalidOpExMT != null && RegisterType(WellKnownTypes.InvalidOperationException, invalidOpExMT))
+            count++;
+
+        // NotSupportedException
+        var notSupportEx = new NotSupportedException();
+        MethodTable* notSupportExMT = (MethodTable*)notSupportEx.m_pMethodTable;
+        if (notSupportExMT != null && RegisterType(WellKnownTypes.NotSupportedException, notSupportExMT))
+            count++;
+
+        // NotImplementedException
+        var notImplEx = new NotImplementedException();
+        MethodTable* notImplExMT = (MethodTable*)notImplEx.m_pMethodTable;
+        if (notImplExMT != null && RegisterType(WellKnownTypes.NotImplementedException, notImplExMT))
+            count++;
+
+        // IndexOutOfRangeException
+        var indexEx = new IndexOutOfRangeException();
+        MethodTable* indexExMT = (MethodTable*)indexEx.m_pMethodTable;
+        if (indexExMT != null && RegisterType(WellKnownTypes.IndexOutOfRangeException, indexExMT))
+            count++;
+
+        // NullReferenceException
+        var nullRefEx = new NullReferenceException();
+        MethodTable* nullRefExMT = (MethodTable*)nullRefEx.m_pMethodTable;
+        if (nullRefExMT != null && RegisterType(WellKnownTypes.NullReferenceException, nullRefExMT))
+            count++;
+
+        // InvalidCastException
+        var invalidCastEx = new InvalidCastException();
+        MethodTable* invalidCastExMT = (MethodTable*)invalidCastEx.m_pMethodTable;
+        if (invalidCastExMT != null && RegisterType(WellKnownTypes.InvalidCastException, invalidCastExMT))
+            count++;
+
+        // FormatException
+        var formatEx = new FormatException();
+        MethodTable* formatExMT = (MethodTable*)formatEx.m_pMethodTable;
+        if (formatExMT != null && RegisterType(WellKnownTypes.FormatException, formatExMT))
+            count++;
 
         return count;
     }

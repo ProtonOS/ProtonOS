@@ -423,8 +423,41 @@ public static unsafe class Tier0JIT
             }
         }
 
+        // Parse EH clauses if method has exception handlers
+        ILExceptionClauses ilClauses = default;
+        bool hasEH = false;
+        if (body.HasMoreSections)
+        {
+            if (ILMethodParser.ParseEHClauses(methodBodyPtr, body.ILCode, (int)body.CodeSize, out ilClauses))
+            {
+                hasEH = ilClauses.Count > 0;
+                if (hasEH)
+                {
+                    compiler.SetILEHClauses(ref ilClauses);
+                    DebugConsole.Write("[Tier0JIT] Method 0x");
+                    DebugConsole.WriteHex(methodToken);
+                    DebugConsole.Write(" has ");
+                    DebugConsole.WriteDecimal(ilClauses.Count);
+                    DebugConsole.WriteLine(" EH clause(s)");
+                }
+            }
+        }
+
         // Compile to native code
-        void* code = compiler.Compile();
+        void* code;
+        JITMethodInfo methodInfo = default;
+        JITExceptionClauses nativeClauses = default;
+
+        if (hasEH)
+        {
+            // Use funclet-based compilation for methods with exception handlers
+            code = compiler.CompileWithFunclets(out methodInfo, out nativeClauses);
+        }
+        else
+        {
+            // Simple compilation for methods without EH
+            code = compiler.Compile();
+        }
 
         // Free heap-allocated compiler buffers (reduces memory pressure during nested JIT)
         compiler.FreeBuffers();
@@ -439,6 +472,25 @@ public static unsafe class Tier0JIT
         }
 
         int codeSize = (int)compiler.CodeSize;
+
+        // For methods without EH, create basic method info for stack unwinding
+        // (Methods with EH already have methodInfo from CompileWithFunclets)
+        if (!hasEH)
+        {
+            ulong codeAddr = (ulong)code;
+            methodInfo = JITMethodInfo.Create(
+                codeAddr,             // codeBase
+                codeAddr,             // codeStart
+                (uint)codeSize,       // codeSize
+                compiler.PrologSize,  // prologSize
+                5,                    // frameRegister (RBP)
+                0                     // frameOffset
+            );
+
+            // Add standard unwind codes for proper stack unwinding
+            // This is critical for exception handling to work correctly
+            methodInfo.AddStandardUnwindCodes(compiler.StackAdjust);
+        }
 
         // bool isTargetedDump = (assemblyId == 4 && methodToken == 0x0600002A) ||
         //                       (assemblyId == 3 && (methodToken == 0x06000006 || methodToken == 0x06000007 ||
@@ -518,6 +570,25 @@ public static unsafe class Tier0JIT
 
         // Complete the compilation (sets native code and clears IsBeingCompiled)
         CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId);
+
+        // Register method with exception handling system
+        // Methods with EH clauses get full registration (unwind + EH info)
+        // Methods without EH clauses still need unwind info for proper stack unwinding
+        if (hasEH && nativeClauses.Count > 0)
+        {
+            if (!JITMethodRegistry.RegisterMethod(ref methodInfo, ref nativeClauses))
+            {
+                DebugConsole.Write("[Tier0JIT] WARNING: Failed to register method 0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.WriteLine(" with EH system");
+            }
+        }
+        else
+        {
+            // Register for stack unwinding only (no EH clauses)
+            // This is needed so exception handling can properly walk the stack
+            JITMethodRegistry.RegisterMethodForUnwind(ref methodInfo);
+        }
 
         // If this is a virtual method, populate the vtable slot
         bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;

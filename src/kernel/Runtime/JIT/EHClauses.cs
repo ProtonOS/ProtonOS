@@ -156,6 +156,12 @@ public struct JITExceptionClause
     /// </summary>
     public uint ClassTokenOrFilterOffset;
 
+    /// <summary>
+    /// Native code offset where control should continue after the catch handler's leave.
+    /// This is the target of the leave instruction inside the handler.
+    /// </summary>
+    public uint LeaveTargetOffset;
+
     /// <summary>True if this clause was successfully converted (all offsets valid).</summary>
     public bool IsValid;
 }
@@ -576,6 +582,7 @@ public static unsafe class EHClauseConverter
                 nativeClause.HandlerStartOffset = 0;
                 nativeClause.HandlerEndOffset = 0;
                 nativeClause.ClassTokenOrFilterOffset = 0;
+                nativeClause.LeaveTargetOffset = 0;
                 nativeClause.IsValid = false;
                 allValid = false;
 
@@ -597,6 +604,7 @@ public static unsafe class EHClauseConverter
                 nativeClause.TryEndOffset = (uint)tryEnd;
                 nativeClause.HandlerStartOffset = (uint)handlerStart;
                 nativeClause.HandlerEndOffset = (uint)handlerEnd;
+                nativeClause.LeaveTargetOffset = 0;  // Will be set later in ILCompiler
 
                 // For filter clauses, convert the filter offset too
                 if (ilClause.Flags == ILExceptionClauseFlags.Filter)

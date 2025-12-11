@@ -68,8 +68,8 @@ public static class TestRunner
         // TEMPORARILY DISABLED - crashes with CR2=0x64
         // RunInstanceTests();
 
-        // TODO: Exception tests - requires MemberRef support (exception constructors from System.Runtime)
-        // RunExceptionTests();
+        // Exception tests - uses AOT well-known type exposure for Exception base class
+        RunExceptionTests();
 
         // Generic tests - tests MethodSpec (0x2B) token resolution
         RunGenericTests();
@@ -1469,8 +1469,21 @@ public static class StringTests
 }
 
 // =============================================================================
-// Exception Handling Tests (for later phases)
+// Exception Handling Tests
 // =============================================================================
+
+// Local exception class for testing - avoids cross-assembly type resolution issues
+public class TestException : Exception
+{
+    public TestException() : base() { }
+    public TestException(string message) : base(message) { }
+}
+
+public class TestException2 : Exception
+{
+    public TestException2() : base() { }
+    public TestException2(string message) : base(message) { }
+}
 
 public static class ExceptionTests
 {
@@ -1489,7 +1502,7 @@ public static class ExceptionTests
 
     private static void ThrowException()
     {
-        throw new InvalidOperationException("Test exception");
+        throw new TestException("Test exception");
     }
 
     public static int TestTryFinally()
@@ -1512,14 +1525,14 @@ public static class ExceptionTests
         {
             try
             {
-                throw new InvalidOperationException("Inner");
+                throw new TestException("Inner");
             }
-            catch (InvalidOperationException)
+            catch (TestException)
             {
-                throw new ArgumentException("Outer");
+                throw new TestException2("Outer");
             }
         }
-        catch (ArgumentException)
+        catch (TestException2)
         {
             return 42;
         }

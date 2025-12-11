@@ -2,6 +2,7 @@
 // Provides lookup for AOT-compiled korlib methods that can be called from JIT code.
 // These methods have no JIT metadata - they're compiled directly into the kernel.
 
+using System;
 using ProtonOS.Memory;
 using ProtonOS.Platform;
 using ProtonOS.Runtime.JIT;
@@ -77,6 +78,9 @@ public static unsafe class AotMethodRegistry
 
         // Register well-known Int32 methods
         RegisterInt32Methods();
+
+        // Register well-known Exception methods
+        RegisterExceptionMethods();
 
         _initialized = true;
         DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", _count));
@@ -215,6 +219,125 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register Exception constructor methods for JIT code.
+    /// These allow JIT-compiled code to call newobj for exception types.
+    /// </summary>
+    private static void RegisterExceptionMethods()
+    {
+        // Exception constructors - factory style (JIT transforms newobj to call)
+        // Exception() - 0 parameters
+        Register(
+            "System.Exception", ".ctor",
+            (nint)(delegate*<Exception>)&ExceptionHelpers.Ctor_Exception,
+            0, ReturnKind.IntPtr, false, false);
+
+        // Exception(string) - 1 parameter
+        Register(
+            "System.Exception", ".ctor",
+            (nint)(delegate*<string?, Exception>)&ExceptionHelpers.Ctor_Exception_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // ArgumentException constructors
+        Register(
+            "System.ArgumentException", ".ctor",
+            (nint)(delegate*<ArgumentException>)&ExceptionHelpers.Ctor_ArgumentException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.ArgumentException", ".ctor",
+            (nint)(delegate*<string?, ArgumentException>)&ExceptionHelpers.Ctor_ArgumentException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // ArgumentNullException constructors
+        Register(
+            "System.ArgumentNullException", ".ctor",
+            (nint)(delegate*<ArgumentNullException>)&ExceptionHelpers.Ctor_ArgumentNullException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.ArgumentNullException", ".ctor",
+            (nint)(delegate*<string?, ArgumentNullException>)&ExceptionHelpers.Ctor_ArgumentNullException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // InvalidOperationException constructors
+        Register(
+            "System.InvalidOperationException", ".ctor",
+            (nint)(delegate*<InvalidOperationException>)&ExceptionHelpers.Ctor_InvalidOperationException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.InvalidOperationException", ".ctor",
+            (nint)(delegate*<string?, InvalidOperationException>)&ExceptionHelpers.Ctor_InvalidOperationException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // NotSupportedException constructors
+        Register(
+            "System.NotSupportedException", ".ctor",
+            (nint)(delegate*<NotSupportedException>)&ExceptionHelpers.Ctor_NotSupportedException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.NotSupportedException", ".ctor",
+            (nint)(delegate*<string?, NotSupportedException>)&ExceptionHelpers.Ctor_NotSupportedException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // NotImplementedException constructors
+        Register(
+            "System.NotImplementedException", ".ctor",
+            (nint)(delegate*<NotImplementedException>)&ExceptionHelpers.Ctor_NotImplementedException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.NotImplementedException", ".ctor",
+            (nint)(delegate*<string?, NotImplementedException>)&ExceptionHelpers.Ctor_NotImplementedException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // IndexOutOfRangeException constructors
+        Register(
+            "System.IndexOutOfRangeException", ".ctor",
+            (nint)(delegate*<IndexOutOfRangeException>)&ExceptionHelpers.Ctor_IndexOutOfRangeException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.IndexOutOfRangeException", ".ctor",
+            (nint)(delegate*<string?, IndexOutOfRangeException>)&ExceptionHelpers.Ctor_IndexOutOfRangeException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // NullReferenceException constructors
+        Register(
+            "System.NullReferenceException", ".ctor",
+            (nint)(delegate*<NullReferenceException>)&ExceptionHelpers.Ctor_NullReferenceException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.NullReferenceException", ".ctor",
+            (nint)(delegate*<string?, NullReferenceException>)&ExceptionHelpers.Ctor_NullReferenceException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // InvalidCastException constructors
+        Register(
+            "System.InvalidCastException", ".ctor",
+            (nint)(delegate*<InvalidCastException>)&ExceptionHelpers.Ctor_InvalidCastException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.InvalidCastException", ".ctor",
+            (nint)(delegate*<string?, InvalidCastException>)&ExceptionHelpers.Ctor_InvalidCastException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        // FormatException constructors
+        Register(
+            "System.FormatException", ".ctor",
+            (nint)(delegate*<FormatException>)&ExceptionHelpers.Ctor_FormatException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.FormatException", ".ctor",
+            (nint)(delegate*<string?, FormatException>)&ExceptionHelpers.Ctor_FormatException_String,
+            1, ReturnKind.IntPtr, false, false);
+    }
+
+    /// <summary>
     /// Register an AOT method.
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
@@ -311,6 +434,30 @@ public static unsafe class AotMethodRegistry
 
         // Check for System.Int32
         if (StringMatches(typeName, "System.Int32"))
+            return true;
+
+        // Exception types
+        if (StringMatches(typeName, "System.Exception"))
+            return true;
+        if (StringMatches(typeName, "System.ArgumentException"))
+            return true;
+        if (StringMatches(typeName, "System.ArgumentNullException"))
+            return true;
+        if (StringMatches(typeName, "System.ArgumentOutOfRangeException"))
+            return true;
+        if (StringMatches(typeName, "System.InvalidOperationException"))
+            return true;
+        if (StringMatches(typeName, "System.NotSupportedException"))
+            return true;
+        if (StringMatches(typeName, "System.NotImplementedException"))
+            return true;
+        if (StringMatches(typeName, "System.IndexOutOfRangeException"))
+            return true;
+        if (StringMatches(typeName, "System.NullReferenceException"))
+            return true;
+        if (StringMatches(typeName, "System.InvalidCastException"))
+            return true;
+        if (StringMatches(typeName, "System.FormatException"))
             return true;
 
         return false;
@@ -586,4 +733,52 @@ public static unsafe class Int32Helpers
         int* valuePtr = (int*)(thisPtr + 8);
         return System.Int32.FormatInt32(*valuePtr);
     }
+}
+
+/// <summary>
+/// Factory methods for Exception types.
+/// These are used by JIT code to create exception instances via newobj.
+/// The JIT transforms newobj Exception::.ctor to a call to these factory methods.
+/// </summary>
+public static class ExceptionHelpers
+{
+    // Exception
+    public static Exception Ctor_Exception() => new Exception();
+    public static Exception Ctor_Exception_String(string? message) => new Exception(message);
+
+    // ArgumentException
+    public static ArgumentException Ctor_ArgumentException() => new ArgumentException();
+    public static ArgumentException Ctor_ArgumentException_String(string? message) => new ArgumentException(message);
+
+    // ArgumentNullException
+    public static ArgumentNullException Ctor_ArgumentNullException() => new ArgumentNullException();
+    public static ArgumentNullException Ctor_ArgumentNullException_String(string? paramName) => new ArgumentNullException(paramName);
+
+    // InvalidOperationException
+    public static InvalidOperationException Ctor_InvalidOperationException() => new InvalidOperationException();
+    public static InvalidOperationException Ctor_InvalidOperationException_String(string? message) => new InvalidOperationException(message);
+
+    // NotSupportedException
+    public static NotSupportedException Ctor_NotSupportedException() => new NotSupportedException();
+    public static NotSupportedException Ctor_NotSupportedException_String(string? message) => new NotSupportedException(message);
+
+    // NotImplementedException
+    public static NotImplementedException Ctor_NotImplementedException() => new NotImplementedException();
+    public static NotImplementedException Ctor_NotImplementedException_String(string? message) => new NotImplementedException(message);
+
+    // IndexOutOfRangeException
+    public static IndexOutOfRangeException Ctor_IndexOutOfRangeException() => new IndexOutOfRangeException();
+    public static IndexOutOfRangeException Ctor_IndexOutOfRangeException_String(string? message) => new IndexOutOfRangeException(message);
+
+    // NullReferenceException
+    public static NullReferenceException Ctor_NullReferenceException() => new NullReferenceException();
+    public static NullReferenceException Ctor_NullReferenceException_String(string? message) => new NullReferenceException(message);
+
+    // InvalidCastException
+    public static InvalidCastException Ctor_InvalidCastException() => new InvalidCastException();
+    public static InvalidCastException Ctor_InvalidCastException_String(string? message) => new InvalidCastException(message);
+
+    // FormatException
+    public static FormatException Ctor_FormatException() => new FormatException();
+    public static FormatException Ctor_FormatException_String(string? message) => new FormatException(message);
 }

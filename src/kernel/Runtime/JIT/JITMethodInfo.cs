@@ -285,6 +285,14 @@ public unsafe struct JITMethodInfo
             }
 
             // Write new clause in NativeAOT format
+            DebugConsole.Write("[AddEHClause] tryStart=0x");
+            DebugConsole.WriteHex(clause.TryStartOffset);
+            DebugConsole.Write(" tryEnd=0x");
+            DebugConsole.WriteHex(clause.TryEndOffset);
+            DebugConsole.Write(" handler=0x");
+            DebugConsole.WriteHex(clause.HandlerStartOffset);
+            DebugConsole.WriteLine();
+
             WriteNativeUnsigned(ref ptr, clause.TryStartOffset);
 
             uint tryLength = clause.TryEndOffset - clause.TryStartOffset;
@@ -304,6 +312,15 @@ public unsafe struct JITMethodInfo
             else if (kind == EHClauseKind.Filter)
             {
                 WriteNativeUnsigned(ref ptr, clause.ClassTokenOrFilterOffset);
+            }
+
+            // Leave target offset (for catch/filter handlers - where to resume after handler returns)
+            if (kind == EHClauseKind.Typed || kind == EHClauseKind.Filter)
+            {
+                WriteNativeUnsigned(ref ptr, clause.LeaveTargetOffset);
+                DebugConsole.Write("[AddEHClause] leaveTarget=0x");
+                DebugConsole.WriteHex(clause.LeaveTargetOffset);
+                DebugConsole.WriteLine();
             }
 
             EHClauseCount++;
@@ -348,6 +365,16 @@ public unsafe struct JITMethodInfo
         {
             fixed (byte* src = _ehClauseData)
             {
+                DebugConsole.Write("[BuildEHInfo] clauseDataSize=");
+                DebugConsole.WriteDecimal((uint)clauseDataSize);
+                DebugConsole.Write(" bytes: ");
+                for (int i = 0; i < clauseDataSize && i < 16; i++)
+                {
+                    DebugConsole.WriteHex((ulong)src[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+
                 for (int i = 0; i < clauseDataSize; i++)
                 {
                     ptr[i] = src[i];
@@ -712,6 +739,12 @@ public unsafe struct JITMethodInfo
             SkipNativeUnsigned(ref ptr);  // Filter offset
         }
 
+        // Leave target offset (for catch/filter handlers)
+        if (kind == (byte)EHClauseKind.Typed || kind == (byte)EHClauseKind.Filter)
+        {
+            SkipNativeUnsigned(ref ptr);  // Leave target
+        }
+
         return ptr;
     }
 
@@ -945,7 +978,9 @@ public static unsafe class JITMethodRegistry
 
         if (success)
         {
-            DebugConsole.Write("[JITRegistry] Registered method at RVA 0x");
+            DebugConsole.Write("[JITRegistry] Registered method base=0x");
+            DebugConsole.WriteHex(info.CodeBase);
+            DebugConsole.Write(" RVA 0x");
             DebugConsole.WriteHex(info.Function.BeginAddress);
             DebugConsole.Write("-0x");
             DebugConsole.WriteHex(info.Function.EndAddress);
@@ -966,6 +1001,72 @@ public static unsafe class JITMethodRegistry
             DebugConsole.WriteLine();
         }
 
+        return success;
+    }
+
+    /// <summary>
+    /// Register a JIT-compiled method for stack unwinding only (no EH clauses).
+    /// This is needed so the exception handler can properly unwind through JIT methods
+    /// even if they don't have try/catch/finally blocks.
+    /// </summary>
+    /// <param name="info">Method info structure to register</param>
+    /// <returns>True if registered successfully</returns>
+    public static bool RegisterMethodForUnwind(ref JITMethodInfo info)
+    {
+        if (!_initialized && !Init())
+            return false;
+
+        _lock.Acquire();
+
+        if (_methodCount >= MaxMethods)
+        {
+            _lock.Release();
+            return false;
+        }
+
+        // Finalize unwind info (no EH clauses)
+        info.FinalizeUnwindInfo(false);
+
+        // Store method info
+        int index = _methodCount++;
+        _methods[index] = info;
+
+        // Allocate UNWIND_INFO from CodeHeap so it can be addressed via RVA from CodeBase
+        const int unwindInfoSize = 64;
+        byte* unwindInfoInCodeHeap = CodeHeap.Alloc(unwindInfoSize);
+        if (unwindInfoInCodeHeap == null)
+        {
+            _methodCount--;
+            _lock.Release();
+            return false;
+        }
+
+        // Copy unwind info to CodeHeap
+        byte* localUnwind = info.GetUnwindInfoPtr();
+        for (int i = 0; i < unwindInfoSize; i++)
+            unwindInfoInCodeHeap[i] = localUnwind[i];
+
+        // Calculate UNWIND_INFO RVA relative to CodeBase
+        uint unwindRva = (uint)((ulong)unwindInfoInCodeHeap - info.CodeBase);
+
+        // Update the stored info's RUNTIME_FUNCTION with correct unwind RVA
+        _methods[index].Function.UnwindInfoAddress = unwindRva;
+
+        // Build single-entry RUNTIME_FUNCTION array
+        RuntimeFunction* functions = (RuntimeFunction*)CodeHeap.Alloc((ulong)sizeof(RuntimeFunction));
+        if (functions == null)
+        {
+            _methodCount--;
+            _lock.Release();
+            return false;
+        }
+
+        functions[0] = _methods[index].Function;
+
+        // Register with ExceptionHandling
+        bool success = ExceptionHandling.AddFunctionTable(functions, 1, info.CodeBase);
+
+        _lock.Release();
         return success;
     }
 

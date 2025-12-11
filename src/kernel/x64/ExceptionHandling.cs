@@ -301,6 +301,7 @@ public struct NativeAotEHClause
     public uint HandlerOffset;    // RVA offset of handler funclet from function start
     public uint FilterOffset;     // RVA offset of filter funclet (for Filter kind)
     public ulong CatchTypeRva;    // RVA of catch type (for Typed kind)
+    public uint LeaveTargetOffset; // RVA offset where execution continues after catch/filter handler returns
 }
 
 /// <summary>
@@ -337,8 +338,8 @@ public unsafe delegate int UnhandledExceptionFilter(ExceptionRecord* exceptionRe
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct FunctionTableStorage
 {
-    // Up to 64 registered code regions
-    public fixed byte Data[64 * 40]; // 64 entries × sizeof(FunctionTableEntry)
+    // Up to 512 registered code regions (increased to support JIT methods without EH)
+    public fixed byte Data[512 * 40]; // 512 entries × sizeof(FunctionTableEntry)
 }
 
 /// <summary>
@@ -694,7 +695,7 @@ public static unsafe class ExceptionHandling
         }
     }
 
-    private const int MaxFunctionTables = 64;
+    private const int MaxFunctionTables = 512;
 
     private static FunctionTableStorage _tableStorage;
     private static SpinLock _lock;
@@ -899,8 +900,17 @@ public static unsafe class ExceptionHandling
                 var functions = tables[i].Functions;
                 uint count = tables[i].FunctionCount;
 
-                // Binary search through RUNTIME_FUNCTION array
+                // Skip if controlPc is before this code region (would overflow when cast to uint)
+                if (controlPc < baseAddr)
+                    continue;
+
+                // Calculate RVA (offset within the code region)
                 uint rva = (uint)(controlPc - baseAddr);
+
+                // Quick upper bound check - if RVA is huge, skip this table
+                // (avoids searching when controlPc is way past this code region)
+                if (rva > 0x100000)  // 1MB max method size is very generous
+                    continue;
 
                 int left = 0;
                 int right = (int)count - 1;
@@ -1784,6 +1794,7 @@ public static unsafe class ExceptionHandling
             // Read type-specific data
             uint filterOffset = 0;
             uint catchTypeRva = 0;
+            uint leaveTargetOffset = 0;
 
             if (kind == (byte)EHClauseKind.Typed)
             {
@@ -1797,6 +1808,12 @@ public static unsafe class ExceptionHandling
                 // For filter, read handler offset then filter offset
                 handlerOffset = ReadNativeUnsigned(ref ptr);
                 filterOffset = ReadNativeUnsigned(ref ptr);
+            }
+
+            // Read leave target offset for catch/filter handlers
+            if (kind == (byte)EHClauseKind.Typed || kind == (byte)EHClauseKind.Filter)
+            {
+                leaveTargetOffset = ReadNativeUnsigned(ref ptr);
             }
 
             DebugConsole.Write("[EH] Clause ");
@@ -1835,9 +1852,12 @@ public static unsafe class ExceptionHandling
                     clause.HandlerOffset = handlerOffset;
                     clause.FilterOffset = filterOffset;
                     clause.CatchTypeRva = catchTypeRva;
+                    clause.LeaveTargetOffset = leaveTargetOffset;
                     foundClauseIndex = i;
 
-                    DebugConsole.WriteLine("[EH] Found matching catch clause!");
+                    DebugConsole.Write("[EH] Found matching catch clause! leaveTarget=0x");
+                    DebugConsole.WriteHex(leaveTargetOffset);
+                    DebugConsole.WriteLine();
                     return true;
                 }
                 else if (kind == (byte)EHClauseKind.Filter)
@@ -1871,9 +1891,12 @@ public static unsafe class ExceptionHandling
                         clause.HandlerOffset = handlerOffset;
                         clause.FilterOffset = filterOffset;
                         clause.CatchTypeRva = 0;  // Filter clauses don't have a type
+                        clause.LeaveTargetOffset = leaveTargetOffset;
                         foundClauseIndex = i;
 
-                        DebugConsole.WriteLine("[EH] Filter matched! Using this handler.");
+                        DebugConsole.Write("[EH] Filter matched! Using this handler. leaveTarget=0x");
+                        DebugConsole.WriteHex(leaveTargetOffset);
+                        DebugConsole.WriteLine();
                         return true;
                     }
                     else
@@ -2071,7 +2094,9 @@ public static unsafe class ExceptionHandling
 
             DebugConsole.Write("[EH] Frame ");
             DebugConsole.WriteDecimal(frame);
-            DebugConsole.Write(": func RVA=0x");
+            DebugConsole.Write(": base=0x");
+            DebugConsole.WriteHex(imageBase);
+            DebugConsole.Write(" RVA=0x");
             DebugConsole.WriteHex(funcEntry->BeginAddress);
             DebugConsole.Write("-0x");
             DebugConsole.WriteHex(funcEntry->EndAddress);
@@ -2240,14 +2265,25 @@ public static unsafe class ExceptionHandling
                     DebugConsole.WriteLine();
 
                     // Transfer control to handler
+                    // The funclet prologue is: push rbp; mov rbp, rdx
+                    // So the funclet will do a push at entry, then ret reads from RSP+8 at exit
+                    // We need to set up the stack so:
+                    // - RSP points to where the funclet will push rbp
+                    // - RSP+8 contains the return address (read by ret after pop rbp)
                     context->Rip = handlerAddr;
-                    context->Rsp = unwindContext.Rsp - 8;  // Point at return address
+                    context->Rsp = unwindContext.Rsp - 16;  // Leave room for push rbp AND return addr
                     context->Rbp = catchSearchContext.Rbp;  // Keep the frame pointer
                     context->Rcx = (ulong)exceptionObject;
                     context->Rdx = catchSearchContext.Rbp;  // Pass frame pointer
 
-                    // Write the return address at RSP so handler's RET works
-                    *(ulong*)context->Rsp = unwindContext.Rip;
+                    // Write the return address at RSP+8 so handler's RET works after pop rbp
+                    // The return address is the leave target - where execution continues after the handler
+                    // This is calculated as: imageBase + functionStart + leaveTargetOffset
+                    ulong leaveTargetAddr = catchImageBase + catchFuncEntry->BeginAddress + clause.LeaveTargetOffset;
+                    DebugConsole.Write("[EH] Leave target addr=0x");
+                    DebugConsole.WriteHex(leaveTargetAddr);
+                    DebugConsole.WriteLine();
+                    *(ulong*)(context->Rsp + 8) = leaveTargetAddr;
 
                     // Set current exception info for rethrow support
                     SetCurrentException(exceptionObject);
@@ -2379,11 +2415,21 @@ public static unsafe class ExceptionHandling
                     // Update the actual context for transfer
                     // Use walkContext (unwound to parent frame) for frame info,
                     // not actualContext (which is the funclet's frame)
+                    // The funclet prologue is: push rbp; mov rbp, rdx
+                    // So we need RSP-16 to leave room for push AND return address at RSP+8
                     actualContext->Rip = handlerAddr;
-                    actualContext->Rsp = walkContext.Rsp;  // Parent's stack pointer
+                    actualContext->Rsp = walkContext.Rsp - 16;  // Leave room for push and return addr
                     actualContext->Rbp = walkContext.Rbp;  // Parent's frame pointer
                     actualContext->Rcx = (ulong)exceptionObject;
                     actualContext->Rdx = walkContext.Rbp;  // Pass parent's frame pointer to funclet
+
+                    // Write return address at RSP+8 (where ret will find it after pop rbp)
+                    // The return address is the leave target - where execution continues after the handler
+                    ulong leaveTargetAddr = imageBase + funcEntry->BeginAddress + clause.LeaveTargetOffset;
+                    DebugConsole.Write("[EH] Leave target addr=0x");
+                    DebugConsole.WriteHex(leaveTargetAddr);
+                    DebugConsole.WriteLine();
+                    *(ulong*)(actualContext->Rsp + 8) = leaveTargetAddr;
 
                     // Update exception tracking for nested rethrow
                     SetCurrentException(exceptionObject);
