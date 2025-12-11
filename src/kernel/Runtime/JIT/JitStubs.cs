@@ -4,6 +4,7 @@
 
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
+using ProtonOS.X64;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -81,11 +82,13 @@ public static unsafe class JitStubs
         var result = Tier0JIT.CompileMethod(assemblyId, methodToken);
         if (!result.Success)
         {
-            DebugConsole.Write("[JitStubs] FAILED to compile 0x");
+            DebugConsole.Write("[JitStubs] FATAL: Failed to compile 0x");
             DebugConsole.WriteHex(methodToken);
             DebugConsole.Write(" asm ");
             DebugConsole.WriteDecimal(assemblyId);
             DebugConsole.WriteLine();
+            DebugConsole.WriteLine("!!! SYSTEM HALTED - JIT compilation failure");
+            CPU.HaltForever();
         }
     }
 
@@ -136,12 +139,13 @@ public static unsafe class JitStubs
         var result = Tier0JIT.CompileMethod(assemblyId, methodToken);
         if (!result.Success)
         {
-            DebugConsole.Write("[JitStubs] FAILED to compile virtual 0x");
+            DebugConsole.Write("[JitStubs] FATAL: Failed to compile virtual 0x");
             DebugConsole.WriteHex(methodToken);
             DebugConsole.Write(" asm ");
             DebugConsole.WriteDecimal(assemblyId);
             DebugConsole.WriteLine();
-            return;
+            DebugConsole.WriteLine("!!! SYSTEM HALTED - JIT compilation failure");
+            CPU.HaltForever();
         }
 
         // After compilation, update the vtable slot
@@ -230,19 +234,27 @@ public static unsafe class JitStubs
                 }
                 else
                 {
-                    DebugConsole.Write("[JitStubs] FAILED to compile vtable slot ");
+                    DebugConsole.Write("[JitStubs] FATAL: Failed to compile vtable slot ");
                     DebugConsole.WriteDecimal((uint)vtableSlot);
+                    DebugConsole.Write(" token 0x");
+                    DebugConsole.WriteHex(info->Token);
+                    DebugConsole.Write(" asm ");
+                    DebugConsole.WriteDecimal(info->AssemblyId);
                     DebugConsole.WriteLine();
+                    DebugConsole.WriteLine("!!! SYSTEM HALTED - JIT compilation failure");
+                    CPU.HaltForever();
                 }
             }
             return;
         }
 
         // No method registered for this vtable slot - this is a gap in our metadata
-        DebugConsole.Write("[JitStubs] VTable slot ");
+        DebugConsole.Write("[JitStubs] FATAL: VTable slot ");
         DebugConsole.WriteDecimal((uint)vtableSlot);
         DebugConsole.Write(" has no registered method for MT 0x");
         DebugConsole.WriteHex((ulong)methodTable);
         DebugConsole.WriteLine();
+        DebugConsole.WriteLine("!!! SYSTEM HALTED - Missing vtable method registration");
+        CPU.HaltForever();
     }
 }

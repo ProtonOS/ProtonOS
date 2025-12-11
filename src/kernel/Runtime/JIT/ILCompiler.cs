@@ -693,6 +693,7 @@ public unsafe struct ILCompiler
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
         // Debug helpers
         compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
+        compiler._debugLdfld = RuntimeHelpers.GetDebugLdfldPtr();
         compiler._debugStelemStack = RuntimeHelpers.GetDebugStelemStackPtr();
         compiler._debugVtableDispatch = RuntimeHelpers.GetDebugVtableDispatchPtr();
         compiler._debugAssemblyId = 0;
@@ -5877,6 +5878,14 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);
         PopEntry();
 
+        // Save struct pointer for debug tracing (only for ref fields from value types)
+        bool needDebugLdfld = _debugLdfld != null && isValueType && !fieldTypeIsValueType && size == 8;
+        if (needDebugLdfld)
+        {
+            // Save original pointer to R9 (VReg.R9 = x64 R13, callee-saved)
+            X64Emitter.MovRR(ref _code, VReg.R9, VReg.R0);
+        }
+
         // ldfld conditions debug (verbose - commented out)
         // if (_debugAssemblyId == 3)
         // {
@@ -6001,6 +6010,19 @@ public unsafe struct ILCompiler
             // Sizes 3 should use 4-byte load; sizes 5,6,7 should use 8-byte load.
             // The extra bytes loaded are garbage but won't affect the value type since
             // subsequent field accesses use the correct byte offsets.
+
+            // Debug ldfld for reference type fields from value types
+            if (isValueType && !fieldTypeIsValueType && size == 8)
+            {
+                DebugConsole.Write("[ldfld] ref field from VT: tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" off=");
+                DebugConsole.WriteDecimal((uint)offset);
+                DebugConsole.Write(" declIsVT=Y declSize=");
+                DebugConsole.WriteDecimal((uint)declaringTypeSize);
+                DebugConsole.WriteLine();
+            }
+
             if (size == 1)
             {
                 if (signed)
@@ -6027,6 +6049,31 @@ public unsafe struct ILCompiler
             {
                 // Sizes 5, 6, 7, 8 use 8-byte load
                 X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, offset);
+            }
+
+            // Runtime debug: trace ldfld for reference fields from value types (like DefaultInterpolatedStringHandler._builder)
+            if (needDebugLdfld)
+            {
+                // Save R0 (loaded value) - we need it for both the debug call and the result
+                X64Emitter.Push(ref _code, VReg.R0);
+
+                // Allocate shadow space
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+                // Set up args: RCX = original ptr (saved in R9/x64-R13), RDX = offset, R8 = loaded value
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R9);  // RCX = original struct ptr
+                X64Emitter.MovRI32(ref _code, VReg.R2, offset);  // RDX = offset
+                X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, 32);  // R8 (VReg.R3) = value (from saved R0)
+
+                // Call DebugLdfld
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_debugLdfld);
+                X64Emitter.CallR(ref _code, VReg.R0);
+
+                // Deallocate shadow space
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+                // Restore R0
+                X64Emitter.Pop(ref _code, VReg.R0);
             }
         }
 
@@ -6704,6 +6751,55 @@ public unsafe struct ILCompiler
         // DebugConsole.WriteHex((ulong)ctor.MethodTable);
         // DebugConsole.WriteLine();
 
+        // Special case: Factory-style constructors (like String..ctor)
+        // These have NativeCode but no MethodTable - they allocate and return the object themselves
+        if (resolved && ctor.IsValid && ctor.NativeCode != null && ctor.MethodTable == null && !ctor.HasThis)
+        {
+            // Factory method: just call it with the args and it returns the new object
+            int factoryArgs = ctor.ArgCount;
+
+            if (factoryArgs > 4)
+            {
+                DebugConsole.WriteLine("[JIT] newobj factory: too many args (max 4)");
+                return false;
+            }
+
+            // Pop args from eval stack into argument registers
+            // x64: RCX, RDX, R8, R9 for first 4 args
+            VReg[] argRegs = { VReg.R1, VReg.R2, VReg.R3, VReg.R4 };
+            VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10 };
+
+            // Pop in reverse order (last arg on top of stack)
+            for (int i = factoryArgs - 1; i >= 0; i--)
+            {
+                X64Emitter.Pop(ref _code, tempRegs[i]);
+                PopEntry();
+            }
+
+            // Reserve shadow space
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+            // Move saved args to their calling convention positions
+            for (int i = 0; i < factoryArgs; i++)
+            {
+                X64Emitter.MovRR(ref _code, argRegs[i], tempRegs[i]);
+            }
+
+            // Call the factory method
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctor.NativeCode);
+            X64Emitter.CallR(ref _code, VReg.R0);
+            RecordSafePoint();
+
+            // Restore shadow space
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Push return value (in RAX) onto eval stack
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushEntry(EvalStackEntry.NativeInt);
+
+            return true;
+        }
+
         if (resolved && ctor.IsValid && ctor.MethodTable != null)
         {
             // Check if this is a value type constructor
@@ -6840,31 +6936,11 @@ public unsafe struct ILCompiler
             return true;
         }
 
-        // Fallback: token is directly the MethodTable* address (simplified testing mode)
-        ulong mtAddress = token;
-
-        // Load MethodTable* into RCX (first arg for RhpNewFast)
-        X64Emitter.MovRI64(ref _code, VReg.R1, mtAddress);
-
-        // Reserve shadow space to protect any live eval stack data
-        X64Emitter.SubRI(ref _code, VReg.SP, 32);
-
-        // Call RhpNewFast(MethodTable* pMT) -> returns object pointer in RAX
-        // RhpNewFast allocates the object and sets the MT pointer
-        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
-        X64Emitter.CallR(ref _code, VReg.R0);
-
-        // Record safe point after call (GC can happen during allocation)
-        RecordSafePoint();
-
-        // Restore RSP after the shadow space reservation
-        X64Emitter.AddRI(ref _code, VReg.SP, 32);
-
-        // Push the allocated object reference onto eval stack
-        X64Emitter.Push(ref _code, VReg.R0);
-        PushEntry(EvalStackEntry.NativeInt);
-
-        return true;
+        // Failed to resolve newobj token - this is a compilation error
+        DebugConsole.Write("[JIT newobj] FAIL: unresolved token 0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.WriteLine();
+        return false;
     }
 
     /// <summary>
@@ -8105,6 +8181,7 @@ public unsafe struct ILCompiler
     private void* _isAssignableTo;
     private void* _getInterfaceMethod;
     private void* _debugStfld;
+    private void* _debugLdfld;
     private void* _debugStelemStack;
     private void* _debugVtableDispatch;
     private void* _ensureVtableSlotCompiled;  // JIT stub for lazy vtable slot compilation

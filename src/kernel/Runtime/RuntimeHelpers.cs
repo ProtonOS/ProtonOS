@@ -94,6 +94,7 @@ public static unsafe class RuntimeHelpers
 
         // Cache debug helper pointers
         _debugStfldPtr = (void*)(delegate*<void*, int, void>)&DebugStfld;
+        _debugLdfldPtr = (void*)(delegate*<void*, int, void*, void>)&DebugLdfld;
         _debugStelemStackPtr = (void*)(delegate*<void*, ulong, void*, int, void>)&DebugStelemStack;
         _debugVtableDispatchPtr = (void*)(delegate*<void*, int, void>)&DebugVtableDispatch;
 
@@ -235,11 +236,42 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void DebugStfld(void* objPtr, int offset)
     {
-        // DebugConsole.Write("[stfld RT] obj=0x");
-        // DebugConsole.WriteHex((ulong)objPtr);
-        // DebugConsole.Write(" off=");
-        // DebugConsole.WriteDecimal((uint)offset);
-        // DebugConsole.WriteLine();
+        DebugConsole.Write("[stfld RT] obj=0x");
+        DebugConsole.WriteHex((ulong)objPtr);
+        DebugConsole.Write(" off=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.WriteLine();
+    }
+
+    // Debug helper pointer for ldfld
+    private static void* _debugLdfldPtr;
+
+    /// <summary>
+    /// Get the debug ldfld function pointer for tracing.
+    /// Signature: void DebugLdfld(void* objPtr, int offset, void* value)
+    /// </summary>
+    public static void* GetDebugLdfldPtr() => _debugLdfldPtr;
+
+    /// <summary>
+    /// Debug helper called from JIT code to trace ldfld operations.
+    /// Shows the actual runtime object pointer, offset, and loaded value.
+    /// </summary>
+    public static void DebugLdfld(void* objPtr, int offset, void* value)
+    {
+        DebugConsole.Write("[ldfld RT] ptr=0x");
+        DebugConsole.WriteHex((ulong)objPtr);
+        DebugConsole.Write(" off=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.Write(" val=0x");
+        DebugConsole.WriteHex((ulong)value);
+        // If value looks like a valid pointer, show what's at offset 0 (MethodTable)
+        if (value != null && (ulong)value > 0x1000)
+        {
+            void* mt = *(void**)value;
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)mt);
+        }
+        DebugConsole.WriteLine();
     }
 
     // Debug helper pointer for stelem
