@@ -877,25 +877,61 @@ public static unsafe class Tier0JIT
             }
             else if (elemType == 0x15) // ELEMENT_TYPE_GENERICINST
             {
-                // Generic instantiation - skip all tokens
+                // Generic instantiation - parse fully to get size
                 isValueType[i] = false;
-                // Skip: CLASS/VALUETYPE marker, TypeDefOrRef, argCount, args...
+                // Parse: CLASS/VALUETYPE marker, TypeDefOrRef, argCount, args...
                 if (ptr < end)
                 {
                     byte genKind = *ptr++;
                     isValueType[i] = (genKind == 0x11); // ValueType generic
                     if (ptr < end)
                     {
-                        MetadataReader.ReadCompressedUInt(ref ptr); // TypeDefOrRef
+                        uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                        // Get size of first type argument (for Nullable<T> calculation)
+                        ushort firstTypeArgSize = 0;
                         if (ptr < end)
                         {
                             uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
-                            // Skip type arguments (simplified - just skip tokens)
+                            // Parse type arguments
                             for (uint j = 0; j < argCount && ptr < end; j++)
                             {
-                                byte argType = *ptr++;
-                                if (argType == 0x11 || argType == 0x12)
-                                    MetadataReader.ReadCompressedUInt(ref ptr);
+                                if (j == 0)
+                                {
+                                    // Get the size of the first type argument
+                                    bool argIsVT;
+                                    GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out firstTypeArgSize);
+                                }
+                                else
+                                {
+                                    SkipTypeSig(ref ptr, end);
+                                }
+                            }
+                            // Compute size for generic value type
+                            if (isValueType[i] && typeSize != null)
+                            {
+                                // Convert TypeDefOrRef to full token
+                                uint tag = typeDefOrRef & 0x03;
+                                uint typeRid = typeDefOrRef >> 2;
+                                uint fullToken = 0;
+                                if (tag == 0)
+                                    fullToken = 0x02000000 | typeRid;  // TypeDef
+                                else if (tag == 1)
+                                    fullToken = 0x01000000 | typeRid;  // TypeRef
+                                else if (tag == 2)
+                                    fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+                                uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                                // Nullable<T> pattern: base size <= 8, single type arg
+                                if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                                {
+                                    // Nullable<T>: size = 8 (hasValue + padding) + sizeof(T), aligned to 8
+                                    int alignedTSize = (firstTypeArgSize + 7) & ~7;
+                                    typeSize[i] = (ushort)(8 + alignedTSize);
+                                }
+                                else
+                                {
+                                    typeSize[i] = (ushort)baseSize;
+                                }
                             }
                         }
                     }
@@ -1085,6 +1121,66 @@ public static unsafe class Tier0JIT
             return;
         }
 
+        // GENERICINST (0x15) - generic instantiation return type
+        if (elemType == 0x15)
+        {
+            if (ptr < end)
+            {
+                byte genKind = *ptr++;
+                isValueType = (genKind == 0x11); // ValueType generic
+                if (ptr < end)
+                {
+                    uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                    // Get size of first type argument (for Nullable<T> calculation)
+                    ushort firstTypeArgSize = 0;
+                    if (ptr < end)
+                    {
+                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        // Parse type arguments
+                        for (uint j = 0; j < argCount && ptr < end; j++)
+                        {
+                            if (j == 0)
+                            {
+                                bool argIsVT;
+                                GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out firstTypeArgSize);
+                            }
+                            else
+                            {
+                                SkipTypeSig(ref ptr, end);
+                            }
+                        }
+                        // Compute size for generic value type
+                        if (isValueType)
+                        {
+                            // Convert TypeDefOrRef to full token
+                            uint tag = typeDefOrRef & 0x03;
+                            uint typeRid = typeDefOrRef >> 2;
+                            uint fullToken = 0;
+                            if (tag == 0)
+                                fullToken = 0x02000000 | typeRid;  // TypeDef
+                            else if (tag == 1)
+                                fullToken = 0x01000000 | typeRid;  // TypeRef
+                            else if (tag == 2)
+                                fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+                            uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                            // Nullable<T> pattern: base size <= 8, single type arg
+                            if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                            {
+                                int alignedTSize = (firstTypeArgSize + 7) & ~7;
+                                typeSize = (ushort)(8 + alignedTSize);
+                            }
+                            else
+                            {
+                                typeSize = (ushort)baseSize;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Class (0x12), SzArray (0x1D), Object (0x1C), String (0x0E) - not value types
         // isValueType remains false
     }
@@ -1254,18 +1350,29 @@ public static unsafe class Tier0JIT
             {
                 byte genKind = *ptr++;
                 isValueType = (genKind == 0x11);
-                // Skip TypeDefOrRef
+                // Read TypeDefOrRef
                 uint typeDefOrRef = 0;
+                uint argCount = 0;
+                ushort firstTypeArgSize = 0;
                 if (ptr < end)
                 {
                     typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
-                    // Skip type arguments
+                    // Parse type arguments (we need the first arg's size for Nullable<T>)
                     if (ptr < end)
                     {
-                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        argCount = MetadataReader.ReadCompressedUInt(ref ptr);
                         for (uint j = 0; j < argCount && ptr < end; j++)
                         {
-                            SkipTypeSig(ref ptr, end);
+                            if (j == 0)
+                            {
+                                // Get the size of the first type argument
+                                bool argIsVT;
+                                GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out firstTypeArgSize);
+                            }
+                            else
+                            {
+                                SkipTypeSig(ref ptr, end);
+                            }
                         }
                     }
                 }
@@ -1281,7 +1388,25 @@ public static unsafe class Tier0JIT
                         fullToken = 0x01000000 | typeRid;
                     else if (tag == 2)
                         fullToken = 0x1B000000 | typeRid;
-                    typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
+
+                    // Special handling for Nullable<T>: size = 8 + sizeof(T), aligned to 8
+                    // The base generic Nullable<T> has argCount=1, and the layout is:
+                    //   bool _hasValue (1 byte) + padding to 8 + T _value
+                    // For small T (<=8 bytes), total is 16 bytes.
+                    // For larger T, total is 8 + alignedSize(T), rounded to 8.
+                    // We detect Nullable by checking if the base type resolves to 0 or invalid size.
+                    uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                    if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                    {
+                        // This looks like a generic wrapper type (like Nullable<T>)
+                        // The size is 8 (for hasValue + padding) + sizeof(T), aligned to 8
+                        int alignedTSize = (firstTypeArgSize + 7) & ~7;
+                        typeSize = (ushort)(8 + alignedTSize);
+                    }
+                    else
+                    {
+                        typeSize = (ushort)baseSize;
+                    }
                 }
             }
             return;

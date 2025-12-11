@@ -2703,6 +2703,73 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Check if the name is "Nullable`1".
+    /// </summary>
+    private static bool IsNullableName(byte* name)
+    {
+        // "Nullable`1" = N u l l a b l e ` 1 \0
+        return name[0] == 'N' && name[1] == 'u' && name[2] == 'l' && name[3] == 'l' &&
+               name[4] == 'a' && name[5] == 'b' && name[6] == 'l' && name[7] == 'e' &&
+               name[8] == '`' && name[9] == '1' && name[10] == 0;
+    }
+
+    /// <summary>
+    /// Check if a generic definition token refers to System.Nullable`1.
+    /// </summary>
+    private static bool IsNullableGenericDef(uint genDefToken)
+    {
+        uint tableType = genDefToken >> 24;
+        uint rid = genDefToken & 0x00FFFFFF;
+
+        if (tableType == 0x02)  // TypeDef
+        {
+            // Check each loaded assembly for this TypeDef
+            for (int i = 0; i < _assemblyCount; i++)
+            {
+                if (!_assemblies[i].IsLoaded)
+                    continue;
+
+                LoadedAssembly* asm = &_assemblies[i];
+                uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+                if (rid > 0 && rid <= typeDefCount)
+                {
+                    uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, rid);
+                    uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, rid);
+                    byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+                    byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+                    if (IsSystemNamespace(ns) && IsNullableName(name))
+                        return true;
+                }
+            }
+        }
+        else if (tableType == 0x01)  // TypeRef
+        {
+            // TypeRefs point to external types - check the name/namespace from the TypeRef table
+            for (int i = 0; i < _assemblyCount; i++)
+            {
+                if (!_assemblies[i].IsLoaded)
+                    continue;
+
+                LoadedAssembly* asm = &_assemblies[i];
+                uint typeRefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeRef];
+                if (rid > 0 && rid <= typeRefCount)
+                {
+                    uint refNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, rid);
+                    uint refNsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, rid);
+                    byte* name = MetadataReader.GetString(ref asm->Metadata, refNameIdx);
+                    byte* ns = MetadataReader.GetString(ref asm->Metadata, refNsIdx);
+
+                    if (IsSystemNamespace(ns) && IsNullableName(name))
+                        return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Get the well-known type token for a type name in the System namespace.
     /// </summary>
     private static uint GetWellKnownTypeToken(byte* name)
@@ -4428,6 +4495,12 @@ public static unsafe class AssemblyLoader
         if (isValueType)
         {
             instMT->_usFlags |= (ushort)(MTFlags.IsValueType >> 16);
+        }
+
+        // Check if this is Nullable<T> and mark it for special boxing/unboxing
+        if (isValueType && typeArgCount == 1 && IsNullableGenericDef(genDefToken))
+        {
+            instMT->_usFlags |= (ushort)(MTFlags.IsNullable >> 16);
         }
 
         // Store pointer to first type argument MT in _relatedType (for simple generic lookups)

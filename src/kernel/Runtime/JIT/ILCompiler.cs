@@ -3539,9 +3539,10 @@ public unsafe struct ILCompiler
         // For large VTs, the arg slot contains a POINTER to the struct data (passed by caller)
         // So ldarga should return that pointer value directly, not the address of the slot
         bool isLargeVT = false;
+        ushort argSize = 0;
         if (_argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index])
         {
-            ushort argSize = (_argTypeSize != null && index < _argCount) ? _argTypeSize[index] : (ushort)0;
+            argSize = (_argTypeSize != null && index < _argCount) ? _argTypeSize[index] : (ushort)0;
             if (argSize > 8)
                 isLargeVT = true;
         }
@@ -6963,15 +6964,27 @@ public unsafe struct ILCompiler
                 // VALUE TYPE: Allocate space on stack, call constructor
                 // Value types don't use RhpNewFast - they're stack allocated
                 // We'll use a temp slot in the frame for the value
-                // For simplicity, always use 8 bytes (pad small structs)
 
-                // Zero the temp slot
+                // Get the actual size of the value type from its MethodTable
+                uint vtSize = mt->BaseSize;
+                int alignedVtSize = (int)((vtSize + 7) & ~7UL);  // Round up to 8-byte alignment
+
+                // Adjust newobjTempOffset to account for larger structs
+                // newobjTempOffset is the start of the temp area, growing toward lower addresses
+                // We need space for the full struct, so adjust the base if needed
+                int vtBaseOffset = newobjTempOffset - (alignedVtSize - 8);
+
+                // Zero the entire value type temp slot
+                // Fields are at [base + 0], [base + 8], etc.
                 X64Emitter.MovRI64(ref _code, VReg.R0, 0);
-                X64Emitter.MovMR(ref _code, VReg.FP, newobjTempOffset, VReg.R0);
+                for (int off = 0; off < alignedVtSize; off += 8)
+                {
+                    X64Emitter.MovMR(ref _code, VReg.FP, vtBaseOffset + off, VReg.R0);
+                }
 
                 // RCX = pointer to the value (for 'this' parameter)
-                // LEA RCX, [RBP + newobjTempOffset]
-                X64Emitter.Lea(ref _code, VReg.R1, VReg.FP, newobjTempOffset);
+                // LEA RCX, [RBP + vtBaseOffset]
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.FP, vtBaseOffset);
             }
             else
             {
@@ -7039,9 +7052,42 @@ public unsafe struct ILCompiler
             X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
             // Push result onto eval stack
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, newobjTempOffset);
-            X64Emitter.Push(ref _code, VReg.R0);
-            PushEntry(EvalStackEntry.NativeInt);
+            if (isValueType)
+            {
+                // For value types, push the entire struct onto the eval stack
+                uint vtSize = mt->BaseSize;
+                int alignedVtSize = (int)((vtSize + 7) & ~7UL);
+                // Calculate the base offset (same formula as above)
+                int vtBaseOffset = newobjTempOffset - (alignedVtSize - 8);
+
+                if (alignedVtSize <= 8)
+                {
+                    // Small struct: fits in one register/stack slot
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, vtBaseOffset);
+                    X64Emitter.Push(ref _code, VReg.R0);
+                    PushEntry(EvalStackEntry.NativeInt);
+                }
+                else
+                {
+                    // Larger struct: push all 8-byte chunks in reverse order
+                    // (so first chunk ends up at lowest address on stack)
+                    // Fields are at [vtBaseOffset + 0], [vtBaseOffset + 8], etc.
+                    for (int off = alignedVtSize - 8; off >= 0; off -= 8)
+                    {
+                        X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, vtBaseOffset + off);
+                        X64Emitter.Push(ref _code, VReg.R0);
+                    }
+                    // Track as one entry with the struct size (consistent with ldloc for structs)
+                    PushEntry(EvalStackEntry.Struct(alignedVtSize));
+                }
+            }
+            else
+            {
+                // Reference type: push the object pointer
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, newobjTempOffset);
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+            }
 
             return true;
         }
@@ -7130,6 +7176,10 @@ public unsafe struct ILCompiler
     ///
     /// Allocates boxed object via RhpNewFast, then copies value into it.
     /// Boxed layout: [MT*][value data] where value starts at offset 8.
+    ///
+    /// Special handling for Nullable&lt;T&gt;:
+    /// - If HasValue is false, box returns null
+    /// - If HasValue is true, box just the inner value using T's MethodTable
     /// </summary>
     private bool CompileBox(uint token)
     {
@@ -7137,6 +7187,9 @@ public unsafe struct ILCompiler
         // The value type size is derived from BaseSize - 8 (minus MT pointer)
         ulong mtAddress = token;  // Fallback: use token directly (for testing)
         uint valueSize = 8;  // Default: 8 bytes
+        bool isNullable = false;
+        ulong innerMtAddress = 0;
+        uint innerValueSize = 0;
 
         // If we have a type resolver, use it to get the real MethodTable
         if (_typeResolver != null)
@@ -7159,6 +7212,26 @@ public unsafe struct ILCompiler
                 DebugConsole.WriteHex(combinedFlags);
                 DebugConsole.Write(" isVT=");
                 DebugConsole.Write(mt->IsValueType ? "Y" : "N");
+
+                // Check for Nullable<T> - requires special boxing semantics
+                if (mt->IsNullable)
+                {
+                    isNullable = true;
+                    DebugConsole.Write(" NULLABLE");
+
+                    // Get the inner type's MethodTable from _relatedType
+                    MethodTable* innerMt = mt->_relatedType;
+                    if (innerMt != null)
+                    {
+                        innerMtAddress = (ulong)innerMt;
+                        innerValueSize = innerMt->BaseSize - 8;  // Inner value size
+
+                        DebugConsole.Write(" innerMT=0x");
+                        DebugConsole.WriteHex((uint)innerMtAddress);
+                        DebugConsole.Write(" innerSize=");
+                        DebugConsole.WriteHex(innerValueSize);
+                    }
+                }
 
                 // For value types, BaseSize includes the 8-byte MT pointer overhead.
                 // The actual value size is BaseSize - 8.
@@ -7185,11 +7258,39 @@ public unsafe struct ILCompiler
             }
         }
 
-        // Pop value/address from stack into R3 (R8)
-        // For small structs (<=8 bytes): R3 contains the VALUE
-        // For large structs (>8 bytes): R3 contains the ADDRESS of the value
-        X64Emitter.Pop(ref _code, VReg.R3);
+        // Check if the top entry is a multi-slot struct (ByteSize > 8)
+        EvalStackEntry topEntry = PeekEntry();
+        bool isMultiSlotStruct = topEntry.Kind == EvalStackKind.ValueType && topEntry.ByteSize > 8;
+        int structByteSize = topEntry.ByteSize;
+
+        if (isMultiSlotStruct)
+        {
+            // Multi-slot struct: data is on the stack, get its address into R3
+            // LEA R3, [RSP] - the struct data starts at current RSP
+            X64Emitter.Lea(ref _code, VReg.R3, VReg.SP, 0);
+            // Don't pop yet - we need the data to stay on the stack while we read it
+            // We'll adjust RSP after copying
+        }
+        else
+        {
+            // Small value: pop the value itself into R3
+            X64Emitter.Pop(ref _code, VReg.R3);
+        }
         PopEntry();
+
+        // Handle Nullable<T> boxing specially
+        if (isNullable && innerMtAddress != 0)
+        {
+            bool result = CompileNullableBox(innerMtAddress, innerValueSize, valueSize, isMultiSlotStruct, structByteSize);
+            return result;
+        }
+
+        // For non-Nullable multi-slot structs, adjust RSP after getting the address
+        if (isMultiSlotStruct)
+        {
+            // Don't adjust RSP yet - normal box path handles this via the copy loop
+            // which expects R3 to be the ADDRESS of the value
+        }
 
         // Save R3 (the value/address to box) on the stack - R8 is caller-saved and will be clobbered
         X64Emitter.Push(ref _code, VReg.R3);
@@ -7306,6 +7407,256 @@ public unsafe struct ILCompiler
     }
 
     /// <summary>
+    /// Special boxing for Nullable&lt;T&gt;.
+    /// - R3 contains address of Nullable&lt;T&gt; struct
+    /// - If hasValue (at offset 0) is false, push null
+    /// - If hasValue is true, box the inner value (at offset 8) using innerMT
+    /// - If isMultiSlotStruct is true, the struct data is on the stack at RSP and needs to be cleaned up
+    /// </summary>
+    private bool CompileNullableBox(ulong innerMtAddress, uint innerValueSize, uint nullableSize, bool isMultiSlotStruct, int structByteSize)
+    {
+        // R3 has the address of the Nullable<T> struct
+        // Layout: [hasValue: 1 byte] [padding: 7 bytes] [value: T]
+
+        // Load hasValue byte into R2 (RDX): movzx edx, byte [R3]
+        X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, 0);
+
+        // Test hasValue: test rdx, rdx (test full register to set flags)
+        X64Emitter.TestRR(ref _code, VReg.R2, VReg.R2);
+
+        // If hasValue is false (zero), jump to push null
+        // je pushNull (Je = Jz when ZF=1)
+        int jzPatchOffset = X64Emitter.Je(ref _code);
+
+        // hasValue is true - box the inner value
+        // Inner value is at offset 8 in the Nullable struct
+
+        // Save address of inner value (R3 + 8) for after allocation
+        // lea R3, [R3 + 8]  - point R3 at the actual value
+        X64Emitter.Lea(ref _code, VReg.R3, VReg.R3, 8);
+
+        // Save R3 on stack (inner value address)
+        X64Emitter.Push(ref _code, VReg.R3);
+
+        // Load inner type's MethodTable* into RCX
+        X64Emitter.MovRI64(ref _code, VReg.R1, innerMtAddress);
+
+        // Reserve shadow space for call
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Call RhpNewFast(innerMT) to allocate boxed object
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+        X64Emitter.CallR(ref _code, VReg.R0);
+
+        // Record safe point after call
+        RecordSafePoint();
+
+        // Restore RSP
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+        // Restore inner value address into R3
+        X64Emitter.Pop(ref _code, VReg.R3);
+
+        // RAX = boxed object, R3 = pointer to inner value
+        // Copy inner value to offset 8 in boxed object
+        if (innerValueSize <= 8)
+        {
+            // Small value - load and store directly
+            if (innerValueSize == 8)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.R3, 0);
+                X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R2);
+            }
+            else if (innerValueSize == 4)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R2, VReg.R3, 0);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 8, VReg.R2);
+            }
+            else if (innerValueSize == 2)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R2, VReg.R3, 0);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 8, VReg.R2);
+            }
+            else if (innerValueSize == 1)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, 0);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 8, VReg.R2);
+            }
+        }
+        else
+        {
+            // Large value - copy in chunks
+            int copyOffset = 0;
+            while (copyOffset + 8 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 8;
+            }
+            if (copyOffset + 4 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                copyOffset += 2;
+            }
+            if (copyOffset < (int)innerValueSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+            }
+        }
+
+        // Jump past the null case
+        int jmpPatchOffset = X64Emitter.JmpRel32(ref _code);
+
+        // Patch the je (jz) to jump here (pushNull label)
+        int pushNullOffset = _code.Position;
+        X64Emitter.PatchJump(ref _code, jzPatchOffset, pushNullOffset);
+
+        // hasValue is false - push null
+        // xor rax, rax
+        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);
+
+        // Patch the jmp to jump here (end label)
+        int endOffset = _code.Position;
+        X64Emitter.PatchJump(ref _code, jmpPatchOffset, endOffset);
+
+        // Clean up the struct data from the stack if it was multi-slot
+        if (isMultiSlotStruct && structByteSize > 0)
+        {
+            X64Emitter.AddRI(ref _code, VReg.SP, structByteSize);
+        }
+
+        // Push result (RAX = boxed object or null) onto stack
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.ObjRef);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Special unboxing for Nullable&lt;T&gt;.
+    /// - R3 contains the source object reference (boxed T or null)
+    /// - If R3 is null, create Nullable&lt;T&gt; with HasValue=false
+    /// - If R3 is non-null, create Nullable&lt;T&gt; with HasValue=true and copy the value
+    /// </summary>
+    private bool CompileNullableUnbox(ulong innerMtAddress, uint innerValueSize, uint nullableSize)
+    {
+        // Nullable<T> layout: [hasValue: 1 byte] [padding: 7 bytes] [value: T (aligned to 8)]
+        // Total size for Nullable<int>: 16 bytes (1 + 7 padding + 4 + 4 padding = 16, but 8+8 aligned)
+        // Actually Nullable<int> is 8 bytes aligned: hasValue(1) + padding(3) + int(4) = 8 bytes
+        // For larger T, it's 8 + sizeof(T) rounded up
+
+        int alignedNullableSize = ((int)nullableSize + 7) & ~7;
+        if (alignedNullableSize < 16)
+            alignedNullableSize = 16;  // Minimum 16 bytes for Nullable<T> on stack
+
+        // Allocate space on stack for the Nullable<T> result
+        X64Emitter.SubRI(ref _code, VReg.SP, alignedNullableSize);
+
+        // Test if R3 (source object) is null
+        X64Emitter.TestRR(ref _code, VReg.R3, VReg.R3);
+
+        // If null, jump to create null Nullable
+        int jzPatchOffset = X64Emitter.Je(ref _code);
+
+        // Non-null path: create Nullable with HasValue=true and copy the value
+        // Set hasValue = 1 at [RSP]
+        X64Emitter.MovRI64(ref _code, VReg.R0, 1);
+        X64Emitter.MovMR8(ref _code, VReg.SP, 0, VReg.R0);
+
+        // Zero the padding bytes (bytes 1-7)
+        X64Emitter.MovRI64(ref _code, VReg.R0, 0);
+        // Write 0 to bytes 1-7 via overlapping writes
+        // Actually, just zero the entire first 8 bytes then set byte 0 to 1
+        X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R0);  // Zero bytes 0-7
+        X64Emitter.MovRI64(ref _code, VReg.R0, 1);
+        X64Emitter.MovMR8(ref _code, VReg.SP, 0, VReg.R0);  // Set hasValue = 1
+
+        // Copy the inner value from [R3 + 8] to [RSP + 8]
+        if (innerValueSize <= 8)
+        {
+            if (innerValueSize == 8)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8);
+                X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R0);
+            }
+            else if (innerValueSize == 4)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R3, 8);
+                X64Emitter.MovMR32(ref _code, VReg.SP, 8, VReg.R0);
+            }
+            else if (innerValueSize == 2)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R3, 8);
+                X64Emitter.MovMR16(ref _code, VReg.SP, 8, VReg.R0);
+            }
+            else if (innerValueSize == 1)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R3, 8);
+                X64Emitter.MovMR8(ref _code, VReg.SP, 8, VReg.R0);
+            }
+        }
+        else
+        {
+            // Large inner value - copy in chunks
+            int copyOffset = 0;
+            while (copyOffset + 8 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                copyOffset += 8;
+            }
+            if (copyOffset + 4 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR32(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                copyOffset += 4;
+            }
+            if (copyOffset + 2 <= (int)innerValueSize)
+            {
+                X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR16(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                copyOffset += 2;
+            }
+            if (copyOffset < (int)innerValueSize)
+            {
+                X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
+                X64Emitter.MovMR8(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+            }
+        }
+
+        // Jump past the null path
+        int jmpPatchOffset = X64Emitter.JmpRel32(ref _code);
+
+        // Null path: create Nullable with HasValue=false (all zeros)
+        int nullPathOffset = _code.Position;
+        X64Emitter.PatchJump(ref _code, jzPatchOffset, nullPathOffset);
+
+        // Zero the entire Nullable struct
+        X64Emitter.MovRI64(ref _code, VReg.R0, 0);
+        for (int off = 0; off < alignedNullableSize; off += 8)
+        {
+            X64Emitter.MovMR(ref _code, VReg.SP, off, VReg.R0);
+        }
+
+        // End label
+        int endOffset = _code.Position;
+        X64Emitter.PatchJump(ref _code, jmpPatchOffset, endOffset);
+
+        // Track as a struct entry with the Nullable size
+        PushEntry(EvalStackEntry.Struct(alignedNullableSize));
+
+        return true;
+    }
+
+    /// <summary>
     /// unbox - Get a managed pointer to the value inside a boxed object.
     /// Stack: ..., obj -> ..., valuePtr
     ///
@@ -7358,12 +7709,20 @@ public unsafe struct ILCompiler
     /// - Assumes 64-bit value for simplicity
     ///
     /// This is equivalent to unbox followed by ldobj.
+    ///
+    /// Special handling for Nullable&lt;T&gt;:
+    /// - If target type is Nullable&lt;T&gt; and source is null, create Nullable with HasValue=false
+    /// - If target type is Nullable&lt;T&gt; and source is non-null, create Nullable with HasValue=true and the value
     /// </summary>
     private bool CompileUnboxAny(uint token)
     {
         // Resolve token to MethodTable* address for type validation
         ulong expectedMT = token;  // Fallback: use token directly (for testing)
         uint valueSize = 8;  // Default: 8 bytes
+        bool isNullable = false;
+        ulong innerMtAddress = 0;
+        uint innerValueSize = 0;
+        uint nullableSize = 0;
 
         // If we have a type resolver, use it to get the real MethodTable
         if (_typeResolver != null)
@@ -7372,8 +7731,24 @@ public unsafe struct ILCompiler
             if (_typeResolver(token, out resolved) && resolved != null)
             {
                 expectedMT = (ulong)resolved;
+                MethodTable* mt = (MethodTable*)resolved;
                 // Read BaseSize from MethodTable (offset 4: _uBaseSize)
-                uint baseSize = *(uint*)((byte*)resolved + 4);
+                uint baseSize = mt->BaseSize;
+
+                // Check for Nullable<T> - requires special unboxing semantics
+                if (mt->IsNullable)
+                {
+                    isNullable = true;
+                    nullableSize = baseSize - 8;  // Nullable struct size (without MT pointer overhead)
+
+                    // Get the inner type's MethodTable from _relatedType
+                    MethodTable* innerMt = mt->_relatedType;
+                    if (innerMt != null)
+                    {
+                        innerMtAddress = (ulong)innerMt;
+                        innerValueSize = innerMt->BaseSize - 8;  // Inner value size
+                    }
+                }
 
                 // Token table is in high byte:
                 // 0x01 = TypeRef (external type, like System.Int32 from System.Runtime)
@@ -7400,6 +7775,12 @@ public unsafe struct ILCompiler
         // Pop object reference from stack into R3 (source address)
         X64Emitter.Pop(ref _code, VReg.R3);
         PopEntry();
+
+        // Handle Nullable<T> unboxing specially
+        if (isNullable && innerMtAddress != 0)
+        {
+            return CompileNullableUnbox(innerMtAddress, innerValueSize, nullableSize);
+        }
 
         // Value data is at [R3 + 8] (after MT pointer)
         if (valueSize <= 8)

@@ -1495,6 +1495,17 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// Patch a jump instruction at patchOffset to jump to targetOffset.
+    /// Works for both JMP rel32 and Jcc rel32 instructions.
+    /// </summary>
+    public static void PatchJump(ref CodeBuffer code, int patchOffset, int targetOffset)
+    {
+        // rel32 is calculated from the end of the rel32 field (patchOffset + 4)
+        int rel = targetOffset - (patchOffset + 4);
+        code.PatchInt32(patchOffset, rel);
+    }
+
+    /// <summary>
     /// Move with zero-extend from byte: dst = zero-extend([baseReg + disp])
     /// </summary>
     public static void MovzxByte(ref CodeBuffer code, VReg dst, VReg baseReg, int disp)

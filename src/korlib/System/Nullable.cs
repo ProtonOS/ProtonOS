@@ -35,6 +35,10 @@ namespace System
             }
         }
 
+        public readonly T GetValueOrDefault() => _value;
+
+        public readonly T GetValueOrDefault(T defaultValue) => _hasValue ? _value : defaultValue;
+
         public static implicit operator Nullable<T>(T value) => new Nullable<T>(value);
 
         public static explicit operator T(Nullable<T> value) => value.Value;

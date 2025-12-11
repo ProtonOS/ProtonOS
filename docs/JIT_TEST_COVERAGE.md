@@ -243,13 +243,18 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ## 10. Nullable<T>
 
-- ❌ Nullable<T> creation
-- ❌ HasValue property
-- ❌ Value property
-- ❌ GetValueOrDefault()
-- ❌ Nullable boxing (null value boxes to null reference)
-- ❌ Nullable unboxing
-- ❌ Lifted operators (int? + int?)
+- ✅ Nullable<T> creation (via constructor)
+- ✅ HasValue property
+- ✅ Value property
+- ✅ GetValueOrDefault()
+- ✅ GetValueOrDefault(defaultValue)
+- ✅ Implicit conversion from T to Nullable<T>
+- ✅ Assign null to Nullable<T> (initobj)
+- ✅ Nullable<T> as method parameter
+- ✅ Nullable<T> as method return value
+- ✅ Nullable boxing (null value boxes to null reference)
+- ✅ Nullable unboxing (null reference unboxes to Nullable with HasValue=false)
+- ✅ Lifted operators (int? + int?) - compiler generates inline code using existing support
 
 ---
 
@@ -298,7 +303,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### P0 - Critical for Drivers
 1. ✅ Exception handling (try/catch/finally)
 2. ✅ Interface dispatch
-3. Nullable<T> (used extensively in APIs)
+3. ⚠️ Nullable<T> (basic operations work; passing/returning structs needs work)
 
 ### P1 - Important for Robustness
 4. Delegates (for callbacks)
@@ -327,11 +332,45 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 111 passing
+- Current test count: 142 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Nullable<T> Lifted Operators (2024-12)
+Verified lifted operators work without additional JIT changes:
+- C# compiler generates inline code using HasValue, GetValueOrDefault(), and newobj
+- 11 new tests added for lifted operators:
+  - Addition with both values, first null, second null, both null
+  - Subtraction, multiplication, division
+  - Equality comparisons (same values, different values, both null, one null)
+
+### Nullable<T> Boxing/Unboxing (2024-12)
+Completed Nullable<T> boxing/unboxing support:
+- Nullable boxing: if HasValue is false, box returns null; if true, boxes inner T value
+- Nullable unboxing: null reference creates Nullable with HasValue=false; non-null creates HasValue=true
+- Added `IsNullable` flag (0x00010000) to MTFlags and MethodTable
+- Added `IsNullableName()` and `IsNullableGenericDef()` helpers to AssemblyLoader
+- `CompileBox` detects Nullable<T> and calls `CompileNullableBox` for special handling
+- `CompileUnboxAny` detects Nullable<T> and calls `CompileNullableUnbox` for special handling
+- Fixed multi-slot struct handling in box: LEA RSP instead of POP for structs >8 bytes
+- 7 new tests added:
+  - Boxing with value, boxing null, boxing default-constructed
+  - Unboxing from boxed int, unboxing from null
+  - Round-trip boxing/unboxing with value and null
+
+### Nullable<T> Support (2024-12)
+Added Nullable<T> support:
+- Added `GetValueOrDefault()` and `GetValueOrDefault(T)` to korlib Nullable<T>
+- Added `Nullable<T>` struct to System.Runtime to match korlib
+- Fixed `newobj` for value types: properly allocate/zero large structs (>8 bytes)
+- Fixed generic instantiation size calculation: compute Nullable<T> as 8 + sizeof(T)
+- 13 tests passing (up from 9):
+  - Constructor, HasValue, Value properties
+  - GetValueOrDefault with/without custom default
+  - Implicit conversion, null assignment (initobj)
+  - Parameter passing and return values (fixed)
 
 ### Interface Dispatch (2024-12)
 Implemented interface dispatch via `callvirt` on interface types:

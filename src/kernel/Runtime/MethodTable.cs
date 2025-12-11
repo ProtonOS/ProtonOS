@@ -58,6 +58,9 @@ public static class MTFlags
 
     /// <summary>Type is a value type (struct/enum).</summary>
     public const uint IsValueType = 0x00200000;
+
+    /// <summary>Type is Nullable&lt;T&gt; (requires special boxing/unboxing semantics).</summary>
+    public const uint IsNullable = 0x00010000;
 }
 
 /// <summary>
@@ -138,6 +141,9 @@ public unsafe struct MethodTable
 
     /// <summary>Whether this is a value type (struct/enum).</summary>
     public bool IsValueType => (CombinedFlags & MTFlags.IsValueType) != 0;
+
+    /// <summary>Whether this is Nullable&lt;T&gt; (requires special boxing/unboxing).</summary>
+    public bool IsNullable => (CombinedFlags & MTFlags.IsNullable) != 0;
 
     /// <summary>Whether this type has a component size (array or string).</summary>
     public bool HasComponentSize => (CombinedFlags & MTFlags.HasComponentSize) != 0;

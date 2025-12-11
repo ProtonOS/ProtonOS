@@ -83,6 +83,9 @@ public static class TestRunner
         // Interface tests - tests interface dispatch via callvirt
         RunInterfaceTests();
 
+        // Nullable<T> tests - tests generic value type with special semantics
+        RunNullableTests();
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -159,6 +162,42 @@ public static class TestRunner
     private static void RunInterfaceTests()
     {
         RecordResult("InterfaceTests.TestSimpleInterface", InterfaceTests.TestSimpleInterface() == 42);
+    }
+
+    private static void RunNullableTests()
+    {
+        RecordResult("NullableTests.TestNullableHasValue", NullableTests.TestNullableHasValue() == 1);
+        RecordResult("NullableTests.TestNullableValue", NullableTests.TestNullableValue() == 42);
+        RecordResult("NullableTests.TestNullableNoValue", NullableTests.TestNullableNoValue() == 0);
+        RecordResult("NullableTests.TestNullableGetValueOrDefaultWithValue", NullableTests.TestNullableGetValueOrDefaultWithValue() == 42);
+        RecordResult("NullableTests.TestNullableGetValueOrDefaultNoValue", NullableTests.TestNullableGetValueOrDefaultNoValue() == 0);
+        RecordResult("NullableTests.TestNullableGetValueOrDefaultCustomWithValue", NullableTests.TestNullableGetValueOrDefaultCustomWithValue() == 42);
+        RecordResult("NullableTests.TestNullableGetValueOrDefaultCustomNoValue", NullableTests.TestNullableGetValueOrDefaultCustomNoValue() == 99);
+        RecordResult("NullableTests.TestNullableImplicitConversion", NullableTests.TestNullableImplicitConversion() == 1);
+        RecordResult("NullableTests.TestNullableAssignNull", NullableTests.TestNullableAssignNull() == 0);
+        RecordResult("NullableTests.TestNullableParameter", NullableTests.TestNullableParameter() == 42);
+        RecordResult("NullableTests.TestNullableParameterNull", NullableTests.TestNullableParameterNull() == 0);
+        RecordResult("NullableTests.TestNullableReturn", NullableTests.TestNullableReturn() == 42);
+        RecordResult("NullableTests.TestNullableReturnNull", NullableTests.TestNullableReturnNull() == 99);
+        RecordResult("NullableTests.TestNullableBoxingWithValue", NullableTests.TestNullableBoxingWithValue() == 42);
+        RecordResult("NullableTests.TestNullableBoxingNull", NullableTests.TestNullableBoxingNull() == 1);
+        RecordResult("NullableTests.TestNullableBoxingNoHasValue", NullableTests.TestNullableBoxingNoHasValue() == 1);
+        RecordResult("NullableTests.TestNullableUnboxFromBoxedInt", NullableTests.TestNullableUnboxFromBoxedInt() == 1);
+        RecordResult("NullableTests.TestNullableUnboxFromNull", NullableTests.TestNullableUnboxFromNull() == 1);
+        RecordResult("NullableTests.TestNullableRoundTrip", NullableTests.TestNullableRoundTrip() == 1);
+        RecordResult("NullableTests.TestNullableRoundTripNull", NullableTests.TestNullableRoundTripNull() == 1);
+        // Lifted operators
+        RecordResult("NullableTests.TestLiftedAddBothValues", NullableTests.TestLiftedAddBothValues() == 1);
+        RecordResult("NullableTests.TestLiftedAddFirstNull", NullableTests.TestLiftedAddFirstNull() == 1);
+        RecordResult("NullableTests.TestLiftedAddSecondNull", NullableTests.TestLiftedAddSecondNull() == 1);
+        RecordResult("NullableTests.TestLiftedAddBothNull", NullableTests.TestLiftedAddBothNull() == 1);
+        RecordResult("NullableTests.TestLiftedSubtract", NullableTests.TestLiftedSubtract() == 1);
+        RecordResult("NullableTests.TestLiftedMultiply", NullableTests.TestLiftedMultiply() == 1);
+        RecordResult("NullableTests.TestLiftedDivide", NullableTests.TestLiftedDivide() == 1);
+        RecordResult("NullableTests.TestLiftedEqualsBothSame", NullableTests.TestLiftedEqualsBothSame() == 1);
+        RecordResult("NullableTests.TestLiftedEqualsBothDifferent", NullableTests.TestLiftedEqualsBothDifferent() == 1);
+        RecordResult("NullableTests.TestLiftedEqualsBothNull", NullableTests.TestLiftedEqualsBothNull() == 1);
+        RecordResult("NullableTests.TestLiftedEqualsOneNull", NullableTests.TestLiftedEqualsOneNull() == 1);
     }
 
     private static void RecordResult(string testName, bool passed)
@@ -2196,6 +2235,344 @@ public static class InterfaceTests
     {
         IValue v = new ValueImpl();
         return v.GetValue();  // Should return 42
+    }
+}
+
+// =============================================================================
+// Nullable<T> Tests
+// =============================================================================
+
+public static class NullableTests
+{
+    /// <summary>
+    /// Test creating a Nullable with a value and reading HasValue.
+    /// </summary>
+    public static int TestNullableHasValue()
+    {
+        int? x = 42;
+        return x.HasValue ? 1 : 0;  // Should return 1
+    }
+
+    /// <summary>
+    /// Test creating a Nullable with a value and reading Value.
+    /// </summary>
+    public static int TestNullableValue()
+    {
+        int? x = 42;
+        return x.Value;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test creating a null Nullable and reading HasValue.
+    /// </summary>
+    public static int TestNullableNoValue()
+    {
+        int? x = null;
+        return x.HasValue ? 1 : 0;  // Should return 0
+    }
+
+    /// <summary>
+    /// Test GetValueOrDefault() on Nullable with value.
+    /// </summary>
+    public static int TestNullableGetValueOrDefaultWithValue()
+    {
+        int? x = 42;
+        return x.GetValueOrDefault();  // Should return 42
+    }
+
+    /// <summary>
+    /// Test GetValueOrDefault() on null Nullable (returns default(T)).
+    /// </summary>
+    public static int TestNullableGetValueOrDefaultNoValue()
+    {
+        int? x = null;
+        return x.GetValueOrDefault();  // Should return 0
+    }
+
+    /// <summary>
+    /// Test GetValueOrDefault(defaultValue) on Nullable with value.
+    /// </summary>
+    public static int TestNullableGetValueOrDefaultCustomWithValue()
+    {
+        int? x = 42;
+        return x.GetValueOrDefault(99);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test GetValueOrDefault(defaultValue) on null Nullable.
+    /// </summary>
+    public static int TestNullableGetValueOrDefaultCustomNoValue()
+    {
+        int? x = null;
+        return x.GetValueOrDefault(99);  // Should return 99
+    }
+
+    /// <summary>
+    /// Test implicit conversion from T to Nullable<T>.
+    /// </summary>
+    public static int TestNullableImplicitConversion()
+    {
+        int? x = 42;  // Implicit conversion from int to int?
+        return x.HasValue && x.Value == 42 ? 1 : 0;  // Should return 1
+    }
+
+    /// <summary>
+    /// Test assigning null to Nullable<T>.
+    /// </summary>
+    public static int TestNullableAssignNull()
+    {
+        int? x = 42;
+        x = null;
+        return x.HasValue ? 1 : 0;  // Should return 0
+    }
+
+    /// <summary>
+    /// Test Nullable<T> as method parameter.
+    /// </summary>
+    public static int TestNullableParameter()
+    {
+        int? x = 42;
+        return GetNullableValueOrZero(x);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test null Nullable<T> as method parameter.
+    /// </summary>
+    public static int TestNullableParameterNull()
+    {
+        int? x = null;
+        return GetNullableValueOrZero(x);  // Should return 0
+    }
+
+    private static int GetNullableValueOrZero(int? value)
+    {
+        return value.HasValue ? value.Value : 0;
+    }
+
+    /// <summary>
+    /// Test Nullable<T> as method return value.
+    /// </summary>
+    public static int TestNullableReturn()
+    {
+        int? result = GetNullableFortyTwo();
+        return result.HasValue ? result.Value : 0;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test null Nullable<T> as method return value.
+    /// </summary>
+    public static int TestNullableReturnNull()
+    {
+        int? result = GetNullableNull();
+        return result.HasValue ? result.Value : 99;  // Should return 99
+    }
+
+    private static int? GetNullableFortyTwo()
+    {
+        return 42;
+    }
+
+    private static int? GetNullableNull()
+    {
+        return null;
+    }
+
+    /// <summary>
+    /// Test boxing a Nullable<int> with a value - should box to int.
+    /// </summary>
+    public static int TestNullableBoxingWithValue()
+    {
+        int? x = 42;
+        object boxed = x;  // Boxing happens here
+        // If boxing works correctly, boxed should be a boxed int (not null)
+        if (boxed == null)
+            return 0;  // Fail: should not be null
+        // The boxed value should be the inner int value
+        int unboxed = (int)boxed;
+        return unboxed;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test boxing a null Nullable<int> - should box to null reference.
+    /// </summary>
+    public static int TestNullableBoxingNull()
+    {
+        int? x = null;
+        object boxed = x;  // Boxing happens here - should produce null
+        return boxed == null ? 1 : 0;  // Should return 1 (boxed is null)
+    }
+
+    /// <summary>
+    /// Test boxing a Nullable<int> with HasValue=false explicitly.
+    /// </summary>
+    public static int TestNullableBoxingNoHasValue()
+    {
+        int? x = new int?();  // Default constructor - HasValue=false
+        object boxed = x;
+        return boxed == null ? 1 : 0;  // Should return 1 (boxed is null)
+    }
+
+    /// <summary>
+    /// Test unboxing a boxed int to Nullable<int>.
+    /// </summary>
+    public static int TestNullableUnboxFromBoxedInt()
+    {
+        object boxed = (object)42;  // Box an int
+        int? result = (int?)boxed;   // Unbox to Nullable<int>
+        return result.HasValue && result.Value == 42 ? 1 : 0;  // Should return 1
+    }
+
+    /// <summary>
+    /// Test unboxing null to Nullable<int>.
+    /// </summary>
+    public static int TestNullableUnboxFromNull()
+    {
+        object boxed = null;
+        int? result = (int?)boxed;   // Unbox null to Nullable<int>
+        return result.HasValue ? 0 : 1;  // Should return 1 (HasValue is false)
+    }
+
+    /// <summary>
+    /// Test round-trip: box Nullable with value, unbox to Nullable.
+    /// </summary>
+    public static int TestNullableRoundTrip()
+    {
+        int? original = 99;
+        object boxed = original;  // Box (produces boxed int)
+        int? result = (int?)boxed;  // Unbox to Nullable<int>
+        return result.HasValue && result.Value == 99 ? 1 : 0;  // Should return 1
+    }
+
+    /// <summary>
+    /// Test round-trip: box null Nullable, unbox to Nullable.
+    /// </summary>
+    public static int TestNullableRoundTripNull()
+    {
+        int? original = null;
+        object boxed = original;  // Box (produces null)
+        int? result = (int?)boxed;  // Unbox null to Nullable<int>
+        return result.HasValue ? 0 : 1;  // Should return 1 (HasValue is false)
+    }
+
+    /// <summary>
+    /// Test lifted addition: int? + int? where both have values.
+    /// </summary>
+    public static int TestLiftedAddBothValues()
+    {
+        int? a = 10;
+        int? b = 32;
+        int? result = a + b;
+        return result.HasValue && result.Value == 42 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test lifted addition: int? + int? where first is null.
+    /// </summary>
+    public static int TestLiftedAddFirstNull()
+    {
+        int? a = null;
+        int? b = 32;
+        int? result = a + b;
+        return result.HasValue ? 0 : 1;  // Should return 1 (result is null)
+    }
+
+    /// <summary>
+    /// Test lifted addition: int? + int? where second is null.
+    /// </summary>
+    public static int TestLiftedAddSecondNull()
+    {
+        int? a = 10;
+        int? b = null;
+        int? result = a + b;
+        return result.HasValue ? 0 : 1;  // Should return 1 (result is null)
+    }
+
+    /// <summary>
+    /// Test lifted addition: int? + int? where both are null.
+    /// </summary>
+    public static int TestLiftedAddBothNull()
+    {
+        int? a = null;
+        int? b = null;
+        int? result = a + b;
+        return result.HasValue ? 0 : 1;  // Should return 1 (result is null)
+    }
+
+    /// <summary>
+    /// Test lifted subtraction.
+    /// </summary>
+    public static int TestLiftedSubtract()
+    {
+        int? a = 50;
+        int? b = 8;
+        int? result = a - b;
+        return result.HasValue && result.Value == 42 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test lifted multiplication.
+    /// </summary>
+    public static int TestLiftedMultiply()
+    {
+        int? a = 6;
+        int? b = 7;
+        int? result = a * b;
+        return result.HasValue && result.Value == 42 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test lifted division.
+    /// </summary>
+    public static int TestLiftedDivide()
+    {
+        int? a = 84;
+        int? b = 2;
+        int? result = a / b;
+        return result.HasValue && result.Value == 42 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test lifted equality: both have same value.
+    /// </summary>
+    public static int TestLiftedEqualsBothSame()
+    {
+        int? a = 42;
+        int? b = 42;
+        bool result = a == b;
+        return result ? 1 : 0;  // Should return 1 (true)
+    }
+
+    /// <summary>
+    /// Test lifted equality: both have different values.
+    /// </summary>
+    public static int TestLiftedEqualsBothDifferent()
+    {
+        int? a = 42;
+        int? b = 99;
+        bool result = a == b;
+        return result ? 0 : 1;  // Should return 1 (false)
+    }
+
+    /// <summary>
+    /// Test lifted equality: both are null (should be true).
+    /// </summary>
+    public static int TestLiftedEqualsBothNull()
+    {
+        int? a = null;
+        int? b = null;
+        bool result = a == b;
+        return result ? 1 : 0;  // Should return 1 (true - null == null)
+    }
+
+    /// <summary>
+    /// Test lifted equality: one is null (should be false).
+    /// </summary>
+    public static int TestLiftedEqualsOneNull()
+    {
+        int? a = 42;
+        int? b = null;
+        bool result = a == b;
+        return result ? 0 : 1;  // Should return 1 (false - value != null)
     }
 }
 
