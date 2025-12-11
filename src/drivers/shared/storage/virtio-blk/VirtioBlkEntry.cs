@@ -92,32 +92,32 @@ public static unsafe class VirtioBlkEntry
 
         // Create and initialize the virtio block device
         _device = new VirtioBlkDevice();
-        Debug.WriteHex(0xBEEF0001u); // Created VirtioBlkDevice
+        // Debug.WriteHex(0xBEEF0001u); // Created VirtioBlkDevice
 
         // Initialize virtio device (handles modern/legacy detection, feature negotiation)
         // Cast to VirtioDevice to ensure we call the base method, not the IDriver.Initialize()
         bool initResult = ((VirtioDevice)_device).Initialize(pciDevice);
-        Debug.WriteHex(initResult ? 0xFACE0001u : 0xFACE0000u);  // Trace initResult before branch
+        // Debug.WriteHex(initResult ? 0xFACE0001u : 0xFACE0000u);  // Trace initResult before branch
         if (!initResult)
         {
-            Debug.WriteHex(0xDEAD0001u);
+            // Debug.WriteHex(0xDEAD0001u);
             _device = null;
             return false;
         }
 
-        Debug.WriteHex(0xBEEF0003u); // Initialize succeeded
+        // Debug.WriteHex(0xBEEF0003u); // Initialize succeeded
 
         // Initialize block-specific functionality
         bool blkResult = _device.InitializeBlockDevice();
         while (!blkResult)
         {
-            Debug.WriteHex(0xDEAD0002u);
+            // Debug.WriteHex(0xDEAD0002u);
             _device.Dispose();
             _device = null;
             return false;
         }
 
-        Debug.WriteHex(0x00010000u); // Success marker
+        // Debug.WriteHex(0x00010000u); // Success marker
         return true;
     }
 
@@ -163,25 +163,25 @@ public static unsafe class VirtioBlkEntry
         PCI.WriteConfig32(bus, device, function, barOffset, barValue);
 
         // Debug: Show probe result
-        Debug.WriteHex(0xBAB00000u | (uint)barIndex);
-        Debug.WriteHex(barValue);
-        Debug.WriteHex(sizeLow);
+        // Debug.WriteHex(0xBAB00000u | (uint)barIndex);
+        // Debug.WriteHex(barValue);
+        // Debug.WriteHex(sizeLow);
 
         // Debug: test comparisons explicitly
-        Debug.WriteHex(0xBAB00010u); // About to test sizeLow == 0
+        // Debug.WriteHex(0xBAB00010u); // About to test sizeLow == 0
         bool isZeroSize = sizeLow == 0;
-        Debug.WriteHex(isZeroSize ? 0xBAB00011u : 0xBAB00012u);
-        Debug.WriteHex(0xBAB00020u); // About to test sizeLow == 0xFFFFFFFF
+        // Debug.WriteHex(isZeroSize ? 0xBAB00011u : 0xBAB00012u);
+        // Debug.WriteHex(0xBAB00020u); // About to test sizeLow == 0xFFFFFFFF
         bool isAllOnes = sizeLow == 0xFFFFFFFF;
-        Debug.WriteHex(isAllOnes ? 0xBAB00021u : 0xBAB00022u);
-        Debug.WriteHex(0xBAB00030u); // About to test OR
+        // Debug.WriteHex(isAllOnes ? 0xBAB00021u : 0xBAB00022u);
+        // Debug.WriteHex(0xBAB00030u); // About to test OR
         bool shouldSkip = isZeroSize || isAllOnes;
-        Debug.WriteHex(shouldSkip ? 0xBAB00031u : 0xBAB00032u);
+        // Debug.WriteHex(shouldSkip ? 0xBAB00031u : 0xBAB00032u);
 
         // If sizeLow is 0 or all 1s with no valid bits, BAR doesn't exist
         if (shouldSkip)
         {
-            Debug.WriteHex(0xBAB00040u); // Inside skip branch
+            // Debug.WriteHex(0xBAB00040u); // Inside skip branch
             PciBar empty;
             empty.Index = barIndex;
             empty.BaseAddress = 0;
@@ -190,14 +190,14 @@ public static unsafe class VirtioBlkEntry
             empty.Is64Bit = false;
             empty.IsPrefetchable = false;
             result = empty;
-            Debug.WriteHex(0xBAB00041u); // About to return
+            // Debug.WriteHex(0xBAB00041u); // About to return
             return;
         }
-        Debug.WriteHex(0xBAB00050u); // After skip check, continuing
+        // Debug.WriteHex(0xBAB00050u); // After skip check, continuing
 
         // Determine BAR type from the probed value
         bool isIO = (sizeLow & 1) != 0;
-        Debug.WriteHex(isIO ? 0xBAB10001u : 0xBAB10000u);
+        // Debug.WriteHex(isIO ? 0xBAB10001u : 0xBAB10000u);
 
         // Skip I/O BARs for now - we only need memory BARs for modern virtio
         if (isIO)
@@ -217,12 +217,12 @@ public static unsafe class VirtioBlkEntry
         if (is64Bit && barIndex < 5)
         {
             upperBar = PCI.ReadConfig32(bus, device, function, (ushort)(barOffset + 4));
-            Debug.WriteHex(0xBAB15000u); // Upper BAR read
-            Debug.WriteHex(upperBar);
+            // Debug.WriteHex(0xBAB15000u); // Upper BAR read
+            // Debug.WriteHex(upperBar);
             baseAddr |= (ulong)upperBar << 32;
-            Debug.WriteHex(0xBAB15001u); // After OR
-            Debug.WriteHex((uint)(baseAddr >> 32));
-            Debug.WriteHex((uint)baseAddr);
+            // Debug.WriteHex(0xBAB15001u); // After OR
+            // Debug.WriteHex((uint)(baseAddr >> 32));
+            // Debug.WriteHex((uint)baseAddr);
         }
 
         // Calculate size
@@ -242,17 +242,17 @@ public static unsafe class VirtioBlkEntry
             size &= 0xFFFFFFFF;
         }
 
-        Debug.WriteHex(0xBAB20000u | (uint)barIndex); // size/base snapshot
-        Debug.WriteHex((uint)(baseAddr >> 32));
-        Debug.WriteHex((uint)baseAddr);
-        Debug.WriteHex((uint)(size >> 32));
-        Debug.WriteHex((uint)size);
+        // Debug.WriteHex(0xBAB20000u | (uint)barIndex); // size/base snapshot
+        // Debug.WriteHex((uint)(baseAddr >> 32));
+        // Debug.WriteHex((uint)baseAddr);
+        // Debug.WriteHex((uint)(size >> 32));
+        // Debug.WriteHex((uint)size);
 
         // Handle non-zero base address case (BAR already programmed by firmware)
         // Use early return pattern to avoid JIT brfalse bug with large if-blocks
         if (baseAddr != 0)
         {
-            Debug.WriteHex(0xBAB27000u | (uint)barIndex); // non-zero path
+            // Debug.WriteHex(0xBAB27000u | (uint)barIndex); // non-zero path
             PciBar earlyResult;
             earlyResult.Index = barIndex;
             earlyResult.BaseAddress = baseAddr;
@@ -282,9 +282,9 @@ public static unsafe class VirtioBlkEntry
         // Align the address to the BAR size (BARs must be naturally aligned)
         ulong alignedAddr = (_nextBarAddress + size - 1) & ~(size - 1);
 
-        Debug.WriteHex(0xBAB30000u | (uint)barIndex); // programming BAR
-        Debug.WriteHex((uint)(alignedAddr >> 32));
-        Debug.WriteHex((uint)alignedAddr);
+        // Debug.WriteHex(0xBAB30000u | (uint)barIndex); // programming BAR
+        // Debug.WriteHex((uint)(alignedAddr >> 32));
+        // Debug.WriteHex((uint)alignedAddr);
 
         // Program the BAR
         if (is64Bit && barIndex < 5)
@@ -309,9 +309,9 @@ public static unsafe class VirtioBlkEntry
         // Update next available address
         _nextBarAddress = alignedAddr + size;
 
-        Debug.WriteHex(0xBAB30080u | (uint)barIndex); // next free addr
-        Debug.WriteHex((uint)(_nextBarAddress >> 32));
-        Debug.WriteHex((uint)_nextBarAddress);
+        // Debug.WriteHex(0xBAB30080u | (uint)barIndex); // next free addr
+        // Debug.WriteHex((uint)(_nextBarAddress >> 32));
+        // Debug.WriteHex((uint)_nextBarAddress);
 
         // Enable memory space decoding in the PCI command register
         ushort cmd = PCI.ReadConfig16(bus, device, function, PCI.PCI_COMMAND);

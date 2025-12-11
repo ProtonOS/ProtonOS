@@ -175,59 +175,29 @@ public static unsafe class Kernel
         if (_systemRuntimeBytes != null)
         {
             _systemRuntimeId = AssemblyLoader.Load(_systemRuntimeBytes, _systemRuntimeSize);
-            if (_systemRuntimeId != AssemblyLoader.InvalidAssemblyId)
-            {
-                DebugConsole.Write("[Kernel] System.Runtime registered with ID ");
-                DebugConsole.WriteDecimal(_systemRuntimeId);
-                DebugConsole.WriteLine();
-            }
         }
 
         // Register ProtonOS.DDK.dll (depends on System.Runtime)
         if (_ddkBytes != null)
         {
             _ddkId = AssemblyLoader.Load(_ddkBytes, _ddkSize);
-            if (_ddkId != AssemblyLoader.InvalidAssemblyId)
-            {
-                DebugConsole.Write("[Kernel] ProtonOS.DDK registered with ID ");
-                DebugConsole.WriteDecimal(_ddkId);
-                DebugConsole.WriteLine();
-            }
         }
 
         // Register driver assemblies (depend on System.Runtime and DDK)
         if (_virtioDriverBytes != null)
         {
             _virtioDriverId = AssemblyLoader.Load(_virtioDriverBytes, _virtioDriverSize);
-            if (_virtioDriverId != AssemblyLoader.InvalidAssemblyId)
-            {
-                DebugConsole.Write("[Kernel] Virtio driver registered with ID ");
-                DebugConsole.WriteDecimal(_virtioDriverId);
-                DebugConsole.WriteLine();
-            }
         }
 
         if (_virtioBlkDriverBytes != null)
         {
             _virtioBlkDriverId = AssemblyLoader.Load(_virtioBlkDriverBytes, _virtioBlkDriverSize);
-            if (_virtioBlkDriverId != AssemblyLoader.InvalidAssemblyId)
-            {
-                DebugConsole.Write("[Kernel] VirtioBlk driver registered with ID ");
-                DebugConsole.WriteDecimal(_virtioBlkDriverId);
-                DebugConsole.WriteLine();
-            }
         }
 
         // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
         if (_testAssemblyBytes != null)
         {
             _testAssemblyId = AssemblyLoader.Load(_testAssemblyBytes, _testAssemblySize);
-            if (_testAssemblyId != AssemblyLoader.InvalidAssemblyId)
-            {
-                DebugConsole.Write("[Kernel] Test assembly registered with ID ");
-                DebugConsole.WriteDecimal(_testAssemblyId);
-                DebugConsole.WriteLine();
-            }
         }
 
         // Initialize metadata integration layer (requires HeapAllocator)
@@ -276,50 +246,15 @@ public static unsafe class Kernel
     /// </summary>
     private static void LoadTestAssembly()
     {
-        DebugConsole.WriteLine("[Kernel] Loading assemblies from UEFI FS...");
-
         // Load System.Runtime.dll first (dependency for all assemblies)
         _systemRuntimeBytes = UEFIFS.ReadFileAscii("\\System.Runtime.dll", out _systemRuntimeSize);
-        if (_systemRuntimeBytes != null)
-        {
-            DebugConsole.Write("[Kernel] System.Runtime.dll loaded, size ");
-            DebugConsole.WriteHex(_systemRuntimeSize);
-            DebugConsole.WriteLine();
-        }
-        else
-        {
-            DebugConsole.WriteLine("[Kernel] System.Runtime.dll not found (optional)");
-        }
 
         // Load ProtonOS.DDK.dll (Driver Development Kit)
         _ddkBytes = UEFIFS.ReadFileAscii("\\ProtonOS.DDK.dll", out _ddkSize);
-        if (_ddkBytes != null)
-        {
-            DebugConsole.Write("[Kernel] ProtonOS.DDK.dll loaded, size ");
-            DebugConsole.WriteHex(_ddkSize);
-            DebugConsole.WriteLine();
-        }
-        else
-        {
-            DebugConsole.WriteLine("[Kernel] ProtonOS.DDK.dll not found (optional)");
-        }
 
         // Load driver assemblies from /drivers/
         _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
-        if (_virtioDriverBytes != null)
-        {
-            DebugConsole.Write("[Kernel] Virtio driver loaded, size ");
-            DebugConsole.WriteHex(_virtioDriverSize);
-            DebugConsole.WriteLine();
-        }
-
         _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
-        if (_virtioBlkDriverBytes != null)
-        {
-            DebugConsole.Write("[Kernel] VirtioBlk driver loaded, size ");
-            DebugConsole.WriteHex(_virtioBlkDriverSize);
-            DebugConsole.WriteLine();
-        }
 
         // Load FullTest.dll
         _testAssemblyBytes = UEFIFS.ReadFileAscii("\\FullTest.dll", out _testAssemblySize);
@@ -330,18 +265,10 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[Kernel] Test assembly loaded at 0x");
-        DebugConsole.WriteHex((ulong)_testAssemblyBytes);
-        DebugConsole.Write(", size ");
-        DebugConsole.WriteHex(_testAssemblySize);
-        DebugConsole.WriteLine();
-
         // Verify it looks like a PE file (MZ header)
         if (_testAssemblySize >= 2 && _testAssemblyBytes[0] == 'M' && _testAssemblyBytes[1] == 'Z')
         {
-            DebugConsole.WriteLine("[Kernel] PE signature verified (MZ)");
-
-            // Parse CLI header and metadata (still needed before ExitBootServices for dump output)
+            // Parse CLI header and metadata (still needed before ExitBootServices)
             ParseAssemblyMetadata();
         }
         else
@@ -364,20 +291,6 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[Kernel] CLI header: runtime ");
-        DebugConsole.WriteDecimal(corHeader->MajorRuntimeVersion);
-        DebugConsole.Write(".");
-        DebugConsole.WriteDecimal(corHeader->MinorRuntimeVersion);
-        DebugConsole.Write(", flags 0x");
-        DebugConsole.WriteHex(corHeader->Flags);
-        DebugConsole.WriteLine();
-
-        DebugConsole.Write("[Kernel] Metadata RVA 0x");
-        DebugConsole.WriteHex(corHeader->MetaData.VirtualAddress);
-        DebugConsole.Write(", size 0x");
-        DebugConsole.WriteHex(corHeader->MetaData.Size);
-        DebugConsole.WriteLine();
-
         // Get metadata root (using file-based RVA translation)
         var metadataRoot = (byte*)PEHelper.GetMetadataRootFromFile(_testAssemblyBytes);
         if (metadataRoot == null)
@@ -388,11 +301,7 @@ public static unsafe class Kernel
 
         // Verify BSJB signature
         uint signature = *(uint*)metadataRoot;
-        if (signature == PEConstants.METADATA_SIGNATURE)
-        {
-            DebugConsole.WriteLine("[Kernel] Metadata signature verified (BSJB)");
-        }
-        else
+        if (signature != PEConstants.METADATA_SIGNATURE)
         {
             DebugConsole.Write("[Kernel] Invalid metadata signature: 0x");
             DebugConsole.WriteHex(signature);
@@ -406,7 +315,7 @@ public static unsafe class Kernel
             // Save the MetadataRoot for later use (e.g., string resolution)
             _testMetadataRoot = mdRoot;
 
-            MetadataReader.Dump(ref mdRoot);
+            // MetadataReader.Dump(ref mdRoot);
 
             // Parse #~ (tables) stream header
             if (MetadataReader.ParseTablesHeader(ref mdRoot, out var tablesHeader))
@@ -415,26 +324,26 @@ public static unsafe class Kernel
                 _testTablesHeader = tablesHeader;
                 _testTableSizes = TableSizes.Calculate(ref tablesHeader);
 
-                MetadataReader.DumpTablesHeader(ref tablesHeader);
+                // MetadataReader.DumpTablesHeader(ref tablesHeader);
 
                 // Test heap access by reading Module and TypeDef tables
-                MetadataReader.DumpModuleTable(ref mdRoot, ref tablesHeader);
-                MetadataReader.DumpTypeDefTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpModuleTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpTypeDefTable(ref mdRoot, ref tablesHeader);
 
                 // Test new table accessors with TypeRef, MethodDef, MemberRef, AssemblyRef
-                MetadataReader.DumpTypeRefTable(ref mdRoot, ref tablesHeader);
-                MetadataReader.DumpMethodDefTable(ref mdRoot, ref tablesHeader);
-                MetadataReader.DumpMemberRefTable(ref mdRoot, ref tablesHeader);
-                MetadataReader.DumpAssemblyRefTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpTypeRefTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpMethodDefTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpMemberRefTable(ref mdRoot, ref tablesHeader);
+                // MetadataReader.DumpAssemblyRefTable(ref mdRoot, ref tablesHeader);
 
                 // Test IL method body parsing
-                DumpMethodBodies(ref mdRoot, ref tablesHeader);
+                // DumpMethodBodies(ref mdRoot, ref tablesHeader);
 
                 // Test type resolution (Phase 5.9)
-                MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref _testTableSizes);
+                // MetadataReader.TestTypeResolution(ref mdRoot, ref tablesHeader, ref _testTableSizes);
 
                 // Test assembly identity (Phase 5.10)
-                MetadataReader.TestAssemblyIdentity(ref mdRoot, ref tablesHeader, ref _testTableSizes);
+                // MetadataReader.TestAssemblyIdentity(ref mdRoot, ref tablesHeader, ref _testTableSizes);
             }
             else
             {
