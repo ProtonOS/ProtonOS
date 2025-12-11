@@ -136,6 +136,58 @@ namespace System
             return Concat(Concat(str0, str1), Concat(str2, str3));
         }
 
+        // Additional Concat overloads for longer concatenations (avoids params boxing)
+        public static string Concat(string? str0, string? str1, string? str2, string? str3, string? str4)
+        {
+            return Concat(Concat(str0, str1, str2, str3), str4);
+        }
+
+        public static string Concat(string? str0, string? str1, string? str2, string? str3, string? str4, string? str5)
+        {
+            return Concat(Concat(str0, str1, str2, str3), Concat(str4, str5));
+        }
+
+        public static string Concat(string? str0, string? str1, string? str2, string? str3, string? str4, string? str5, string? str6)
+        {
+            return Concat(Concat(str0, str1, str2, str3), Concat(str4, str5, str6));
+        }
+
+        public static string Concat(string? str0, string? str1, string? str2, string? str3, string? str4, string? str5, string? str6, string? str7)
+        {
+            return Concat(Concat(str0, str1, str2, str3), Concat(str4, str5, str6, str7));
+        }
+
+        public static string Concat(params string?[] values)
+        {
+            if (values == null || values.Length == 0) return Empty;
+            if (values.Length == 1) return values[0] ?? Empty;
+
+            // Calculate total length
+            int totalLen = 0;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] != null)
+                    totalLen += values[i]!.Length;
+            }
+
+            if (totalLen == 0) return Empty;
+
+            // Allocate and copy
+            string result = FastNewString(totalLen);
+            int pos = 0;
+            for (int i = 0; i < values.Length; i++)
+            {
+                string? s = values[i];
+                if (s != null)
+                {
+                    for (int j = 0; j < s.Length; j++)
+                        Unsafe.Add(ref result._firstChar, pos++) = s[j];
+                }
+            }
+
+            return result;
+        }
+
         // Instance methods
 
         public bool Contains(char c)
@@ -732,6 +784,233 @@ namespace System
             [MethodImpl(MethodImplOptions.InternalCall)]
             [RuntimeImport("*", "RhpNewArray")]
             static extern string NewString(MethodTable* pMT, int numElements);
+        }
+
+        // String constructor factory methods - these are registered in AotMethodRegistry
+        // and called by the JIT when it sees newobj for String constructors.
+
+        /// <summary>
+        /// Factory method for String(char[], int, int) constructor.
+        /// Called by the JIT instead of actually calling the constructor.
+        /// </summary>
+        public static string Ctor_CharArrayStartLength(char[] value, int startIndex, int length)
+        {
+            if (value == null || length == 0)
+                return Empty;
+            if (startIndex < 0 || length < 0 || startIndex + length > value.Length)
+                return Empty;
+
+            string result = FastNewString(length);
+            for (int i = 0; i < length; i++)
+                Unsafe.Add(ref result._firstChar, i) = value[startIndex + i];
+            return result;
+        }
+
+        /// <summary>
+        /// Factory method for String(char[]) constructor.
+        /// </summary>
+        public static string Ctor_CharArray(char[] value)
+        {
+            if (value == null || value.Length == 0)
+                return Empty;
+
+            string result = FastNewString(value.Length);
+            for (int i = 0; i < value.Length; i++)
+                Unsafe.Add(ref result._firstChar, i) = value[i];
+            return result;
+        }
+
+        // String.Format implementation for AOT code
+        // Supports {0}, {1}, {2}, {3} placeholders
+
+        public static string Format(string format, object? arg0)
+        {
+            return FormatHelper(format, arg0, null, null, null);
+        }
+
+        public static string Format(string format, object? arg0, object? arg1)
+        {
+            return FormatHelper(format, arg0, arg1, null, null);
+        }
+
+        public static string Format(string format, object? arg0, object? arg1, object? arg2)
+        {
+            return FormatHelper(format, arg0, arg1, arg2, null);
+        }
+
+        public static string Format(string format, params object?[] args)
+        {
+            if (format == null) return Empty;
+            if (args == null || args.Length == 0) return format;
+
+            // Calculate result length first
+            int resultLen = 0;
+            int i = 0;
+            while (i < format.Length)
+            {
+                if (format[i] == '{' && i + 2 < format.Length && format[i + 2] == '}')
+                {
+                    char indexChar = format[i + 1];
+                    if (indexChar >= '0' && indexChar <= '9')
+                    {
+                        int argIndex = indexChar - '0';
+                        if (argIndex < args.Length && args[argIndex] != null)
+                        {
+                            string? argStr = args[argIndex]?.ToString();
+                            if (argStr != null)
+                                resultLen += argStr.Length;
+                        }
+                        i += 3;
+                        continue;
+                    }
+                }
+                resultLen++;
+                i++;
+            }
+
+            // Build result
+            string result = FastNewString(resultLen);
+            int pos = 0;
+            i = 0;
+            while (i < format.Length)
+            {
+                if (format[i] == '{' && i + 2 < format.Length && format[i + 2] == '}')
+                {
+                    char indexChar = format[i + 1];
+                    if (indexChar >= '0' && indexChar <= '9')
+                    {
+                        int argIndex = indexChar - '0';
+                        if (argIndex < args.Length && args[argIndex] != null)
+                        {
+                            string? argStr = args[argIndex]?.ToString();
+                            if (argStr != null)
+                            {
+                                for (int j = 0; j < argStr.Length; j++)
+                                    Unsafe.Add(ref result._firstChar, pos++) = argStr[j];
+                            }
+                        }
+                        i += 3;
+                        continue;
+                    }
+                }
+                Unsafe.Add(ref result._firstChar, pos++) = format[i];
+                i++;
+            }
+
+            return result;
+        }
+
+        private static string FormatHelper(string format, object? arg0, object? arg1, object? arg2, object? arg3)
+        {
+            if (format == null) return Empty;
+
+            // Convert args to strings with format support
+            string? s0 = null, s1 = null, s2 = null, s3 = null;
+
+            // Calculate result length and format arguments
+            int resultLen = 0;
+            int i = 0;
+            while (i < format.Length)
+            {
+                if (format[i] == '{' && i + 1 < format.Length)
+                {
+                    // Find the closing brace
+                    int closeBrace = format.IndexOf('}', i + 1);
+                    if (closeBrace > i + 1)
+                    {
+                        // Parse the placeholder content
+                        int argIndex = -1;
+                        string? argFormat = null;
+                        int colonPos = -1;
+
+                        // Look for colon (format specifier separator)
+                        for (int k = i + 1; k < closeBrace; k++)
+                        {
+                            if (format[k] == ':')
+                            {
+                                colonPos = k;
+                                break;
+                            }
+                        }
+
+                        // Parse argument index
+                        char indexChar = format[i + 1];
+                        if (indexChar >= '0' && indexChar <= '9')
+                        {
+                            argIndex = indexChar - '0';
+                        }
+
+                        // Extract format specifier if present
+                        if (colonPos > 0 && colonPos < closeBrace - 1)
+                        {
+                            argFormat = format.Substring(colonPos + 1, closeBrace - colonPos - 1);
+                        }
+
+                        // Format the argument
+                        string? argStr = argIndex switch
+                        {
+                            0 => s0 ?? (s0 = FormatArg(arg0, argFormat)),
+                            1 => s1 ?? (s1 = FormatArg(arg1, argFormat)),
+                            2 => s2 ?? (s2 = FormatArg(arg2, argFormat)),
+                            3 => s3 ?? (s3 = FormatArg(arg3, argFormat)),
+                            _ => null
+                        };
+
+                        if (argStr != null)
+                            resultLen += argStr.Length;
+
+                        i = closeBrace + 1;
+                        continue;
+                    }
+                }
+                resultLen++;
+                i++;
+            }
+
+            // Build result
+            string result = FastNewString(resultLen);
+            int pos = 0;
+            i = 0;
+            while (i < format.Length)
+            {
+                if (format[i] == '{' && i + 1 < format.Length)
+                {
+                    int closeBrace = format.IndexOf('}', i + 1);
+                    if (closeBrace > i + 1)
+                    {
+                        char indexChar = format[i + 1];
+                        string? argStr = indexChar switch
+                        {
+                            '0' => s0,
+                            '1' => s1,
+                            '2' => s2,
+                            '3' => s3,
+                            _ => null
+                        };
+                        if (argStr != null)
+                        {
+                            for (int j = 0; j < argStr.Length; j++)
+                                Unsafe.Add(ref result._firstChar, pos++) = argStr[j];
+                        }
+                        i = closeBrace + 1;
+                        continue;
+                    }
+                }
+                Unsafe.Add(ref result._firstChar, pos++) = format[i];
+                i++;
+            }
+
+            return result;
+        }
+
+        private static string? FormatArg(object? arg, string? format)
+        {
+            if (arg == null) return null;
+
+            // For now, just use ToString() - format specifiers require type identification
+            // which needs TypeCast runtime support we don't have
+            // TODO: Add format support once we have TypeCast or alternative approach
+            return arg.ToString();
         }
     }
 }

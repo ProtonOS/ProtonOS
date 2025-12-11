@@ -41,6 +41,313 @@ namespace System.Runtime
         private ushort _usNumVtableSlots;
         private ushort _usNumInterfaces;
         private uint _uHashCode;
+
+        // Helper property to check if this is a value type
+        // Bit 2 (0x0004) in _usFlags indicates value type
+        internal bool IsValueType => (_usFlags & 0x0004) != 0;
+
+        // Get the size of value type data (excluding object header)
+        internal uint ValueTypeSize => _uBaseSize - (uint)sizeof(MethodTable*);
+    }
+
+    /// <summary>
+    /// Runtime exports required by the AOT compiler for boxing operations.
+    /// The compiler looks for System.Runtime.RuntimeExports.RhBox when generating
+    /// code for boxing value types (e.g., passing int to object parameter).
+    /// </summary>
+    internal static unsafe class RuntimeExports
+    {
+        /// <summary>
+        /// Box a value type. Allocates a new object and copies the value into it.
+        /// </summary>
+        /// <param name="pEEType">The MethodTable* for the value type being boxed</param>
+        /// <param name="data">Reference to the value type data to box</param>
+        /// <returns>A boxed object containing a copy of the value</returns>
+        public static object RhBox(MethodTable* pEEType, ref byte data)
+        {
+            // Allocate space for the boxed object
+            // BaseSize includes the MethodTable pointer + value type data
+            MethodTable** result = AllocObject(pEEType->_uBaseSize);
+            *result = pEEType;
+
+            // Copy value type data into the object (after the MethodTable pointer)
+            byte* dst = (byte*)(result + 1);
+            uint size = pEEType->ValueTypeSize;
+
+            // Simple byte-by-byte copy
+            for (uint i = 0; i < size; i++)
+            {
+                dst[i] = Unsafe.Add(ref data, (int)i);
+            }
+
+            // Convert pointer to object reference
+            // This is equivalent to reinterpreting the pointer as an object reference
+            return *(object*)&result;
+        }
+
+        // Import allocation from kernel PAL (same as StartupCodeHelpers)
+        [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+        private static extern MethodTable** PalAllocObject(uint size);
+
+        private static MethodTable** AllocObject(uint size)
+        {
+            MethodTable** result = PalAllocObject(size);
+            if (result == null)
+                Environment.FailFast(null);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Runtime type casting helpers required by the AOT compiler.
+    /// The compiler generates calls to these methods for type checking operations
+    /// like 'is', 'as', and explicit casts.
+    /// </summary>
+    internal static unsafe class TypeCast
+    {
+        /// <summary>
+        /// Check if an object is an instance of a class type.
+        /// Returns the object if it is, null otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_IsInstanceOfClass")]
+        public static object? IsInstanceOfClass(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Walk up the type hierarchy
+            while (pObjType != null)
+            {
+                if (pObjType == pTargetType)
+                    return obj;
+                pObjType = pObjType->_relatedType;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Check cast to a class type.
+        /// Returns the object if cast is valid, throws InvalidCastException otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_CheckCastClass")]
+        public static object CheckCastClass(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null!;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Walk up the type hierarchy
+            while (pObjType != null)
+            {
+                if (pObjType == pTargetType)
+                    return obj;
+                pObjType = pObjType->_relatedType;
+            }
+
+            throw new InvalidCastException();
+        }
+
+        /// <summary>
+        /// Check if an object is an instance of an interface type.
+        /// Returns the object if it is, null otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_IsInstanceOfInterface")]
+        public static object? IsInstanceOfInterface(MethodTable* pTargetType, object obj)
+        {
+            // Simplified: For now, we don't support interfaces properly
+            // This would need interface table walking
+            if (obj == null)
+                return null;
+
+            // TODO: Proper interface checking
+            // For now, assume it's assignable (will be corrected later)
+            return null;
+        }
+
+        /// <summary>
+        /// Check cast to an interface type.
+        /// Returns the object if cast is valid, throws InvalidCastException otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_CheckCastInterface")]
+        public static object CheckCastInterface(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null!;
+
+            // Simplified: For now, we don't support interfaces properly
+            throw new InvalidCastException();
+        }
+
+        /// <summary>
+        /// Check if an object is an instance of an array type.
+        /// Returns the object if it is, null otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_IsInstanceOfArray")]
+        public static object? IsInstanceOfArray(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Direct type match
+            if (pObjType == pTargetType)
+                return obj;
+
+            // TODO: Array covariance checking
+            return null;
+        }
+
+        /// <summary>
+        /// Check cast to an array type.
+        /// Returns the object if cast is valid, throws InvalidCastException otherwise.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_CheckCastArray")]
+        public static object CheckCastArray(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null!;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Direct type match
+            if (pObjType == pTargetType)
+                return obj;
+
+            throw new InvalidCastException();
+        }
+
+        /// <summary>
+        /// Check if source type is assignable to target type.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_AreTypesAssignable")]
+        public static bool AreTypesAssignable(MethodTable* pSourceType, MethodTable* pTargetType)
+        {
+            if (pSourceType == pTargetType)
+                return true;
+
+            // Walk up the source type hierarchy
+            MethodTable* pType = pSourceType;
+            while (pType != null)
+            {
+                if (pType == pTargetType)
+                    return true;
+                pType = pType->_relatedType;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Generic IsInstanceOf - checks class, interface, and array types.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_IsInstanceOf")]
+        public static object? IsInstanceOf(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Direct type match
+            if (pObjType == pTargetType)
+                return obj;
+
+            // Walk up the type hierarchy
+            MethodTable* pType = pObjType->_relatedType;
+            while (pType != null)
+            {
+                if (pType == pTargetType)
+                    return obj;
+                pType = pType->_relatedType;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Generic CheckCast - checks class, interface, and array types.
+        /// </summary>
+        [RuntimeExport("RhTypeCast_CheckCast")]
+        public static object CheckCast(MethodTable* pTargetType, object obj)
+        {
+            if (obj == null)
+                return null!;
+
+            MethodTable* pObjType = obj.m_pMethodTable;
+
+            // Direct type match
+            if (pObjType == pTargetType)
+                return obj;
+
+            // Walk up the type hierarchy
+            MethodTable* pType = pObjType->_relatedType;
+            while (pType != null)
+            {
+                if (pType == pTargetType)
+                    return obj;
+                pType = pType->_relatedType;
+            }
+
+            throw new InvalidCastException();
+        }
+
+        /// <summary>
+        /// Store element reference in array with type checking.
+        /// This is used by the compiler for storing references in object[] arrays.
+        /// </summary>
+        public static void StelemRef(Array array, nint index, object obj)
+        {
+            if (array == null)
+                throw new NullReferenceException();
+
+            MethodTable* elementType = array.m_pMethodTable->_relatedType;
+
+            if (obj == null)
+            {
+                // Storing null is always allowed
+                Unsafe.As<ArrayElement[]>(array)[index].Value = null!;
+                return;
+            }
+
+            MethodTable* objType = obj.m_pMethodTable;
+
+            // Check if object type is assignable to element type
+            while (objType != null)
+            {
+                if (objType == elementType)
+                {
+                    Unsafe.As<ArrayElement[]>(array)[index].Value = obj;
+                    return;
+                }
+                objType = objType->_relatedType;
+            }
+
+            // Type mismatch
+            throw new ArrayTypeMismatchException();
+        }
+
+        internal struct ArrayElement
+        {
+            public object Value;
+        }
+
+        /// <summary>
+        /// Load element address reference from array with type checking.
+        /// </summary>
+        public static ref object LdelemaRef(Array array, nint index, MethodTable* elementType)
+        {
+            if (array == null)
+                throw new NullReferenceException();
+
+            // Simplified: just return the element reference
+            // Full implementation would check element type
+            return ref Unsafe.As<ArrayElement[]>(array)[index].Value;
+        }
     }
 }
 
@@ -124,6 +431,13 @@ namespace Internal.Runtime.CompilerHelpers
         // Fast path alias for array allocation (same implementation)
         [RuntimeExport("RhpNewArrayFast")]
         static unsafe void* RhpNewArrayFast(System.Runtime.MethodTable* pMT, int numElements)
+        {
+            return RhpNewArray(pMT, numElements);
+        }
+
+        // For pointer arrays (e.g., object[])
+        [RuntimeExport("RhpNewPtrArrayFast")]
+        static unsafe void* RhpNewPtrArrayFast(System.Runtime.MethodTable* pMT, int numElements)
         {
             return RhpNewArray(pMT, numElements);
         }

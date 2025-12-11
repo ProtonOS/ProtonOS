@@ -76,11 +76,8 @@ public static unsafe class GC
 
         _initialized = true;
 
-        DebugConsole.Write("[GC] Initialized, mark stack at 0x");
-        DebugConsole.WriteHex((ulong)_markStack);
-        DebugConsole.Write(" (capacity=");
-        DebugConsole.WriteDecimal(MarkStackCapacity);
-        DebugConsole.WriteLine(")");
+        DebugConsole.WriteLine(string.Format("[GC] Initialized, mark stack at 0x{0} (capacity={1})",
+            ((ulong)_markStack).ToString("X", null), MarkStackCapacity));
 
         return true;
     }
@@ -107,11 +104,8 @@ public static unsafe class GC
         _gcInProgress = true;
         _collectionsPerformed++;
 
-        DebugConsole.Write("[GC] Starting collection #");
-        DebugConsole.WriteDecimal((uint)_collectionsPerformed);
-        if (forceCompact)
-            DebugConsole.Write(" (compacting)");
-        DebugConsole.WriteLine("...");
+        DebugConsole.WriteLine(string.Format("[GC] Starting collection #{0}{1}...",
+            _collectionsPerformed, forceCompact ? " (compacting)" : ""));
 
         // Phase 1: Stop the world
         StopTheWorld();
@@ -131,11 +125,8 @@ public static unsafe class GC
         // Process the mark stack (transitive closure)
         ProcessMarkStack();
 
-        DebugConsole.Write("[GC] Mark phase complete: ");
-        DebugConsole.WriteDecimal((uint)_rootsFound);
-        DebugConsole.Write(" roots, ");
-        DebugConsole.WriteDecimal((uint)_objectsMarked);
-        DebugConsole.WriteLine(" objects marked");
+        DebugConsole.WriteLine(string.Format("[GC] Mark phase complete: {0} roots, {1} objects marked",
+            _rootsFound, _objectsMarked));
 
         // Phase 4a: Sweep LOH (LOH is never compacted)
         int lohFreed = SweepLOH();
@@ -187,9 +178,7 @@ public static unsafe class GC
 
         if (fragmentationPercent > 25)
         {
-            DebugConsole.Write("[GC] High fragmentation: ");
-            DebugConsole.WriteDecimal((uint)fragmentationPercent);
-            DebugConsole.WriteLine("% - will compact");
+            DebugConsole.WriteLine(string.Format("[GC] High fragmentation: {0}% - will compact", fragmentationPercent));
             return true;
         }
 

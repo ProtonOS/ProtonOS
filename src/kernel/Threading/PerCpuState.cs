@@ -236,9 +236,7 @@ public static unsafe class PerCpu
         _allCpuStates = (PerCpuState**)Memory.HeapAllocator.AllocZeroed((ulong)(sizeof(PerCpuState*) * cpuCount));
         _initialized = true;
 
-        DebugConsole.Write("[PerCpu] Initialized for ");
-        DebugConsole.WriteDecimal(cpuCount);
-        DebugConsole.WriteLine(" CPUs");
+        DebugConsole.WriteLine(string.Format("[PerCpu] Initialized for {0} CPUs", cpuCount));
     }
 
     /// <summary>

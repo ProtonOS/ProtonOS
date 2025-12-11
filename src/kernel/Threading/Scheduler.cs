@@ -115,9 +115,8 @@ public static unsafe class Scheduler
         _threadCount = 1;
 
         _initialized = true;
-        DebugConsole.Write("[Sched] Initialized, boot thread ID: ");
-        DebugConsole.WriteHex((ushort)bootThread->Id);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[Sched] Initialized, boot thread ID: 0x{0}",
+            bootThread->Id.ToString("X4", null)));
     }
 
     /// <summary>
@@ -320,11 +319,8 @@ public static unsafe class Scheduler
 
         _globalLock.Release();
 
-        DebugConsole.Write("[Sched] Created thread ");
-        DebugConsole.WriteHex((ushort)threadId);
-        DebugConsole.Write(" stack 0x");
-        DebugConsole.WriteHex(stackBase);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[Sched] Created thread 0x{0} stack 0x{1}",
+            threadId.ToString("X4", null), stackBase.ToString("X", null)));
 
         return thread;
     }
@@ -372,11 +368,8 @@ public static unsafe class Scheduler
         thread->ExitCode = exitCode;
         thread->State = ThreadState.Terminated;
 
-        DebugConsole.Write("[Sched] Thread ");
-        DebugConsole.WriteHex((ushort)thread->Id);
-        DebugConsole.Write(" exited with code ");
-        DebugConsole.WriteHex(exitCode);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[Sched] Thread 0x{0} exited with code 0x{1}",
+            thread->Id.ToString("X4", null), exitCode.ToString("X8", null)));
 
         // TODO: Free stack memory
         // TODO: Wake any threads waiting on this thread

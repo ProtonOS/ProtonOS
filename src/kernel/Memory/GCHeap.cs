@@ -194,13 +194,9 @@ public static unsafe class GCHeap
 
         _initialized = true;
 
-        DebugConsole.Write("[GCHeap] Initialized: ");
-        DebugConsole.WriteHex((ulong)_regionStart);
-        DebugConsole.Write(" - ");
-        DebugConsole.WriteHex((ulong)_regionEnd);
-        DebugConsole.Write(" (");
-        DebugConsole.WriteDecimal((uint)(InitialRegionSize / 1024));
-        DebugConsole.WriteLine(" KB)");
+        DebugConsole.WriteLine(string.Format("[GCHeap] Initialized: 0x{0} - 0x{1} ({2} KB)",
+            ((ulong)_regionStart).ToString("X", null), ((ulong)_regionEnd).ToString("X", null),
+            (uint)(InitialRegionSize / 1024)));
 
         return true;
     }

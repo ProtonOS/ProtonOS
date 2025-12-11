@@ -28,6 +28,17 @@ namespace System
     public abstract class Type
     {
         /// <summary>
+        /// Gets a Type from a RuntimeTypeHandle.
+        /// Required by the compiler for typeof() operator.
+        /// </summary>
+        public static unsafe Type GetTypeFromHandle(RuntimeTypeHandle handle)
+        {
+            if (handle.Value == IntPtr.Zero)
+                return null!;
+            return new RuntimeType((MethodTable*)handle.Value);
+        }
+
+        /// <summary>
         /// Gets the fully qualified name of the type.
         /// </summary>
         public virtual string? FullName => null;

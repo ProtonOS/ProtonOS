@@ -19,10 +19,51 @@ namespace System
 {
     public struct Void { }
 
+    // Helper class for number formatting
+    internal static class NumberFormatter
+    {
+        internal static unsafe string FormatHex(ulong value, int width, bool uppercase)
+        {
+            // Max 16 hex digits for ulong
+            char* buffer = stackalloc char[17];
+            int pos = 16;
+            buffer[16] = '\0';
+
+            char baseChar = uppercase ? 'A' : 'a';
+
+            if (value == 0)
+            {
+                pos--;
+                buffer[pos] = '0';
+            }
+            else
+            {
+                while (value > 0)
+                {
+                    pos--;
+                    int digit = (int)(value & 0xF);
+                    buffer[pos] = digit < 10 ? (char)('0' + digit) : (char)(baseChar + digit - 10);
+                    value >>= 4;
+                }
+            }
+
+            // Pad with zeros if width specified
+            int digitCount = 16 - pos;
+            while (digitCount < width && pos > 0)
+            {
+                pos--;
+                buffer[pos] = '0';
+                digitCount++;
+            }
+
+            return new string(buffer + pos, 0, 16 - pos);
+        }
+    }
+
     // The layout of primitive types is special cased because it would be recursive.
     // These really don't need any fields to work - the compiler/runtime handles them specially.
 
-    public struct Boolean : IEquatable<bool>, IComparable<bool>, IComparable
+    public struct Boolean : IEquatable<bool>, IComparable<bool>, IComparable, IFormattable
     {
         public static readonly string TrueString = "True";
         public static readonly string FalseString = "False";
@@ -50,6 +91,8 @@ namespace System
 
         public override string ToString() => this ? TrueString : FalseString;
 
+        public string ToString(string? format, IFormatProvider? formatProvider) => this ? TrueString : FalseString;
+
         public static bool Parse(string value)
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
@@ -75,7 +118,7 @@ namespace System
         }
     }
 
-    public struct Char : IEquatable<char>, IComparable<char>, IComparable
+    public struct Char : IEquatable<char>, IComparable<char>, IComparable, IFormattable
     {
         public const char MaxValue = (char)0xFFFF;
         public const char MinValue = (char)0;
@@ -96,6 +139,8 @@ namespace System
         }
 
         public override string ToString() => new string(this, 1);
+
+        public string ToString(string? format, IFormatProvider? formatProvider) => new string(this, 1);
 
         public static bool IsDigit(char c) => c >= '0' && c <= '9';
 
@@ -122,7 +167,7 @@ namespace System
             (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
     }
 
-    public struct SByte : IEquatable<sbyte>, IComparable<sbyte>, IComparable
+    public struct SByte : IEquatable<sbyte>, IComparable<sbyte>, IComparable, IFormattable
     {
         public const sbyte MaxValue = 127;
         public const sbyte MinValue = -128;
@@ -143,9 +188,28 @@ namespace System
         }
 
         public override string ToString() => Int32.FormatInt32((int)this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return Int32.FormatInt32((int)this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex((byte)this, width, specifier == 'X');
+            return Int32.FormatInt32((int)this);
+        }
     }
 
-    public struct Byte : IEquatable<byte>, IComparable<byte>, IComparable
+    public struct Byte : IEquatable<byte>, IComparable<byte>, IComparable, IFormattable
     {
         public const byte MaxValue = 255;
         public const byte MinValue = 0;
@@ -166,9 +230,28 @@ namespace System
         }
 
         public override string ToString() => Int32.FormatInt32((int)this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return Int32.FormatInt32((int)this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex(this, width, specifier == 'X');
+            return Int32.FormatInt32((int)this);
+        }
     }
 
-    public struct Int16 : IEquatable<short>, IComparable<short>, IComparable
+    public struct Int16 : IEquatable<short>, IComparable<short>, IComparable, IFormattable
     {
         public const short MaxValue = 32767;
         public const short MinValue = -32768;
@@ -189,9 +272,28 @@ namespace System
         }
 
         public override string ToString() => Int32.FormatInt32((int)this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return Int32.FormatInt32((int)this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex((ushort)this, width, specifier == 'X');
+            return Int32.FormatInt32((int)this);
+        }
     }
 
-    public struct UInt16 : IEquatable<ushort>, IComparable<ushort>, IComparable
+    public struct UInt16 : IEquatable<ushort>, IComparable<ushort>, IComparable, IFormattable
     {
         public const ushort MaxValue = 65535;
         public const ushort MinValue = 0;
@@ -212,9 +314,28 @@ namespace System
         }
 
         public override string ToString() => Int32.FormatInt32((int)this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return Int32.FormatInt32((int)this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex(this, width, specifier == 'X');
+            return Int32.FormatInt32((int)this);
+        }
     }
 
-    public struct Int32 : IEquatable<int>, IComparable<int>, IComparable
+    public struct Int32 : IEquatable<int>, IComparable<int>, IComparable, IFormattable
     {
         public const int MaxValue = 0x7FFFFFFF;
         public const int MinValue = unchecked((int)0x80000000);
@@ -240,6 +361,36 @@ namespace System
         }
 
         public override string ToString() => FormatInt32(this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return FormatInt32(this);
+            return FormatInt32WithFormat(this, format);
+        }
+
+        internal static unsafe string FormatInt32WithFormat(int value, string format)
+        {
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+
+            // Handle hex format (X or x)
+            if (specifier == 'X' || specifier == 'x')
+            {
+                return NumberFormatter.FormatHex((uint)value, width, specifier == 'X');
+            }
+
+            // Default to decimal
+            return FormatInt32(value);
+        }
 
         // Internal helper for formatting integers
         internal static unsafe string FormatInt32(int value)
@@ -319,7 +470,7 @@ namespace System
         }
     }
 
-    public struct UInt32 : IEquatable<uint>, IComparable<uint>, IComparable
+    public struct UInt32 : IEquatable<uint>, IComparable<uint>, IComparable, IFormattable
     {
         public const uint MaxValue = 0xFFFFFFFF;
         public const uint MinValue = 0;
@@ -345,6 +496,25 @@ namespace System
         }
 
         public override string ToString() => FormatUInt32(this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return FormatUInt32(this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex(this, width, specifier == 'X');
+            return FormatUInt32(this);
+        }
 
         internal static unsafe string FormatUInt32(uint value)
         {
@@ -396,7 +566,7 @@ namespace System
         }
     }
 
-    public struct Int64 : IEquatable<long>, IComparable<long>, IComparable
+    public struct Int64 : IEquatable<long>, IComparable<long>, IComparable, IFormattable
     {
         public const long MaxValue = 0x7FFFFFFFFFFFFFFFL;
         public const long MinValue = unchecked((long)0x8000000000000000L);
@@ -422,6 +592,25 @@ namespace System
         }
 
         public override string ToString() => FormatInt64(this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return FormatInt64(this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex((ulong)this, width, specifier == 'X');
+            return FormatInt64(this);
+        }
 
         internal static unsafe string FormatInt64(long value)
         {
@@ -504,7 +693,7 @@ namespace System
         }
     }
 
-    public struct UInt64 : IEquatable<ulong>, IComparable<ulong>, IComparable
+    public struct UInt64 : IEquatable<ulong>, IComparable<ulong>, IComparable, IFormattable
     {
         public const ulong MaxValue = 0xFFFFFFFFFFFFFFFFUL;
         public const ulong MinValue = 0;
@@ -530,6 +719,25 @@ namespace System
         }
 
         public override string ToString() => FormatUInt64(this);
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return FormatUInt64(this);
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex(this, width, specifier == 'X');
+            return FormatUInt64(this);
+        }
 
         internal static unsafe string FormatUInt64(ulong value)
         {
@@ -585,7 +793,7 @@ namespace System
         }
     }
 
-    public struct IntPtr : IEquatable<nint>, IComparable<nint>, IComparable
+    public struct IntPtr : IEquatable<nint>, IComparable<nint>, IComparable, IFormattable
     {
         public static readonly nint Zero = 0;
 
@@ -619,6 +827,25 @@ namespace System
                 return Int32.FormatInt32((int)this);
         }
 
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return ToString();
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex((ulong)this, width, specifier == 'X');
+            return ToString();
+        }
+
         public unsafe void* ToPointer() => (void*)this;
 
         public int ToInt32() => (int)this;
@@ -626,7 +853,7 @@ namespace System
         public long ToInt64() => (long)this;
     }
 
-    public struct UIntPtr : IEquatable<nuint>, IComparable<nuint>, IComparable
+    public struct UIntPtr : IEquatable<nuint>, IComparable<nuint>, IComparable, IFormattable
     {
         public static readonly nuint Zero = 0;
 
@@ -658,6 +885,25 @@ namespace System
                 return UInt64.FormatUInt64((ulong)this);
             else
                 return UInt32.FormatUInt32((uint)this);
+        }
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            if (string.IsNullOrEmpty(format)) return ToString();
+            char specifier = format[0];
+            int width = 0;
+            if (format.Length > 1)
+            {
+                for (int i = 1; i < format.Length; i++)
+                {
+                    char c = format[i];
+                    if (c >= '0' && c <= '9')
+                        width = width * 10 + (c - '0');
+                }
+            }
+            if (specifier == 'X' || specifier == 'x')
+                return NumberFormatter.FormatHex((ulong)this, width, specifier == 'X');
+            return ToString();
         }
 
         public unsafe void* ToPointer() => (void*)this;

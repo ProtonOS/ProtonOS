@@ -519,6 +519,14 @@ public static unsafe class Tier0JIT
         // Complete the compilation (sets native code and clears IsBeingCompiled)
         CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId);
 
+        // If this is a virtual method, populate the vtable slot
+        bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+        bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+        if (isVirtual && !isStatic)
+        {
+            PopulateVtableSlot(assembly, methodRid, methodToken, assemblyId, (nint)code, methodFlags);
+        }
+
         // If this is a constructor, set the MethodTable for newobj to use
         if (IsConstructor(dbgMethodName))
         {
@@ -983,6 +991,29 @@ public static unsafe class Tier0JIT
             return;
         }
 
+        // MVAR (0x1E) - method type parameter, resolve from MethodSpec context
+        if (elemType == 0x1E)
+        {
+            uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+            if (MetadataIntegration.HasMethodTypeArgContext())
+            {
+                typeSize = MetadataIntegration.GetMethodTypeArgSize((int)mvarIndex);
+                // Determine if the substituted type is a value type
+                byte substitutedType = MetadataIntegration.GetMethodTypeArgElementType((int)mvarIndex);
+                // Primitives (0x02-0x0D), IntPtr/UIntPtr (0x18-0x19), and ValueType (0x11) are value types
+                isValueType = (substitutedType >= 0x02 && substitutedType <= 0x0D) ||
+                              (substitutedType >= 0x18 && substitutedType <= 0x19) ||
+                              substitutedType == 0x11;
+            }
+            else
+            {
+                // No context - treat as pointer-sized (conservative fallback)
+                typeSize = 8;
+                isValueType = false;
+            }
+            return;
+        }
+
         // Class (0x12), SzArray (0x1D), Object (0x1C), String (0x0E) - not value types
         // isValueType remains false
     }
@@ -1192,6 +1223,39 @@ public static unsafe class Tier0JIT
             return;
         }
 
+        // MVAR (0x1E) - method type parameter, resolve from MethodSpec context
+        if (elemType == 0x1E)
+        {
+            uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+            if (MetadataIntegration.HasMethodTypeArgContext())
+            {
+                typeSize = MetadataIntegration.GetMethodTypeArgSize((int)mvarIndex);
+                // Determine if the substituted type is a value type
+                byte substitutedType = MetadataIntegration.GetMethodTypeArgElementType((int)mvarIndex);
+                // Primitives (0x02-0x0D), IntPtr/UIntPtr (0x18-0x19), and ValueType (0x11) are value types
+                isValueType = (substitutedType >= 0x02 && substitutedType <= 0x0D) ||
+                              (substitutedType >= 0x18 && substitutedType <= 0x19) ||
+                              substitutedType == 0x11;
+            }
+            else
+            {
+                // No context - treat as pointer-sized (conservative fallback)
+                typeSize = 8;
+                isValueType = false;
+            }
+            return;
+        }
+
+        // VAR (0x13) - type parameter from generic type, not currently supported
+        // Would need type context from containing generic type
+        if (elemType == 0x13)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr); // Skip index
+            typeSize = 8;
+            isValueType = false;
+            return;
+        }
+
         // Everything else (STRING, OBJECT, etc.) - not a value type
     }
 
@@ -1243,6 +1307,20 @@ public static unsafe class Tier0JIT
 
         // SzArray - skip element type
         if (elemType == 0x1D)
+        {
+            SkipTypeSig(ref ptr, end);
+            return;
+        }
+
+        // MVAR (0x1E) or VAR (0x13) - skip the parameter index
+        if (elemType == 0x1E || elemType == 0x13)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr);
+            return;
+        }
+
+        // Ptr (0x0F) - skip the pointed-to type
+        if (elemType == 0x0F)
         {
             SkipTypeSig(ref ptr, end);
             return;
@@ -1466,7 +1544,29 @@ public static unsafe class Tier0JIT
     /// </summary>
     private static int ComputeVtableSlot(LoadedAssembly* assembly, uint typeRow, uint targetMethodRid)
     {
-        // Get the method range for this type
+        // For override methods (ReuseSlot), we need to find the base slot by method name.
+        // The most common overrides are Object's 3 virtual methods:
+        // - slot 0: ToString
+        // - slot 1: Equals
+        // - slot 2: GetHashCode
+
+        // Get the method name
+        uint nameIdx = MetadataReader.GetMethodDefName(ref assembly->Tables, ref assembly->Sizes, targetMethodRid);
+        byte* methodName = MetadataReader.GetString(ref assembly->Metadata, nameIdx);
+
+        if (methodName != null)
+        {
+            // Check for well-known Object override methods
+            if (NameEquals(methodName, "ToString"))
+                return 0;
+            if (NameEquals(methodName, "Equals"))
+                return 1;
+            if (NameEquals(methodName, "GetHashCode"))
+                return 2;
+        }
+
+        // For other overrides, fall back to counting virtuals in this type
+        // (This isn't correct for deep hierarchies but handles simple cases)
         uint methodStart = MetadataReader.GetTypeDefMethodList(ref assembly->Tables, ref assembly->Sizes, typeRow);
         uint methodEnd;
         uint typeDefCount = assembly->Tables.RowCounts[(int)MetadataTableId.TypeDef];
@@ -1495,6 +1595,105 @@ public static unsafe class Tier0JIT
 
         // If we get here, the method wasn't found - return slot 0 as fallback
         return 0;
+    }
+
+    /// <summary>
+    /// Populate the vtable slot for a virtual method after JIT compilation.
+    /// This updates the declaring type's MethodTable with the compiled method's native code.
+    /// </summary>
+    private static void PopulateVtableSlot(LoadedAssembly* assembly, uint methodRid, uint methodToken,
+                                            uint assemblyId, nint nativeCode, ushort methodFlags)
+    {
+        // Find the declaring type
+        uint typeRow = FindOwningTypeDef(assembly, methodRid);
+        if (typeRow == 0)
+            return;
+
+        uint typeToken = 0x02000000 | typeRow;
+
+        // Get the type's MethodTable
+        MethodTable* mt = AssemblyLoader.ResolveType(assemblyId, typeToken);
+        if (mt == null)
+            return;
+
+        // Check if MT has vtable slots
+        if (mt->_usNumVtableSlots == 0)
+            return;
+
+        // Compute the vtable slot for this method
+        // For overrides (ReuseSlot), we need to find which base slot is being overridden
+        // For new virtual methods (NewSlot), we count new virtuals in this type
+        bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+
+        int vtableSlot;
+        if (isNewSlot)
+        {
+            // New slot - it's positioned after inherited slots
+            // Count which new virtual this is in the type
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref assembly->Tables, ref assembly->Sizes, typeRow);
+            uint typeDefCount = assembly->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+            uint methodEnd = (typeRow < typeDefCount)
+                ? MetadataReader.GetTypeDefMethodList(ref assembly->Tables, ref assembly->Sizes, typeRow + 1)
+                : assembly->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+            // Get base class vtable slots
+            int baseSlots = 0;
+            if (mt->_relatedType != null)
+            {
+                baseSlots = mt->_relatedType->_usNumVtableSlots;
+            }
+            else
+            {
+                // Direct Object base - has 3 slots
+                baseSlots = 3;
+            }
+
+            // Count new virtuals before this method
+            int newVirtualIndex = 0;
+            for (uint rid = methodStart; rid < methodEnd && rid < methodRid; rid++)
+            {
+                ushort flags = MetadataReader.GetMethodDefFlags(ref assembly->Tables, ref assembly->Sizes, rid);
+                if ((flags & MethodDefFlags.Virtual) != 0 && (flags & MethodDefFlags.NewSlot) != 0)
+                {
+                    newVirtualIndex++;
+                }
+            }
+            vtableSlot = baseSlots + newVirtualIndex;
+        }
+        else
+        {
+            // Override (ReuseSlot) - need to find which base slot we're overriding
+            // This requires matching by name/signature to base class
+            // For now, use the simple approach: count all virtuals up to this method
+            vtableSlot = ComputeVtableSlot(assembly, typeRow, methodRid);
+        }
+
+        // Validate slot is within range
+        if (vtableSlot < 0 || vtableSlot >= mt->_usNumVtableSlots)
+        {
+            DebugConsole.Write("[PopulateVT] Slot ");
+            DebugConsole.WriteDecimal((uint)vtableSlot);
+            DebugConsole.Write(" out of range (max ");
+            DebugConsole.WriteDecimal(mt->_usNumVtableSlots);
+            DebugConsole.WriteLine(")");
+            return;
+        }
+
+        // Set the vtable entry
+        nint* vtable = mt->GetVtablePtr();
+        vtable[vtableSlot] = nativeCode;
+
+        DebugConsole.Write("[PopulateVT] token=0x");
+        DebugConsole.WriteHex(methodToken);
+        DebugConsole.Write(" type=0x");
+        DebugConsole.WriteHex(typeToken);
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.Write(" slot=");
+        DebugConsole.WriteDecimal((uint)vtableSlot);
+        DebugConsole.Write(" code=0x");
+        DebugConsole.WriteHex((ulong)nativeCode);
+        DebugConsole.WriteLine();
     }
 
     private static bool NameEquals(byte* name, string expected)

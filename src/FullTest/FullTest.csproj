@@ -13,6 +13,8 @@
   <ItemGroup>
     <!-- Reference System.Runtime for cross-assembly testing -->
     <ProjectReference Include="../SystemRuntime/System.Runtime.csproj" />
+    <!-- Reference DDK for debug output -->
+    <ProjectReference Include="../ddk/DDK.csproj" />
   </ItemGroup>
 
 </Project>

@@ -4,6 +4,7 @@
 using System;
 using System.Runtime.InteropServices;
 using ProtonOS.DDK.Drivers;
+using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Storage;
 using ProtonOS.DDK.Platform;
 using ProtonOS.Drivers.Virtio;
@@ -198,6 +199,7 @@ public unsafe class VirtioBlkDriver : VirtioDevice, IBlockDevice, IPciDriver
         // Initialize virtio device
         if (!base.Initialize(device))
         {
+            Debug.WriteLine("[virtio-blk] Failed to initialize virtio device");
             _state = DriverState.Failed;
             return;
         }
@@ -205,9 +207,10 @@ public unsafe class VirtioBlkDriver : VirtioDevice, IBlockDevice, IPciDriver
         // Read device config
         ReadDeviceConfig();
 
-        // Update device name based on capacity
-        // NOTE: Avoid string interpolation - the JIT doesn't support generic methods yet
-        // ulong sizeGB = (_config.Capacity * SectorSize) / (1024 * 1024 * 1024);
+        // Log device information
+        ulong sizeMB = (_config.Capacity * SectorSize) / (1024 * 1024);
+        Debug.WriteLine("[virtio-blk] Capacity: {0} MB, BlockSize: {1}", sizeMB, _config.BlkSize);
+
         _deviceName = "virtio-blk";
     }
 

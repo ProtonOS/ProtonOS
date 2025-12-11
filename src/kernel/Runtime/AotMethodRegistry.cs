@@ -79,9 +79,7 @@ public static unsafe class AotMethodRegistry
         RegisterInt32Methods();
 
         _initialized = true;
-        DebugConsole.Write("[AotRegistry] Initialized with ");
-        DebugConsole.WriteDecimal(_count);
-        DebugConsole.WriteLine(" methods");
+        DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", _count));
     }
 
     /// <summary>
@@ -130,6 +128,46 @@ public static unsafe class AotMethodRegistry
             "System.String", "GetPinnableReference",
             (nint)(delegate*<string, nint>)&StringHelpers.GetPinnableReference,
             0, ReturnKind.IntPtr, true, false);
+
+        // String.CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count)
+        // 4 parameters (sourceIndex, destination, destinationIndex, count), HasThis=true, returns void
+        Register(
+            "System.String", "CopyTo",
+            (nint)(delegate*<string, int, char[], int, int, void>)&StringHelpers.CopyTo,
+            4, ReturnKind.Void, true, false);
+
+        // String constructor: .ctor(char[], int, int) - 3 parameters, static (factory method)
+        // This is used by StringBuilder.ToString to create strings from char arrays.
+        // The JIT transforms newobj String::.ctor to a call to this factory method.
+        Register(
+            "System.String", ".ctor",
+            (nint)(delegate*<char[], int, int, string>)&StringHelpers.Ctor_CharArrayStartLength,
+            3, ReturnKind.IntPtr, false, false);
+
+        // String constructor: .ctor(char[]) - 1 parameter, static (factory method)
+        Register(
+            "System.String", ".ctor",
+            (nint)(delegate*<char[], string>)&StringHelpers.Ctor_CharArray,
+            1, ReturnKind.IntPtr, false, false);
+
+        // String.Format overloads - static methods for formatted strings
+        // Format(string, object) - 2 parameters
+        Register(
+            "System.String", "Format",
+            (nint)(delegate*<string, object?, string>)&StringHelpers.Format1,
+            2, ReturnKind.IntPtr, false, false);
+
+        // Format(string, object, object) - 3 parameters
+        Register(
+            "System.String", "Format",
+            (nint)(delegate*<string, object?, object?, string>)&StringHelpers.Format2,
+            3, ReturnKind.IntPtr, false, false);
+
+        // Format(string, object, object, object) - 4 parameters
+        Register(
+            "System.String", "Format",
+            (nint)(delegate*<string, object?, object?, object?, string>)&StringHelpers.Format3,
+            4, ReturnKind.IntPtr, false, false);
     }
 
     /// <summary>
@@ -168,11 +206,11 @@ public static unsafe class AotMethodRegistry
     /// </summary>
     private static void RegisterInt32Methods()
     {
-        // Int32.ToString() - instance method on value type
-        // For value types, 'this' is a pointer to the value
+        // Int32.ToString() - instance method on boxed value type
+        // For boxed value types, 'this' is a pointer to the boxed object
         Register(
             "System.Int32", "ToString",
-            (nint)(delegate*<int*, string>)&Int32Helpers.ToString,
+            (nint)(delegate*<nint, string>)&Int32Helpers.ToString,
             0, ReturnKind.IntPtr, true, false);
     }
 
@@ -229,6 +267,30 @@ public static unsafe class AotMethodRegistry
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Look up an AOT method by type and method name (managed strings).
+    /// Returns the native code address or 0 if not found.
+    /// </summary>
+    public static nint LookupByName(string typeName, string methodName)
+    {
+        if (_entries == null || typeName == null || methodName == null)
+            return 0;
+
+        uint typeHash = HashString(typeName);
+        uint methodHash = HashString(methodName);
+
+        for (int i = 0; i < _count; i++)
+        {
+            if (_entries[i].TypeNameHash == typeHash &&
+                _entries[i].MethodNameHash == methodHash)
+            {
+                return _entries[i].NativeCode;
+            }
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -381,6 +443,69 @@ public static unsafe class StringHelpers
             return (nint)ptr;
         }
     }
+
+    /// <summary>
+    /// Wrapper for String.CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count).
+    /// Copies characters from the string to a char array.
+    /// </summary>
+    public static void CopyTo(string s, int sourceIndex, char[] destination, int destinationIndex, int count)
+    {
+        if (s == null || destination == null)
+            return;
+        if (sourceIndex < 0 || destinationIndex < 0 || count <= 0)
+            return;
+        if (sourceIndex + count > s.Length)
+            return;
+        if (destinationIndex + count > destination.Length)
+            return;
+
+        for (int i = 0; i < count; i++)
+        {
+            destination[destinationIndex + i] = s[sourceIndex + i];
+        }
+    }
+
+    /// <summary>
+    /// Factory method for String..ctor(char[], int, int).
+    /// Creates a new string from a portion of a char array.
+    /// </summary>
+    public static string Ctor_CharArrayStartLength(char[] value, int startIndex, int length)
+    {
+        return string.Ctor_CharArrayStartLength(value, startIndex, length);
+    }
+
+    /// <summary>
+    /// Factory method for String..ctor(char[]).
+    /// Creates a new string from a char array.
+    /// </summary>
+    public static string Ctor_CharArray(char[] value)
+    {
+        return string.Ctor_CharArray(value);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Format(string, object).
+    /// </summary>
+    public static string Format1(string format, object? arg0)
+    {
+        return string.Format(format, arg0);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Format(string, object, object).
+    /// </summary>
+    public static string Format2(string format, object? arg0, object? arg1)
+    {
+        return string.Format(format, arg0, arg1);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Format(string, object, object, object).
+    /// </summary>
+    public static string Format3(string format, object? arg0, object? arg1, object? arg2)
+    {
+        return string.Format(format, arg0, arg1, arg2);
+    }
 }
 
 /// <summary>
@@ -442,18 +567,23 @@ public static unsafe class ObjectHelpers
 
 /// <summary>
 /// Wrapper methods for Int32 operations.
-/// For value types, the 'this' pointer is a pointer to the value.
+/// When called via vtable dispatch on a boxed value type, 'this' is the boxed object pointer.
+/// The actual value is at offset 8 (after the MethodTable pointer).
 /// </summary>
 public static unsafe class Int32Helpers
 {
     /// <summary>
-    /// Wrapper for Int32.ToString().
-    /// Takes pointer to int value and returns string representation.
+    /// Wrapper for Int32.ToString() when called on a boxed Int32.
+    /// When called through vtable dispatch, 'this' is the boxed object pointer.
+    /// The actual int value is at offset 8 (after the MethodTable pointer).
     /// </summary>
-    public static string ToString(int* value)
+    public static string ToString(nint thisPtr)
     {
-        if (value == null)
+        if (thisPtr == 0)
             return "0";
-        return System.Int32.FormatInt32(*value);
+        // thisPtr is a boxed object: [MethodTable*][int value]
+        // Value is at offset 8
+        int* valuePtr = (int*)(thisPtr + 8);
+        return System.Int32.FormatInt32(*valuePtr);
     }
 }

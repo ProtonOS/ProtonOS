@@ -91,33 +91,30 @@ public static unsafe class VirtioBlkEntry
         }
 
         // Create and initialize the virtio block device
+        Debug.WriteLine("[virtio-blk] Binding to PCI {0}:{1}.{2}", bus, device, function);
         _device = new VirtioBlkDevice();
-        // Debug.WriteHex(0xBEEF0001u); // Created VirtioBlkDevice
 
         // Initialize virtio device (handles modern/legacy detection, feature negotiation)
         // Cast to VirtioDevice to ensure we call the base method, not the IDriver.Initialize()
         bool initResult = ((VirtioDevice)_device).Initialize(pciDevice);
-        // Debug.WriteHex(initResult ? 0xFACE0001u : 0xFACE0000u);  // Trace initResult before branch
         if (!initResult)
         {
-            // Debug.WriteHex(0xDEAD0001u);
+            Debug.WriteLine("[virtio-blk] VirtioDevice.Initialize failed");
             _device = null;
             return false;
         }
-
-        // Debug.WriteHex(0xBEEF0003u); // Initialize succeeded
 
         // Initialize block-specific functionality
         bool blkResult = _device.InitializeBlockDevice();
         while (!blkResult)
         {
-            // Debug.WriteHex(0xDEAD0002u);
+            Debug.WriteLine("[virtio-blk] InitializeBlockDevice failed");
             _device.Dispose();
             _device = null;
             return false;
         }
 
-        // Debug.WriteHex(0x00010000u); // Success marker
+        Debug.WriteLine("[virtio-blk] Driver bound successfully");
         return true;
     }
 

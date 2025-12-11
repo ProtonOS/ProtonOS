@@ -64,9 +64,7 @@ public static unsafe class InitializeStatics
         ulong regionSize = (ulong)((byte*)end - (byte*)start);
         int entryCount = (int)(regionSize / sizeof(int));
 
-        DebugConsole.Write("[InitStatics] Processing ");
-        DebugConsole.WriteDecimal(entryCount);
-        DebugConsole.WriteLine(" static blocks...");
+        DebugConsole.WriteLine(string.Format("[InitStatics] Processing {0} static blocks...", entryCount));
 
         int initializedCount = 0;
         int skippedCount = 0;
@@ -145,11 +143,8 @@ public static unsafe class InitializeStatics
             current++;
         }
 
-        DebugConsole.Write("[InitStatics] Initialized ");
-        DebugConsole.WriteDecimal(initializedCount);
-        DebugConsole.Write(" blocks, skipped ");
-        DebugConsole.WriteDecimal(skippedCount);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[InitStatics] Initialized {0} blocks, skipped {1}",
+            initializedCount, skippedCount));
 
         _initialized = true;
         return true;

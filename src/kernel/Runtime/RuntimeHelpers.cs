@@ -95,6 +95,7 @@ public static unsafe class RuntimeHelpers
         // Cache debug helper pointers
         _debugStfldPtr = (void*)(delegate*<void*, int, void>)&DebugStfld;
         _debugStelemStackPtr = (void*)(delegate*<void*, ulong, void*, int, void>)&DebugStelemStack;
+        _debugVtableDispatchPtr = (void*)(delegate*<void*, int, void>)&DebugVtableDispatch;
 
         // Register MD array helpers with the CompiledMethodRegistry
         RegisterMDArrayHelpers();
@@ -183,9 +184,50 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void* GetDebugStfldPtr() => _debugStfldPtr;
 
+    // Debug vtable dispatch helper pointer
+    private static void* _debugVtableDispatchPtr;
+
+    /// <summary>
+    /// Get the debug vtable dispatch function pointer.
+    /// Signature: void DebugVtableDispatch(void* thisPtr, int slot)
+    /// </summary>
+    public static void* GetDebugVtableDispatchPtr() => _debugVtableDispatchPtr;
+
     #endregion
 
     #region Debug Helpers
+
+    /// <summary>
+    /// Debug helper called from JIT code to trace vtable dispatch.
+    /// Shows the actual runtime 'this' pointer and what MT/vtable values are read.
+    /// </summary>
+    public static void DebugVtableDispatch(void* thisPtr, int slot)
+    {
+        DebugConsole.Write("[VT dispatch] this=0x");
+        DebugConsole.WriteHex((ulong)thisPtr);
+        DebugConsole.Write(" slot=");
+        DebugConsole.WriteDecimal((uint)slot);
+
+        if (thisPtr != null)
+        {
+            // Read MT pointer from object
+            MethodTable* mt = *(MethodTable**)thisPtr;
+            DebugConsole.Write(" mt=0x");
+            DebugConsole.WriteHex((ulong)mt);
+
+            if (mt != null)
+            {
+                // Read vtable slot
+                nint* vtable = (nint*)((byte*)mt + MethodTable.HeaderSize);
+                nint funcPtr = vtable[slot];
+                DebugConsole.Write(" vt[");
+                DebugConsole.WriteDecimal((uint)slot);
+                DebugConsole.Write("]=0x");
+                DebugConsole.WriteHex((ulong)funcPtr);
+            }
+        }
+        DebugConsole.WriteLine();
+    }
 
     /// <summary>
     /// Debug helper called from JIT code to trace stfld operations.
@@ -245,10 +287,18 @@ public static unsafe class RuntimeHelpers
             return null;
         }
 
-        // DebugConsole.Write("[RhpNewFast] MT=0x");
-        // DebugConsole.WriteHex((ulong)pMT);
-        // DebugConsole.Write(" size=");
-        // DebugConsole.WriteDecimal(pMT->BaseSize);
+        // Debug: Check if this is a value type being boxed and verify vtable
+        if (pMT->IsValueType && pMT->NumVtableSlots > 0)
+        {
+            DebugConsole.Write("[RhpNewFast] Boxing VT MT=0x");
+            DebugConsole.WriteHex((ulong)pMT);
+            DebugConsole.Write(" slots=");
+            DebugConsole.WriteDecimal(pMT->NumVtableSlots);
+            nint* vtable = pMT->GetVtablePtr();
+            DebugConsole.Write(" vt[0]=0x");
+            DebugConsole.WriteHex((ulong)vtable[0]);
+            DebugConsole.WriteLine();
+        }
 
         byte* result = (byte*)GCHeap.Alloc(pMT->BaseSize);
         if (result == null)
@@ -259,9 +309,19 @@ public static unsafe class RuntimeHelpers
 
         *(MethodTable**)result = pMT;
 
-        // DebugConsole.Write(" -> 0x");
-        // DebugConsole.WriteHex((ulong)result);
-        // DebugConsole.WriteLine();
+        // Debug: verify the MT pointer was stored correctly
+        if (pMT->IsValueType)
+        {
+            MethodTable* storedMT = *(MethodTable**)result;
+            DebugConsole.Write("[RhpNewFast] obj=0x");
+            DebugConsole.WriteHex((ulong)result);
+            DebugConsole.Write(" stored MT=0x");
+            DebugConsole.WriteHex((ulong)storedMT);
+            DebugConsole.Write(" vt[0]=0x");
+            nint* vt = storedMT->GetVtablePtr();
+            DebugConsole.WriteHex((ulong)vt[0]);
+            DebugConsole.WriteLine();
+        }
 
         return result;
     }

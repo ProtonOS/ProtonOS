@@ -161,6 +161,30 @@ public static unsafe class KernelExportInit
         n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
         n[17]=0x48; n[18]=0x65; n[19]=0x78; n[20]=0x38; n[21]=0; // Hex8
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, void>)&DebugExports.DebugWriteHex8);
+
+        // Kernel_DebugWriteDecimal (signed int32)
+        // "Kernel_DebugWriteDecimal" = 4B 65 72 6E 65 6C 5F 44 65 62 75 67 57 72 69 74 65 44 65 63 69 6D 61 6C
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67; // Debug
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65; // Write
+        n[17]=0x44; n[18]=0x65; n[19]=0x63; n[20]=0x69; n[21]=0x6D; n[22]=0x61; n[23]=0x6C; n[24]=0; // Decimal
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int, void>)&DebugExports.DebugWriteDecimal);
+
+        // Kernel_DebugWriteDecimalU (unsigned int32)
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67;
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
+        n[17]=0x44; n[18]=0x65; n[19]=0x63; n[20]=0x69; n[21]=0x6D; n[22]=0x61; n[23]=0x6C;
+        n[24]=0x55; n[25]=0; // DecimalU
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, void>)&DebugExports.DebugWriteDecimalU);
+
+        // Kernel_DebugWriteDecimal64 (unsigned int64)
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
+        n[7]=0x44; n[8]=0x65; n[9]=0x62; n[10]=0x75; n[11]=0x67;
+        n[12]=0x57; n[13]=0x72; n[14]=0x69; n[15]=0x74; n[16]=0x65;
+        n[17]=0x44; n[18]=0x65; n[19]=0x63; n[20]=0x69; n[21]=0x6D; n[22]=0x61; n[23]=0x6C;
+        n[24]=0x36; n[25]=0x34; n[26]=0; // Decimal64
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, void>)&DebugExports.DebugWriteDecimal64);
     }
 
     private static void RegisterPCIExports()

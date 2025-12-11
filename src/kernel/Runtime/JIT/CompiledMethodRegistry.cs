@@ -465,6 +465,71 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
+    /// Register an uncompiled override method with its MethodTable and vtable slot.
+    /// This allows JitStubs to find the method by (MethodTable, vtableSlot) when lazy compiling.
+    /// The NativeCode is null until the method is actually compiled.
+    /// </summary>
+    public static bool RegisterUncompiledOverride(uint token, uint assemblyId, void* methodTable, short vtableSlot)
+    {
+        if (!_initialized)
+            Initialize();
+
+        if (token == 0 || methodTable == null || vtableSlot < 0)
+            return false;
+
+        // Check if already registered - update if so
+        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        if (existing != null)
+        {
+            // Update with vtable info
+            existing->MethodTable = methodTable;
+            existing->VtableSlot = vtableSlot;
+            existing->IsVirtual = true;
+            return true;
+        }
+
+        // Find a block with free space
+        int blockIndex = FindBlockWithFreeSlot();
+        if (blockIndex < 0)
+        {
+            blockIndex = AllocateNewBlock();
+            if (blockIndex < 0)
+                return false;
+        }
+
+        // Get the block and allocate an entry
+        MethodBlock* block = _blocks[blockIndex];
+        CompiledMethodInfo* entries = block->GetEntries();
+
+        byte slotIndex = block->Header.NextFreeIndex;
+        CompiledMethodInfo* entry = &entries[slotIndex];
+
+        // Fill in the entry - NativeCode stays null until compiled
+        entry->Token = token;
+        entry->NativeCode = null;
+        entry->ArgCount = 0;  // Will be filled in during compilation
+        entry->ReturnKind = ReturnKind.Void;
+        entry->HasThis = true;  // Override methods are instance methods
+        entry->IsCompiled = false;
+        entry->IsBeingCompiled = false;
+        entry->IsVirtual = true;
+        entry->VtableSlot = vtableSlot;
+        entry->MethodTable = methodTable;
+        entry->AssemblyId = assemblyId;
+
+        // Clear arg types
+        for (int i = 0; i < 4; i++)
+            entry->ArgTypes[i] = 0;
+
+        // Update block header
+        block->Header.UsedCount++;
+        UpdateNextFreeIndex(block);
+
+        _totalCount++;
+        return true;
+    }
+
+    /// <summary>
     /// Reserve a slot for a method that is being compiled.
     /// This prevents infinite recursion when compiling recursive methods.
     /// Returns the reserved entry, or null if the method is already being compiled.
@@ -1173,5 +1238,39 @@ public static unsafe class CompiledMethodRegistry
 
         // No free slots found
         block->Header.NextFreeIndex = 0xFF;
+    }
+
+    /// <summary>
+    /// Look up a virtual method by its MethodTable and vtable slot.
+    /// Used by JitStubs to find and compile methods when vtable slots are empty.
+    /// </summary>
+    /// <param name="methodTable">The MethodTable pointer to search for.</param>
+    /// <param name="vtableSlot">The vtable slot index.</param>
+    /// <returns>Pointer to the method info, or null if not found.</returns>
+    public static CompiledMethodInfo* LookupByVtableSlot(void* methodTable, short vtableSlot)
+    {
+        if (!_initialized || methodTable == null || vtableSlot < 0)
+            return null;
+
+        // Scan all blocks for a method with matching MethodTable and VtableSlot
+        for (int b = 0; b < _blockCount; b++)
+        {
+            MethodBlock* block = _blocks[b];
+            if (block == null || block->IsEmpty)
+                continue;
+
+            CompiledMethodInfo* entries = block->GetEntries();
+            for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
+            {
+                if (entries[i].IsUsed &&
+                    entries[i].MethodTable == methodTable &&
+                    entries[i].VtableSlot == vtableSlot)
+                {
+                    return &entries[i];
+                }
+            }
+        }
+
+        return null;
     }
 }

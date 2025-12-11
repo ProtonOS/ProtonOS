@@ -5,6 +5,7 @@ using System;
 using ProtonOS.DDK.Drivers;
 using ProtonOS.DDK.Platform;
 using ProtonOS.DDK.Kernel;
+// Debug class provides: Debug.WriteLine(format, args...)
 
 namespace ProtonOS.Drivers.Virtio;
 

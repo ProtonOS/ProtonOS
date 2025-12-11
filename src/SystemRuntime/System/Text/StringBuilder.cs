@@ -1,5 +1,6 @@
 // ProtonOS System.Runtime - StringBuilder
 // Represents a mutable string of characters.
+// This implementation avoids Array.Copy and exceptions for JIT compatibility.
 
 namespace System.Text
 {
@@ -20,7 +21,7 @@ namespace System.Text
         /// <summary>Initializes a new instance with the specified capacity.</summary>
         public StringBuilder(int capacity)
         {
-            if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+            if (capacity < 0) capacity = DefaultCapacity;
             _buffer = new char[capacity > 0 ? capacity : DefaultCapacity];
             _length = 0;
         }
@@ -44,10 +45,10 @@ namespace System.Text
         /// <summary>Initializes a new instance with the specified string and capacity.</summary>
         public StringBuilder(string? value, int capacity)
         {
-            if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+            if (capacity < 0) capacity = DefaultCapacity;
 
             int valueLen = value?.Length ?? 0;
-            int actualCapacity = Math.Max(capacity, valueLen);
+            int actualCapacity = capacity > valueLen ? capacity : valueLen;
             actualCapacity = actualCapacity > 0 ? actualCapacity : DefaultCapacity;
 
             _buffer = new char[actualCapacity];
@@ -68,7 +69,7 @@ namespace System.Text
             get => _length;
             set
             {
-                if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value < 0) value = 0;
                 if (value > _buffer.Length) EnsureCapacity(value);
                 if (value > _length)
                 {
@@ -86,11 +87,11 @@ namespace System.Text
             get => _buffer.Length;
             set
             {
-                if (value < _length) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value < _length) value = _length;
                 if (value != _buffer.Length)
                 {
                     var newBuffer = new char[value];
-                    Array.Copy(_buffer, newBuffer, _length);
+                    CopyChars(_buffer, 0, newBuffer, 0, _length);
                     _buffer = newBuffer;
                 }
             }
@@ -101,20 +102,20 @@ namespace System.Text
         {
             get
             {
-                if ((uint)index >= (uint)_length) throw new IndexOutOfRangeException();
+                if ((uint)index >= (uint)_length) return '\0';
                 return _buffer[index];
             }
             set
             {
-                if ((uint)index >= (uint)_length) throw new IndexOutOfRangeException();
-                _buffer[index] = value;
+                if ((uint)index < (uint)_length)
+                    _buffer[index] = value;
             }
         }
 
         /// <summary>Ensures that the capacity is at least the specified value.</summary>
         public int EnsureCapacity(int capacity)
         {
-            if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+            if (capacity < 0) capacity = 0;
             if (_buffer.Length < capacity)
             {
                 int newCapacity = _buffer.Length * 2;
@@ -135,8 +136,7 @@ namespace System.Text
         /// <summary>Appends a specified number of copies of a character to this instance.</summary>
         public StringBuilder Append(char value, int repeatCount)
         {
-            if (repeatCount < 0) throw new ArgumentOutOfRangeException(nameof(repeatCount));
-            if (repeatCount == 0) return this;
+            if (repeatCount <= 0) return this;
 
             EnsureCapacity(_length + repeatCount);
             for (int i = 0; i < repeatCount; i++)
@@ -158,15 +158,10 @@ namespace System.Text
         /// <summary>Appends a copy of a substring to this instance.</summary>
         public StringBuilder Append(string? value, int startIndex, int count)
         {
-            if (value == null)
-            {
-                if (startIndex == 0 && count == 0) return this;
-                throw new ArgumentNullException(nameof(value));
-            }
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            if (startIndex + count > value.Length) throw new ArgumentOutOfRangeException(nameof(count));
-            if (count == 0) return this;
+            if (value == null || count <= 0) return this;
+            if (startIndex < 0) startIndex = 0;
+            if (startIndex + count > value.Length) count = value.Length - startIndex;
+            if (count <= 0) return this;
 
             EnsureCapacity(_length + count);
             value.CopyTo(startIndex, _buffer, _length, count);
@@ -216,7 +211,7 @@ namespace System.Text
             if (value == null || value.Length == 0) return this;
 
             EnsureCapacity(_length + value.Length);
-            Array.Copy(value, 0, _buffer, _length, value.Length);
+            CopyChars(value, 0, _buffer, _length, value.Length);
             _length += value.Length;
             return this;
         }
@@ -224,18 +219,13 @@ namespace System.Text
         /// <summary>Appends a subarray of characters to this instance.</summary>
         public StringBuilder Append(char[]? value, int startIndex, int charCount)
         {
-            if (value == null)
-            {
-                if (startIndex == 0 && charCount == 0) return this;
-                throw new ArgumentNullException(nameof(value));
-            }
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (charCount < 0) throw new ArgumentOutOfRangeException(nameof(charCount));
-            if (startIndex + charCount > value.Length) throw new ArgumentOutOfRangeException(nameof(charCount));
-            if (charCount == 0) return this;
+            if (value == null || charCount <= 0) return this;
+            if (startIndex < 0) startIndex = 0;
+            if (startIndex + charCount > value.Length) charCount = value.Length - startIndex;
+            if (charCount <= 0) return this;
 
             EnsureCapacity(_length + charCount);
-            Array.Copy(value, startIndex, _buffer, _length, charCount);
+            CopyChars(value, startIndex, _buffer, _length, charCount);
             _length += charCount;
             return this;
         }
@@ -268,13 +258,13 @@ namespace System.Text
         /// <summary>Inserts a string into this instance at the specified position.</summary>
         public StringBuilder Insert(int index, string? value)
         {
-            if ((uint)index > (uint)_length) throw new ArgumentOutOfRangeException(nameof(index));
+            if ((uint)index > (uint)_length) return this;
             if (string.IsNullOrEmpty(value)) return this;
 
             EnsureCapacity(_length + value.Length);
 
             // Shift existing characters to the right
-            Array.Copy(_buffer, index, _buffer, index + value.Length, _length - index);
+            CopyCharsBackward(_buffer, index, _buffer, index + value.Length, _length - index);
 
             // Insert new characters
             value.CopyTo(0, _buffer, index, value.Length);
@@ -285,10 +275,10 @@ namespace System.Text
         /// <summary>Inserts a character into this instance at the specified position.</summary>
         public StringBuilder Insert(int index, char value)
         {
-            if ((uint)index > (uint)_length) throw new ArgumentOutOfRangeException(nameof(index));
+            if ((uint)index > (uint)_length) return this;
 
             EnsureCapacity(_length + 1);
-            Array.Copy(_buffer, index, _buffer, index + 1, _length - index);
+            CopyCharsBackward(_buffer, index, _buffer, index + 1, _length - index);
             _buffer[index] = value;
             _length++;
             return this;
@@ -315,16 +305,13 @@ namespace System.Text
         /// <summary>Removes the specified range of characters from this instance.</summary>
         public StringBuilder Remove(int startIndex, int length)
         {
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (length < 0) throw new ArgumentOutOfRangeException(nameof(length));
-            if (startIndex + length > _length) throw new ArgumentOutOfRangeException(nameof(length));
+            if (startIndex < 0 || length <= 0) return this;
+            if (startIndex >= _length) return this;
+            if (startIndex + length > _length) length = _length - startIndex;
 
-            if (length > 0)
-            {
-                // Shift remaining characters to the left
-                Array.Copy(_buffer, startIndex + length, _buffer, startIndex, _length - startIndex - length);
-                _length -= length;
-            }
+            // Shift remaining characters to the left
+            CopyChars(_buffer, startIndex + length, _buffer, startIndex, _length - startIndex - length);
+            _length -= length;
             return this;
         }
 
@@ -342,9 +329,9 @@ namespace System.Text
         /// <summary>Replaces occurrences of a specified character with another character within a substring.</summary>
         public StringBuilder Replace(char oldChar, char newChar, int startIndex, int count)
         {
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            if (startIndex + count > _length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (startIndex < 0) startIndex = 0;
+            if (count <= 0) return this;
+            if (startIndex + count > _length) count = _length - startIndex;
 
             int endIndex = startIndex + count;
             for (int i = startIndex; i < endIndex; i++)
@@ -364,11 +351,10 @@ namespace System.Text
         /// <summary>Replaces occurrences of a specified string with another string within a substring.</summary>
         public StringBuilder Replace(string oldValue, string? newValue, int startIndex, int count)
         {
-            if (oldValue == null) throw new ArgumentNullException(nameof(oldValue));
-            if (oldValue.Length == 0) throw new ArgumentException("String cannot be empty", nameof(oldValue));
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            if (startIndex + count > _length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (oldValue == null || oldValue.Length == 0) return this;
+            if (startIndex < 0) startIndex = 0;
+            if (count <= 0) return this;
+            if (startIndex + count > _length) count = _length - startIndex;
 
             newValue ??= string.Empty;
 
@@ -426,9 +412,10 @@ namespace System.Text
         /// <summary>Converts a substring of this instance to a String.</summary>
         public string ToString(int startIndex, int length)
         {
-            if (startIndex < 0) throw new ArgumentOutOfRangeException(nameof(startIndex));
-            if (length < 0) throw new ArgumentOutOfRangeException(nameof(length));
-            if (startIndex + length > _length) throw new ArgumentOutOfRangeException(nameof(length));
+            if (startIndex < 0) startIndex = 0;
+            if (length <= 0) return string.Empty;
+            if (startIndex >= _length) return string.Empty;
+            if (startIndex + length > _length) length = _length - startIndex;
 
             return new string(_buffer, startIndex, length);
         }
@@ -436,23 +423,25 @@ namespace System.Text
         /// <summary>Copies the characters from a specified segment of this instance to a specified segment of a destination Char array.</summary>
         public void CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count)
         {
-            if (destination == null) throw new ArgumentNullException(nameof(destination));
-            if (sourceIndex < 0) throw new ArgumentOutOfRangeException(nameof(sourceIndex));
-            if (destinationIndex < 0) throw new ArgumentOutOfRangeException(nameof(destinationIndex));
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            if (sourceIndex + count > _length) throw new ArgumentOutOfRangeException(nameof(count));
-            if (destinationIndex + count > destination.Length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (destination == null) return;
+            if (sourceIndex < 0) sourceIndex = 0;
+            if (destinationIndex < 0) destinationIndex = 0;
+            if (count <= 0) return;
+            if (sourceIndex + count > _length) count = _length - sourceIndex;
+            if (destinationIndex + count > destination.Length) count = destination.Length - destinationIndex;
+            if (count <= 0) return;
 
-            Array.Copy(_buffer, sourceIndex, destination, destinationIndex, count);
+            CopyChars(_buffer, sourceIndex, destination, destinationIndex, count);
         }
 
         /// <summary>Copies the characters from a specified segment of this instance to a destination Span.</summary>
         public void CopyTo(int sourceIndex, Span<char> destination, int count)
         {
-            if (sourceIndex < 0) throw new ArgumentOutOfRangeException(nameof(sourceIndex));
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
-            if (sourceIndex + count > _length) throw new ArgumentOutOfRangeException(nameof(count));
-            if (count > destination.Length) throw new ArgumentOutOfRangeException(nameof(count));
+            if (sourceIndex < 0) sourceIndex = 0;
+            if (count <= 0) return;
+            if (sourceIndex + count > _length) count = _length - sourceIndex;
+            if (count > destination.Length) count = destination.Length;
+            if (count <= 0) return;
 
             for (int i = 0; i < count; i++)
                 destination[i] = _buffer[sourceIndex + i];
@@ -480,5 +469,23 @@ namespace System.Text
 
         /// <summary>Returns a ReadOnlySpan representing a substring of this instance.</summary>
         public ReadOnlySpan<char> AsSpan(int start, int length) => new ReadOnlySpan<char>(_buffer, start, length);
+
+        // Helper method to copy chars without using Array.Copy
+        private static void CopyChars(char[] source, int sourceIndex, char[] dest, int destIndex, int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                dest[destIndex + i] = source[sourceIndex + i];
+            }
+        }
+
+        // Helper method to copy chars backwards (for overlapping regions)
+        private static void CopyCharsBackward(char[] source, int sourceIndex, char[] dest, int destIndex, int count)
+        {
+            for (int i = count - 1; i >= 0; i--)
+            {
+                dest[destIndex + i] = source[sourceIndex + i];
+            }
+        }
     }
 }

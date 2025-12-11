@@ -129,6 +129,15 @@ public static unsafe class MetadataIntegration
     // Current assembly ID for resolution context
     private static uint _currentAssemblyId;
 
+    // MethodSpec type argument context for generic method resolution
+    // This holds the parsed type arguments from the MethodSpec instantiation blob
+    // Used when resolving MVAR types in method signatures
+    private const int MaxMethodTypeArgs = 8;
+    private static byte* _methodTypeArgs;  // Array of ELEMENT_TYPE bytes for each type arg
+    private static ushort* _methodTypeArgSizes;  // Size in bytes for each type arg
+    private static MethodTable** _methodTypeArgMTs;  // MethodTable pointers for each type arg (for constrained. support)
+    private static int _methodTypeArgCount;
+
     private static bool _initialized;
 
     /// <summary>
@@ -165,6 +174,17 @@ public static unsafe class MetadataIntegration
             DebugConsole.WriteLine("[MetaInt] Failed to allocate field layout cache");
             return;
         }
+
+        // Allocate MethodSpec type argument storage
+        _methodTypeArgs = (byte*)HeapAllocator.AllocZeroed((ulong)MaxMethodTypeArgs);
+        _methodTypeArgSizes = (ushort*)HeapAllocator.AllocZeroed((ulong)(MaxMethodTypeArgs * sizeof(ushort)));
+        _methodTypeArgMTs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxMethodTypeArgs * sizeof(MethodTable*)));
+        if (_methodTypeArgs == null || _methodTypeArgSizes == null || _methodTypeArgMTs == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to allocate method type arg storage");
+            return;
+        }
+        _methodTypeArgCount = 0;
 
         _typeCount = 0;
         _staticFieldCount = 0;
@@ -311,114 +331,209 @@ public static unsafe class MetadataIntegration
     }
 
     // Static storage for synthetic primitive MethodTables
-    // These are used for newarr to get element sizes
-    private static MethodTable* _primitiveMethodTables;
+    // These are used for newarr to get element sizes AND for virtual method dispatch
+    // Each MethodTable needs space for vtable slots (3 slots: ToString, Equals, GetHashCode)
+    private static byte* _primitiveMethodTableBuffer;
     private const int NumPrimitiveTypes = 16;
+    private const int NumVtableSlots = 3;  // Slot 0: ToString, Slot 1: Equals, Slot 2: GetHashCode
+    private const int MethodTableWithVtableSize = MethodTable.HeaderSize + (NumVtableSlots * 8);  // 24 + 24 = 48 bytes
+
+    /// <summary>
+    /// Get a MethodTable pointer from the buffer at the given index.
+    /// </summary>
+    private static MethodTable* GetPrimitiveMT(int index)
+    {
+        return (MethodTable*)(_primitiveMethodTableBuffer + (index * MethodTableWithVtableSize));
+    }
+
+    /// <summary>
+    /// Set a vtable slot for a primitive MethodTable.
+    /// </summary>
+    private static void SetVtableSlot(MethodTable* mt, int slot, nint functionPtr)
+    {
+        nint* vtable = mt->GetVtablePtr();
+        vtable[slot] = functionPtr;
+    }
+
+    /// <summary>
+    /// Initialize a primitive MethodTable with vtable entries.
+    /// </summary>
+    private static void InitPrimitiveMT(MethodTable* mt, ushort componentSize, uint baseSize,
+                                         nint toStringPtr, nint equalsPtr, nint getHashCodePtr)
+    {
+        const ushort ValueTypeFlag = 0x0020;  // IsValueType flag
+
+        mt->_usComponentSize = componentSize;
+        mt->_usFlags = ValueTypeFlag;
+        mt->_uBaseSize = baseSize;
+        mt->_relatedType = null;  // TODO: point to ValueType/Object
+        mt->_usNumVtableSlots = NumVtableSlots;
+        mt->_usNumInterfaces = 0;
+        mt->_uHashCode = 0;
+
+        // Set vtable entries
+        SetVtableSlot(mt, 0, toStringPtr);   // Slot 0: ToString
+        SetVtableSlot(mt, 1, equalsPtr);     // Slot 1: Equals
+        SetVtableSlot(mt, 2, getHashCodePtr); // Slot 2: GetHashCode
+
+        // Debug: verify slots were written
+        nint* vtable = mt->GetVtablePtr();
+        DebugConsole.Write("[MetaInt] MT@0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.Write(" slots[0]=0x");
+        DebugConsole.WriteHex((ulong)vtable[0]);
+        DebugConsole.Write(" [1]=0x");
+        DebugConsole.WriteHex((ulong)vtable[1]);
+        DebugConsole.Write(" [2]=0x");
+        DebugConsole.WriteHex((ulong)vtable[2]);
+        DebugConsole.WriteLine();
+    }
 
     /// <summary>
     /// Register primitives by creating synthetic MethodTables with correct element sizes.
     /// These are used by newarr to determine array element sizes.
+    /// The MethodTables include vtable entries for virtual method dispatch.
     /// </summary>
     private static int RegisterPrimitiveViaArrayAllocation()
     {
-        // Allocate storage for primitive MethodTables
-        _primitiveMethodTables = (MethodTable*)HeapAllocator.AllocZeroed(
-            (ulong)(NumPrimitiveTypes * sizeof(MethodTable)));
+        // Allocate storage for primitive MethodTables WITH vtable space
+        _primitiveMethodTableBuffer = (byte*)HeapAllocator.AllocZeroed(
+            (ulong)(NumPrimitiveTypes * MethodTableWithVtableSize));
 
-        if (_primitiveMethodTables == null)
+        if (_primitiveMethodTableBuffer == null)
         {
             DebugConsole.WriteLine("[MetaInt] Failed to allocate primitive MethodTables");
             return 0;
         }
 
-        int count = 0;
+        // Get AOT method pointers for Object's virtual methods (fallback for types without overrides)
+        nint objectToString = AotMethodRegistry.LookupByName("System.Object", "ToString");
+        nint objectEquals = AotMethodRegistry.LookupByName("System.Object", "Equals");
+        nint objectGetHashCode = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
 
-        // Create synthetic MethodTables for each primitive type
-        // The key field is _usComponentSize which RhpNewArray uses for element size
+        DebugConsole.Write("[MetaInt] AOT vtable ptrs: ToString=0x");
+        DebugConsole.WriteHex((ulong)objectToString);
+        DebugConsole.Write(" Equals=0x");
+        DebugConsole.WriteHex((ulong)objectEquals);
+        DebugConsole.Write(" GetHashCode=0x");
+        DebugConsole.WriteHex((ulong)objectGetHashCode);
+        DebugConsole.WriteLine();
+
+        // Fallback: if AOT methods not found, use null (will crash but provides debug info)
+        if (objectToString == 0)
+        {
+            DebugConsole.WriteLine("[MetaInt] WARNING: Object.ToString not found in AOT registry");
+        }
+        if (objectEquals == 0)
+        {
+            DebugConsole.WriteLine("[MetaInt] WARNING: Object.Equals not found in AOT registry");
+        }
+        if (objectGetHashCode == 0)
+        {
+            DebugConsole.WriteLine("[MetaInt] WARNING: Object.GetHashCode not found in AOT registry");
+        }
+
+        // Get type-specific method pointers for primitives (override Object's virtual methods)
+        // If a type-specific method is not found, fall back to Object's method
+        nint int32ToString = AotMethodRegistry.LookupByName("System.Int32", "ToString");
+        nint int64ToString = AotMethodRegistry.LookupByName("System.Int64", "ToString");
+        nint boolToString = AotMethodRegistry.LookupByName("System.Boolean", "ToString");
+        nint byteToString = AotMethodRegistry.LookupByName("System.Byte", "ToString");
+        nint charToString = AotMethodRegistry.LookupByName("System.Char", "ToString");
+        nint doubleToString = AotMethodRegistry.LookupByName("System.Double", "ToString");
+        nint singleToString = AotMethodRegistry.LookupByName("System.Single", "ToString");
+        nint int16ToString = AotMethodRegistry.LookupByName("System.Int16", "ToString");
+        nint uint16ToString = AotMethodRegistry.LookupByName("System.UInt16", "ToString");
+        nint uint32ToString = AotMethodRegistry.LookupByName("System.UInt32", "ToString");
+        nint uint64ToString = AotMethodRegistry.LookupByName("System.UInt64", "ToString");
+        nint sbyteToString = AotMethodRegistry.LookupByName("System.SByte", "ToString");
+
+        // Use fallbacks for missing type-specific methods
+        if (int32ToString == 0) int32ToString = objectToString;
+        if (int64ToString == 0) int64ToString = objectToString;
+        if (boolToString == 0) boolToString = objectToString;
+        if (byteToString == 0) byteToString = objectToString;
+        if (charToString == 0) charToString = objectToString;
+        if (doubleToString == 0) doubleToString = objectToString;
+        if (singleToString == 0) singleToString = objectToString;
+        if (int16ToString == 0) int16ToString = objectToString;
+        if (uint16ToString == 0) uint16ToString = objectToString;
+        if (uint32ToString == 0) uint32ToString = objectToString;
+        if (uint64ToString == 0) uint64ToString = objectToString;
+        if (sbyteToString == 0) sbyteToString = objectToString;
+
+        int count = 0;
+        MethodTable* mt;
 
         // Int32 - 4 bytes
-        _primitiveMethodTables[0]._usComponentSize = 4;
-        _primitiveMethodTables[0]._uBaseSize = 12;  // MT* (8) + value (4)
-        if (RegisterType(WellKnownTypes.Int32, &_primitiveMethodTables[0]))
-            count++;
+        mt = GetPrimitiveMT(0);
+        InitPrimitiveMT(mt, 4, 12, int32ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Int32, mt)) count++;
 
         // Int64 - 8 bytes
-        _primitiveMethodTables[1]._usComponentSize = 8;
-        _primitiveMethodTables[1]._uBaseSize = 16;  // MT* (8) + value (8)
-        if (RegisterType(WellKnownTypes.Int64, &_primitiveMethodTables[1]))
-            count++;
+        mt = GetPrimitiveMT(1);
+        InitPrimitiveMT(mt, 8, 16, int64ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Int64, mt)) count++;
 
         // Boolean - 1 byte
-        _primitiveMethodTables[2]._usComponentSize = 1;
-        _primitiveMethodTables[2]._uBaseSize = 9;
-        if (RegisterType(WellKnownTypes.Boolean, &_primitiveMethodTables[2]))
-            count++;
+        mt = GetPrimitiveMT(2);
+        InitPrimitiveMT(mt, 1, 9, boolToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Boolean, mt)) count++;
 
         // Byte - 1 byte
-        _primitiveMethodTables[3]._usComponentSize = 1;
-        _primitiveMethodTables[3]._uBaseSize = 9;
-        if (RegisterType(WellKnownTypes.Byte, &_primitiveMethodTables[3]))
-            count++;
+        mt = GetPrimitiveMT(3);
+        InitPrimitiveMT(mt, 1, 9, byteToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Byte, mt)) count++;
 
         // Char - 2 bytes
-        _primitiveMethodTables[4]._usComponentSize = 2;
-        _primitiveMethodTables[4]._uBaseSize = 10;
-        if (RegisterType(WellKnownTypes.Char, &_primitiveMethodTables[4]))
-            count++;
+        mt = GetPrimitiveMT(4);
+        InitPrimitiveMT(mt, 2, 10, charToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Char, mt)) count++;
 
         // Double - 8 bytes
-        _primitiveMethodTables[5]._usComponentSize = 8;
-        _primitiveMethodTables[5]._uBaseSize = 16;
-        if (RegisterType(WellKnownTypes.Double, &_primitiveMethodTables[5]))
-            count++;
+        mt = GetPrimitiveMT(5);
+        InitPrimitiveMT(mt, 8, 16, doubleToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Double, mt)) count++;
 
         // Single - 4 bytes
-        _primitiveMethodTables[6]._usComponentSize = 4;
-        _primitiveMethodTables[6]._uBaseSize = 12;
-        if (RegisterType(WellKnownTypes.Single, &_primitiveMethodTables[6]))
-            count++;
+        mt = GetPrimitiveMT(6);
+        InitPrimitiveMT(mt, 4, 12, singleToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Single, mt)) count++;
 
         // Int16 - 2 bytes
-        _primitiveMethodTables[7]._usComponentSize = 2;
-        _primitiveMethodTables[7]._uBaseSize = 10;
-        if (RegisterType(WellKnownTypes.Int16, &_primitiveMethodTables[7]))
-            count++;
+        mt = GetPrimitiveMT(7);
+        InitPrimitiveMT(mt, 2, 10, int16ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.Int16, mt)) count++;
 
         // UInt16 - 2 bytes
-        _primitiveMethodTables[8]._usComponentSize = 2;
-        _primitiveMethodTables[8]._uBaseSize = 10;
-        if (RegisterType(WellKnownTypes.UInt16, &_primitiveMethodTables[8]))
-            count++;
+        mt = GetPrimitiveMT(8);
+        InitPrimitiveMT(mt, 2, 10, uint16ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.UInt16, mt)) count++;
 
         // UInt32 - 4 bytes
-        _primitiveMethodTables[9]._usComponentSize = 4;
-        _primitiveMethodTables[9]._uBaseSize = 12;
-        if (RegisterType(WellKnownTypes.UInt32, &_primitiveMethodTables[9]))
-            count++;
+        mt = GetPrimitiveMT(9);
+        InitPrimitiveMT(mt, 4, 12, uint32ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.UInt32, mt)) count++;
 
         // UInt64 - 8 bytes
-        _primitiveMethodTables[10]._usComponentSize = 8;
-        _primitiveMethodTables[10]._uBaseSize = 16;
-        if (RegisterType(WellKnownTypes.UInt64, &_primitiveMethodTables[10]))
-            count++;
+        mt = GetPrimitiveMT(10);
+        InitPrimitiveMT(mt, 8, 16, uint64ToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.UInt64, mt)) count++;
 
         // IntPtr - 8 bytes (64-bit)
-        _primitiveMethodTables[11]._usComponentSize = 8;
-        _primitiveMethodTables[11]._uBaseSize = 16;
-        if (RegisterType(WellKnownTypes.IntPtr, &_primitiveMethodTables[11]))
-            count++;
+        mt = GetPrimitiveMT(11);
+        InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.IntPtr, mt)) count++;
 
         // UIntPtr - 8 bytes (64-bit)
-        _primitiveMethodTables[12]._usComponentSize = 8;
-        _primitiveMethodTables[12]._uBaseSize = 16;
-        if (RegisterType(WellKnownTypes.UIntPtr, &_primitiveMethodTables[12]))
-            count++;
+        mt = GetPrimitiveMT(12);
+        InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.UIntPtr, mt)) count++;
 
         // SByte - 1 byte
-        _primitiveMethodTables[13]._usComponentSize = 1;
-        _primitiveMethodTables[13]._uBaseSize = 9;
-        if (RegisterType(WellKnownTypes.SByte, &_primitiveMethodTables[13]))
-            count++;
+        mt = GetPrimitiveMT(13);
+        InitPrimitiveMT(mt, 1, 9, objectToString, objectEquals, objectGetHashCode);
+        if (RegisterType(WellKnownTypes.SByte, mt)) count++;
 
         return count;
     }
@@ -520,6 +635,68 @@ public static unsafe class MetadataIntegration
         {
             methodTablePtr = globalMt;
             return true;
+        }
+
+        // Special handling for TypeSpec: parse the blob to check for MVAR
+        // For MVAR (method type variable), we don't need metadata - just look up from current context
+        if (tableId == 0x1B)
+        {
+            // First try the method type arg context directly for MVAR types
+            // This is the common case for constrained. prefix with generic methods
+            if (_methodTypeArgCount > 0)
+            {
+                // Try to get from current assembly's metadata
+                if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+                {
+                    uint rowId = token & 0x00FFFFFF;
+                    if (rowId > 0)
+                    {
+                        uint blobIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, rowId);
+                        byte* blob = MetadataReader.GetBlob(ref *_metadataRoot, blobIdx, out uint blobLen);
+
+                        if (blob != null && blobLen >= 1 && blob[0] == 0x1E)  // MVAR
+                        {
+                            byte* ptr = blob + 1;
+                            uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                            MethodTable* mvarMt = GetMethodTypeArgMethodTable((int)mvarIndex);
+                            if (mvarMt != null)
+                            {
+                                methodTablePtr = mvarMt;
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // If we have method type args but couldn't parse the blob from current assembly,
+                // the constrained type might be from another assembly (e.g., System.Runtime)
+                // In that case, try to look up the type from the calling assembly context
+                if (_currentAssemblyId != 0)
+                {
+                    LoadedAssembly* asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+                    if (asm != null)
+                    {
+                        uint rowId = token & 0x00FFFFFF;
+                        if (rowId > 0)
+                        {
+                            uint blobIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
+                            byte* blob = MetadataReader.GetBlob(ref asm->Metadata, blobIdx, out uint blobLen);
+
+                            if (blob != null && blobLen >= 1 && blob[0] == 0x1E)  // MVAR
+                            {
+                                byte* ptr = blob + 1;
+                                uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                                MethodTable* mvarMt = GetMethodTypeArgMethodTable((int)mvarIndex);
+                                if (mvarMt != null)
+                                {
+                                    methodTablePtr = mvarMt;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Not found - log for debugging
@@ -1209,15 +1386,14 @@ public static unsafe class MetadataIntegration
 
         if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
         {
-            // DebugConsole.Write("[AotMemberRef] No metadata for token 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.WriteLine();
             return false;
         }
 
         uint rowId = token & 0x00FFFFFF;
         if (rowId == 0)
+        {
             return false;
+        }
 
         // Get the Class coded index (MemberRefParent)
         CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, rowId);
@@ -1230,11 +1406,16 @@ public static unsafe class MetadataIntegration
         byte* sig = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
 
         if (memberName == null || sig == null || sigLen == 0)
+        {
             return false;
+        }
 
         // Check if this is a method signature (NOT 0x06 which is FIELD)
         if (sig[0] == 0x06)
-            return false;  // It's a field, not a method
+        {
+            // It's a field, not a method - silently skip (fields are common)
+            return false;
+        }
 
         // Get the type name from the TypeRef
         byte* typeName = null;
@@ -1260,17 +1441,15 @@ public static unsafe class MetadataIntegration
         // }
 
         if (typeName == null)
+        {
             return false;
+        }
 
         // Check if this is a well-known AOT type
-        if (!AotMethodRegistry.IsWellKnownAotType(typeName))
+        bool isWellKnown = AotMethodRegistry.IsWellKnownAotType(typeName);
+
+        if (!isWellKnown)
         {
-            // Debug: show the type name that wasn't recognized
-            // DebugConsole.Write("[AotMemberRef] Token 0x");
-            // DebugConsole.WriteHex(token);
-            // DebugConsole.Write(" type '");
-            // WriteByteString(typeName);
-            // DebugConsole.WriteLine("' is not a well-known AOT type");
             return false;
         }
 
@@ -1315,13 +1494,13 @@ public static unsafe class MetadataIntegration
         }
 
         // Debug: TryLookup failed
-        // DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
-        // WriteByteString(typeName);
-        // DebugConsole.Write(".");
-        // WriteByteString(memberName);
-        // DebugConsole.Write(" paramCount=");
-        // DebugConsole.WriteDecimal(paramCount);
-        // DebugConsole.WriteLine();
+        DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
+        WriteByteString(typeName);
+        DebugConsole.Write(".");
+        WriteByteString(memberName);
+        DebugConsole.Write(" paramCount=");
+        DebugConsole.WriteDecimal(paramCount);
+        DebugConsole.WriteLine();
 
         return false;
     }
@@ -1526,6 +1705,427 @@ public static unsafe class MetadataIntegration
         _metadataRoot = savedMdRoot;
         _tablesHeader = savedTables;
         _tableSizes = savedSizes;
+
+        return success;
+    }
+
+    /// <summary>
+    /// Parse a MethodSpec instantiation blob and populate the type argument context.
+    /// The instantiation blob format is: GENERICINST(0x0A) + ArgCount + Type*
+    /// This must be called before resolving the underlying method when handling MethodSpec tokens.
+    /// </summary>
+    /// <param name="instantiationBlob">Pointer to the instantiation blob data</param>
+    /// <param name="blobLen">Length of the blob</param>
+    /// <returns>True if parsing succeeded</returns>
+    private static bool ParseMethodSpecInstantiation(byte* instantiationBlob, uint blobLen)
+    {
+        _methodTypeArgCount = 0;
+
+        // Clear MT array
+        for (int i = 0; i < MaxMethodTypeArgs; i++)
+            _methodTypeArgMTs[i] = null;
+
+        if (instantiationBlob == null || blobLen < 2)
+            return false;
+
+        byte* ptr = instantiationBlob;
+        byte* end = instantiationBlob + blobLen;
+
+        // First byte should be GENERICINST (0x0A)
+        byte marker = *ptr++;
+        if (marker != 0x0A)
+        {
+            DebugConsole.Write("[MetaInt] MethodSpec blob missing GENERICINST marker, got 0x");
+            DebugConsole.WriteHex(marker);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Read argument count (compressed uint)
+        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+        if (argCount > MaxMethodTypeArgs)
+        {
+            DebugConsole.Write("[MetaInt] Too many method type args: ");
+            DebugConsole.WriteDecimal(argCount);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Parse each type argument
+        for (uint i = 0; i < argCount && ptr < end; i++)
+        {
+            byte elemType = *ptr;
+
+            // Handle different type formats
+            switch (elemType)
+            {
+                // Primitive types - store element type directly, compute size, and lookup MT
+                case 0x02: // Boolean
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 1;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x03: // Char
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 2;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x04: // I1
+                case 0x05: // U1
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 1;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x06: // I2
+                case 0x07: // U2
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 2;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x08: // I4
+                case 0x09: // U4
+                case 0x0C: // R4
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 4;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x0A: // I8
+                case 0x0B: // U8
+                case 0x0D: // R8
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8;
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x18: // IntPtr (I)
+                case 0x19: // UIntPtr (U)
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8; // 64-bit native int
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x0E: // String
+                case 0x1C: // Object
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8; // Reference types are pointer-sized
+                    _methodTypeArgMTs[i] = GetPrimitiveMethodTableFromElementType(elemType);
+                    ptr++;
+                    break;
+                case 0x12: // Class
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8; // Reference types are pointer-sized
+                    ptr++;
+                    // Skip the TypeDefOrRef token
+                    MetadataReader.ReadCompressedUInt(ref ptr);
+                    break;
+                case 0x11: // ValueType
+                    _methodTypeArgs[i] = elemType;
+                    ptr++;
+                    {
+                        // Read TypeDefOrRef and compute size
+                        uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                        uint tag = typeDefOrRef & 0x03;
+                        uint typeRid = typeDefOrRef >> 2;
+                        uint fullToken = 0;
+                        if (tag == 0)
+                            fullToken = 0x02000000 | typeRid; // TypeDef
+                        else if (tag == 1)
+                            fullToken = 0x01000000 | typeRid; // TypeRef
+                        else if (tag == 2)
+                            fullToken = 0x1B000000 | typeRid; // TypeSpec
+                        _methodTypeArgSizes[i] = (ushort)GetTypeSize(fullToken);
+                    }
+                    break;
+                case 0x15: // GenericInst
+                    _methodTypeArgs[i] = elemType;
+                    ptr++;
+                    {
+                        // GenericInst format: CLASS/VALUETYPE + TypeDefOrRef + ArgCount + Type*
+                        byte genKind = *ptr++;
+                        bool isValueType = (genKind == 0x11);
+                        uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                        uint genArgCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        // Skip the generic type arguments
+                        for (uint j = 0; j < genArgCount && ptr < end; j++)
+                        {
+                            SkipTypeSig(ref ptr, end);
+                        }
+                        if (isValueType)
+                        {
+                            uint tag = typeDefOrRef & 0x03;
+                            uint typeRid = typeDefOrRef >> 2;
+                            uint fullToken = 0;
+                            if (tag == 0) fullToken = 0x02000000 | typeRid;
+                            else if (tag == 1) fullToken = 0x01000000 | typeRid;
+                            else if (tag == 2) fullToken = 0x1B000000 | typeRid;
+                            _methodTypeArgSizes[i] = (ushort)GetTypeSize(fullToken);
+                        }
+                        else
+                        {
+                            _methodTypeArgSizes[i] = 8; // Reference type
+                        }
+                    }
+                    break;
+                case 0x1D: // SzArray
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8; // Arrays are reference types
+                    ptr++;
+                    SkipTypeSig(ref ptr, end);
+                    break;
+                case 0x0F: // Ptr
+                case 0x10: // ByRef
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8; // Pointers/refs are pointer-sized
+                    ptr++;
+                    SkipTypeSig(ref ptr, end);
+                    break;
+                default:
+                    // Unknown type - treat as pointer-sized
+                    DebugConsole.Write("[MetaInt] Unknown element type in MethodSpec arg: 0x");
+                    DebugConsole.WriteHex(elemType);
+                    DebugConsole.WriteLine();
+                    _methodTypeArgs[i] = elemType;
+                    _methodTypeArgSizes[i] = 8;
+                    ptr++;
+                    break;
+            }
+        }
+
+        _methodTypeArgCount = (int)argCount;
+        return true;
+    }
+
+    /// <summary>
+    /// Skip over a type signature in a blob.
+    /// </summary>
+    private static void SkipTypeSig(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end) return;
+
+        byte elemType = *ptr++;
+
+        switch (elemType)
+        {
+            // Simple types with no additional data
+            case 0x01: // Void
+            case 0x02: // Boolean
+            case 0x03: // Char
+            case 0x04: // I1
+            case 0x05: // U1
+            case 0x06: // I2
+            case 0x07: // U2
+            case 0x08: // I4
+            case 0x09: // U4
+            case 0x0A: // I8
+            case 0x0B: // U8
+            case 0x0C: // R4
+            case 0x0D: // R8
+            case 0x0E: // String
+            case 0x18: // IntPtr
+            case 0x19: // UIntPtr
+            case 0x1C: // Object
+                // No additional data
+                break;
+
+            // Types with TypeDefOrRef token
+            case 0x11: // ValueType
+            case 0x12: // Class
+                MetadataReader.ReadCompressedUInt(ref ptr);
+                break;
+
+            // Pointer and ByRef - followed by another type
+            case 0x0F: // Ptr
+            case 0x10: // ByRef
+            case 0x1D: // SzArray
+                SkipTypeSig(ref ptr, end);
+                break;
+
+            // Generic instantiation
+            case 0x15: // GenericInst
+                ptr++; // Skip CLASS/VALUETYPE marker
+                MetadataReader.ReadCompressedUInt(ref ptr); // Skip TypeDefOrRef
+                {
+                    uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                    for (uint i = 0; i < argCount && ptr < end; i++)
+                    {
+                        SkipTypeSig(ref ptr, end);
+                    }
+                }
+                break;
+
+            // Generic type/method parameters
+            case 0x13: // Var (type parameter)
+            case 0x1E: // MVar (method parameter)
+                MetadataReader.ReadCompressedUInt(ref ptr); // Skip index
+                break;
+
+            // Array
+            case 0x14: // Array (with dimensions)
+                SkipTypeSig(ref ptr, end); // Element type
+                {
+                    uint rank = MetadataReader.ReadCompressedUInt(ref ptr);
+                    uint numSizes = MetadataReader.ReadCompressedUInt(ref ptr);
+                    for (uint i = 0; i < numSizes; i++)
+                        MetadataReader.ReadCompressedUInt(ref ptr);
+                    uint numLoBounds = MetadataReader.ReadCompressedUInt(ref ptr);
+                    for (uint i = 0; i < numLoBounds; i++)
+                        MetadataReader.ReadCompressedUInt(ref ptr);
+                }
+                break;
+
+            // Function pointer
+            case 0x1B: // FnPtr
+                // Skip method signature - complex, just skip the calling convention for now
+                if (ptr < end) ptr++;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Clear the method type argument context.
+    /// Should be called after resolving a MethodSpec to avoid stale context affecting other methods.
+    /// </summary>
+    private static void ClearMethodTypeArgContext()
+    {
+        _methodTypeArgCount = 0;
+    }
+
+    /// <summary>
+    /// Get the element type for a method type parameter (MVAR) at the given index.
+    /// Returns 0 if the index is out of range.
+    /// </summary>
+    public static byte GetMethodTypeArgElementType(int index)
+    {
+        if (index < 0 || index >= _methodTypeArgCount)
+            return 0;
+        return _methodTypeArgs[index];
+    }
+
+    /// <summary>
+    /// Get the size for a method type parameter (MVAR) at the given index.
+    /// Returns 8 (pointer size) if the index is out of range.
+    /// </summary>
+    public static ushort GetMethodTypeArgSize(int index)
+    {
+        if (index < 0 || index >= _methodTypeArgCount)
+            return 8;
+        return _methodTypeArgSizes[index];
+    }
+
+    /// <summary>
+    /// Check if there's an active method type argument context.
+    /// Used by signature parsing to determine if MVAR should be resolved.
+    /// </summary>
+    public static bool HasMethodTypeArgContext()
+    {
+        return _methodTypeArgCount > 0;
+    }
+
+    /// <summary>
+    /// Get the MethodTable for a method type parameter (MVAR) at the given index.
+    /// Returns null if the index is out of range or no MT is registered.
+    /// </summary>
+    public static MethodTable* GetMethodTypeArgMethodTable(int index)
+    {
+        if (index < 0 || index >= _methodTypeArgCount)
+            return null;
+        return _methodTypeArgMTs[index];
+    }
+
+    /// <summary>
+    /// Get a MethodTable pointer for a primitive ELEMENT_TYPE code.
+    /// Uses the well-known type registry.
+    /// </summary>
+    private static MethodTable* GetPrimitiveMethodTableFromElementType(byte elementType)
+    {
+        uint token = elementType switch
+        {
+            0x02 => WellKnownTypes.Boolean,  // ELEMENT_TYPE_BOOLEAN
+            0x03 => WellKnownTypes.Char,     // ELEMENT_TYPE_CHAR
+            0x04 => WellKnownTypes.SByte,    // ELEMENT_TYPE_I1
+            0x05 => WellKnownTypes.Byte,     // ELEMENT_TYPE_U1
+            0x06 => WellKnownTypes.Int16,    // ELEMENT_TYPE_I2
+            0x07 => WellKnownTypes.UInt16,   // ELEMENT_TYPE_U2
+            0x08 => WellKnownTypes.Int32,    // ELEMENT_TYPE_I4
+            0x09 => WellKnownTypes.UInt32,   // ELEMENT_TYPE_U4
+            0x0A => WellKnownTypes.Int64,    // ELEMENT_TYPE_I8
+            0x0B => WellKnownTypes.UInt64,   // ELEMENT_TYPE_U8
+            0x0C => WellKnownTypes.Single,   // ELEMENT_TYPE_R4
+            0x0D => WellKnownTypes.Double,   // ELEMENT_TYPE_R8
+            0x0E => WellKnownTypes.String,   // ELEMENT_TYPE_STRING
+            0x18 => WellKnownTypes.IntPtr,   // ELEMENT_TYPE_I
+            0x19 => WellKnownTypes.UIntPtr,  // ELEMENT_TYPE_U
+            0x1C => WellKnownTypes.Object,   // ELEMENT_TYPE_OBJECT
+            _ => 0
+        };
+
+        if (token == 0)
+            return null;
+
+        return LookupType(token);
+    }
+
+    /// <summary>
+    /// Resolve a MethodSpec token (0x2B) to method call information.
+    /// This handles generic method instantiations like Foo<int>().
+    /// </summary>
+    private static bool ResolveMethodSpecMethod(uint token, out ResolvedMethod result)
+    {
+        result = default;
+
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get the underlying method (MethodDefOrRef coded index)
+        uint methodDefOrRef = MetadataReader.GetMethodSpecMethod(ref *_tablesHeader, ref *_tableSizes, rowId, ref *_tablesHeader);
+        if (methodDefOrRef == 0)
+        {
+            DebugConsole.WriteLine("[MetaInt] MethodSpec has null method reference");
+            return false;
+        }
+
+        // Get the instantiation blob
+        uint instantiationIdx = MetadataReader.GetMethodSpecInstantiation(ref *_tablesHeader, ref *_tableSizes, rowId, ref *_tablesHeader);
+        byte* instantiationBlob = MetadataReader.GetBlob(ref *_metadataRoot, instantiationIdx, out uint blobLen);
+
+        // Parse the instantiation blob to populate type argument context
+        if (!ParseMethodSpecInstantiation(instantiationBlob, blobLen))
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to parse MethodSpec instantiation blob");
+            return false;
+        }
+
+        // Decode MethodDefOrRef: 1-bit tag (0=MethodDef, 1=MemberRef), rest is row ID
+        uint tag = methodDefOrRef & 0x01;
+        uint underlyingRowId = methodDefOrRef >> 1;
+
+        uint underlyingToken;
+        if (tag == 0)
+        {
+            // MethodDef
+            underlyingToken = 0x06000000 | underlyingRowId;
+        }
+        else
+        {
+            // MemberRef
+            underlyingToken = 0x0A000000 | underlyingRowId;
+        }
+
+        // Now resolve the underlying method with type args in context
+        // The signature parsing functions will use GetMethodTypeArgSize() for MVAR types
+        bool success = ResolveMethod(underlyingToken, out result);
+
+        // Clear the context after resolution to avoid affecting other methods
+        ClearMethodTypeArgContext();
 
         return success;
     }
@@ -2044,6 +2644,11 @@ public static unsafe class MetadataIntegration
         {
             // External method reference - resolve through the assembly's references
             return ResolveMemberRefMethod(token, out result);
+        }
+        else if (tableId == 0x2B) // MethodSpec token
+        {
+            // Generic method instantiation - resolve through MethodSpec handler
+            return ResolveMethodSpecMethod(token, out result);
         }
         else
         {

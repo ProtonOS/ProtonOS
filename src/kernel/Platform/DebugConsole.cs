@@ -101,7 +101,8 @@ public static unsafe class DebugConsole
     }
 
     /// <summary>
-    /// Write a 64-bit value as hexadecimal
+    /// Write a 64-bit value as hexadecimal followed by a space.
+    /// Used for early boot output before string.Format is available.
     /// </summary>
     public static void WriteHex(ulong value)
     {
@@ -112,11 +113,11 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
-        WriteLine();
+        WriteByte((byte)' ');
     }
 
     /// <summary>
-    /// Write a 32-bit value as hexadecimal
+    /// Write a 32-bit value as hexadecimal followed by a space.
     /// </summary>
     public static void WriteHex(uint value)
     {
@@ -126,11 +127,11 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
-        WriteLine();
+        WriteByte((byte)' ');
     }
 
     /// <summary>
-    /// Write a 16-bit value as hexadecimal
+    /// Write a 16-bit value as hexadecimal followed by a space.
     /// </summary>
     public static void WriteHex(ushort value)
     {
@@ -140,11 +141,11 @@ public static unsafe class DebugConsole
             byte c = (byte)(nibble < 10 ? '0' + nibble : 'A' + nibble - 10);
             WriteByte(c);
         }
-        WriteLine();
+        WriteByte((byte)' ');
     }
 
     /// <summary>
-    /// Write a single byte as 2-digit hexadecimal
+    /// Write a single byte as 2-digit hexadecimal followed by a space.
     /// </summary>
     public static void WriteHex(byte value)
     {
@@ -152,7 +153,7 @@ public static unsafe class DebugConsole
         int lo = value & 0xF;
         WriteByte((byte)(hi < 10 ? '0' + hi : 'A' + hi - 10));
         WriteByte((byte)(lo < 10 ? '0' + lo : 'A' + lo - 10));
-        WriteLine();
+        WriteByte((byte)' ');
     }
 
     /// <summary>

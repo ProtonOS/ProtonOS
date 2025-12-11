@@ -71,4 +71,31 @@ public static unsafe class DebugExports
     {
         DebugConsole.WriteHex(value);
     }
+
+    /// <summary>
+    /// Write a decimal value (signed 32-bit).
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_DebugWriteDecimal")]
+    public static void DebugWriteDecimal(int value)
+    {
+        DebugConsole.WriteDecimal(value);
+    }
+
+    /// <summary>
+    /// Write a decimal value (unsigned 32-bit).
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_DebugWriteDecimalU")]
+    public static void DebugWriteDecimalU(uint value)
+    {
+        DebugConsole.WriteDecimal(value);
+    }
+
+    /// <summary>
+    /// Write a decimal value (unsigned 64-bit).
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_DebugWriteDecimal64")]
+    public static void DebugWriteDecimal64(ulong value)
+    {
+        DebugConsole.WriteDecimal(value);
+    }
 }

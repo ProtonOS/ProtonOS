@@ -165,6 +165,9 @@ public static unsafe class Kernel
         // Initialize AOT method registry for well-known types (String, etc.)
         Runtime.AotMethodRegistry.Init();
 
+        // Initialize JIT stubs for lazy method compilation
+        Runtime.JIT.JitStubs.Init();
+
         // Initialize string pool for interning and ldstr caching (requires HeapAllocator)
         Runtime.StringPool.Init();
 
@@ -225,6 +228,9 @@ public static unsafe class Kernel
 
         // Bind drivers to detected PCI devices
         BindDrivers();
+
+        // Run the FullTest assembly to exercise JIT functionality
+        RunFullTestAssembly();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
@@ -441,9 +447,7 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[FullTest] Assembly ID: ");
-        DebugConsole.WriteDecimal(_testAssemblyId);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[FullTest] Assembly ID: {0}", _testAssemblyId));
 
         // Find TestRunner type using AssemblyLoader
         uint testRunnerToken = AssemblyLoader.FindTypeDefByFullName(_testAssemblyId, "FullTest", "TestRunner");
@@ -453,9 +457,7 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[FullTest] Found TestRunner type, token: 0x");
-        DebugConsole.WriteHex(testRunnerToken);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[FullTest] Found TestRunner type, token: 0x{0}", testRunnerToken.ToString("X8", null)));
 
         // Find RunAllTests method using AssemblyLoader
         uint runAllTestsToken = AssemblyLoader.FindMethodDefByName(_testAssemblyId, testRunnerToken, "RunAllTests");
@@ -465,33 +467,15 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[FullTest] Found RunAllTests method, token: 0x");
-        DebugConsole.WriteHex(runAllTestsToken);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[FullTest] Found RunAllTests method, token: 0x{0}", runAllTestsToken.ToString("X8", null)));
 
         // JIT compile the method
         DebugConsole.WriteLine("[FullTest] JIT compiling RunAllTests...");
 
-        // Diagnostic: dump page table walk for the crash address
-        DebugConsole.WriteLine("[FullTest] Checking page table before JIT...");
-        X64.VirtualMemory.DumpPageTableWalk(0xFFFF800000100020);
-
-        // Try to read from the address to verify mapping
-        unsafe
-        {
-            DebugConsole.Write("[FullTest] Reading from 0xFFFF800000100020: ");
-            byte* ptr = (byte*)0xFFFF800000100020;
-            byte val = *ptr;
-            DebugConsole.WriteHex(val);
-            DebugConsole.WriteLine(" (OK)");
-        }
-
         var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_testAssemblyId, runAllTestsToken);
         if (jitResult.Success)
         {
-            DebugConsole.Write("[FullTest] JIT compilation successful, code at 0x");
-            DebugConsole.WriteHex((ulong)jitResult.CodeAddress);
-            DebugConsole.WriteLine();
+            DebugConsole.WriteLine(string.Format("[FullTest] JIT compilation successful, code at 0x{0}", ((ulong)jitResult.CodeAddress).ToString("X", null)));
 
             // Execute the compiled method
             DebugConsole.WriteLine("[FullTest] Executing RunAllTests...");
@@ -509,12 +493,8 @@ public static unsafe class Kernel
             DebugConsole.WriteLine("==============================");
             DebugConsole.WriteLine("  FullTest Results");
             DebugConsole.WriteLine("==============================");
-            DebugConsole.Write("[FullTest] Passed: ");
-            DebugConsole.WriteDecimal(passCount);
-            DebugConsole.WriteLine();
-            DebugConsole.Write("[FullTest] Failed: ");
-            DebugConsole.WriteDecimal(failCount);
-            DebugConsole.WriteLine();
+            DebugConsole.WriteLine(string.Format("[FullTest] Passed: {0}", passCount));
+            DebugConsole.WriteLine(string.Format("[FullTest] Failed: {0}", failCount));
 
             if (failCount == 0)
             {
@@ -549,9 +529,7 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[DDK] Assembly ID: ");
-        DebugConsole.WriteDecimal(_ddkId);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[DDK] Assembly ID: {0}", _ddkId));
 
         // Find DDKInit type
         uint ddkInitToken = AssemblyLoader.FindTypeDefByFullName(_ddkId, "ProtonOS.DDK", "DDKInit");
@@ -561,9 +539,7 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[DDK] Found DDKInit type, token: 0x");
-        DebugConsole.WriteHex(ddkInitToken);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[DDK] Found DDKInit type, token: 0x{0}", ddkInitToken.ToString("X8", null)));
 
         // Find Initialize method
         uint initializeToken = AssemblyLoader.FindMethodDefByName(_ddkId, ddkInitToken, "Initialize");
@@ -573,9 +549,7 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[DDK] Found Initialize method, token: 0x");
-        DebugConsole.WriteHex(initializeToken);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[DDK] Found Initialize method, token: 0x{0}", initializeToken.ToString("X8", null)));
 
         // JIT compile the method
         DebugConsole.WriteLine("[DDK] JIT compiling DDKInit.Initialize...");
@@ -583,9 +557,7 @@ public static unsafe class Kernel
         var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_ddkId, initializeToken);
         if (jitResult.Success)
         {
-            DebugConsole.Write("[DDK] JIT compilation successful, code at 0x");
-            DebugConsole.WriteHex((ulong)jitResult.CodeAddress);
-            DebugConsole.WriteLine();
+            DebugConsole.WriteLine(string.Format("[DDK] JIT compilation successful, code at 0x{0}", ((ulong)jitResult.CodeAddress).ToString("X", null)));
 
             // Execute the compiled method (returns bool)
             DebugConsole.WriteLine("[DDK] Executing DDKInit.Initialize()...");
@@ -649,13 +621,8 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[Drivers] Found VirtioBlkEntry type (0x");
-        DebugConsole.WriteHex(virtioBlkEntryToken);
-        DebugConsole.Write("), Probe (0x");
-        DebugConsole.WriteHex(probeToken);
-        DebugConsole.Write("), Bind (0x");
-        DebugConsole.WriteHex(bindToken);
-        DebugConsole.WriteLine(")");
+        DebugConsole.WriteLine(string.Format("[Drivers] Found VirtioBlkEntry (0x{0}) Probe (0x{1}) Bind (0x{2})",
+            virtioBlkEntryToken.ToString("X8", null), probeToken.ToString("X8", null), bindToken.ToString("X8", null)));
 
         // JIT compile Probe method
         DebugConsole.WriteLine("[Drivers] JIT compiling VirtioBlkEntry.Probe...");
@@ -675,11 +642,8 @@ public static unsafe class Kernel
             return;
         }
 
-        DebugConsole.Write("[Drivers] Probe at 0x");
-        DebugConsole.WriteHex((ulong)probeResult.CodeAddress);
-        DebugConsole.Write(", Bind at 0x");
-        DebugConsole.WriteHex((ulong)bindResult.CodeAddress);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteLine(string.Format("[Drivers] Probe at 0x{0} Bind at 0x{1}",
+            ((ulong)probeResult.CodeAddress).ToString("X", null), ((ulong)bindResult.CodeAddress).ToString("X", null)));
 
         // Create function pointers
         var probeFunc = (delegate* unmanaged<ushort, ushort, bool>)probeResult.CodeAddress;
@@ -689,9 +653,7 @@ public static unsafe class Kernel
         int deviceCount = Platform.PCI.DeviceCount;
         int boundCount = 0;
 
-        DebugConsole.Write("[Drivers] Checking ");
-        DebugConsole.WriteDecimal(deviceCount);
-        DebugConsole.WriteLine(" PCI device(s)...");
+        DebugConsole.WriteLine(string.Format("[Drivers] Checking {0} PCI device(s)...", deviceCount));
 
         for (int i = 0; i < deviceCount; i++)
         {
@@ -704,17 +666,10 @@ public static unsafe class Kernel
 
             if (probeSuccess)
             {
-                DebugConsole.Write("[Drivers] VirtioBlk matched ");
-                DebugConsole.WriteHex(device->Bus);
-                DebugConsole.Write(":");
-                DebugConsole.WriteHex(device->Device);
-                DebugConsole.Write(".");
-                DebugConsole.WriteHex(device->Function);
-                DebugConsole.Write(" (Vendor:");
-                DebugConsole.WriteHex(device->VendorId);
-                DebugConsole.Write(" Device:");
-                DebugConsole.WriteHex(device->DeviceId);
-                DebugConsole.WriteLine(")");
+                // Test string.Format with byte (Bus/Device/Function) and ushort (VendorId/DeviceId)
+                DebugConsole.WriteLine(string.Format("[Drivers] VirtioBlk matched {0}:{1}.{2} (Vendor:{3} Device:{4})",
+                    device->Bus.ToString("X2", null), device->Device.ToString("X2", null), device->Function.ToString("X2", null),
+                    device->VendorId.ToString("X4", null), device->DeviceId.ToString("X4", null)));
 
                 // Bind the driver
                 bool bindSuccess = bindFunc(device->Bus, device->Device, device->Function);
@@ -730,8 +685,6 @@ public static unsafe class Kernel
             }
         }
 
-        DebugConsole.Write("[Drivers] Bound ");
-        DebugConsole.WriteDecimal(boundCount);
-        DebugConsole.WriteLine(" driver(s)");
+        DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} driver(s)", boundCount));
     }
 }

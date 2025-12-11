@@ -577,6 +577,9 @@ public unsafe struct ILCompiler
     private int _ilLength;
     private int _ilOffset;
 
+    // Prefix opcodes state - cleared after each instruction
+    private uint _constrainedTypeToken;  // Non-zero if constrained. prefix is pending
+
     // Method info
     private int _argCount;
     private int _localCount;
@@ -666,6 +669,7 @@ public unsafe struct ILCompiler
         compiler._il = il;
         compiler._ilLength = ilLength;
         compiler._ilOffset = 0;
+        compiler._constrainedTypeToken = 0;  // Initialize prefix state
         compiler._argCount = argCount;
         compiler._localCount = localCount;
         compiler._stackAdjust = 0;
@@ -690,8 +694,11 @@ public unsafe struct ILCompiler
         // Debug helpers
         compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
         compiler._debugStelemStack = RuntimeHelpers.GetDebugStelemStackPtr();
+        compiler._debugVtableDispatch = RuntimeHelpers.GetDebugVtableDispatchPtr();
         compiler._debugAssemblyId = 0;
         compiler._debugMethodToken = 0;
+        // JIT stub helpers
+        compiler._ensureVtableSlotCompiled = (void*)JitStubs.EnsureVtableSlotCompiledAddress;
 
         // Initialize funclet support
         compiler._ehClauseCount = 0;
@@ -1997,10 +2004,14 @@ public unsafe struct ILCompiler
             case ILOpcode.Constrained_2:
                 {
                     // constrained. <type token> - prefix for callvirt
-                    uint token = *(uint*)(_il + _ilOffset);
+                    // Save the constraint type token - the next callvirt will use it
+                    _constrainedTypeToken = *(uint*)(_il + _ilOffset);
                     _ilOffset += 4;
-                    // For Tier 0 JIT, we ignore the constraint and let the next callvirt handle it
-                    // The constrained prefix is an optimization hint that allows devirtualization
+                    // NOTE: For value types, constrained. is REQUIRED, not just an optimization
+                    // When calling a virtual method on a value type through constrained.:
+                    // - Stack has managed pointer to the value (not boxed object)
+                    // - For value types that override the method: direct call
+                    // - For value types that don't override: box and call
                     return true;
                 }
             case ILOpcode.Readonly_2:
@@ -4568,6 +4579,109 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCallvirt(uint token)
     {
+        // Check for constrained. prefix - this changes how we handle 'this'
+        uint constrainedToken = _constrainedTypeToken;
+        _constrainedTypeToken = 0;  // Clear it - must be consumed
+
+        // For constrained. prefix on value types:
+        // - Stack has a managed pointer to the value type (NOT a boxed object)
+        // - We need to box the value first, then do the virtual call
+        // - The constrained token tells us the type to box
+        if (constrainedToken != 0 && _typeResolver != null)
+        {
+            DebugConsole.Write("[constrained] token=0x");
+            DebugConsole.WriteHex(constrainedToken);
+
+            // Resolve the constraint type to get its MethodTable
+            void* resolvedPtr;
+            if (_typeResolver(constrainedToken, out resolvedPtr) && resolvedPtr != null)
+            {
+                MethodTable* constraintMT = (MethodTable*)resolvedPtr;
+                DebugConsole.Write(" mt=0x");
+                DebugConsole.WriteHex((ulong)constraintMT);
+                DebugConsole.Write(" isVT=");
+                DebugConsole.Write(constraintMT->IsValueType ? "Y" : "N");
+                DebugConsole.WriteLine();
+
+                if (constraintMT->IsValueType)
+                {
+                    // Value type with constrained prefix - need to box before virtual call
+                    // Stack currently has: [..., managed_ptr_to_value]
+                    // We need to transform it to: [..., boxed_object]
+                    //
+                    // After boxing, the vtable dispatch will work normally since primitive
+                    // MethodTables now include proper vtable entries (ToString, Equals, GetHashCode).
+
+                    // The managed pointer is on top of stack
+                    // We need to:
+                    // 1. Pop the managed pointer
+                    // 2. Read the value from that pointer
+                    // 3. Box the value (allocate and copy)
+                    // 4. Push the boxed object
+                    // 5. Continue with DEVIRTUALIZED callvirt
+
+                    // Get the value size from the MethodTable
+                    uint baseSize = constraintMT->_uBaseSize;
+                    int valueSize = (int)(baseSize - 8);  // Subtract MethodTable pointer (8 bytes)
+                    if (valueSize <= 0) valueSize = 8;  // Minimum
+
+                    // Pop managed pointer to RAX
+                    X64Emitter.Pop(ref _code, VReg.R0);
+                    PopEntry();
+
+                    // Read the value from the pointer
+                    // For small values (<=8 bytes), we can read directly
+                    // For now, assume 4-byte or 8-byte values (most common)
+                    if (valueSize <= 4)
+                    {
+                        // mov eax, [rax] - read 4 bytes
+                        X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);
+                    }
+                    else
+                    {
+                        // mov rax, [rax] - read 8 bytes
+                        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
+                    }
+
+                    // Now box it - inline the boxing logic
+                    // Need to allocate: baseSize bytes
+                    // Layout: [MethodTable*][value]
+
+                    // Save value on the stack (R10 is caller-saved and gets clobbered by calls!)
+                    X64Emitter.Push(ref _code, VReg.R0);  // Save value on stack
+
+                    // Call RhpNewFast(MT*) - returns pointer in RAX
+                    X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)constraintMT);  // RCX = MT*
+                    X64Emitter.SubRI(ref _code, VReg.SP, 32);  // Shadow space
+                    X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+                    X64Emitter.CallR(ref _code, VReg.R0);
+                    X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+                    // RAX = allocated object pointer (MT* is already set by RhpNewFast)
+                    // Pop saved value from stack into R2 (RDX)
+                    X64Emitter.Pop(ref _code, VReg.R2);  // RDX = saved value
+
+                    // Store value at [RAX + 8]
+                    if (valueSize <= 4)
+                    {
+                        X64Emitter.MovMR32(ref _code, VReg.R0, 8, VReg.R2);  // [RAX+8] = value (32-bit)
+                    }
+                    else
+                    {
+                        X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R2);  // [RAX+8] = value (64-bit)
+                    }
+
+                    // Push boxed object back on stack
+                    X64Emitter.Push(ref _code, VReg.R0);
+                    PushEntry(EvalStackEntry.NativeInt);  // Object reference
+
+                    // Now fall through to callvirt handling with boxed object on stack
+                    // Virtual dispatch will work via the vtable entries in the MethodTable
+                }
+                // For reference types with constrained prefix, just proceed normally
+            }
+        }
+
         // For now, callvirt behaves like call but always has 'this'.
         // The resolved method should have HasThis=true.
         //
@@ -4761,12 +4875,41 @@ public unsafe struct ILCompiler
         {
             // Virtual dispatch: load function pointer from vtable
             // RCX contains 'this' at this point
+            DebugConsole.Write("[JIT] vtable dispatch: slot=");
+            DebugConsole.WriteDecimal((uint)method.VtableSlot);
+            DebugConsole.Write(" offset=0x");
+            int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (method.VtableSlot * 8);
+            DebugConsole.WriteHex((uint)vtableOffset);
+            DebugConsole.WriteLine();
+
+            // Call EnsureVtableSlotCompiled(objPtr, vtableSlot) to ensure the method is compiled
+            // This is the lazy JIT stub - if method is already compiled, it returns immediately
+            // If not, it triggers compilation and updates the vtable slot
+            if (_ensureVtableSlotCompiled != null)
+            {
+                // Save RCX to callee-saved R12 (we'll restore after stub call)
+                X64Emitter.Push(ref _code, VReg.R8);  // Save R12
+                X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);  // R12 = RCX (this)
+
+                // RCX already has 'this' (objPtr), just need RDX = slot (short)
+                X64Emitter.MovRI32(ref _code, VReg.R2, method.VtableSlot);
+
+                // Call stub helper: EnsureVtableSlotCompiled(nint objPtr, short vtableSlot)
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);  // Shadow space
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_ensureVtableSlotCompiled);
+                X64Emitter.CallR(ref _code, VReg.R0);
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+                // Restore RCX from R12
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // RCX = R12 (this)
+                X64Emitter.Pop(ref _code, VReg.R8);  // Restore R12
+            }
+
             // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = *this = MethodTable*
 
             // 2. Load vtable slot at offset HeaderSize + slot*8
             // MethodTable.HeaderSize = 24 bytes, each vtable slot is 8 bytes
-            int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (method.VtableSlot * 8);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, vtableOffset);  // RAX = vtable[slot]
 
             // 3. Call through the vtable slot
@@ -5944,16 +6087,40 @@ public unsafe struct ILCompiler
     {
         int offset;
         int size;
+        bool isFieldTypeValueType = true;  // Default to true (safer)
 
         // Try field resolver first, fall back to test token encoding
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid)
         {
             offset = field.Offset;
             size = field.Size;
+            isFieldTypeValueType = field.IsFieldTypeValueType;
+
+            // DEBUG: trace stfld resolution
+            DebugConsole.Write("[stfld] token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" off=");
+            DebugConsole.WriteDecimal(offset);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(size);
+            DebugConsole.Write(" isValType=");
+            DebugConsole.Write(isFieldTypeValueType ? "Y" : "N");
+            DebugConsole.WriteLine();
         }
         else
         {
             DecodeFieldToken(token, out offset, out size, out _);
+        }
+
+        // CRITICAL: For reference-type fields (class fields), force size=8 (pointer)
+        // regardless of what the field resolver returned. Reference types are always
+        // stored as 8-byte pointers, never as inline data.
+        if (!isFieldTypeValueType && size > 8)
+        {
+            DebugConsole.Write("[stfld] FIXING ref type field size ");
+            DebugConsole.WriteDecimal(size);
+            DebugConsole.WriteLine(" -> 8");
+            size = 8;
         }
 
         // For large structs, the value takes multiple stack slots
@@ -6792,26 +6959,43 @@ public unsafe struct ILCompiler
             if (_typeResolver(token, out resolvedPtr) && resolvedPtr != null)
             {
                 mtAddress = (ulong)resolvedPtr;
-                // Read BaseSize from MethodTable (offset 4: _uBaseSize)
-                // Layout: [0-2: ComponentSize] [2-4: Flags] [4-8: BaseSize]
-                uint baseSize = *(uint*)((byte*)resolvedPtr + 4);
+                MethodTable* mt = (MethodTable*)resolvedPtr;
+                uint baseSize = mt->BaseSize;
+                uint combinedFlags = mt->CombinedFlags;
 
-                // Token table is in high byte:
-                // 0x01 = TypeRef (external type, like System.Int32 from System.Runtime)
-                // 0x02 = TypeDef (local type defined in the user assembly)
-                // External types have BaseSize that includes 8-byte MT pointer overhead
-                // Local types have BaseSize = actual value size (no overhead)
-                bool isExternalType = (token >> 24) == 0x01;
-                if (isExternalType)
+                DebugConsole.Write("[box] token=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" mt=0x");
+                DebugConsole.WriteHex((uint)mtAddress);
+                DebugConsole.Write(" baseSize=");
+                DebugConsole.WriteHex(baseSize);
+                DebugConsole.Write(" flags=0x");
+                DebugConsole.WriteHex(combinedFlags);
+                DebugConsole.Write(" isVT=");
+                DebugConsole.Write(mt->IsValueType ? "Y" : "N");
+
+                // For value types, BaseSize includes the 8-byte MT pointer overhead.
+                // The actual value size is BaseSize - 8.
+                // For reference types (boxing a ref type is a no-op), use 8 (pointer size).
+                if (mt->IsValueType)
                 {
-                    // External type: BaseSize includes MT pointer overhead
                     valueSize = baseSize - 8;
                 }
                 else
                 {
-                    // Local type: BaseSize IS the value size
-                    valueSize = baseSize;
+                    // Reference type - shouldn't really be boxing, but treat as pointer
+                    valueSize = 8;
                 }
+
+                DebugConsole.Write(" valueSize=");
+                DebugConsole.WriteHex(valueSize);
+                DebugConsole.WriteLine("");
+            }
+            else
+            {
+                DebugConsole.Write("[box] token=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine(" RESOLUTION FAILED!");
             }
         }
 
@@ -6847,9 +7031,52 @@ public unsafe struct ILCompiler
         // Copy the value to offset 8 in the object (after MT pointer)
         if (valueSize <= 8)
         {
-            // Small struct: R3 contains the value directly
-            // mov [RAX + 8], R3
-            X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
+            // Small value type: R3 contains the value directly
+            // Use correctly-sized store to avoid corrupting neighboring memory
+            if (valueSize == 8)
+            {
+                // 64-bit value (long, ulong, double, pointer)
+                X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R3);
+            }
+            else if (valueSize == 4)
+            {
+                // 32-bit value (int, uint, float)
+                X64Emitter.MovMR32(ref _code, VReg.R0, 8, VReg.R3);
+            }
+            else if (valueSize == 2)
+            {
+                // 16-bit value (short, ushort, char)
+                X64Emitter.MovMR16(ref _code, VReg.R0, 8, VReg.R3);
+            }
+            else if (valueSize == 1)
+            {
+                // 8-bit value (byte, sbyte, bool)
+                X64Emitter.MovMR8(ref _code, VReg.R0, 8, VReg.R3);
+            }
+            else
+            {
+                // Unusual size (3, 5, 6, 7 bytes) - use byte-by-byte copy from address
+                // R3 is expected to be an address in this case
+                int copyOffset = 0;
+                while (copyOffset + 4 <= (int)valueSize)
+                {
+                    X64Emitter.MovRM32(ref _code, VReg.R2, VReg.R3, copyOffset);
+                    X64Emitter.MovMR32(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                    copyOffset += 4;
+                }
+                while (copyOffset + 2 <= (int)valueSize)
+                {
+                    X64Emitter.MovRM16(ref _code, VReg.R2, VReg.R3, copyOffset);
+                    X64Emitter.MovMR16(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                    copyOffset += 2;
+                }
+                while (copyOffset < (int)valueSize)
+                {
+                    X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, copyOffset);
+                    X64Emitter.MovMR8(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
+                    copyOffset += 1;
+                }
+            }
         }
         else
         {
@@ -7879,6 +8106,8 @@ public unsafe struct ILCompiler
     private void* _getInterfaceMethod;
     private void* _debugStfld;
     private void* _debugStelemStack;
+    private void* _debugVtableDispatch;
+    private void* _ensureVtableSlotCompiled;  // JIT stub for lazy vtable slot compilation
     private uint _debugAssemblyId;   // Assembly ID for targeted debug logging
     private uint _debugMethodToken;  // Method token for targeted debug logging
 

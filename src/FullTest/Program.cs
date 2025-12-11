@@ -2,6 +2,8 @@
 // This assembly exercises all Tier 0 JIT functionality with real executable code paths.
 // Each test method returns a result that can be validated by the kernel.
 
+using ProtonOS.DDK.Kernel;
+
 namespace FullTest;
 
 /// <summary>
@@ -69,229 +71,254 @@ public static class TestRunner
         // TODO: Exception tests - requires MemberRef support (exception constructors from System.Runtime)
         // RunExceptionTests();
 
-        // TODO: Generic tests - requires MethodSpec/TypeSpec support
-        // RunGenericTests();
+        // Generic tests - tests MethodSpec (0x2B) token resolution
+        RunGenericTests();
+
+        // String.Format tests - tests AOT method calls from JIT
+        RunStringFormatTests();
+
+        // String interpolation tests - requires MethodSpec (0x2B), MVAR, and cross-assembly TypeRef resolution
+        RunStringInterpolationTests();
 
         return (_passCount << 16) | _failCount;
     }
 
+    private static void RunStringFormatTests()
+    {
+        RecordResult("StringFormatTests.TestFormatOneArg", StringFormatTests.TestFormatOneArg() == 9);
+        RecordResult("StringFormatTests.TestFormatTwoArgs", StringFormatTests.TestFormatTwoArgs() == 7);
+        RecordResult("StringFormatTests.TestFormatThreeArgs", StringFormatTests.TestFormatThreeArgs() == 12);
+        RecordResult("StringFormatTests.TestFormatStringArg", StringFormatTests.TestFormatStringArg() == 13);
+    }
+
     private static void RunStringTests()
     {
-        RecordResult(StringTests.TestLdstr() == 5);
-        RecordResult(StringTests.TestStringConcat() == 10);
+        RecordResult("StringTests.TestLdstr", StringTests.TestLdstr() == 5);
+        RecordResult("StringTests.TestStringConcat", StringTests.TestStringConcat() == 10);
     }
 
     private static void RunBoxingTests()
     {
         // Phase 4.1: newobj with >4 constructor args - WORKS
-        RecordResult(BoxingTests.TestNewObjManyArgs() == 15);
+        RecordResult("BoxingTests.TestNewObjManyArgs", BoxingTests.TestNewObjManyArgs() == 15);
 
         // Phase 4.2: box/unbox operations
-        RecordResult(BoxingTests.TestBoxInt() == 42);  // Int boxing - WORKS
+        RecordResult("BoxingTests.TestBoxInt", BoxingTests.TestBoxInt() == 42);  // Int boxing - WORKS
 
         // Struct boxing tests
-        RecordResult(BoxingTests.TestBoxStruct() == 30);  // Small struct (8 bytes)
-        RecordResult(BoxingTests.TestBoxMediumStruct() == 300);  // Medium struct (16 bytes)
-        RecordResult(BoxingTests.TestBoxLargeStruct() == 60);  // Large struct (24 bytes)
+        RecordResult("BoxingTests.TestBoxStruct", BoxingTests.TestBoxStruct() == 30);  // Small struct (8 bytes)
+        RecordResult("BoxingTests.TestBoxMediumStruct", BoxingTests.TestBoxMediumStruct() == 300);  // Medium struct (16 bytes)
+        RecordResult("BoxingTests.TestBoxLargeStruct", BoxingTests.TestBoxLargeStruct() == 60);  // Large struct (24 bytes)
     }
 
     private static void RunInstanceTests()
     {
         // Phase 5.1: Instance field access
-        RecordResult(InstanceTests.TestInstanceFieldReadWrite() == 42);
-        RecordResult(InstanceTests.TestMultipleInstanceFields() == 60);
+        RecordResult("InstanceTests.TestInstanceFieldReadWrite", InstanceTests.TestInstanceFieldReadWrite() == 42);
+        RecordResult("InstanceTests.TestMultipleInstanceFields", InstanceTests.TestMultipleInstanceFields() == 60);
 
         // Phase 5.2: Instance method calls
-        RecordResult(InstanceTests.TestInstanceMethodCall() == 30);
-        RecordResult(InstanceTests.TestInstanceMethodWithThis() == 50);
+        RecordResult("InstanceTests.TestInstanceMethodCall", InstanceTests.TestInstanceMethodCall() == 30);
+        RecordResult("InstanceTests.TestInstanceMethodWithThis", InstanceTests.TestInstanceMethodWithThis() == 50);
 
         // Regression: callvirt returning bool, store to local, branch on local
         // TEMPORARILY DISABLED - crashes with CR2=0xA
-        // RecordResult(InstanceTests.TestCallvirtBoolBranchWithLargeLocals() == 2);
+        // RecordResult("InstanceTests.TestCallvirtBoolBranchWithLargeLocals", InstanceTests.TestCallvirtBoolBranchWithLargeLocals() == 2);
 
         // Critical: Cross-assembly large struct return (hidden buffer convention)
-        RecordResult(InstanceTests.TestCrossAssemblyLargeStructReturn() == 42);
-        RecordResult(InstanceTests.TestCrossAssemblyLargeStructToClassField() == 42);
+        RecordResult("InstanceTests.TestCrossAssemblyLargeStructReturn", InstanceTests.TestCrossAssemblyLargeStructReturn() == 42);
+        RecordResult("InstanceTests.TestCrossAssemblyLargeStructToClassField", InstanceTests.TestCrossAssemblyLargeStructToClassField() == 42);
     }
 
     private static void RunExceptionTests()
     {
-        RecordResult(ExceptionTests.TestTryCatch() == 42);
-        RecordResult(ExceptionTests.TestTryFinally() == 42);
-        RecordResult(ExceptionTests.TestNestedTryCatch() == 42);
+        RecordResult("ExceptionTests.TestTryCatch", ExceptionTests.TestTryCatch() == 42);
+        RecordResult("ExceptionTests.TestTryFinally", ExceptionTests.TestTryFinally() == 42);
+        RecordResult("ExceptionTests.TestNestedTryCatch", ExceptionTests.TestNestedTryCatch() == 42);
     }
 
     private static void RunGenericTests()
     {
-        RecordResult(GenericTests.TestGenericMethod() == 42);
-        RecordResult(GenericTests.TestGenericClass() == 42);
+        RecordResult("GenericTests.TestGenericMethod", GenericTests.TestGenericMethod() == 42);
+        // TestGenericClass requires TypeSpec (0x1B) support for generic type instantiation
+        // RecordResult("GenericTests.TestGenericClass", GenericTests.TestGenericClass() == 42);
     }
 
-    private static void RecordResult(bool passed)
+    private static void RunStringInterpolationTests()
+    {
+        RecordResult("StringInterpolationTests.TestSimpleInterpolation", StringInterpolationTests.TestSimpleInterpolation() == 9);     // "Value: 42"
+        RecordResult("StringInterpolationTests.TestMultipleValues", StringInterpolationTests.TestMultipleValues() == 12);         // "10 + 20 = 30"
+        RecordResult("StringInterpolationTests.TestStringValues", StringInterpolationTests.TestStringValues() == 12);           // "Hello, Test!"
+    }
+
+    private static void RecordResult(string testName, bool passed)
     {
         if (passed)
             _passCount++;
         else
+        {
             _failCount++;
+            Debug.WriteLine(string.Format("[FAIL] {0}", testName));
+        }
     }
 
     private static void RunArithmeticTests()
     {
-        RecordResult(ArithmeticTests.TestAdd() == 42);
-        RecordResult(ArithmeticTests.TestSub() == 8);
-        RecordResult(ArithmeticTests.TestMul() == 56);
-        RecordResult(ArithmeticTests.TestDiv() == 5);
-        RecordResult(ArithmeticTests.TestRem() == 3);
-        RecordResult(ArithmeticTests.TestNeg() == -42);
-        RecordResult(ArithmeticTests.TestAddOverflow() == unchecked((int)0x80000001));
-        RecordResult(ArithmeticTests.TestLongAdd() == 0x1_0000_0000L);
-        RecordResult(ArithmeticTests.TestLongMul() == 0x10_0000_0000L);
-        RecordResult(ArithmeticTests.TestUlongPlusUint() == 1);     // ulong + uint high bits preserved
-        RecordResult(ArithmeticTests.TestUlongPlusUintLow() == 1);  // ulong + uint low bits correct
+        RecordResult("ArithmeticTests.TestAdd", ArithmeticTests.TestAdd() == 42);
+        RecordResult("ArithmeticTests.TestSub", ArithmeticTests.TestSub() == 8);
+        RecordResult("ArithmeticTests.TestMul", ArithmeticTests.TestMul() == 56);
+        RecordResult("ArithmeticTests.TestDiv", ArithmeticTests.TestDiv() == 5);
+        RecordResult("ArithmeticTests.TestRem", ArithmeticTests.TestRem() == 3);
+        RecordResult("ArithmeticTests.TestNeg", ArithmeticTests.TestNeg() == -42);
+        RecordResult("ArithmeticTests.TestAddOverflow", ArithmeticTests.TestAddOverflow() == unchecked((int)0x80000001));
+        RecordResult("ArithmeticTests.TestLongAdd", ArithmeticTests.TestLongAdd() == 0x1_0000_0000L);
+        RecordResult("ArithmeticTests.TestLongMul", ArithmeticTests.TestLongMul() == 0x10_0000_0000L);
+        RecordResult("ArithmeticTests.TestUlongPlusUint", ArithmeticTests.TestUlongPlusUint() == 1);     // ulong + uint high bits preserved
+        RecordResult("ArithmeticTests.TestUlongPlusUintLow", ArithmeticTests.TestUlongPlusUintLow() == 1);  // ulong + uint low bits correct
     }
 
     private static void RunComparisonTests()
     {
-        RecordResult(ComparisonTests.TestCeq() == 1);
-        RecordResult(ComparisonTests.TestCgt() == 1);
-        RecordResult(ComparisonTests.TestClt() == 1);
-        RecordResult(ComparisonTests.TestCgtUn() == 1);
-        RecordResult(ComparisonTests.TestCltUn() == 1);
-        RecordResult(ComparisonTests.TestEqualsFalse() == 0);
+        RecordResult("ComparisonTests.TestCeq", ComparisonTests.TestCeq() == 1);
+        RecordResult("ComparisonTests.TestCgt", ComparisonTests.TestCgt() == 1);
+        RecordResult("ComparisonTests.TestClt", ComparisonTests.TestClt() == 1);
+        RecordResult("ComparisonTests.TestCgtUn", ComparisonTests.TestCgtUn() == 1);
+        RecordResult("ComparisonTests.TestCltUn", ComparisonTests.TestCltUn() == 1);
+        RecordResult("ComparisonTests.TestEqualsFalse", ComparisonTests.TestEqualsFalse() == 0);
         // 64-bit comparison tests
-        RecordResult(ComparisonTests.TestCeqLongZero() == 1);
-        RecordResult(ComparisonTests.TestCeqLongNonZero() == 0);
-        RecordResult(ComparisonTests.TestCeqLongEquals() == 1);
-        RecordResult(ComparisonTests.TestCeqLongNotEquals() == 0);
+        RecordResult("ComparisonTests.TestCeqLongZero", ComparisonTests.TestCeqLongZero() == 1);
+        RecordResult("ComparisonTests.TestCeqLongNonZero", ComparisonTests.TestCeqLongNonZero() == 0);
+        RecordResult("ComparisonTests.TestCeqLongEquals", ComparisonTests.TestCeqLongEquals() == 1);
+        RecordResult("ComparisonTests.TestCeqLongNotEquals", ComparisonTests.TestCeqLongNotEquals() == 0);
     }
 
     private static void RunBitwiseTests()
     {
-        RecordResult(BitwiseTests.TestAnd() == 0x10);
-        RecordResult(BitwiseTests.TestOr() == 0xFF);
-        RecordResult(BitwiseTests.TestXor() == 0xEF);
-        RecordResult(BitwiseTests.TestNot() == unchecked((int)0xFFFFFFF0));
-        RecordResult(BitwiseTests.TestShl() == 0x80);
-        RecordResult(BitwiseTests.TestShr() == 0x04);
-        RecordResult(BitwiseTests.TestShrUn() == 0x7FFFFFFF);
-        RecordResult(BitwiseTests.TestShl64By32Simple() == 1);  // 64-bit shift left by 32
-        RecordResult(BitwiseTests.TestShl64By32() == 0xC0);     // 64-bit shift with conv.u8
-        RecordResult(BitwiseTests.TestShl64LowBits() == unchecked((int)0xABCD0000));  // 64-bit shift by 16
+        RecordResult("BitwiseTests.TestAnd", BitwiseTests.TestAnd() == 0x10);
+        RecordResult("BitwiseTests.TestOr", BitwiseTests.TestOr() == 0xFF);
+        RecordResult("BitwiseTests.TestXor", BitwiseTests.TestXor() == 0xEF);
+        RecordResult("BitwiseTests.TestNot", BitwiseTests.TestNot() == unchecked((int)0xFFFFFFF0));
+        RecordResult("BitwiseTests.TestShl", BitwiseTests.TestShl() == 0x80);
+        RecordResult("BitwiseTests.TestShr", BitwiseTests.TestShr() == 0x04);
+        RecordResult("BitwiseTests.TestShrUn", BitwiseTests.TestShrUn() == 0x7FFFFFFF);
+        RecordResult("BitwiseTests.TestShl64By32Simple", BitwiseTests.TestShl64By32Simple() == 1);  // 64-bit shift left by 32
+        RecordResult("BitwiseTests.TestShl64By32", BitwiseTests.TestShl64By32() == 0xC0);     // 64-bit shift with conv.u8
+        RecordResult("BitwiseTests.TestShl64LowBits", BitwiseTests.TestShl64LowBits() == unchecked((int)0xABCD0000));  // 64-bit shift by 16
     }
 
     private static void RunControlFlowTests()
     {
-        RecordResult(ControlFlowTests.TestBranch() == 100);
-        RecordResult(ControlFlowTests.TestBrtrue() == 1);
-        RecordResult(ControlFlowTests.TestBrfalse() == 1);
-        RecordResult(ControlFlowTests.TestBeq() == 1);
-        RecordResult(ControlFlowTests.TestBne() == 1);
-        RecordResult(ControlFlowTests.TestBgt() == 1);
-        RecordResult(ControlFlowTests.TestBlt() == 1);
-        RecordResult(ControlFlowTests.TestBge() == 1);
-        RecordResult(ControlFlowTests.TestBle() == 1);
-        RecordResult(ControlFlowTests.TestLoop() == 55);  // Sum of 1..10
-        RecordResult(ControlFlowTests.TestNestedLoop() == 100);
-        RecordResult(ControlFlowTests.TestSwitch() == 42);
+        RecordResult("ControlFlowTests.TestBranch", ControlFlowTests.TestBranch() == 100);
+        RecordResult("ControlFlowTests.TestBrtrue", ControlFlowTests.TestBrtrue() == 1);
+        RecordResult("ControlFlowTests.TestBrfalse", ControlFlowTests.TestBrfalse() == 1);
+        RecordResult("ControlFlowTests.TestBeq", ControlFlowTests.TestBeq() == 1);
+        RecordResult("ControlFlowTests.TestBne", ControlFlowTests.TestBne() == 1);
+        RecordResult("ControlFlowTests.TestBgt", ControlFlowTests.TestBgt() == 1);
+        RecordResult("ControlFlowTests.TestBlt", ControlFlowTests.TestBlt() == 1);
+        RecordResult("ControlFlowTests.TestBge", ControlFlowTests.TestBge() == 1);
+        RecordResult("ControlFlowTests.TestBle", ControlFlowTests.TestBle() == 1);
+        RecordResult("ControlFlowTests.TestLoop", ControlFlowTests.TestLoop() == 55);  // Sum of 1..10
+        RecordResult("ControlFlowTests.TestNestedLoop", ControlFlowTests.TestNestedLoop() == 100);
+        RecordResult("ControlFlowTests.TestSwitch", ControlFlowTests.TestSwitch() == 42);
 
         // Phase 3 control flow tests
-        RecordResult(ControlFlowTests.TestIfElseChain() == 20);
-        RecordResult(ControlFlowTests.TestIfElseChainWithReturns() == 30);
-        RecordResult(ControlFlowTests.TestBreakInLoop() == 10);
-        RecordResult(ControlFlowTests.TestContinueInLoop() == 25);
-        RecordResult(ControlFlowTests.TestNestedBreak() == 30);
-        RecordResult(ControlFlowTests.TestWhileWithAndCondition() == 21);
+        RecordResult("ControlFlowTests.TestIfElseChain", ControlFlowTests.TestIfElseChain() == 20);
+        RecordResult("ControlFlowTests.TestIfElseChainWithReturns", ControlFlowTests.TestIfElseChainWithReturns() == 30);
+        RecordResult("ControlFlowTests.TestBreakInLoop", ControlFlowTests.TestBreakInLoop() == 10);
+        RecordResult("ControlFlowTests.TestContinueInLoop", ControlFlowTests.TestContinueInLoop() == 25);
+        RecordResult("ControlFlowTests.TestNestedBreak", ControlFlowTests.TestNestedBreak() == 30);
+        RecordResult("ControlFlowTests.TestWhileWithAndCondition", ControlFlowTests.TestWhileWithAndCondition() == 21);
     }
 
     private static void RunLocalVariableTests()
     {
-        RecordResult(LocalVariableTests.TestSimpleLocals() == 30);
-        RecordResult(LocalVariableTests.TestManyLocals() == 45);
-        RecordResult(LocalVariableTests.TestLocalAddress() == 42);
+        RecordResult("LocalVariableTests.TestSimpleLocals", LocalVariableTests.TestSimpleLocals() == 30);
+        RecordResult("LocalVariableTests.TestManyLocals", LocalVariableTests.TestManyLocals() == 45);
+        RecordResult("LocalVariableTests.TestLocalAddress", LocalVariableTests.TestLocalAddress() == 42);
     }
 
     private static void RunMethodCallTests()
     {
-        RecordResult(MethodCallTests.TestSimpleCall() == 42);
-        RecordResult(MethodCallTests.TestCallWithArgs() == 15);
-        RecordResult(MethodCallTests.TestCallChain() == 120);
-        RecordResult(MethodCallTests.TestRecursion() == 120);  // 5! = 120
+        RecordResult("MethodCallTests.TestSimpleCall", MethodCallTests.TestSimpleCall() == 42);
+        RecordResult("MethodCallTests.TestCallWithArgs", MethodCallTests.TestCallWithArgs() == 15);
+        RecordResult("MethodCallTests.TestCallChain", MethodCallTests.TestCallChain() == 120);
+        RecordResult("MethodCallTests.TestRecursion", MethodCallTests.TestRecursion() == 120);  // 5! = 120
     }
 
     private static void RunConversionTests()
     {
-        RecordResult(ConversionTests.TestConvI4() == 42);
-        RecordResult(ConversionTests.TestConvI8() == 0x1_0000_0000L);
-        RecordResult(ConversionTests.TestConvU4() == 0xFFFFFFFF);
-        RecordResult(ConversionTests.TestConvI1() == -1);
-        RecordResult(ConversionTests.TestConvU1() == 255);
-        RecordResult(ConversionTests.TestConvI2() == -1);
-        RecordResult(ConversionTests.TestConvU2() == 65535);
+        RecordResult("ConversionTests.TestConvI4", ConversionTests.TestConvI4() == 42);
+        RecordResult("ConversionTests.TestConvI8", ConversionTests.TestConvI8() == 0x1_0000_0000L);
+        RecordResult("ConversionTests.TestConvU4", ConversionTests.TestConvU4() == 0xFFFFFFFF);
+        RecordResult("ConversionTests.TestConvI1", ConversionTests.TestConvI1() == -1);
+        RecordResult("ConversionTests.TestConvU1", ConversionTests.TestConvU1() == 255);
+        RecordResult("ConversionTests.TestConvI2", ConversionTests.TestConvI2() == -1);
+        RecordResult("ConversionTests.TestConvU2", ConversionTests.TestConvU2() == 65535);
     }
 
     private static void RunObjectTests()
     {
-        RecordResult(ObjectTests.TestLdnull() == 1);
+        RecordResult("ObjectTests.TestLdnull", ObjectTests.TestLdnull() == 1);
     }
 
     private static void RunArrayTests()
     {
-        RecordResult(ArrayTests.TestNewarr() == 10);
-        RecordResult(ArrayTests.TestStelem() == 42);
-        RecordResult(ArrayTests.TestLdlen() == 5);
-        RecordResult(ArrayTests.TestArraySum() == 15);
+        RecordResult("ArrayTests.TestNewarr", ArrayTests.TestNewarr() == 10);
+        RecordResult("ArrayTests.TestStelem", ArrayTests.TestStelem() == 42);
+        RecordResult("ArrayTests.TestLdlen", ArrayTests.TestLdlen() == 5);
+        RecordResult("ArrayTests.TestArraySum", ArrayTests.TestArraySum() == 15);
     }
 
     private static void RunFieldTests()
     {
-        RecordResult(FieldTests.TestStaticField() == 42);
-        RecordResult(FieldTests.TestStaticFieldIncrement() == 43);
-        RecordResult(FieldTests.TestMultipleStaticFields() == 100);
+        RecordResult("FieldTests.TestStaticField", FieldTests.TestStaticField() == 42);
+        RecordResult("FieldTests.TestStaticFieldIncrement", FieldTests.TestStaticFieldIncrement() == 43);
+        RecordResult("FieldTests.TestMultipleStaticFields", FieldTests.TestMultipleStaticFields() == 100);
     }
 
     private static void RunStructTests()
     {
         // Basic struct field access tests
-        RecordResult(StructTests.TestStructLocalFieldWrite() == 42);
-        RecordResult(StructTests.TestStructLocalFieldSum() == 30);
-        RecordResult(StructTests.TestStructPassByValue() == 100);
-        RecordResult(StructTests.TestStructOutParam() == 42);
+        RecordResult("StructTests.TestStructLocalFieldWrite", StructTests.TestStructLocalFieldWrite() == 42);
+        RecordResult("StructTests.TestStructLocalFieldSum", StructTests.TestStructLocalFieldSum() == 30);
+        RecordResult("StructTests.TestStructPassByValue", StructTests.TestStructPassByValue() == 100);
+        RecordResult("StructTests.TestStructOutParam", StructTests.TestStructOutParam() == 42);
 
         // Object initializer tests - RE-ENABLED for testing
-        RecordResult(StructTests.TestObjectInitializer() == 30);
-        RecordResult(StructTests.TestStindI8() == 100);  // Test stind.i8 pattern first
-        RecordResult(StructTests.TestSimpleStobj() == 300);  // RE-ENABLED for debugging
-        RecordResult(StructTests.TestObjectInitializerOut() == 30);  // TODO: Fix initobj+stobj interaction
+        RecordResult("StructTests.TestObjectInitializer", StructTests.TestObjectInitializer() == 30);
+        RecordResult("StructTests.TestStindI8", StructTests.TestStindI8() == 100);  // Test stind.i8 pattern first
+        RecordResult("StructTests.TestSimpleStobj", StructTests.TestSimpleStobj() == 300);  // RE-ENABLED for debugging
+        RecordResult("StructTests.TestObjectInitializerOut", StructTests.TestObjectInitializerOut() == 30);  // TODO: Fix initobj+stobj interaction
 
         // Struct array tests (ldelem/stelem with type token)
-        RecordResult(StructTests.TestStructArrayStore() == 10);
-        RecordResult(StructTests.TestStructArrayLoad() == 70);
-        RecordResult(StructTests.TestStructArrayCopy() == 100);
-        RecordResult(StructTests.TestStructArrayMultiple() == 111);
+        RecordResult("StructTests.TestStructArrayStore", StructTests.TestStructArrayStore() == 10);
+        RecordResult("StructTests.TestStructArrayLoad", StructTests.TestStructArrayLoad() == 70);
+        RecordResult("StructTests.TestStructArrayCopy", StructTests.TestStructArrayCopy() == 100);
+        RecordResult("StructTests.TestStructArrayMultiple", StructTests.TestStructArrayMultiple() == 111);
 
         // Large struct tests (structs > 8 bytes) - DISABLED: CR2=0xA crash
-        // RecordResult(StructTests.TestLargeStructFields() == 60);
-        // RecordResult(StructTests.TestLargeStructCopy() == 600);
-        // RecordResult(StructTests.TestLargeStructArrayStore() == 1);  // Struct first, array second
-        // RecordResult(StructTests.TestLargeStructArrayLoad() == 60);
-        // RecordResult(StructTests.TestLargeStructArrayCopy() == 100);
+        // RecordResult("StructTests.TestLargeStructFields", StructTests.TestLargeStructFields() == 60);
+        // RecordResult("StructTests.TestLargeStructCopy", StructTests.TestLargeStructCopy() == 600);
+        // RecordResult("StructTests.TestLargeStructArrayStore", StructTests.TestLargeStructArrayStore() == 1);  // Struct first, array second
+        // RecordResult("StructTests.TestLargeStructArrayLoad", StructTests.TestLargeStructArrayLoad() == 60);
+        // RecordResult("StructTests.TestLargeStructArrayCopy", StructTests.TestLargeStructArrayCopy() == 100);
 
         // Struct return value tests (2.1) - BISECTING
-        // RecordResult(StructTests.TestSmallStructReturn() == 30);
-        // RecordResult(StructTests.TestMediumStructReturn() == 300);
-        // RecordResult(StructTests.TestLargeStructReturn() == 6);
+        // RecordResult("StructTests.TestSmallStructReturn", StructTests.TestSmallStructReturn() == 30);
+        // RecordResult("StructTests.TestMediumStructReturn", StructTests.TestMediumStructReturn() == 300);
+        // RecordResult("StructTests.TestLargeStructReturn", StructTests.TestLargeStructReturn() == 6);
 
         // ref/out parameter tests (2.3) - BISECTING
-        // RecordResult(StructTests.TestSimpleOutParam() == 42);
-        // RecordResult(StructTests.TestRefParam() == 20);
-        // RecordResult(StructTests.TestRefParamMultiple() == 45);
+        // RecordResult("StructTests.TestSimpleOutParam", StructTests.TestSimpleOutParam() == 42);
+        // RecordResult("StructTests.TestRefParam", StructTests.TestRefParam() == 20);
+        // RecordResult("StructTests.TestRefParamMultiple", StructTests.TestRefParamMultiple() == 45);
 
         // Nested field out/ref tests (class.struct.field pattern) - BISECTING
-        // RecordResult(StructTests.TestNestedFieldOut() == 99);
-        // RecordResult(StructTests.TestNestedFieldRef() == 110);
+        // RecordResult("StructTests.TestNestedFieldOut", StructTests.TestNestedFieldOut() == 99);
+        // RecordResult("StructTests.TestNestedFieldRef", StructTests.TestNestedFieldRef() == 110);
 
         // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
-        RecordResult(VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
+        RecordResult("VirtqueueExactTests.TestThreeAllocationsAndReadBack", VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
     }
 }
 
@@ -1951,6 +1978,120 @@ public class Box<T>
     public Box(T value)
     {
         Value = value;
+    }
+}
+
+// =============================================================================
+// String.Format Tests
+// =============================================================================
+
+public static class StringFormatTests
+{
+    /// <summary>
+    /// Tests string.Format with a single integer argument.
+    /// </summary>
+    public static int TestFormatOneArg()
+    {
+        int x = 42;
+        string s = string.Format("Value: {0}", x);
+        Debug.WriteLine(string.Format("[StrFormat] TestFormatOneArg: '{0}' len={1}", s, s.Length));
+        // Expected: "Value: 42" which has length 9
+        return s.Length;
+    }
+
+    /// <summary>
+    /// Tests string.Format with two arguments.
+    /// </summary>
+    public static int TestFormatTwoArgs()
+    {
+        int a = 10;
+        int b = 20;
+        string s = string.Format("{0} + {1}", a, b);
+        Debug.WriteLine(string.Format("[StrFormat] TestFormatTwoArgs: '{0}' len={1}", s, s.Length));
+        // Expected: "10 + 20" which has length 7
+        return s.Length;
+    }
+
+    /// <summary>
+    /// Tests string.Format with three arguments.
+    /// </summary>
+    public static int TestFormatThreeArgs()
+    {
+        int a = 10;
+        int b = 20;
+        int c = 30;
+        string s = string.Format("{0} + {1} = {2}", a, b, c);
+        Debug.WriteLine(string.Format("[StrFormat] TestFormatThreeArgs: '{0}' len={1}", s, s.Length));
+        // Expected: "10 + 20 = 30" which has length 12
+        return s.Length;
+    }
+
+    /// <summary>
+    /// Tests string.Format with string arguments.
+    /// </summary>
+    public static int TestFormatStringArg()
+    {
+        string name = "World";
+        string s = string.Format("Hello, {0}!", name);
+        Debug.WriteLine(string.Format("[StrFormat] TestFormatStringArg: '{0}' len={1}", s, s.Length));
+        // Expected: "Hello, World!" which has length 13
+        return s.Length;
+    }
+}
+
+// =============================================================================
+// String Interpolation Tests
+// =============================================================================
+
+public static class StringInterpolationTests
+{
+    /// <summary>
+    /// Tests basic string interpolation with an integer value.
+    /// Uses DefaultInterpolatedStringHandler via compiler transformation.
+    /// </summary>
+    public static int TestSimpleInterpolation()
+    {
+        Debug.WriteLine("[StrInterp] Starting test...");
+
+        // Test 1: Can we get an int's ToString?
+        int x = 42;
+        string xStr = x.ToString();
+        Debug.WriteLine(string.Format("[StrInterp] x.ToString() = '{0}' len={1}", xStr ?? "null", xStr?.Length ?? 0));
+
+        // Test 2: Can we concat two strings?
+        string concat = string.Concat("Value: ", xStr);
+        Debug.WriteLine(string.Format("[StrInterp] concat = '{0}' len={1}", concat ?? "null", concat?.Length ?? 0));
+
+        // Test 3: Now test the actual interpolation
+        Debug.WriteLine("[StrInterp] Now testing $\"...\": ");
+        string s = $"Value: {x}";
+        Debug.WriteLine(string.Format("[StrInterp] result = '{0}' len={1}", s, s.Length));
+        return s.Length;
+    }
+
+    /// <summary>
+    /// Tests string interpolation with multiple values.
+    /// </summary>
+    public static int TestMultipleValues()
+    {
+        int a = 10;
+        int b = 20;
+        string s = $"{a} + {b} = {a + b}";
+        Debug.WriteLine(string.Format("[StrInterp] TestMultipleValues: '{0}' len={1}", s, s.Length));
+        // Expected: "10 + 20 = 30" which has length 12
+        return s.Length;
+    }
+
+    /// <summary>
+    /// Tests string interpolation with string values.
+    /// </summary>
+    public static int TestStringValues()
+    {
+        string name = "Test";
+        string s = $"Hello, {name}!";
+        Debug.WriteLine(string.Format("[StrInterp] TestStringValues: '{0}' len={1}", s, s.Length));
+        // Expected: "Hello, Test!" which has length 12
+        return s.Length;
     }
 }
 

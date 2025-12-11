@@ -833,6 +833,75 @@ public static unsafe class AssemblyLoader
             return ptrMt;
         }
 
+        // ELEMENT_TYPE_MVAR = 0x1E - method type variable (generic method parameter)
+        // Used when a TypeSpec references a generic method's type parameter
+        if (elementType == 0x1E)
+        {
+            // Read the method type parameter index (compressed uint)
+            uint index = 0;
+            if (pos < (int)sigLen)
+            {
+                byte b = sig[pos++];
+                if ((b & 0x80) == 0)
+                    index = b;
+                else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    index = ((uint)(b & 0x3F) << 8) | sig[pos++];
+                else if ((b & 0xE0) == 0xC0 && pos + 2 < (int)sigLen)
+                {
+                    index = ((uint)(b & 0x1F) << 24) | ((uint)sig[pos++] << 16) | ((uint)sig[pos++] << 8) | sig[pos++];
+                }
+            }
+
+            // Check if we have a method type argument context
+            if (!JIT.MetadataIntegration.HasMethodTypeArgContext())
+            {
+                DebugConsole.Write("[AsmLoader] TypeSpec MVAR !!");
+                DebugConsole.WriteDecimal(index);
+                DebugConsole.WriteLine(" but no MethodSpec context");
+                return null;
+            }
+
+            // Get the element type for this MVAR index from the MethodSpec context
+            byte mvarElemType = JIT.MetadataIntegration.GetMethodTypeArgElementType((int)index);
+            if (mvarElemType == 0)
+            {
+                DebugConsole.Write("[AsmLoader] TypeSpec MVAR !!");
+                DebugConsole.WriteDecimal(index);
+                DebugConsole.WriteLine(" - index out of range");
+                return null;
+            }
+
+            // Get the MethodTable for this element type
+            MethodTable* mvarMt = GetPrimitiveMethodTable(mvarElemType);
+            if (mvarMt != null)
+            {
+                return mvarMt;
+            }
+
+            // Not a primitive - for CLASS (0x12) or other reference types, use Object
+            if (mvarElemType == 0x12 || mvarElemType == 0x1C || mvarElemType == 0x0E)
+            {
+                return GetPrimitiveMethodTable(0x1C);  // Object
+            }
+
+            DebugConsole.Write("[AsmLoader] TypeSpec MVAR !!");
+            DebugConsole.WriteDecimal(index);
+            DebugConsole.Write(" unknown elemType 0x");
+            DebugConsole.WriteHex(mvarElemType);
+            DebugConsole.WriteLine();
+            return null;
+        }
+
+        // ELEMENT_TYPE_VAR = 0x13 - type type variable (generic type parameter)
+        // Similar to MVAR but for generic types instead of generic methods
+        if (elementType == 0x13)
+        {
+            // For now, treat type parameters as Object (reference types)
+            // Full implementation would need type instantiation context
+            DebugConsole.WriteLine("[AsmLoader] TypeSpec VAR - using Object as placeholder");
+            return GetPrimitiveMethodTable(0x1C);  // Object
+        }
+
         // ELEMENT_TYPE_GENERICINST = 0x15 - generic instantiation
         // Not yet implemented - would need to parse generic type and type arguments
 
@@ -880,6 +949,50 @@ public static unsafe class AssemblyLoader
                 DebugConsole.WriteLine("");
             }
             return mt;
+        }
+
+        // ELEMENT_TYPE_MVAR = 0x1E - method type variable
+        if (elementType == 0x1E)
+        {
+            // Read the method type parameter index
+            uint index = 0;
+            if (pos < (int)sigLen)
+            {
+                byte b = sig[pos++];
+                if ((b & 0x80) == 0)
+                    index = b;
+                else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    index = ((uint)(b & 0x3F) << 8) | sig[pos++];
+            }
+
+            if (JIT.MetadataIntegration.HasMethodTypeArgContext())
+            {
+                byte mvarElemType = JIT.MetadataIntegration.GetMethodTypeArgElementType((int)index);
+                if (mvarElemType != 0)
+                {
+                    MethodTable* mvarMt = GetPrimitiveMethodTable(mvarElemType);
+                    if (mvarMt != null)
+                        return mvarMt;
+                    // Reference types use Object
+                    if (mvarElemType == 0x12 || mvarElemType == 0x1C || mvarElemType == 0x0E)
+                        return GetPrimitiveMethodTable(0x1C);
+                }
+            }
+            // Fallback to Object for unresolved MVAR
+            return GetPrimitiveMethodTable(0x1C);
+        }
+
+        // ELEMENT_TYPE_VAR = 0x13 - type type variable
+        if (elementType == 0x13)
+        {
+            // Skip the index and use Object as placeholder
+            if (pos < (int)sigLen)
+            {
+                byte b = sig[pos++];
+                if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    pos++;
+            }
+            return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
         // Primitive types - get AOT MethodTables from registry
@@ -976,6 +1089,7 @@ public static unsafe class AssemblyLoader
     /// <summary>
     /// Create a MethodTable on-demand for a TypeDef in a JIT-compiled assembly.
     /// This handles types that weren't pre-registered during assembly loading.
+    /// Allocates vtable slots and copies base class vtable entries.
     /// </summary>
     private static MethodTable* CreateTypeDefMethodTable(LoadedAssembly* asm, uint token)
     {
@@ -1000,8 +1114,32 @@ public static unsafe class AssemblyLoader
         // Compute instance size from fields
         uint instanceSize = ComputeInstanceSize(asm, rowId, isValueType);
 
-        // Allocate MethodTable (just the header, no vtable for now)
-        MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        // Get base class MethodTable to inherit vtable from
+        MethodTable* baseMT = null;
+        ushort baseVtableSlots = 0;
+        if (!isValueType && !isInterface && extendsIdx.RowId != 0)
+        {
+            baseMT = GetBaseClassMethodTable(asm, extendsIdx);
+            if (baseMT != null)
+            {
+                baseVtableSlots = baseMT->_usNumVtableSlots;
+            }
+            else if (IsObjectBase(asm, extendsIdx))
+            {
+                // System.Object has 3 virtual methods: ToString, Equals, GetHashCode
+                baseVtableSlots = 3;
+            }
+        }
+
+        // Count new virtual slots introduced by this type
+        ushort newVirtualSlots = CountNewVirtualSlots(asm, rowId);
+
+        // Total vtable slots = inherited + new
+        ushort totalVtableSlots = (ushort)(baseVtableSlots + newVirtualSlots);
+
+        // Allocate MethodTable with vtable space
+        ulong mtSize = (ulong)(MethodTable.HeaderSize + totalVtableSlots * sizeof(nint));
+        MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed(mtSize);
         if (mt == null)
             return null;
 
@@ -1014,15 +1152,306 @@ public static unsafe class AssemblyLoader
             flags |= (ushort)(MTFlags.IsValueType >> 16);
         mt->_usFlags = flags;
         mt->_uBaseSize = instanceSize;
-        mt->_relatedType = null;
-        mt->_usNumVtableSlots = 0;
+        mt->_relatedType = baseMT;  // Point to base class MT
+        mt->_usNumVtableSlots = totalVtableSlots;
         mt->_usNumInterfaces = 0;
         mt->_uHashCode = token;  // Use token as hash for now
 
-        // Register in the assembly's type registry
+        // Get bitmask of slots that this type overrides - leave those as 0 for lazy JIT
+        byte overriddenSlots = GetOverriddenObjectSlots(asm, rowId);
+
+        // Copy base class vtable entries, except for overridden slots
+        if (baseMT != null && baseVtableSlots > 0)
+        {
+            nint* srcVtable = baseMT->GetVtablePtr();
+            nint* dstVtable = mt->GetVtablePtr();
+            for (int i = 0; i < baseVtableSlots; i++)
+            {
+                // Only copy if this slot is NOT overridden by this type
+                if (i < 3 && ((overriddenSlots >> i) & 1) != 0)
+                {
+                    // This slot is overridden - leave as 0 for lazy JIT
+                    continue;
+                }
+                dstVtable[i] = srcVtable[i];
+            }
+        }
+        else if (baseVtableSlots == 3)
+        {
+            // Direct Object base - get AOT vtable entries for Object's methods
+            // But skip slots that are overridden
+            nint* vtable = mt->GetVtablePtr();
+            if ((overriddenSlots & 0x01) == 0)  // ToString not overridden
+                vtable[0] = AotMethodRegistry.LookupByName("System.Object", "ToString");
+            if ((overriddenSlots & 0x02) == 0)  // Equals not overridden
+                vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
+            if ((overriddenSlots & 0x04) == 0)  // GetHashCode not overridden
+                vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+        }
+
+        DebugConsole.Write("[CreateMT] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" baseSlots=");
+        DebugConsole.WriteDecimal(baseVtableSlots);
+        DebugConsole.Write(" newSlots=");
+        DebugConsole.WriteDecimal(newVirtualSlots);
+        DebugConsole.Write(" total=");
+        DebugConsole.WriteDecimal(totalVtableSlots);
+        DebugConsole.WriteLine();
+
+        // Register in the assembly's type registry first (needed for JIT compilation)
         asm->Types.Register(token, mt);
 
+        // Register override methods in CompiledMethodRegistry for lazy JIT lookup
+        // This allows EnsureVtableSlotCompiled to find and compile them on first call
+        if (overriddenSlots != 0)
+        {
+            RegisterOverrideMethodsForLazyJit(asm, rowId, mt, overriddenSlots);
+        }
+
         return mt;
+    }
+
+    /// <summary>
+    /// Register override methods in CompiledMethodRegistry so JitStubs can find them
+    /// when the vtable slot is accessed and needs lazy compilation.
+    /// </summary>
+    private static void RegisterOverrideMethodsForLazyJit(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, byte overriddenSlots)
+    {
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            // Look for virtual methods that are NOT newslot (i.e., overrides)
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+
+            if (isVirtual && !isNewSlot && !isStatic)
+            {
+                // This is an override - check if it's ToString, Equals, or GetHashCode
+                uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+                byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+                short vtableSlot = -1;
+                if (NameEquals(methodName, "ToString"))
+                    vtableSlot = 0;
+                else if (NameEquals(methodName, "Equals"))
+                    vtableSlot = 1;
+                else if (NameEquals(methodName, "GetHashCode"))
+                    vtableSlot = 2;
+
+                if (vtableSlot >= 0)
+                {
+                    // Register this override method for lazy JIT
+                    uint methodToken = 0x06000000 | methodRow;
+                    JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                        methodToken, asm->AssemblyId, mt, vtableSlot);
+
+                    DebugConsole.Write("[LazyJIT] Registered override slot ");
+                    DebugConsole.WriteDecimal((uint)vtableSlot);
+                    DebugConsole.Write(" token 0x");
+                    DebugConsole.WriteHex(methodToken);
+                    DebugConsole.Write(" MT 0x");
+                    DebugConsole.WriteHex((ulong)mt);
+                    DebugConsole.WriteLine();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get a bitmask of Object vtable slots (0=ToString, 1=Equals, 2=GetHashCode) that this type overrides.
+    /// Used to avoid copying base class pointers for slots that have overrides.
+    /// </summary>
+    private static byte GetOverriddenObjectSlots(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        byte overriddenSlots = 0;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            // Look for virtual methods that are NOT newslot (i.e., overrides)
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+
+            if (isVirtual && !isNewSlot && !isStatic)
+            {
+                // This is an override - check if it's ToString, Equals, or GetHashCode
+                uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+                byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+                if (NameEquals(methodName, "ToString"))
+                    overriddenSlots |= 0x01;  // Slot 0
+                else if (NameEquals(methodName, "Equals"))
+                    overriddenSlots |= 0x02;  // Slot 1
+                else if (NameEquals(methodName, "GetHashCode"))
+                    overriddenSlots |= 0x04;  // Slot 2
+            }
+        }
+
+        return overriddenSlots;
+    }
+
+    /// <summary>
+    /// Count the number of new virtual slots introduced by a TypeDef.
+    /// This counts methods that are virtual AND have NewSlot set.
+    /// </summary>
+    private static ushort CountNewVirtualSlots(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        ushort count = 0;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            // Count methods that are virtual AND introduce a new slot
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+
+            if (isVirtual && isNewSlot && !isStatic)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Eagerly compile Object override methods (ToString, Equals, GetHashCode) and update vtable slots.
+    /// This ensures virtual dispatch works correctly even before the override method is first called.
+    /// </summary>
+    private static void EagerlyCompileObjectOverrides(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt)
+    {
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        nint* vtable = mt->GetVtablePtr();
+
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            // Look for virtual methods that are NOT newslot (i.e., overrides)
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+
+            if (isVirtual && !isNewSlot && !isStatic)
+            {
+                // This is an override - check if it's ToString, Equals, or GetHashCode
+                uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+                byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+                int vtableSlot = -1;
+                if (NameEquals(methodName, "ToString"))
+                    vtableSlot = 0;
+                else if (NameEquals(methodName, "Equals"))
+                    vtableSlot = 1;
+                else if (NameEquals(methodName, "GetHashCode"))
+                    vtableSlot = 2;
+
+                if (vtableSlot >= 0 && vtableSlot < mt->_usNumVtableSlots)
+                {
+                    // JIT compile this method and update the vtable slot
+                    uint methodToken = 0x06000000 | methodRow;
+                    var jitResult = Tier0JIT.CompileMethod(asm->AssemblyId, methodToken);
+                    if (jitResult.Success && jitResult.CodeAddress != null)
+                    {
+                        vtable[vtableSlot] = (nint)jitResult.CodeAddress;
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool NameEquals(byte* name, string expected)
+    {
+        if (name == null)
+            return false;
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (name[i] != (byte)expected[i])
+                return false;
+        }
+        return name[expected.Length] == 0;
+    }
+
+    /// <summary>
+    /// Get the base class MethodTable for a TypeDefOrRef coded index.
+    /// Returns null if the base is System.Object (which we handle specially).
+    /// </summary>
+    private static MethodTable* GetBaseClassMethodTable(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // Don't resolve System.Object or System.ValueType
+        if (IsObjectBase(asm, extendsIdx) || IsValueTypeBase(asm, extendsIdx))
+            return null;
+
+        // TypeDefOrRef coded index: TypeDef=0, TypeRef=1, TypeSpec=2
+        if (extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            // Base class is in the same assembly - resolve its MT
+            uint baseToken = 0x02000000 | extendsIdx.RowId;
+            return ResolveType(asm->AssemblyId, baseToken);
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            // Base class is in another assembly - resolve TypeRef to TypeDef
+            LoadedAssembly* targetAsm;
+            uint typeDefToken;
+            if (ResolveTypeRefToTypeDef(asm, extendsIdx.RowId, out targetAsm, out typeDefToken))
+            {
+                if (targetAsm != null && typeDefToken != 0)
+                {
+                    return ResolveType(targetAsm->AssemblyId, typeDefToken);
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1500,23 +1929,23 @@ public static unsafe class AssemblyLoader
             byte* typeNs = MetadataReader.GetString(ref sourceAsm->Metadata, nsIdx);
 
             // Debug: Print what we're looking up
-            // DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
-            // DebugConsole.WriteDecimal(typeRefRow);
-            // DebugConsole.Write(" asmRef=");
-            // DebugConsole.WriteDecimal(resScope.RowId);
-            // DebugConsole.Write(" type=");
-            // if (typeNs != null && typeNs[0] != 0)
-            // {
-            //     for (int i = 0; typeNs[i] != 0 && i < 32; i++)
-            //         DebugConsole.WriteChar((char)typeNs[i]);
-            //     DebugConsole.WriteChar('.');
-            // }
-            // if (typeName != null)
-            // {
-            //     for (int i = 0; typeName[i] != 0 && i < 32; i++)
-            //         DebugConsole.WriteChar((char)typeName[i]);
-            // }
-            // DebugConsole.WriteLine();
+            DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
+            DebugConsole.WriteDecimal(typeRefRow);
+            DebugConsole.Write(" asmRef=");
+            DebugConsole.WriteDecimal(resScope.RowId);
+            DebugConsole.Write(" type=");
+            if (typeNs != null && typeNs[0] != 0)
+            {
+                for (int i = 0; typeNs[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)typeNs[i]);
+                DebugConsole.WriteChar('.');
+            }
+            if (typeName != null)
+            {
+                for (int i = 0; typeName[i] != 0 && i < 32; i++)
+                    DebugConsole.WriteChar((char)typeName[i]);
+            }
+            DebugConsole.WriteLine();
 
             // Find the target assembly
             uint targetAsmId = ResolveAssemblyRef(sourceAsm, resScope.RowId);
@@ -1579,6 +2008,39 @@ public static unsafe class AssemblyLoader
                 {
                     typeDefToken = 0x02000000 | row;
                     return true;
+                }
+            }
+
+            // Type not found in target assembly - check for well-known korlib types
+            // This handles type forwarding where TypeRefs point to System.Runtime but the
+            // actual type is defined in korlib (e.g., System.String, System.Object, etc.)
+            if (IsSystemNamespace(targetNs))
+            {
+                // Check if this is a well-known type that might be in korlib
+                uint wellKnownToken = GetWellKnownTypeToken(targetName);
+                if (wellKnownToken != 0)
+                {
+                    // Search the kernel assembly for the actual TypeDef by name
+                    LoadedAssembly* kernelAsm = GetAssembly(KernelAssemblyId);
+                    if (kernelAsm != null)
+                    {
+                        uint kernelTypeDefCount = kernelAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+                        for (uint row = 1; row <= kernelTypeDefCount; row++)
+                        {
+                            uint defNameIdx = MetadataReader.GetTypeDefName(ref kernelAsm->Tables, ref kernelAsm->Sizes, row);
+                            uint defNsIdx = MetadataReader.GetTypeDefNamespace(ref kernelAsm->Tables, ref kernelAsm->Sizes, row);
+
+                            byte* defName = MetadataReader.GetString(ref kernelAsm->Metadata, defNameIdx);
+                            byte* defNs = MetadataReader.GetString(ref kernelAsm->Metadata, defNsIdx);
+
+                            if (StringsEqual(targetName, defName) && StringsEqual(targetNs, defNs))
+                            {
+                                targetAsm = kernelAsm;
+                                typeDefToken = 0x02000000 | row;
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2042,15 +2504,15 @@ public static unsafe class AssemblyLoader
             ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
 
         // Debug: Print MemberRef resolution info
-        // DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
-        // DebugConsole.WriteHex(memberRefToken);
-        // DebugConsole.Write(" from asm ");
-        // DebugConsole.WriteDecimal(sourceAsmId);
-        // DebugConsole.Write(", class table=");
-        // DebugConsole.WriteDecimal((uint)classRef.Table);
-        // DebugConsole.Write(" row=");
-        // DebugConsole.WriteDecimal(classRef.RowId);
-        // DebugConsole.WriteLine();
+        DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
+        DebugConsole.WriteHex(memberRefToken);
+        DebugConsole.Write(" from asm ");
+        DebugConsole.WriteDecimal(sourceAsmId);
+        DebugConsole.Write(", class table=");
+        DebugConsole.WriteDecimal((uint)classRef.Table);
+        DebugConsole.Write(" row=");
+        DebugConsole.WriteDecimal(classRef.RowId);
+        DebugConsole.WriteLine();
 
         // Get member name and signature
         uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
@@ -2111,6 +2573,27 @@ public static unsafe class AssemblyLoader
                     if (targetAsm != null)
                         break;
                 }
+
+                // Fallback for AOT korlib types (System.Object, System.String, etc.)
+                // These types have MethodTables but aren't registered in Types.Entries
+                if (targetAsm == null && mt != null)
+                {
+                    // Get the type name from the TypeRef
+                    uint typeRefNameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, classRef.RowId);
+                    uint typeRefNsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, classRef.RowId);
+                    byte* typeName = MetadataReader.GetString(ref sourceAsm->Metadata, typeRefNameIdx);
+                    byte* typeNs = MetadataReader.GetString(ref sourceAsm->Metadata, typeRefNsIdx);
+
+                    if (typeName != null && IsSystemNamespace(typeNs))
+                    {
+                        uint wellKnownToken = GetWellKnownTypeToken(typeName);
+                        if (wellKnownToken != 0)
+                        {
+                            targetAsm = GetAssembly(KernelAssemblyId);
+                            typeDefToken = wellKnownToken;
+                        }
+                    }
+                }
             }
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
@@ -2119,9 +2602,59 @@ public static unsafe class AssemblyLoader
             targetAsm = sourceAsm;
             typeDefToken = 0x02000000 | classRef.RowId;
         }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // MemberRef on a TypeSpec (e.g., value type struct like DefaultInterpolatedStringHandler)
+            // Parse the TypeSpec signature to get the underlying TypeDef/TypeRef
+            uint typeSpecRow = classRef.RowId;
+            if (typeSpecRow == 0 || typeSpecRow > sourceAsm->Tables.RowCounts[(int)MetadataTableId.TypeSpec])
+                return false;
+
+            uint tsSigIdx = MetadataReader.GetTypeSpecSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeSpecRow);
+            byte* tsSig = MetadataReader.GetBlob(ref sourceAsm->Metadata, tsSigIdx, out uint tsSigLen);
+            if (tsSig == null || tsSigLen == 0)
+                return false;
+
+            int tsPos = 0;
+            byte elementType = tsSig[tsPos++];
+
+            // ELEMENT_TYPE_VALUETYPE (0x11) or ELEMENT_TYPE_CLASS (0x12) - followed by TypeDefOrRef
+            if (elementType == 0x11 || elementType == 0x12)
+            {
+                uint underlyingToken = DecodeTypeDefOrRefOrSpec(tsSig, ref tsPos, tsSigLen);
+                if (underlyingToken == 0)
+                    return false;
+
+                uint underlyingTable = underlyingToken >> 24;
+                uint underlyingRow = underlyingToken & 0x00FFFFFF;
+
+                if (underlyingTable == 0x02)
+                {
+                    // TypeDef - same assembly
+                    targetAsm = sourceAsm;
+                    typeDefToken = underlyingToken;
+                }
+                else if (underlyingTable == 0x01)
+                {
+                    // TypeRef - resolve to target assembly
+                    if (!ResolveTypeRefToTypeDef(sourceAsm, underlyingRow, out targetAsm, out typeDefToken))
+                        return false;
+                }
+                else
+                {
+                    // Nested TypeSpec - not supported yet
+                    return false;
+                }
+            }
+            else
+            {
+                // Other TypeSpec kinds (arrays, pointers, etc.) not supported for MemberRef
+                return false;
+            }
+        }
         else
         {
-            // Other class types (ModuleRef, MethodDef, TypeSpec) not implemented
+            // Other class types (ModuleRef, MethodDef) not implemented
             return false;
         }
 

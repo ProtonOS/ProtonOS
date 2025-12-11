@@ -29,6 +29,15 @@ public static unsafe class Debug
     [DllImport("*", EntryPoint = "Kernel_DebugWriteHex8")]
     private static extern void Kernel_DebugWriteHex8(byte value);
 
+    [DllImport("*", EntryPoint = "Kernel_DebugWriteDecimal")]
+    private static extern void Kernel_DebugWriteDecimal(int value);
+
+    [DllImport("*", EntryPoint = "Kernel_DebugWriteDecimalU")]
+    private static extern void Kernel_DebugWriteDecimalU(uint value);
+
+    [DllImport("*", EntryPoint = "Kernel_DebugWriteDecimal64")]
+    private static extern void Kernel_DebugWriteDecimal64(ulong value);
+
     /// <summary>
     /// Write a string.
     /// </summary>
@@ -57,6 +66,54 @@ public static unsafe class Debug
     public static void WriteLine()
     {
         WriteLine("");
+    }
+
+    /// <summary>
+    /// Write a formatted string.
+    /// </summary>
+    public static void Write(string format, object? arg0)
+    {
+        Write(string.Format(format, arg0));
+    }
+
+    /// <summary>
+    /// Write a formatted string.
+    /// </summary>
+    public static void Write(string format, object? arg0, object? arg1)
+    {
+        Write(string.Format(format, arg0, arg1));
+    }
+
+    /// <summary>
+    /// Write a formatted string.
+    /// </summary>
+    public static void Write(string format, object? arg0, object? arg1, object? arg2)
+    {
+        Write(string.Format(format, arg0, arg1, arg2));
+    }
+
+    /// <summary>
+    /// Write a formatted string with newline.
+    /// </summary>
+    public static void WriteLine(string format, object? arg0)
+    {
+        WriteLine(string.Format(format, arg0));
+    }
+
+    /// <summary>
+    /// Write a formatted string with newline.
+    /// </summary>
+    public static void WriteLine(string format, object? arg0, object? arg1)
+    {
+        WriteLine(string.Format(format, arg0, arg1));
+    }
+
+    /// <summary>
+    /// Write a formatted string with newline.
+    /// </summary>
+    public static void WriteLine(string format, object? arg0, object? arg1, object? arg2)
+    {
+        WriteLine(string.Format(format, arg0, arg1, arg2));
     }
 
     /// <summary>
@@ -89,5 +146,29 @@ public static unsafe class Debug
     public static void WriteHex(byte value)
     {
         Kernel_DebugWriteHex8(value);
+    }
+
+    /// <summary>
+    /// Write a signed decimal value.
+    /// </summary>
+    public static void WriteDecimal(int value)
+    {
+        Kernel_DebugWriteDecimal(value);
+    }
+
+    /// <summary>
+    /// Write an unsigned decimal value.
+    /// </summary>
+    public static void WriteDecimal(uint value)
+    {
+        Kernel_DebugWriteDecimalU(value);
+    }
+
+    /// <summary>
+    /// Write an unsigned 64-bit decimal value.
+    /// </summary>
+    public static void WriteDecimal(ulong value)
+    {
+        Kernel_DebugWriteDecimal64(value);
     }
 }

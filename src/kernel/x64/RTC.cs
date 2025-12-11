@@ -89,19 +89,9 @@ public static unsafe class RTC
         }
 
         // Print the time we read
-        DebugConsole.Write("[RTC] Time: ");
-        DebugConsole.WriteDecimal(year);
-        DebugConsole.Write("-");
-        DebugConsole.WriteDecimalPadded(month, 2);
-        DebugConsole.Write("-");
-        DebugConsole.WriteDecimalPadded(day, 2);
-        DebugConsole.Write(" ");
-        DebugConsole.WriteDecimalPadded(hour, 2);
-        DebugConsole.Write(":");
-        DebugConsole.WriteDecimalPadded(minute, 2);
-        DebugConsole.Write(":");
-        DebugConsole.WriteDecimalPadded(second, 2);
-        DebugConsole.WriteLine(" UTC");
+        DebugConsole.WriteLine(string.Format("[RTC] Time: {0}-{1}-{2} {3}:{4}:{5} UTC",
+            year, month.ToString("D2", null), day.ToString("D2", null),
+            hour.ToString("D2", null), minute.ToString("D2", null), second.ToString("D2", null)));
 
         // Convert to FILETIME
         _bootTimeFileTime = DateTimeToFileTime(year, month, day, hour, minute, second);

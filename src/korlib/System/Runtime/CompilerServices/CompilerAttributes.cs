@@ -54,4 +54,29 @@ namespace System.Runtime.CompilerServices
     }
 
     public sealed class ExtensionAttribute : Attribute { }
+
+    /// <summary>
+    /// Indicates the attributed type is to be used as an interpolated string handler.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, AllowMultiple = false, Inherited = false)]
+    public sealed class InterpolatedStringHandlerAttribute : Attribute { }
+
+    /// <summary>
+    /// Indicates which arguments to a method should be passed to the InterpolatedStringHandler constructor.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Parameter, AllowMultiple = false, Inherited = false)]
+    public sealed class InterpolatedStringHandlerArgumentAttribute : Attribute
+    {
+        public InterpolatedStringHandlerArgumentAttribute(string argument)
+        {
+            Arguments = new string[] { argument };
+        }
+
+        public InterpolatedStringHandlerArgumentAttribute(string argument1, string argument2)
+        {
+            Arguments = new string[] { argument1, argument2 };
+        }
+
+        public string[] Arguments { get; }
+    }
 }
