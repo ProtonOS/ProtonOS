@@ -138,6 +138,13 @@ public static unsafe class MetadataIntegration
     private static MethodTable** _methodTypeArgMTs;  // MethodTable pointers for each type arg (for constrained. support)
     private static int _methodTypeArgCount;
 
+    // Type type argument context for generic type resolution
+    // This holds the type arguments for the current generic type instantiation
+    // Used when resolving VAR types in type signatures
+    private const int MaxTypeTypeArgs = 8;
+    private static MethodTable** _typeTypeArgMTs;  // MethodTable pointers for each type arg
+    private static int _typeTypeArgCount;
+
     private static bool _initialized;
 
     /// <summary>
@@ -185,6 +192,15 @@ public static unsafe class MetadataIntegration
             return;
         }
         _methodTypeArgCount = 0;
+
+        // Allocate type type argument storage (for VAR resolution in generic types)
+        _typeTypeArgMTs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxTypeTypeArgs * sizeof(MethodTable*)));
+        if (_typeTypeArgMTs == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to allocate type type arg storage");
+            return;
+        }
+        _typeTypeArgCount = 0;
 
         _typeCount = 0;
         _staticFieldCount = 0;
@@ -465,72 +481,76 @@ public static unsafe class MetadataIntegration
         int count = 0;
         MethodTable* mt;
 
-        // Int32 - 4 bytes
+        // NOTE: For value types, baseSize is the BOXED object size (value + 8-byte header).
+        // This is required for RhpNewFast allocation. GetTypeSize subtracts 8 to get raw value size.
+        // The componentSize field is used for arrays - it stores the element size.
+
+        // Int32 - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(0);
         InitPrimitiveMT(mt, 4, 12, int32ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Int32, mt)) count++;
 
-        // Int64 - 8 bytes
+        // Int64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(1);
         InitPrimitiveMT(mt, 8, 16, int64ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Int64, mt)) count++;
 
-        // Boolean - 1 byte
+        // Boolean - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(2);
         InitPrimitiveMT(mt, 1, 9, boolToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Boolean, mt)) count++;
 
-        // Byte - 1 byte
+        // Byte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(3);
         InitPrimitiveMT(mt, 1, 9, byteToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Byte, mt)) count++;
 
-        // Char - 2 bytes
+        // Char - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(4);
         InitPrimitiveMT(mt, 2, 10, charToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Char, mt)) count++;
 
-        // Double - 8 bytes
+        // Double - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(5);
         InitPrimitiveMT(mt, 8, 16, doubleToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Double, mt)) count++;
 
-        // Single - 4 bytes
+        // Single - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(6);
         InitPrimitiveMT(mt, 4, 12, singleToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Single, mt)) count++;
 
-        // Int16 - 2 bytes
+        // Int16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(7);
         InitPrimitiveMT(mt, 2, 10, int16ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.Int16, mt)) count++;
 
-        // UInt16 - 2 bytes
+        // UInt16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(8);
         InitPrimitiveMT(mt, 2, 10, uint16ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.UInt16, mt)) count++;
 
-        // UInt32 - 4 bytes
+        // UInt32 - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(9);
         InitPrimitiveMT(mt, 4, 12, uint32ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.UInt32, mt)) count++;
 
-        // UInt64 - 8 bytes
+        // UInt64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(10);
         InitPrimitiveMT(mt, 8, 16, uint64ToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.UInt64, mt)) count++;
 
-        // IntPtr - 8 bytes (64-bit)
+        // IntPtr - 8 bytes value, 16 bytes boxed (64-bit)
         mt = GetPrimitiveMT(11);
         InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.IntPtr, mt)) count++;
 
-        // UIntPtr - 8 bytes (64-bit)
+        // UIntPtr - 8 bytes value, 16 bytes boxed (64-bit)
         mt = GetPrimitiveMT(12);
         InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.UIntPtr, mt)) count++;
 
-        // SByte - 1 byte
+        // SByte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(13);
         InitPrimitiveMT(mt, 1, 9, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.SByte, mt)) count++;
@@ -637,65 +657,14 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
-        // Special handling for TypeSpec: parse the blob to check for MVAR
-        // For MVAR (method type variable), we don't need metadata - just look up from current context
+        // Special handling for TypeSpec: parse the blob to resolve the actual type
         if (tableId == 0x1B)
         {
-            // First try the method type arg context directly for MVAR types
-            // This is the common case for constrained. prefix with generic methods
-            if (_methodTypeArgCount > 0)
+            MethodTable* resolvedMt = ResolveTypeSpecBlob(token);
+            if (resolvedMt != null)
             {
-                // Try to get from current assembly's metadata
-                if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
-                {
-                    uint rowId = token & 0x00FFFFFF;
-                    if (rowId > 0)
-                    {
-                        uint blobIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, rowId);
-                        byte* blob = MetadataReader.GetBlob(ref *_metadataRoot, blobIdx, out uint blobLen);
-
-                        if (blob != null && blobLen >= 1 && blob[0] == 0x1E)  // MVAR
-                        {
-                            byte* ptr = blob + 1;
-                            uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
-                            MethodTable* mvarMt = GetMethodTypeArgMethodTable((int)mvarIndex);
-                            if (mvarMt != null)
-                            {
-                                methodTablePtr = mvarMt;
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                // If we have method type args but couldn't parse the blob from current assembly,
-                // the constrained type might be from another assembly (e.g., System.Runtime)
-                // In that case, try to look up the type from the calling assembly context
-                if (_currentAssemblyId != 0)
-                {
-                    LoadedAssembly* asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
-                    if (asm != null)
-                    {
-                        uint rowId = token & 0x00FFFFFF;
-                        if (rowId > 0)
-                        {
-                            uint blobIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
-                            byte* blob = MetadataReader.GetBlob(ref asm->Metadata, blobIdx, out uint blobLen);
-
-                            if (blob != null && blobLen >= 1 && blob[0] == 0x1E)  // MVAR
-                            {
-                                byte* ptr = blob + 1;
-                                uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
-                                MethodTable* mvarMt = GetMethodTypeArgMethodTable((int)mvarIndex);
-                                if (mvarMt != null)
-                                {
-                                    methodTablePtr = mvarMt;
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
+                methodTablePtr = resolvedMt;
+                return true;
             }
         }
 
@@ -739,9 +708,6 @@ public static unsafe class MetadataIntegration
         void* elementMTPtr;
         if (!ResolveType(token, out elementMTPtr) || elementMTPtr == null)
         {
-            DebugConsole.Write("[MetaInt] Failed to resolve array element type 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.WriteLine();
             return false;
         }
 
@@ -751,9 +717,6 @@ public static unsafe class MetadataIntegration
 
         if (arrayMT == null)
         {
-            DebugConsole.Write("[MetaInt] Failed to create array MT for element type 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.WriteLine();
             return false;
         }
 
@@ -772,26 +735,11 @@ public static unsafe class MetadataIntegration
         // Extract table ID for debugging
         byte tableId = (byte)(token >> 24);
 
-        // Debug: Log type size requests for TypeRef (cross-assembly types)
-        // if (tableId == 0x01)
-        // {
-        //     DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
-        //     DebugConsole.WriteHex(token);
-        //     DebugConsole.Write(" (asm=");
-        //     DebugConsole.WriteDecimal(_currentAssemblyId);
-        //     DebugConsole.WriteLine(")");
-        // }
-
         // Try to resolve the type to get its MethodTable
         void* mtPtr;
         if (!ResolveType(token, out mtPtr) || mtPtr == null)
         {
             // If we can't resolve, fall back to pointer size
-            // DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
-            // DebugConsole.WriteHex(token);
-            // DebugConsole.Write(" table=0x");
-            // DebugConsole.WriteHex(tableId);
-            // DebugConsole.WriteLine(", defaulting to 8");
             return 8;
         }
 
@@ -799,20 +747,18 @@ public static unsafe class MetadataIntegration
         MethodTable* mt = (MethodTable*)mtPtr;
         uint baseSize = mt->_uBaseSize;
 
-        // For value types, BaseSize is the raw struct size (no object header overhead)
-        // This is how ComputeInstanceSize works in AssemblyLoader - value types start at size=0
+        // For value types, we need the raw struct size (no object header).
+        // - Primitive types (Int32, etc.): ComponentSize is set to raw size, BaseSize is boxed size
+        // - User-defined structs: ComponentSize is 0, BaseSize IS the raw size already
         if (mt->IsValueType)
         {
-            // Debug: Log successful type size resolution for TypeRef
-            // if (tableId == 0x01)
-            // {
-            //     DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
-            //     DebugConsole.WriteHex(token);
-            //     DebugConsole.Write(" resolved to VT size=");
-            //     DebugConsole.WriteDecimal(baseSize);
-            //     DebugConsole.WriteLine();
-            // }
-            // Value type - BaseSize is already the raw struct size
+            // For primitives, ComponentSize is the raw value size
+            ushort componentSize = mt->_usComponentSize;
+            if (componentSize > 0)
+            {
+                return componentSize;
+            }
+            // For user-defined structs, BaseSize is already the raw struct size
             return baseSize;
         }
 
@@ -1573,6 +1519,29 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
+        // Check if this MemberRef is on a generic instantiation (e.g., SimpleList<int>)
+        // If so, get the instantiated MethodTable which has the type argument info
+        MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);
+        bool hasGenericContext = false;
+        MethodTable* savedTypeArg = null;
+
+        if (genericInstMT != null && genericInstMT->_relatedType != null)
+        {
+            // Set up the type type argument context using the first type argument
+            // stored in _relatedType of the GenericInst MethodTable
+            savedTypeArg = _typeTypeArgMTs[0];
+            MethodTable** typeArgs = stackalloc MethodTable*[1];
+            typeArgs[0] = genericInstMT->_relatedType;
+            SetTypeTypeArgs(typeArgs, 1);
+            hasGenericContext = true;
+
+            DebugConsole.Write("[MetaInt] Set type arg context: MT=0x");
+            DebugConsole.WriteHex((ulong)genericInstMT->_relatedType);
+            DebugConsole.Write(" for MemberRef 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+        }
+
         // Fall back to JIT assembly resolution
         if (!AssemblyLoader.ResolveMemberRefMethod(_currentAssemblyId, token,
                                                     out uint methodToken, out uint targetAsmId))
@@ -1580,6 +1549,12 @@ public static unsafe class MetadataIntegration
             DebugConsole.Write("[MetaInt] Failed to resolve MemberRef method 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
+            if (hasGenericContext)
+            {
+                // Restore type arg context on failure
+                _typeTypeArgMTs[0] = savedTypeArg;
+                _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+            }
             return false;
         }
 
@@ -1705,6 +1680,13 @@ public static unsafe class MetadataIntegration
         _metadataRoot = savedMdRoot;
         _tablesHeader = savedTables;
         _tableSizes = savedSizes;
+
+        // Restore type argument context if we set it up
+        if (hasGenericContext)
+        {
+            _typeTypeArgMTs[0] = savedTypeArg;
+            _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+        }
 
         return success;
     }
@@ -2035,6 +2017,268 @@ public static unsafe class MetadataIntegration
         if (index < 0 || index >= _methodTypeArgCount)
             return null;
         return _methodTypeArgMTs[index];
+    }
+
+    /// <summary>
+    /// Get the MethodTable for a type type parameter (VAR) at the given index.
+    /// Returns null if the index is out of range or no MT is registered.
+    /// </summary>
+    public static MethodTable* GetTypeTypeArgMethodTable(int index)
+    {
+        if (index < 0 || index >= _typeTypeArgCount)
+            return null;
+        return _typeTypeArgMTs[index];
+    }
+
+    /// <summary>
+    /// Set type type arguments (for generic type instantiation context).
+    /// </summary>
+    public static void SetTypeTypeArgs(MethodTable** mts, int count)
+    {
+        _typeTypeArgCount = count > MaxTypeTypeArgs ? MaxTypeTypeArgs : count;
+        for (int i = 0; i < _typeTypeArgCount; i++)
+            _typeTypeArgMTs[i] = mts[i];
+    }
+
+    /// <summary>
+    /// Clear type type argument context.
+    /// </summary>
+    public static void ClearTypeTypeArgs()
+    {
+        _typeTypeArgCount = 0;
+        for (int i = 0; i < MaxTypeTypeArgs; i++)
+            _typeTypeArgMTs[i] = null;
+    }
+
+    /// <summary>
+    /// Resolve a TypeSpec blob to a MethodTable.
+    /// Handles VAR, MVAR, GENERICINST, SZARRAY, etc.
+    /// </summary>
+    private static MethodTable* ResolveTypeSpecBlob(uint token)
+    {
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0)
+            return null;
+
+        // Try to get blob from current assembly context first
+        byte* blob = null;
+        uint blobLen = 0;
+
+        if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+        {
+            uint blobIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, rowId);
+            blob = MetadataReader.GetBlob(ref *_metadataRoot, blobIdx, out blobLen);
+        }
+
+        // Fallback to current assembly ID
+        if (blob == null && _currentAssemblyId != 0)
+        {
+            LoadedAssembly* asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+            if (asm != null)
+            {
+                uint blobIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
+                blob = MetadataReader.GetBlob(ref asm->Metadata, blobIdx, out blobLen);
+            }
+        }
+
+        if (blob == null || blobLen < 1)
+            return null;
+
+        byte elemType = blob[0];
+        byte* ptr = blob + 1;
+        byte* end = blob + blobLen;
+
+        switch (elemType)
+        {
+            case 0x13:  // VAR - type generic parameter
+            {
+                uint varIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                return GetTypeTypeArgMethodTable((int)varIndex);
+            }
+
+            case 0x1E:  // MVAR - method generic parameter
+            {
+                uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                return GetMethodTypeArgMethodTable((int)mvarIndex);
+            }
+
+            case 0x15:  // GENERICINST - generic type instantiation (e.g., List<int>)
+            {
+                return ResolveGenericInstType(ptr, end);
+            }
+
+            case 0x1D:  // SZARRAY - single-dimension array with zero lower bound
+            {
+                // Get element type and create array MT
+                MethodTable* elemMt = ResolveTypeSigToMethodTable(ref ptr, end);
+                if (elemMt != null)
+                {
+                    return AssemblyLoader.GetOrCreateArrayMethodTable(elemMt);
+                }
+                return null;
+            }
+
+            case 0x14:  // ARRAY - multi-dimensional array (not commonly used)
+            {
+                DebugConsole.WriteLine("[MetaInt] Multi-dimensional ARRAY TypeSpec not yet supported");
+                return null;
+            }
+
+            case 0x0F:  // PTR - pointer type
+            case 0x10:  // BYREF - by-reference type
+            {
+                // For ptr/byref, we just need the underlying type size info
+                // Return IntPtr MT as a stand-in (pointers are pointer-sized)
+                return LookupType(WellKnownTypes.IntPtr);
+            }
+
+            default:
+                // Try as a primitive element type
+                return GetPrimitiveMethodTableFromElementType(elemType);
+        }
+    }
+
+    /// <summary>
+    /// Resolve a GENERICINST type signature to a MethodTable.
+    /// Format: CLASS/VALUETYPE TypeDefOrRef GenArgCount Type+
+    /// </summary>
+    private static MethodTable* ResolveGenericInstType(byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return null;
+
+        byte kind = *ptr++;  // CLASS (0x12) or VALUETYPE (0x11)
+        bool isValueType = (kind == 0x11);
+
+        // Read the generic type definition (TypeDefOrRef coded index)
+        uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+        uint tag = typeDefOrRef & 0x03;
+        uint typeRid = typeDefOrRef >> 2;
+
+        // Convert to full token
+        uint genDefToken = tag switch
+        {
+            0 => 0x02000000 | typeRid,  // TypeDef
+            1 => 0x01000000 | typeRid,  // TypeRef
+            2 => 0x1B000000 | typeRid,  // TypeSpec (nested generic)
+            _ => 0
+        };
+
+        if (genDefToken == 0)
+            return null;
+
+        // Read the number of type arguments
+        uint genArgCount = MetadataReader.ReadCompressedUInt(ref ptr);
+        if (genArgCount == 0 || genArgCount > MaxTypeTypeArgs)
+            return null;
+
+        // Parse each type argument and get its MethodTable
+        MethodTable** argMTs = stackalloc MethodTable*[(int)genArgCount];
+        for (uint i = 0; i < genArgCount && ptr < end; i++)
+        {
+            argMTs[i] = ResolveTypeSigToMethodTable(ref ptr, end);
+            if (argMTs[i] == null)
+            {
+                return null;
+            }
+        }
+
+        // Get or create the instantiated generic type
+        return AssemblyLoader.GetOrCreateGenericInstMethodTable(genDefToken, argMTs, (int)genArgCount, isValueType);
+    }
+
+    /// <summary>
+    /// Resolve a type signature blob to a MethodTable.
+    /// This handles the various ELEMENT_TYPE formats in type signatures.
+    /// </summary>
+    private static MethodTable* ResolveTypeSigToMethodTable(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return null;
+
+        byte elemType = *ptr++;
+
+        switch (elemType)
+        {
+            // Primitive types
+            case 0x01: return null;  // VOID - no MT
+            case 0x02: return LookupType(WellKnownTypes.Boolean);
+            case 0x03: return LookupType(WellKnownTypes.Char);
+            case 0x04: return LookupType(WellKnownTypes.SByte);
+            case 0x05: return LookupType(WellKnownTypes.Byte);
+            case 0x06: return LookupType(WellKnownTypes.Int16);
+            case 0x07: return LookupType(WellKnownTypes.UInt16);
+            case 0x08: return LookupType(WellKnownTypes.Int32);
+            case 0x09: return LookupType(WellKnownTypes.UInt32);
+            case 0x0A: return LookupType(WellKnownTypes.Int64);
+            case 0x0B: return LookupType(WellKnownTypes.UInt64);
+            case 0x0C: return LookupType(WellKnownTypes.Single);
+            case 0x0D: return LookupType(WellKnownTypes.Double);
+            case 0x0E: return LookupType(WellKnownTypes.String);
+            case 0x18: return LookupType(WellKnownTypes.IntPtr);
+            case 0x19: return LookupType(WellKnownTypes.UIntPtr);
+            case 0x1C: return LookupType(WellKnownTypes.Object);
+
+            case 0x11:  // VALUETYPE TypeDefOrRef
+            case 0x12:  // CLASS TypeDefOrRef
+            {
+                uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                uint tag = typeDefOrRef & 0x03;
+                uint typeRid = typeDefOrRef >> 2;
+                uint fullToken = tag switch
+                {
+                    0 => 0x02000000 | typeRid,
+                    1 => 0x01000000 | typeRid,
+                    2 => 0x1B000000 | typeRid,
+                    _ => 0
+                };
+                if (fullToken == 0) return null;
+
+                void* mt;
+                if (ResolveType(fullToken, out mt))
+                    return (MethodTable*)mt;
+                return null;
+            }
+
+            case 0x13:  // VAR - type generic parameter
+            {
+                uint varIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                return GetTypeTypeArgMethodTable((int)varIndex);
+            }
+
+            case 0x1E:  // MVAR - method generic parameter
+            {
+                uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                return GetMethodTypeArgMethodTable((int)mvarIndex);
+            }
+
+            case 0x15:  // GENERICINST
+            {
+                return ResolveGenericInstType(ptr, end);
+            }
+
+            case 0x1D:  // SZARRAY
+            {
+                MethodTable* elemMt = ResolveTypeSigToMethodTable(ref ptr, end);
+                if (elemMt != null)
+                    return AssemblyLoader.GetOrCreateArrayMethodTable(elemMt);
+                return null;
+            }
+
+            case 0x0F:  // PTR
+            case 0x10:  // BYREF
+            {
+                // Skip the underlying type
+                SkipTypeSig(ref ptr, end);
+                return LookupType(WellKnownTypes.IntPtr);
+            }
+
+            default:
+                DebugConsole.Write("[MetaInt] Unknown element type in TypeSig: 0x");
+                DebugConsole.WriteHex(elemType);
+                DebugConsole.WriteLine();
+                return null;
+        }
     }
 
     /// <summary>
@@ -2376,13 +2620,13 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
-        // Field calculation debug (verbose - commented out)
-        // DebugConsole.Write("[CalcFieldOff] fld=");
-        // DebugConsole.WriteDecimal(fieldRow);
-        // DebugConsole.Write(" type=");
-        // DebugConsole.WriteDecimal(typeRow);
-        // DebugConsole.Write(" asm=");
-        // DebugConsole.WriteDecimal(_currentAssemblyId);
+        // Field calculation debug
+        DebugConsole.Write("[CalcFieldOff] fld=");
+        DebugConsole.WriteDecimal(fieldRow);
+        DebugConsole.Write(" type=");
+        DebugConsole.WriteDecimal(typeRow);
+        DebugConsole.Write(" asm=");
+        DebugConsole.WriteDecimal(_currentAssemblyId);
 
         // Check if this is a value type (struct/enum)
         // Value types accessed via byref don't have an MT pointer, so offsets start at 0
@@ -2471,10 +2715,10 @@ public static unsafe class MetadataIntegration
             offset = (offset + alignment - 1) & ~(alignment - 1);
         }
 
-        // Field offset debug (verbose - commented out)
-        // DebugConsole.Write(" -> offset=");
-        // DebugConsole.WriteDecimal((uint)offset);
-        // DebugConsole.WriteLine();
+        // Field offset debug
+        DebugConsole.Write(" -> offset=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.WriteLine();
         return offset;
     }
 

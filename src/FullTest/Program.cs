@@ -141,6 +141,9 @@ public static class TestRunner
         RecordResult("GenericTests.TestGenericMethod", GenericTests.TestGenericMethod() == 42);
         // TestGenericClass requires TypeSpec (0x1B) support for generic type instantiation
         RecordResult("GenericTests.TestGenericClass", GenericTests.TestGenericClass() == 42);
+        // SimpleList<int> tests (no array usage)
+        RecordResult("GenericTests.TestSimpleListIntBasic", GenericTests.TestSimpleListIntBasic() == 0);  // Empty list count = 0
+        RecordResult("GenericTests.TestSimpleListIntCount", GenericTests.TestSimpleListIntCount() == 3);  // Three items
     }
 
     private static void RunStringInterpolationTests()
@@ -318,6 +321,7 @@ public static class TestRunner
 
         // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
         RecordResult("VirtqueueExactTests.TestThreeAllocationsAndReadBack", VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
+
     }
 }
 
@@ -1968,6 +1972,51 @@ public static class GenericTests
         var box = new Box<int>(42);
         return box.Value;
     }
+
+    public static int TestSimpleListIntBasic()
+    {
+        // Test creation and Count property
+        var list = new SimpleList<int>();
+        return list.Count;  // Expected: 0 (empty list)
+    }
+
+    public static int TestSimpleListIntCount()
+    {
+        // Test Add method and Count
+        var list = new SimpleList<int>();
+        list.Add(10);
+        list.Add(20);
+        list.Add(30);
+        return list.Count;  // Expected: 3
+    }
+}
+
+public class SimpleList<T>
+{
+    private T[] _items;
+    private int _count;
+
+    public SimpleList()
+    {
+        _items = new T[8];
+        _count = 0;
+    }
+
+    public int Count => _count;
+
+    public void Add(T item)
+    {
+        if (_count < _items.Length)
+        {
+            _items[_count] = item;
+        }
+        _count++;
+    }
+
+    public T Get(int index)
+    {
+        return _items[index];
+    }
 }
 
 public class Box<T>
@@ -2093,6 +2142,7 @@ public static class StringInterpolationTests
         return s.Length;
     }
 }
+
 
 // =============================================================================
 // Entry Point (required for valid assembly)

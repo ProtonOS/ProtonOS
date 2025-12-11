@@ -802,9 +802,20 @@ public static unsafe class AssemblyLoader
         int pos = 0;
         byte elementType = sig[pos++];
 
+        DebugConsole.Write("[AsmLoader] ResolveTypeSpec 0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" elemType=0x");
+        DebugConsole.WriteHex(elementType);
+        DebugConsole.WriteLine();
+
         // ELEMENT_TYPE_SZARRAY = 0x1D - single-dimension zero-lower-bound array
         if (elementType == 0x1D)
         {
+            DebugConsole.Write("[AsmLoader] TypeSpec SZARRAY: parsing element type, next byte=0x");
+            if (pos < (int)sigLen)
+                DebugConsole.WriteHex(sig[pos]);
+            DebugConsole.WriteLine();
+
             // Next is the element type
             MethodTable* elementMT = ParseTypeFromSignature(asm, sig, ref pos, sigLen);
             if (elementMT == null)
@@ -812,6 +823,10 @@ public static unsafe class AssemblyLoader
                 DebugConsole.WriteLine("[AsmLoader] TypeSpec array element MT is null");
                 return null;
             }
+
+            DebugConsole.Write("[AsmLoader] TypeSpec SZARRAY: element MT=0x");
+            DebugConsole.WriteHex((ulong)elementMT);
+            DebugConsole.WriteLine();
 
             // Get or create array MethodTable
             return GetOrCreateArrayMethodTable(elementMT);
@@ -906,11 +921,23 @@ public static unsafe class AssemblyLoader
                 else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
                     index = ((uint)(b & 0x3F) << 8) | sig[pos++];
             }
-            // For now, treat type parameters as Object (reference types)
-            // Full implementation would need type instantiation context
-            // DebugConsole.Write("[AsmLoader] TypeSpec VAR !");
-            // DebugConsole.WriteDecimal(index);
-            // DebugConsole.WriteLine(" - using Object as placeholder");
+
+            // Try to get the actual type argument from the type context
+            MethodTable* varMt = JIT.MetadataIntegration.GetTypeTypeArgMethodTable((int)index);
+            if (varMt != null)
+            {
+                DebugConsole.Write("[AsmLoader] TypeSpec VAR index=");
+                DebugConsole.WriteDecimal(index);
+                DebugConsole.Write(" resolved to MT=0x");
+                DebugConsole.WriteHex((ulong)varMt);
+                DebugConsole.WriteLine();
+                return varMt;
+            }
+
+            // Fallback to Object for unresolved VAR
+            DebugConsole.Write("[AsmLoader] TypeSpec VAR index=");
+            DebugConsole.WriteDecimal(index);
+            DebugConsole.WriteLine(" NO TYPE CONTEXT! using Object");
             return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
@@ -947,13 +974,41 @@ public static unsafe class AssemblyLoader
                     genArgCount = ((uint)(b & 0x3F) << 8) | sig[pos++];
             }
 
-            // For now, we'll use the open generic type's MethodTable
-            // This works for most scenarios where we just need the type identity
-            // Full generic instantiation would create specialized MethodTables
+            // Parse the type arguments and create a proper GenericInst MethodTable
+            if (genArgCount > 0 && genArgCount <= 8)
+            {
+                MethodTable** typeArgMTs = stackalloc MethodTable*[(int)genArgCount];
+                bool allResolved = true;
+
+                for (uint i = 0; i < genArgCount && pos < (int)sigLen; i++)
+                {
+                    typeArgMTs[i] = ParseTypeFromSignature(asm, sig, ref pos, sigLen);
+                    if (typeArgMTs[i] == null)
+                    {
+                        DebugConsole.Write("[AsmLoader] TypeSpec GENERICINST: failed to resolve type arg ");
+                        DebugConsole.WriteDecimal(i);
+                        DebugConsole.WriteLine();
+                        allResolved = false;
+                        break;
+                    }
+                }
+
+                if (allResolved)
+                {
+                    // Create instantiated generic type with type arguments
+                    MethodTable* instMT = GetOrCreateGenericInstMethodTable(genericTypeToken, typeArgMTs, (int)genArgCount, isValueType);
+                    if (instMT != null)
+                    {
+                        return instMT;
+                    }
+                }
+            }
+
+            // Fallback: use the open generic type's MethodTable
             MethodTable* genericMt = ResolveType(asm->AssemblyId, genericTypeToken);
             if (genericMt != null)
             {
-                // Skip over the type arguments (we're not using them yet for full instantiation)
+                // Skip over any remaining type arguments
                 for (uint i = 0; i < genArgCount && pos < (int)sigLen; i++)
                 {
                     SkipTypeInSignature(sig, ref pos, sigLen);
@@ -1067,13 +1122,32 @@ public static unsafe class AssemblyLoader
         // ELEMENT_TYPE_VAR = 0x13 - type type variable
         if (elementType == 0x13)
         {
-            // Skip the index and use Object as placeholder
+            // Read the type parameter index (compressed uint)
+            uint index = 0;
             if (pos < (int)sigLen)
             {
                 byte b = sig[pos++];
-                if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
-                    pos++;
+                if ((b & 0x80) == 0)
+                    index = b;
+                else if ((b & 0xC0) == 0x80 && pos < (int)sigLen)
+                    index = ((uint)(b & 0x3F) << 8) | sig[pos++];
             }
+
+            DebugConsole.Write("[AsmLoader] ParseType VAR index=");
+            DebugConsole.WriteDecimal(index);
+
+            // Try to get the actual type argument from the type context
+            MethodTable* varMt = JIT.MetadataIntegration.GetTypeTypeArgMethodTable((int)index);
+            if (varMt != null)
+            {
+                DebugConsole.Write(" resolved to MT=0x");
+                DebugConsole.WriteHex((ulong)varMt);
+                DebugConsole.WriteLine();
+                return varMt;
+            }
+
+            // Fallback to Object for unresolved VAR
+            DebugConsole.WriteLine(" NO TYPE CONTEXT! using Object");
             return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
@@ -2674,9 +2748,82 @@ public static unsafe class AssemblyLoader
             targetAsm = sourceAsm;
             typeDefToken = 0x02000000 | classRef.RowId;
         }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // MemberRef for a field in a generic type instantiation (e.g., SimpleList<T>._items)
+            // Parse the TypeSpec to get the underlying generic type definition
+            uint typeSpecIdx = MetadataReader.GetTypeSpecSignature(
+                ref sourceAsm->Tables, ref sourceAsm->Sizes, classRef.RowId);
+            byte* typeSpecSig = MetadataReader.GetBlob(ref sourceAsm->Metadata, typeSpecIdx, out uint typeSpecLen);
+
+            if (typeSpecSig == null || typeSpecLen < 2)
+            {
+                DebugConsole.Write("[ResolveMemberRefField] Invalid TypeSpec signature for row ");
+                DebugConsole.WriteDecimal(classRef.RowId);
+                DebugConsole.WriteLine();
+                return false;
+            }
+
+            // TypeSpec for generic instantiation: GENERICINST (0x15) CLASS/VALUETYPE TypeDefOrRef GenArgCount ...
+            if (typeSpecSig[0] == 0x15) // GENERICINST
+            {
+                int pos = 1;
+                byte classOrVt = typeSpecSig[pos++];  // CLASS (0x12) or VALUETYPE (0x11)
+
+                // Parse the TypeDefOrRef coded index
+                uint codedIdx = 0;
+                int shift = 0;
+                while (pos < (int)typeSpecLen)
+                {
+                    byte b = typeSpecSig[pos++];
+                    codedIdx |= (uint)(b & 0x7F) << shift;
+                    if ((b & 0x80) == 0) break;
+                    shift += 7;
+                }
+
+                // Decode TypeDefOrRef: low 2 bits = table, rest = row
+                uint table = codedIdx & 0x03;
+                uint row = codedIdx >> 2;
+
+                if (table == 0) // TypeDef
+                {
+                    targetAsm = sourceAsm;
+                    typeDefToken = 0x02000000 | row;
+                }
+                else if (table == 1) // TypeRef
+                {
+                    // Resolve TypeRef to TypeDef
+                    if (!ResolveTypeRefToTypeDef(sourceAsm, row, out targetAsm, out typeDefToken))
+                    {
+                        DebugConsole.Write("[ResolveMemberRefField] Failed to resolve TypeRef ");
+                        DebugConsole.WriteDecimal(row);
+                        DebugConsole.WriteLine();
+                        return false;
+                    }
+                }
+                else
+                {
+                    // TypeSpec nested in TypeSpec not supported
+                    DebugConsole.Write("[ResolveMemberRefField] Nested TypeSpec not supported, table=");
+                    DebugConsole.WriteDecimal(table);
+                    DebugConsole.WriteLine();
+                    return false;
+                }
+            }
+            else
+            {
+                DebugConsole.Write("[ResolveMemberRefField] TypeSpec not GENERICINST: 0x");
+                DebugConsole.WriteHex(typeSpecSig[0]);
+                DebugConsole.WriteLine();
+                return false;
+            }
+        }
         else
         {
-            // Other class types (ModuleRef, MethodDef, TypeSpec) not implemented
+            // Other class types (ModuleRef, MethodDef) not implemented
+            DebugConsole.Write("[ResolveMemberRefField] Unsupported class table: ");
+            DebugConsole.WriteDecimal((uint)classRef.Table);
+            DebugConsole.WriteLine();
             return false;
         }
 
@@ -2954,6 +3101,86 @@ public static unsafe class AssemblyLoader
         }
 
         return methodToken != 0;
+    }
+
+    /// <summary>
+    /// Get the instantiated generic type MethodTable for a MemberRef if its class is a GenericInst TypeSpec.
+    /// Returns null if the MemberRef class is not a generic instantiation.
+    /// This is used to set up type argument context before JIT compiling methods on generic types.
+    /// </summary>
+    public static MethodTable* GetMemberRefGenericInstMT(uint sourceAsmId, uint memberRefToken)
+    {
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] GetMemberRefGenericInstMT: sourceAsm null");
+            return null;
+        }
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+        {
+            DebugConsole.WriteLine("[AsmLoader] GetMemberRefGenericInstMT: rowId=0");
+            return null;
+        }
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: token=0x");
+        DebugConsole.WriteHex(memberRefToken);
+        DebugConsole.Write(" classTable=");
+        DebugConsole.WriteDecimal((uint)classRef.Table);
+        DebugConsole.Write(" row=");
+        DebugConsole.WriteDecimal(classRef.RowId);
+        DebugConsole.WriteLine();
+
+        // Only handle TypeSpec references
+        if (classRef.Table != MetadataTableId.TypeSpec)
+        {
+            return null;
+        }
+
+        uint typeSpecRow = classRef.RowId;
+        if (typeSpecRow == 0 || typeSpecRow > sourceAsm->Tables.RowCounts[(int)MetadataTableId.TypeSpec])
+        {
+            DebugConsole.WriteLine("[AsmLoader] GetMemberRefGenericInstMT: invalid TypeSpec row");
+            return null;
+        }
+
+        // Get the TypeSpec signature
+        uint tsSigIdx = MetadataReader.GetTypeSpecSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeSpecRow);
+        byte* tsSig = MetadataReader.GetBlob(ref sourceAsm->Metadata, tsSigIdx, out uint tsSigLen);
+        if (tsSig == null || tsSigLen == 0)
+        {
+            DebugConsole.WriteLine("[AsmLoader] GetMemberRefGenericInstMT: no TypeSpec sig");
+            return null;
+        }
+
+        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: TypeSpec sig[0]=0x");
+        DebugConsole.WriteHex(tsSig[0]);
+        DebugConsole.WriteLine();
+
+        // Check if it's a GenericInst
+        if (tsSig[0] != 0x15)  // ELEMENT_TYPE_GENERICINST
+        {
+            return null;
+        }
+
+        // Parse the GenericInst to get the instantiated MethodTable
+        // This will resolve the full generic instantiation including type arguments
+        uint typeSpecToken = 0x1B000000 | typeSpecRow;
+        MethodTable* result = ResolveTypeSpec(sourceAsm, typeSpecToken);
+        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: resolved MT=0x");
+        DebugConsole.WriteHex((ulong)result);
+        if (result != null)
+        {
+            DebugConsole.Write(" relatedType=0x");
+            DebugConsole.WriteHex((ulong)result->_relatedType);
+        }
+        DebugConsole.WriteLine();
+        return result;
     }
 
     /// <summary>
@@ -3674,6 +3901,155 @@ public static unsafe class AssemblyLoader
         // DebugConsole.WriteLine();
 
         return arrayMT;
+    }
+
+    // Cache for generic instantiation MethodTables
+    private const int MaxGenericInstCache = 64;
+    private static uint* _genericInstCacheDefTokens;
+    private static ulong* _genericInstCacheArgHashes;  // Hash of type arg MTs
+    private static MethodTable** _genericInstCacheInstMTs;
+    private static int _genericInstCacheCount;
+
+    /// <summary>
+    /// Get or create a MethodTable for an instantiated generic type (e.g., List&lt;int&gt;).
+    /// </summary>
+    /// <param name="genDefToken">Token for the generic type definition (e.g., List&lt;&gt;)</param>
+    /// <param name="typeArgMTs">Array of MethodTable pointers for each type argument</param>
+    /// <param name="typeArgCount">Number of type arguments</param>
+    /// <param name="isValueType">Whether the generic type is a value type</param>
+    public static MethodTable* GetOrCreateGenericInstMethodTable(uint genDefToken, MethodTable** typeArgMTs, int typeArgCount, bool isValueType)
+    {
+        if (typeArgCount <= 0 || typeArgMTs == null)
+            return null;
+
+        // Initialize cache on first use
+        if (_genericInstCacheDefTokens == null)
+        {
+            _genericInstCacheDefTokens = (uint*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(uint)));
+            _genericInstCacheArgHashes = (ulong*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(ulong)));
+            _genericInstCacheInstMTs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(MethodTable*)));
+            _genericInstCacheCount = 0;
+
+            if (_genericInstCacheDefTokens == null || _genericInstCacheArgHashes == null || _genericInstCacheInstMTs == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] Failed to allocate generic inst cache");
+                return null;
+            }
+        }
+
+        // Compute hash of type arguments for cache lookup
+        ulong argHash = 0;
+        for (int i = 0; i < typeArgCount; i++)
+        {
+            argHash = argHash * 31 + (ulong)typeArgMTs[i];
+        }
+
+        // Check cache for existing instantiation
+        for (int i = 0; i < _genericInstCacheCount; i++)
+        {
+            if (_genericInstCacheDefTokens[i] == genDefToken && _genericInstCacheArgHashes[i] == argHash)
+            {
+                return _genericInstCacheInstMTs[i];
+            }
+        }
+
+        // Try to resolve the generic type definition to get base info
+        void* genDefMtPtr;
+        if (!MetadataIntegration.ResolveType(genDefToken, out genDefMtPtr))
+        {
+            // Generic type definition not found - create a minimal MT
+            // This happens for types like List<T> from System.Collections.Generic
+            // that we don't have full metadata for
+            DebugConsole.Write("[AsmLoader] GenericInst: def token 0x");
+            DebugConsole.WriteHex(genDefToken);
+            DebugConsole.WriteLine(" not resolved, creating minimal MT");
+        }
+
+        MethodTable* genDefMT = (MethodTable*)genDefMtPtr;
+
+        // Determine vtable slots count from the generic definition
+        ushort numVtableSlots = 3;  // Default: Object's 3 virtual methods (ToString, Equals, GetHashCode)
+        if (genDefMT != null)
+        {
+            numVtableSlots = genDefMT->_usNumVtableSlots;
+        }
+
+        // Create new instantiated MethodTable with vtable space
+        ulong mtSize = (ulong)(MethodTable.HeaderSize + numVtableSlots * sizeof(nint));
+        MethodTable* instMT = (MethodTable*)HeapAllocator.AllocZeroed(mtSize);
+        if (instMT == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] Failed to allocate generic inst MethodTable");
+            return null;
+        }
+
+        // Copy base info from generic definition if available
+        if (genDefMT != null)
+        {
+            instMT->_uBaseSize = genDefMT->_uBaseSize;
+            instMT->_usFlags = genDefMT->_usFlags;
+            instMT->_usNumVtableSlots = genDefMT->_usNumVtableSlots;
+            instMT->_usNumInterfaces = genDefMT->_usNumInterfaces;
+
+            // Copy vtable entries from the generic definition
+            if (numVtableSlots > 0)
+            {
+                nint* srcVtable = genDefMT->GetVtablePtr();
+                nint* dstVtable = instMT->GetVtablePtr();
+                for (int i = 0; i < numVtableSlots; i++)
+                {
+                    dstVtable[i] = srcVtable[i];
+                }
+            }
+        }
+        else
+        {
+            // Default to reference type with object header size
+            instMT->_uBaseSize = 24;  // MT pointer (8) + sync block (8) + min fields (8)
+            instMT->_usFlags = 0;
+            instMT->_usNumVtableSlots = 3;
+            instMT->_usNumInterfaces = 0;
+
+            // Set up default Object vtable entries
+            nint* vtable = instMT->GetVtablePtr();
+            vtable[0] = AotMethodRegistry.LookupByName("System.Object", "ToString");
+            vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
+            vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+        }
+
+        // Mark as value type if specified
+        if (isValueType)
+        {
+            instMT->_usFlags |= (ushort)(MTFlags.IsValueType >> 16);
+        }
+
+        // Store pointer to first type argument MT in _relatedType (for simple generic lookups)
+        instMT->_relatedType = typeArgMTs[0];
+
+        // Generate unique hash code for this instantiation
+        instMT->_uHashCode = (uint)(genDefToken ^ argHash ^ (argHash >> 32));
+
+        // Cache the new instantiated MT
+        if (_genericInstCacheCount < MaxGenericInstCache)
+        {
+            _genericInstCacheDefTokens[_genericInstCacheCount] = genDefToken;
+            _genericInstCacheArgHashes[_genericInstCacheCount] = argHash;
+            _genericInstCacheInstMTs[_genericInstCacheCount] = instMT;
+            _genericInstCacheCount++;
+        }
+
+        // Debug output
+        DebugConsole.Write("[AsmLoader] Created GenericInst MT 0x");
+        DebugConsole.WriteHex((ulong)instMT);
+        DebugConsole.Write(" for def 0x");
+        DebugConsole.WriteHex(genDefToken);
+        DebugConsole.Write(" with ");
+        DebugConsole.WriteDecimal((uint)typeArgCount);
+        DebugConsole.Write(" type args, isVT=");
+        DebugConsole.Write(isValueType ? "Y" : "N");
+        DebugConsole.WriteLine();
+
+        return instMT;
     }
 
     /// <summary>
