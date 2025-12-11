@@ -596,14 +596,14 @@ public static unsafe class MetadataIntegration
         byte tableId = (byte)(token >> 24);
 
         // Debug: Log type size requests for TypeRef (cross-assembly types)
-        if (tableId == 0x01)
-        {
-            // DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" (asm=");
-            DebugConsole.WriteDecimal(_currentAssemblyId);
-            DebugConsole.WriteLine(")");
-        }
+        // if (tableId == 0x01)
+        // {
+        //     DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+        //     DebugConsole.WriteHex(token);
+        //     DebugConsole.Write(" (asm=");
+        //     DebugConsole.WriteDecimal(_currentAssemblyId);
+        //     DebugConsole.WriteLine(")");
+        // }
 
         // Try to resolve the type to get its MethodTable
         void* mtPtr;
@@ -611,10 +611,10 @@ public static unsafe class MetadataIntegration
         {
             // If we can't resolve, fall back to pointer size
             // DebugConsole.Write("[MetaInt] GetTypeSize: failed to resolve token 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" table=0x");
-            DebugConsole.WriteHex(tableId);
-            DebugConsole.WriteLine(", defaulting to 8");
+            // DebugConsole.WriteHex(token);
+            // DebugConsole.Write(" table=0x");
+            // DebugConsole.WriteHex(tableId);
+            // DebugConsole.WriteLine(", defaulting to 8");
             return 8;
         }
 
@@ -627,14 +627,14 @@ public static unsafe class MetadataIntegration
         if (mt->IsValueType)
         {
             // Debug: Log successful type size resolution for TypeRef
-            if (tableId == 0x01)
-            {
-                // DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" resolved to VT size=");
-                DebugConsole.WriteDecimal(baseSize);
-                DebugConsole.WriteLine();
-            }
+            // if (tableId == 0x01)
+            // {
+            //     DebugConsole.Write("[MetaInt] GetTypeSize: TypeRef 0x");
+            //     DebugConsole.WriteHex(token);
+            //     DebugConsole.Write(" resolved to VT size=");
+            //     DebugConsole.WriteDecimal(baseSize);
+            //     DebugConsole.WriteLine();
+            // }
             // Value type - BaseSize is already the raw struct size
             return baseSize;
         }
@@ -1171,20 +1171,20 @@ public static unsafe class MetadataIntegration
         _tableSizes = savedSizes;
 
         // Debug: Log MemberRef field resolution
-        if (success)
-        {
-            // DebugConsole.Write("[MemberRefField] asm=");
-            DebugConsole.WriteDecimal((int)savedAsmId);
-            DebugConsole.Write(" token=0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" -> FieldDef=0x");
-            DebugConsole.WriteHex(fieldToken);
-            DebugConsole.Write(" offset=");
-            DebugConsole.WriteDecimal(result.Offset);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(result.Size);
-            DebugConsole.WriteLine();
-        }
+        // if (success)
+        // {
+        //     DebugConsole.Write("[MemberRefField] asm=");
+        //     DebugConsole.WriteDecimal((int)savedAsmId);
+        //     DebugConsole.Write(" token=0x");
+        //     DebugConsole.WriteHex(token);
+        //     DebugConsole.Write(" -> FieldDef=0x");
+        //     DebugConsole.WriteHex(fieldToken);
+        //     DebugConsole.Write(" offset=");
+        //     DebugConsole.WriteDecimal(result.Offset);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal(result.Size);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Cache with the original MemberRef token and original assembly ID
         // so subsequent lookups don't need to re-resolve
@@ -1250,14 +1250,14 @@ public static unsafe class MetadataIntegration
             // Combine into full name
             typeName = BuildFullTypeName(ns, name);
         }
-        else
-        {
-            // DebugConsole.Write("[AotMemberRef] Token 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" classRef.Table=");
-            DebugConsole.WriteDecimal((int)classRef.Table);
-            DebugConsole.WriteLine(" (not TypeRef)");
-        }
+        // else
+        // {
+        //     DebugConsole.Write("[AotMemberRef] Token 0x");
+        //     DebugConsole.WriteHex(token);
+        //     DebugConsole.Write(" classRef.Table=");
+        //     DebugConsole.WriteDecimal((int)classRef.Table);
+        //     DebugConsole.WriteLine(" (not TypeRef)");
+        // }
 
         if (typeName == null)
             return false;
@@ -1267,10 +1267,10 @@ public static unsafe class MetadataIntegration
         {
             // Debug: show the type name that wasn't recognized
             // DebugConsole.Write("[AotMemberRef] Token 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" type '");
-            WriteByteString(typeName);
-            DebugConsole.WriteLine("' is not a well-known AOT type");
+            // DebugConsole.WriteHex(token);
+            // DebugConsole.Write(" type '");
+            // WriteByteString(typeName);
+            // DebugConsole.WriteLine("' is not a well-known AOT type");
             return false;
         }
 
@@ -1292,12 +1292,12 @@ public static unsafe class MetadataIntegration
         if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry))
         {
             // DebugConsole.Write("[AotMemberRef] Found AOT method: ");
-            WriteByteString(typeName);
-            DebugConsole.Write(".");
-            WriteByteString(memberName);
-            DebugConsole.Write(" -> 0x");
-            DebugConsole.WriteHex((ulong)entry.NativeCode);
-            DebugConsole.WriteLine();
+            // WriteByteString(typeName);
+            // DebugConsole.Write(".");
+            // WriteByteString(memberName);
+            // DebugConsole.Write(" -> 0x");
+            // DebugConsole.WriteHex((ulong)entry.NativeCode);
+            // DebugConsole.WriteLine();
 
             result.NativeCode = (void*)entry.NativeCode;
             result.ArgCount = entry.ArgCount;
@@ -1316,12 +1316,12 @@ public static unsafe class MetadataIntegration
 
         // Debug: TryLookup failed
         // DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
-        WriteByteString(typeName);
-        DebugConsole.Write(".");
-        WriteByteString(memberName);
-        DebugConsole.Write(" paramCount=");
-        DebugConsole.WriteDecimal(paramCount);
-        DebugConsole.WriteLine();
+        // WriteByteString(typeName);
+        // DebugConsole.Write(".");
+        // WriteByteString(memberName);
+        // DebugConsole.Write(" paramCount=");
+        // DebugConsole.WriteDecimal(paramCount);
+        // DebugConsole.WriteLine();
 
         return false;
     }
@@ -2060,18 +2060,18 @@ public static unsafe class MetadataIntegration
         uint nameIdx = MetadataReader.GetMethodDefName(ref *_tablesHeader, ref *_tableSizes, rid);
         byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
 
-        if (NameEquals(name, "Initialize"))
-        {
-            DebugConsole.Write("[MetaInt] MemberRef Initialize token=0x");
-            DebugConsole.WriteHex(methodToken);
-            DebugConsole.Write(" returnKind=");
-            DebugConsole.WriteDecimal((uint)kind);
-            DebugConsole.Write(" argCount=");
-            DebugConsole.WriteDecimal(argCount);
-            DebugConsole.Write(" asm=");
-            DebugConsole.WriteDecimal(asmId);
-            DebugConsole.WriteLine();
-        }
+        // if (NameEquals(name, "Initialize"))
+        // {
+        //     DebugConsole.Write("[MetaInt] MemberRef Initialize token=0x");
+        //     DebugConsole.WriteHex(methodToken);
+        //     DebugConsole.Write(" returnKind=");
+        //     DebugConsole.WriteDecimal((uint)kind);
+        //     DebugConsole.Write(" argCount=");
+        //     DebugConsole.WriteDecimal(argCount);
+        //     DebugConsole.Write(" asm=");
+        //     DebugConsole.WriteDecimal(asmId);
+        //     DebugConsole.WriteLine();
+        // }
     }
 
     private static bool NameEquals(byte* name, string expected)

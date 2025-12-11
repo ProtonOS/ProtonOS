@@ -87,11 +87,11 @@ public static unsafe class Tier0JIT
             // Check if this is a PInvoke method
             if ((methodFlags & MethodDefFlags.PInvokeImpl) != 0)
             {
-                DebugConsole.Write("[Tier0JIT] PInvoke method 0x");
-                DebugConsole.WriteHex(methodToken);
-                DebugConsole.Write(" (asm ");
-                DebugConsole.WriteDecimal(assemblyId);
-                DebugConsole.WriteLine(")");
+                // DebugConsole.Write("[Tier0JIT] PInvoke method 0x");
+                // DebugConsole.WriteHex(methodToken);
+                // DebugConsole.Write(" (asm ");
+                // DebugConsole.WriteDecimal(assemblyId);
+                // DebugConsole.WriteLine(")");
                 var result = ResolvePInvoke(assembly, methodRid, methodToken, assemblyId);
                 RestoreContext(savedAsmId);
                 return result;
@@ -100,11 +100,11 @@ public static unsafe class Tier0JIT
             // Check if this is an abstract/virtual method
             if ((methodFlags & MethodDefFlags.Abstract) != 0)
             {
-                DebugConsole.Write("[Tier0JIT] Abstract method 0x");
-                DebugConsole.WriteHex(methodToken);
-                DebugConsole.Write(" (asm ");
-                DebugConsole.WriteDecimal(assemblyId);
-                DebugConsole.WriteLine(")");
+                // DebugConsole.Write("[Tier0JIT] Abstract method 0x");
+                // DebugConsole.WriteHex(methodToken);
+                // DebugConsole.Write(" (asm ");
+                // DebugConsole.WriteDecimal(assemblyId);
+                // DebugConsole.WriteLine(")");
                 var result = RegisterAbstractMethod(assembly, methodRid, methodToken, assemblyId, methodFlags, sigIdx);
                 RestoreContext(savedAsmId);
                 return result;
@@ -210,22 +210,22 @@ public static unsafe class Tier0JIT
             localCount = ParseLocalVarSigCount(assembly, body.LocalVarSigToken);
         }
 
-        DebugConsole.Write("[Tier0JIT] Compiling method 0x");
-        DebugConsole.WriteHex(methodToken);
-        DebugConsole.Write(" (asm ");
-        DebugConsole.WriteDecimal(assemblyId);
-        DebugConsole.Write("): IL=");
-        DebugConsole.WriteDecimal((uint)body.CodeSize);
-        DebugConsole.Write(" bytes, args=");
-        DebugConsole.WriteDecimal((uint)jitArgCount);
-        DebugConsole.Write(" (params=");
-        DebugConsole.WriteDecimal((uint)paramCount);
-        DebugConsole.Write(hasThis ? "+this" : "");
-        DebugConsole.Write("), locals=");
-        DebugConsole.WriteDecimal((uint)localCount);
-        DebugConsole.Write(" localSigTok=0x");
-        DebugConsole.WriteHex(body.LocalVarSigToken);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[Tier0JIT] Compiling method 0x");
+        // DebugConsole.WriteHex(methodToken);
+        // DebugConsole.Write(" (asm ");
+        // DebugConsole.WriteDecimal(assemblyId);
+        // DebugConsole.Write("): IL=");
+        // DebugConsole.WriteDecimal((uint)body.CodeSize);
+        // DebugConsole.Write(" bytes, args=");
+        // DebugConsole.WriteDecimal((uint)jitArgCount);
+        // DebugConsole.Write(" (params=");
+        // DebugConsole.WriteDecimal((uint)paramCount);
+        // DebugConsole.Write(hasThis ? "+this" : "");
+        // DebugConsole.Write("), locals=");
+        // DebugConsole.WriteDecimal((uint)localCount);
+        // DebugConsole.Write(" localSigTok=0x");
+        // DebugConsole.WriteHex(body.LocalVarSigToken);
+        // DebugConsole.WriteLine();
 
         // if (assemblyId == 4 && methodToken == 0x0600002A)
         // {
@@ -524,33 +524,33 @@ public static unsafe class Tier0JIT
         {
             // Find the declaring type and set its MethodTable
             uint declaringTypeToken = AssemblyLoader.FindDeclaringType(assemblyId, methodToken);
-            DebugConsole.Write("[Tier0JIT] .ctor 0x");
-            DebugConsole.WriteHex(methodToken);
-            DebugConsole.Write(" declaring type=0x");
-            DebugConsole.WriteHex(declaringTypeToken);
+            // DebugConsole.Write("[Tier0JIT] .ctor 0x");
+            // DebugConsole.WriteHex(methodToken);
+            // DebugConsole.Write(" declaring type=0x");
+            // DebugConsole.WriteHex(declaringTypeToken);
 
             if (declaringTypeToken != 0)
             {
                 MethodTable* mt = AssemblyLoader.ResolveType(assemblyId, declaringTypeToken);
-                DebugConsole.Write(" MT=0x");
-                DebugConsole.WriteHex((ulong)mt);
+                // DebugConsole.Write(" MT=0x");
+                // DebugConsole.WriteHex((ulong)mt);
 
                 if (mt != null)
                 {
                     bool ok = CompiledMethodRegistry.SetMethodTable(methodToken, mt, assemblyId);
-                    DebugConsole.Write(" set=");
-                    DebugConsole.Write(ok ? "OK" : "FAIL");
+                    // DebugConsole.Write(" set=");
+                    // DebugConsole.Write(ok ? "OK" : "FAIL");
                 }
-                else
-                {
-                    DebugConsole.Write(" (ResolveType failed)");
-                }
+                // else
+                // {
+                //     DebugConsole.Write(" (ResolveType failed)");
+                // }
             }
-            else
-            {
-                DebugConsole.Write(" (FindDeclaringType failed)");
-            }
-            DebugConsole.WriteLine();
+            // else
+            // {
+            //     DebugConsole.Write(" (FindDeclaringType failed)");
+            // }
+            // DebugConsole.WriteLine();
         }
 
         return JitResult.Ok(code, codeSize);
@@ -1353,12 +1353,12 @@ public static unsafe class Tier0JIT
                     return JitResult.Fail();
                 }
 
-                DebugConsole.Write("[Tier0JIT] Resolved PInvoke: ");
-                for (int j = 0; importName[j] != 0 && j < 32; j++)
-                    DebugConsole.WriteChar((char)importName[j]);
-                DebugConsole.Write(" -> 0x");
-                DebugConsole.WriteHex((ulong)nativeAddr);
-                DebugConsole.WriteLine();
+                // DebugConsole.Write("[Tier0JIT] Resolved PInvoke: ");
+                // for (int j = 0; importName[j] != 0 && j < 32; j++)
+                //     DebugConsole.WriteChar((char)importName[j]);
+                // DebugConsole.Write(" -> 0x");
+                // DebugConsole.WriteHex((ulong)nativeAddr);
+                // DebugConsole.WriteLine();
 
                 // Register in CompiledMethodRegistry so it can be found for calls
                 // Get signature for argument count and return type

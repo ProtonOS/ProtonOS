@@ -863,9 +863,9 @@ public static unsafe class AssemblyLoader
         {
             // Decode compressed unsigned integer for TypeDefOrRefOrSpec
             uint typeToken = DecodeTypeDefOrRefOrSpec(sig, ref pos, sigLen);
-            DebugConsole.Write("[AsmLoader] ParseType decoded token=0x");
-            DebugConsole.WriteHex(typeToken);
-            DebugConsole.WriteLine("");
+            // DebugConsole.Write("[AsmLoader] ParseType decoded token=0x");
+            // DebugConsole.WriteHex(typeToken);
+            // DebugConsole.WriteLine("");
             if (typeToken == 0)
                 return null;
 
@@ -1388,26 +1388,26 @@ public static unsafe class AssemblyLoader
 
         // Debug: Log the type being resolved
         // DebugConsole.Write("[AsmLoader] ResolveTypeRef 0x");
-        DebugConsole.WriteHex(typeRefToken);
-        DebugConsole.Write(" srcAsm=");
-        DebugConsole.WriteDecimal(sourceAsm->AssemblyId);
-        DebugConsole.Write(" scope=");
-        DebugConsole.WriteDecimal((uint)resScope.Table);
-        DebugConsole.Write(":");
-        DebugConsole.WriteDecimal(resScope.RowId);
-        DebugConsole.Write(" type=");
-        if (ns != null && ns[0] != 0)
-        {
-            for (int i = 0; ns[i] != 0 && i < 24; i++)
-                DebugConsole.WriteChar((char)ns[i]);
-            DebugConsole.WriteChar('.');
-        }
-        if (name != null)
-        {
-            for (int i = 0; name[i] != 0 && i < 24; i++)
-                DebugConsole.WriteChar((char)name[i]);
-        }
-        DebugConsole.WriteLine();
+        // DebugConsole.WriteHex(typeRefToken);
+        // DebugConsole.Write(" srcAsm=");
+        // DebugConsole.WriteDecimal(sourceAsm->AssemblyId);
+        // DebugConsole.Write(" scope=");
+        // DebugConsole.WriteDecimal((uint)resScope.Table);
+        // DebugConsole.Write(":");
+        // DebugConsole.WriteDecimal(resScope.RowId);
+        // DebugConsole.Write(" type=");
+        // if (ns != null && ns[0] != 0)
+        // {
+        //     for (int i = 0; ns[i] != 0 && i < 24; i++)
+        //         DebugConsole.WriteChar((char)ns[i]);
+        //     DebugConsole.WriteChar('.');
+        // }
+        // if (name != null)
+        // {
+        //     for (int i = 0; name[i] != 0 && i < 24; i++)
+        //         DebugConsole.WriteChar((char)name[i]);
+        // }
+        // DebugConsole.WriteLine();
 
         // ResolutionScope points to Module, ModuleRef, AssemblyRef, or TypeRef
         if (resScope.Table == MetadataTableId.AssemblyRef)
@@ -1417,7 +1417,7 @@ public static unsafe class AssemblyLoader
             MethodTable* wellKnownMT = TryResolveWellKnownType(name, ns);
             if (wellKnownMT != null)
             {
-                DebugConsole.WriteLine("  -> well-known type");
+                // DebugConsole.WriteLine("  -> well-known type");
                 return wellKnownMT;
             }
 
@@ -1438,9 +1438,9 @@ public static unsafe class AssemblyLoader
                 return null;
             }
 
-            DebugConsole.Write("  -> target asm ");
-            DebugConsole.WriteDecimal(targetAsmId);
-            DebugConsole.WriteLine("");
+            // DebugConsole.Write("  -> target asm ");
+            // DebugConsole.WriteDecimal(targetAsmId);
+            // DebugConsole.WriteLine("");
 
             // Find the matching TypeDef in the target assembly
             MethodTable* result = FindTypeDefByName(targetAsm, nameIdx, nsIdx, &sourceAsm->Metadata);
@@ -1448,16 +1448,16 @@ public static unsafe class AssemblyLoader
             {
                 DebugConsole.WriteLine("  -> FAILED: type not found in target asm");
             }
-            else
-            {
-                DebugConsole.Write("  -> resolved MT=0x");
-                DebugConsole.WriteHex((ulong)result);
-                DebugConsole.Write(" isVT=");
-                DebugConsole.WriteDecimal(result->IsValueType ? 1u : 0u);
-                DebugConsole.Write(" size=");
-                DebugConsole.WriteDecimal(result->_uBaseSize);
-                DebugConsole.WriteLine();
-            }
+            // else
+            // {
+            //     DebugConsole.Write("  -> resolved MT=0x");
+            //     DebugConsole.WriteHex((ulong)result);
+            //     DebugConsole.Write(" isVT=");
+            //     DebugConsole.WriteDecimal(result->IsValueType ? 1u : 0u);
+            //     DebugConsole.Write(" size=");
+            //     DebugConsole.WriteDecimal(result->_uBaseSize);
+            //     DebugConsole.WriteLine();
+            // }
             return result;
         }
 
@@ -1496,22 +1496,22 @@ public static unsafe class AssemblyLoader
 
             // Debug: Print what we're looking up
             // DebugConsole.Write("[AsmLoader] ResolveTypeRef row=");
-            DebugConsole.WriteDecimal(typeRefRow);
-            DebugConsole.Write(" asmRef=");
-            DebugConsole.WriteDecimal(resScope.RowId);
-            DebugConsole.Write(" type=");
-            if (typeNs != null && typeNs[0] != 0)
-            {
-                for (int i = 0; typeNs[i] != 0 && i < 32; i++)
-                    DebugConsole.WriteChar((char)typeNs[i]);
-                DebugConsole.WriteChar('.');
-            }
-            if (typeName != null)
-            {
-                for (int i = 0; typeName[i] != 0 && i < 32; i++)
-                    DebugConsole.WriteChar((char)typeName[i]);
-            }
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal(typeRefRow);
+            // DebugConsole.Write(" asmRef=");
+            // DebugConsole.WriteDecimal(resScope.RowId);
+            // DebugConsole.Write(" type=");
+            // if (typeNs != null && typeNs[0] != 0)
+            // {
+            //     for (int i = 0; typeNs[i] != 0 && i < 32; i++)
+            //         DebugConsole.WriteChar((char)typeNs[i]);
+            //     DebugConsole.WriteChar('.');
+            // }
+            // if (typeName != null)
+            // {
+            //     for (int i = 0; typeName[i] != 0 && i < 32; i++)
+            //         DebugConsole.WriteChar((char)typeName[i]);
+            // }
+            // DebugConsole.WriteLine();
 
             // Find the target assembly
             uint targetAsmId = ResolveAssemblyRef(sourceAsm, resScope.RowId);
@@ -1534,22 +1534,22 @@ public static unsafe class AssemblyLoader
 
             // Debug: Show TypeDef search parameters
             // DebugConsole.Write("[AsmLoader] Searching asm ");
-            DebugConsole.WriteDecimal(targetAsm->AssemblyId);
-            DebugConsole.Write(" TypeDef table (");
-            DebugConsole.WriteDecimal(typeDefCount);
-            DebugConsole.Write(" rows) for ");
-            if (targetNs != null && targetNs[0] != 0)
-            {
-                for (int i = 0; targetNs[i] != 0 && i < 32; i++)
-                    DebugConsole.WriteChar((char)targetNs[i]);
-                DebugConsole.WriteChar('.');
-            }
-            if (targetName != null)
-            {
-                for (int i = 0; targetName[i] != 0 && i < 32; i++)
-                    DebugConsole.WriteChar((char)targetName[i]);
-            }
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal(targetAsm->AssemblyId);
+            // DebugConsole.Write(" TypeDef table (");
+            // DebugConsole.WriteDecimal(typeDefCount);
+            // DebugConsole.Write(" rows) for ");
+            // if (targetNs != null && targetNs[0] != 0)
+            // {
+            //     for (int i = 0; targetNs[i] != 0 && i < 32; i++)
+            //         DebugConsole.WriteChar((char)targetNs[i]);
+            //     DebugConsole.WriteChar('.');
+            // }
+            // if (targetName != null)
+            // {
+            //     for (int i = 0; targetName[i] != 0 && i < 32; i++)
+            //         DebugConsole.WriteChar((char)targetName[i]);
+            // }
+            // DebugConsole.WriteLine();
 
             for (uint row = 1; row <= typeDefCount; row++)
             {
@@ -1618,10 +1618,10 @@ public static unsafe class AssemblyLoader
         {
             uint cachedId = sourceAsm->Dependencies[assemblyRefRow - 1];
             // DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
-            DebugConsole.WriteDecimal(assemblyRefRow);
-            DebugConsole.Write(" -> cached asm ");
-            DebugConsole.WriteDecimal(cachedId);
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal(assemblyRefRow);
+            // DebugConsole.Write(" -> cached asm ");
+            // DebugConsole.WriteDecimal(cachedId);
+            // DebugConsole.WriteLine();
             return cachedId;
         }
 
@@ -1634,23 +1634,23 @@ public static unsafe class AssemblyLoader
 
         // Debug: Print what we're looking up
         // DebugConsole.Write("[AsmLoader] ResolveAsmRef row=");
-        DebugConsole.WriteDecimal(assemblyRefRow);
-        DebugConsole.Write(" name='");
-        for (int i = 0; name[i] != 0 && i < 32; i++)
-            DebugConsole.WriteChar((char)name[i]);
-        DebugConsole.Write("'");
+        // DebugConsole.WriteDecimal(assemblyRefRow);
+        // DebugConsole.Write(" name='");
+        // for (int i = 0; name[i] != 0 && i < 32; i++)
+        //     DebugConsole.WriteChar((char)name[i]);
+        // DebugConsole.Write("'");
 
         // Find loaded assembly by name
         LoadedAssembly* target = FindByName(name);
         if (target == null)
         {
-            DebugConsole.WriteLine(" -> NOT FOUND!");
+            DebugConsole.WriteLine("[AsmLoader] ResolveAsmRef NOT FOUND");
             return InvalidAssemblyId;
         }
 
-        DebugConsole.Write(" -> found asm ");
-        DebugConsole.WriteDecimal(target->AssemblyId);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write(" -> found asm ");
+        // DebugConsole.WriteDecimal(target->AssemblyId);
+        // DebugConsole.WriteLine();
 
         // Cache the resolution
         if (assemblyRefRow <= LoadedAssembly.MaxDependencies)
@@ -2038,14 +2038,14 @@ public static unsafe class AssemblyLoader
 
         // Debug: Print MemberRef resolution info
         // DebugConsole.Write("[AsmLoader] ResolveMemberRef 0x");
-        DebugConsole.WriteHex(memberRefToken);
-        DebugConsole.Write(" from asm ");
-        DebugConsole.WriteDecimal(sourceAsmId);
-        DebugConsole.Write(", class table=");
-        DebugConsole.WriteDecimal((uint)classRef.Table);
-        DebugConsole.Write(" row=");
-        DebugConsole.WriteDecimal(classRef.RowId);
-        DebugConsole.WriteLine();
+        // DebugConsole.WriteHex(memberRefToken);
+        // DebugConsole.Write(" from asm ");
+        // DebugConsole.WriteDecimal(sourceAsmId);
+        // DebugConsole.Write(", class table=");
+        // DebugConsole.WriteDecimal((uint)classRef.Table);
+        // DebugConsole.Write(" row=");
+        // DebugConsole.WriteDecimal(classRef.RowId);
+        // DebugConsole.WriteLine();
 
         // Get member name and signature
         uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
@@ -2127,16 +2127,16 @@ public static unsafe class AssemblyLoader
 
         // Debug: Print resolved target
         // DebugConsole.Write("[AsmLoader] -> resolved to asm ");
-        DebugConsole.WriteDecimal(targetAsmId);
-        DebugConsole.Write(" (");
-        if (targetAsm->Name != null)
-        {
-            for (int i = 0; targetAsm->Name[i] != 0 && i < 32; i++)
-                DebugConsole.WriteChar((char)targetAsm->Name[i]);
-        }
-        DebugConsole.Write("), TypeDef 0x");
-        DebugConsole.WriteHex(typeDefToken);
-        DebugConsole.WriteLine();
+        // DebugConsole.WriteDecimal(targetAsmId);
+        // DebugConsole.Write(" (");
+        // if (targetAsm->Name != null)
+        // {
+        //     for (int i = 0; targetAsm->Name[i] != 0 && i < 32; i++)
+        //         DebugConsole.WriteChar((char)targetAsm->Name[i]);
+        // }
+        // DebugConsole.Write("), TypeDef 0x");
+        // DebugConsole.WriteHex(typeDefToken);
+        // DebugConsole.WriteLine();
 
         // Find the matching MethodDef in the target type
         methodToken = FindMethodDefByName(sourceAsm, targetAsm, typeDefToken, memberName, sig, sigLen);
@@ -2497,17 +2497,17 @@ public static unsafe class AssemblyLoader
 
         // Debug: Show method range
         // DebugConsole.Write("[AsmLoader] FindMethod in type row ");
-        DebugConsole.WriteDecimal(typeRow);
-        DebugConsole.Write(": methodStart=");
-        DebugConsole.WriteDecimal(methodStart);
-        DebugConsole.Write(", methodEnd=");
-        DebugConsole.WriteDecimal(methodEnd);
-        DebugConsole.Write(", totalMethods=");
-        DebugConsole.WriteDecimal(methodDefCount);
-        DebugConsole.Write(", searching for ");
-        for (int i = 0; methodName[i] != 0 && i < 40; i++)
-            DebugConsole.WriteChar((char)methodName[i]);
-        DebugConsole.WriteLine();
+        // DebugConsole.WriteDecimal(typeRow);
+        // DebugConsole.Write(": methodStart=");
+        // DebugConsole.WriteDecimal(methodStart);
+        // DebugConsole.Write(", methodEnd=");
+        // DebugConsole.WriteDecimal(methodEnd);
+        // DebugConsole.Write(", totalMethods=");
+        // DebugConsole.WriteDecimal(methodDefCount);
+        // DebugConsole.Write(", searching for ");
+        // for (int i = 0; methodName[i] != 0 && i < 40; i++)
+        //     DebugConsole.WriteChar((char)methodName[i]);
+        // DebugConsole.WriteLine();
 
         // Sanity check: if methodStart is > totalMethods, we have corrupt metadata
         if (methodStart > methodDefCount)

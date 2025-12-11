@@ -2149,14 +2149,14 @@ public unsafe struct ILCompiler
             int slots = alignedSize / 8;
 
             // DebugConsole.Write("[ldloc VT] idx=");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal((uint)typeSize);
-            DebugConsole.Write(" src=[FP-");
-            DebugConsole.WriteDecimal((uint)(-offset));
-            DebugConsole.Write("] depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal((uint)index);
+            // DebugConsole.Write(" size=");
+            // DebugConsole.WriteDecimal((uint)typeSize);
+            // DebugConsole.Write(" src=[FP-");
+            // DebugConsole.WriteDecimal((uint)(-offset));
+            // DebugConsole.Write("] depth=");
+            // DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            // DebugConsole.WriteLine();
 
             // Make room on eval stack
             X64Emitter.SubRI(ref _code, VReg.SP, alignedSize);
@@ -2284,10 +2284,10 @@ public unsafe struct ILCompiler
             // TypeRef resolution failed - use stack entry's tracked size
             effectiveSize = tosEntry.RawSize;
             // DebugConsole.Write("[stloc WARN] VT local idx=");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" typeSize=0, using stack rawSize=");
-            DebugConsole.WriteDecimal((uint)effectiveSize);
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal((uint)index);
+            // DebugConsole.Write(" typeSize=0, using stack rawSize=");
+            // DebugConsole.WriteDecimal((uint)effectiveSize);
+            // DebugConsole.WriteLine();
         }
 
         // Large value type (>8 bytes): copy full struct from eval stack into local
@@ -2296,15 +2296,15 @@ public unsafe struct ILCompiler
             int destOffset = X64Emitter.GetLocalOffset(index);
             int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
             // DebugConsole.Write("[stloc VT] idx=");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" copySize=");
-            DebugConsole.WriteDecimal((uint)copySize);
-            DebugConsole.Write(" stackBytes=");
-            DebugConsole.WriteDecimal((uint)stackByteSize);
-            DebugConsole.Write(" dest=[FP-");
-            DebugConsole.WriteDecimal((uint)(-destOffset));
-            DebugConsole.Write("]");
-            DebugConsole.WriteLine();
+            // DebugConsole.WriteDecimal((uint)index);
+            // DebugConsole.Write(" copySize=");
+            // DebugConsole.WriteDecimal((uint)copySize);
+            // DebugConsole.Write(" stackBytes=");
+            // DebugConsole.WriteDecimal((uint)stackByteSize);
+            // DebugConsole.Write(" dest=[FP-");
+            // DebugConsole.WriteDecimal((uint)(-destOffset));
+            // DebugConsole.Write("]");
+            // DebugConsole.WriteLine();
 
             // Copy from [RSP] (top of eval stack) into the local slot
             int copyOffset = 0;
@@ -2993,18 +2993,18 @@ public unsafe struct ILCompiler
     private bool CompileConv(int targetBytes, bool signed)
     {
         // Debug: Log conv for the bool bug method at IL offset 0x197
-        if (IsDebugBoolBugMethod() && _ilOffset >= 0x195 && _ilOffset <= 0x19A)
-        {
-            // DebugConsole.Write("[conv] IL=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" bytes=");
-            DebugConsole.WriteDecimal((uint)targetBytes);
-            DebugConsole.Write(" signed=");
-            DebugConsole.WriteDecimal(signed ? 1U : 0U);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // if (IsDebugBoolBugMethod() && _ilOffset >= 0x195 && _ilOffset <= 0x19A)
+        // {
+        //     DebugConsole.Write("[conv] IL=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" bytes=");
+        //     DebugConsole.WriteDecimal((uint)targetBytes);
+        //     DebugConsole.Write(" signed=");
+        //     DebugConsole.WriteDecimal(signed ? 1U : 0U);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Convert top of stack to different size
         // For naive JIT, we just mask/sign-extend as needed
@@ -3512,18 +3512,18 @@ public unsafe struct ILCompiler
 
     private bool CompileRet()
     {
-        if (IsDebugBoolBugMethod())
-        {
-            // DebugConsole.Write("[BindDbg] ret il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.Write(" returnVT=");
-            DebugConsole.WriteDecimal(_returnIsValueType ? 1U : 0U);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(_returnTypeSize);
-            DebugConsole.WriteLine();
-        }
+        // if (IsDebugBoolBugMethod())
+        // {
+        //     DebugConsole.Write("[BindDbg] ret il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.Write(" returnVT=");
+        //     DebugConsole.WriteDecimal(_returnIsValueType ? 1U : 0U);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal(_returnTypeSize);
+        //     DebugConsole.WriteLine();
+        // }
 
         // If there's a return value, it should be on eval stack
         if (_evalStackDepth > 0)
@@ -3559,14 +3559,14 @@ public unsafe struct ILCompiler
                 {
                     // Large struct (>16 bytes): copy VALUE from [RSP] to hidden buffer (arg0)
                     // DebugConsole.Write("[ret>16] size=");
-                    DebugConsole.WriteDecimal((uint)_returnTypeSize);
-                    DebugConsole.Write(" argCnt=");
-                    DebugConsole.WriteDecimal((uint)_argCount);
-                    DebugConsole.Write(" depth=");
-                    DebugConsole.WriteDecimal((uint)_evalStackDepth);
-                    DebugConsole.Write(" stackBytes=");
-                    DebugConsole.WriteDecimal((uint)stackSize);
-                    DebugConsole.WriteLine();
+                    // DebugConsole.WriteDecimal((uint)_returnTypeSize);
+                    // DebugConsole.Write(" argCnt=");
+                    // DebugConsole.WriteDecimal((uint)_argCount);
+                    // DebugConsole.Write(" depth=");
+                    // DebugConsole.WriteDecimal((uint)_evalStackDepth);
+                    // DebugConsole.Write(" stackBytes=");
+                    // DebugConsole.WriteDecimal((uint)stackSize);
+                    // DebugConsole.WriteLine();
 
                     X64Emitter.LoadArg(ref _code, VReg.R5, 0);  // R5 = hidden buffer pointer
 
@@ -3627,30 +3627,30 @@ public unsafe struct ILCompiler
 
     private bool CompileBrfalse(int targetIL)
     {
-        bool debugBind = IsDebugBindMethod() || IsDebugBarMethod();
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] brfalse il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" target=0x");
-            DebugConsole.WriteHex((ulong)targetIL);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // bool debugBind = IsDebugBindMethod() || IsDebugBarMethod();
+        // if (debugBind)
+        // {
+        //     DebugConsole.Write("[BindDbg] brfalse il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" target=0x");
+        //     DebugConsole.WriteHex((ulong)targetIL);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Pop value, branch if zero
         PopR0();        X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
         int patchOffset = X64Emitter.Je(ref _code);  // Jump if equal (to zero)
         RecordBranch(_ilOffset, targetIL, patchOffset);
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] brfalse patchOff=0x");
-            DebugConsole.WriteHex((ulong)patchOffset);
-            DebugConsole.Write(" codePos=0x");
-            DebugConsole.WriteHex((ulong)_code.Position);
-            DebugConsole.WriteLine();
-        }
+        // if (debugBind)
+        // {
+        //     DebugConsole.Write("[BindDbg] brfalse patchOff=0x");
+        //     DebugConsole.WriteHex((ulong)patchOffset);
+        //     DebugConsole.Write(" codePos=0x");
+        //     DebugConsole.WriteHex((ulong)_code.Position);
+        //     DebugConsole.WriteLine();
+        // }
         return true;
     }
 
@@ -4386,14 +4386,14 @@ public unsafe struct ILCompiler
         if (method.NativeCode != null)
         {
             // Direct call - we already know the target address
-            if (_debugAssemblyId == 3)
-            {
-                // DebugConsole.Write("[JIT call] direct tok=0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" native=0x");
-                DebugConsole.WriteHex((ulong)method.NativeCode);
-                DebugConsole.WriteLine();
-            }
+            // if (_debugAssemblyId == 3)
+            // {
+            //     DebugConsole.Write("[JIT call] direct tok=0x");
+            //     DebugConsole.WriteHex(token);
+            //     DebugConsole.Write(" native=0x");
+            //     DebugConsole.WriteHex((ulong)method.NativeCode);
+            //     DebugConsole.WriteLine();
+            // }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
         }
         else if (method.RegistryEntry != null)
@@ -4402,16 +4402,16 @@ public unsafe struct ILCompiler
             // The NativeCode will be filled in by the time the call actually executes
             // Layout: CompiledMethodInfo { uint Token; void* NativeCode; ... }
             // NativeCode is at offset 8 (after 4-byte Token + 4 bytes padding for alignment)
-            if (_debugAssemblyId == 3)
-            {
-                // DebugConsole.Write("[JIT call] indirect tok=0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" entry=0x");
-                DebugConsole.WriteHex((ulong)method.RegistryEntry);
-                DebugConsole.Write(" NativeCode@entry=0x");
-                DebugConsole.WriteHex((ulong)((CompiledMethodInfo*)method.RegistryEntry)->NativeCode);
-                DebugConsole.WriteLine();
-            }
+            // if (_debugAssemblyId == 3)
+            // {
+            //     DebugConsole.Write("[JIT call] indirect tok=0x");
+            //     DebugConsole.WriteHex(token);
+            //     DebugConsole.Write(" entry=0x");
+            //     DebugConsole.WriteHex((ulong)method.RegistryEntry);
+            //     DebugConsole.Write(" NativeCode@entry=0x");
+            //     DebugConsole.WriteHex((ulong)((CompiledMethodInfo*)method.RegistryEntry)->NativeCode);
+            //     DebugConsole.WriteLine();
+            // }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.RegistryEntry);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);  // Load [RAX+8] = NativeCode
         }
@@ -4594,28 +4594,28 @@ public unsafe struct ILCompiler
         if (method.HasThis || true) // callvirt always has 'this'
             totalArgs++;
 
-        bool debugBind = IsDebugBindMethod();
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] callvirt il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" token=0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.Write(" totalArgs=");
-            DebugConsole.WriteDecimal((uint)totalArgs);
-            DebugConsole.WriteLine();
-        }
+        // bool debugBind = IsDebugBindMethod();
+        // if (debugBind)
+        // {
+        //     DebugConsole.Write("[BindDbg] callvirt il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" token=0x");
+        //     DebugConsole.WriteHex(token);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.Write(" totalArgs=");
+        //     DebugConsole.WriteDecimal((uint)totalArgs);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Verify we have enough values on the eval stack
         if (_evalStackDepth < totalArgs)
         {
             // DebugConsole.Write("[JIT] Callvirt: insufficient stack depth ");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.Write(" for ");
-            DebugConsole.WriteDecimal((uint)totalArgs);
-            DebugConsole.WriteLine(" args");
+            // DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            // DebugConsole.Write(" for ");
+            // DebugConsole.WriteDecimal((uint)totalArgs);
+            // DebugConsole.WriteLine(" args");
             return false;
         }
 
@@ -4834,16 +4834,16 @@ public unsafe struct ILCompiler
                 break;
         }
 
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] callvirt done il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" codePos=");
-            DebugConsole.WriteHex((ulong)_code.Position);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // if (debugBind)
+        // {
+        //     DebugConsole.Write("[BindDbg] callvirt done il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" codePos=");
+        //     DebugConsole.WriteHex((ulong)_code.Position);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         return true;
     }
@@ -5290,11 +5290,11 @@ public unsafe struct ILCompiler
         int size = GetTypeSizeFromToken(token);
 
         // Debug: log stobj size
-        DebugConsole.Write("[stobj] size=");
-        DebugConsole.WriteHex((ulong)size);
-        DebugConsole.Write(" depth=");
-        DebugConsole.WriteDecimal((uint)_evalStackDepth);
-        DebugConsole.WriteLine();
+        // DebugConsole.Write("[stobj] size=");
+        // DebugConsole.WriteHex((ulong)size);
+        // DebugConsole.Write(" depth=");
+        // DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        // DebugConsole.WriteLine();
 
         // CLI says stobj expects: ..., dest, src -> ...
         // In CLI notation, rightmost item (src) is TOS, dest is TOS-1
