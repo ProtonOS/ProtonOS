@@ -173,6 +173,17 @@ public unsafe struct CodeBuffer
     }
 
     /// <summary>
+    /// Patch a single byte at the given offset
+    /// </summary>
+    public void PatchByte(int offset, byte value)
+    {
+        if (offset >= 0 && offset < _size)
+        {
+            _buffer[offset] = value;
+        }
+    }
+
+    /// <summary>
     /// Patch a relative jump at the given offset to target the current position
     /// </summary>
     public void PatchRelative32(int patchOffset)

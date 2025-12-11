@@ -360,6 +360,9 @@ public unsafe struct ResolvedMethod
     /// Used for indirect calls when NativeCode is not yet known (recursive methods).
     /// </summary>
     public void* RegistryEntry;
+
+    /// <summary>True if this is a delegate Invoke method (runtime-provided).</summary>
+    public bool IsDelegateInvoke;
 }
 
 /// <summary>
@@ -4803,6 +4806,13 @@ public unsafe struct ILCompiler
             return false;
         }
 
+        // Special case: delegate Invoke
+        // Delegate.Invoke is a runtime-provided method - we emit inline dispatch code
+        if (method.IsDelegateInvoke)
+        {
+            return CompileCallvirtDelegateInvoke(method);
+        }
+
         // Callvirt always has 'this' as the first argument
         // Even if method.HasThis is false (shouldn't happen), we treat it as instance
         int totalArgs = method.ArgCount;
@@ -5088,6 +5098,164 @@ public unsafe struct ILCompiler
         //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
         //     DebugConsole.WriteLine();
         // }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile delegate Invoke call.
+    /// Stack: ..., arg0, ..., argN-1, delegate -> ..., result (if non-void)
+    ///
+    /// Delegate layout:
+    /// - Offset 8:  _firstParameter (target object for instance, null for static)
+    /// - Offset 32: _functionPointer (actual method to call)
+    ///
+    /// For instance delegates: call func(_firstParameter, arg0, ..., argN-1)
+    /// For static delegates: call func(arg0, ..., argN-1)
+    /// </summary>
+    private bool CompileCallvirtDelegateInvoke(ResolvedMethod method)
+    {
+        // Total args including 'this' (delegate reference)
+        // The delegate itself is on the stack as 'this'
+        int delegateArgCount = method.ArgCount;  // Args to pass to target function (not including delegate)
+        int totalStackArgs = delegateArgCount + 1;  // +1 for delegate reference
+
+        if (totalStackArgs > 5)  // Max 4 real args + delegate
+        {
+            DebugConsole.Write("[JIT] delegate Invoke: too many args ");
+            DebugConsole.WriteDecimal((uint)delegateArgCount);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Pop all arguments from stack including delegate reference
+        // Stack order: ..., arg0, arg1, delegate (delegate on top for callvirt)
+        // Actually for callvirt: delegate is pushed first, then args
+        // Wait - need to check. Stack: ..., delegate, arg0, arg1, ... (delegate pushed first, args after)
+        // When popping: first pop arg (N-1), then arg (N-2), ..., then arg0, then delegate
+
+        // Save args to temp registers, then delegate
+        VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10, VReg.R11 };
+
+        // Pop in reverse order: argN-1, ..., arg0, delegate
+        for (int i = delegateArgCount - 1; i >= 0; i--)
+        {
+            X64Emitter.Pop(ref _code, tempRegs[i + 1]);  // args go to R8-R11
+            PopEntry();
+        }
+        // Pop delegate reference
+        X64Emitter.Pop(ref _code, tempRegs[0]);  // R7 = delegate
+        PopEntry();
+
+        // Reserve shadow space
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Load _firstParameter from delegate (offset 8)
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R7, 8);  // RAX = delegate._firstParameter
+
+        // Load _functionPointer from delegate (offset 32)
+        X64Emitter.MovRM(ref _code, VReg.R6, VReg.R7, 32);  // RSI = delegate._functionPointer
+
+        // Check if this is instance or static delegate
+        // Instance: _firstParameter != null, call as func(target, arg0, arg1, ...)
+        // Static:   _firstParameter == null, call as func(arg0, arg1, ...)
+        //
+        // We emit code that handles both cases at runtime:
+        // 1. Test RAX (== null for static, != null for instance)
+        // 2. If null: RCX=arg0, RDX=arg1, R8=arg2, R9=arg3
+        // 3. If non-null: RCX=target, RDX=arg0, R8=arg1, R9=arg2
+        //
+        // For now, emit simpler code: check at runtime and branch
+
+        // test rax, rax (check if _firstParameter is null)
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0x85);  // TEST
+        _code.EmitByte(0xC0);  // RAX, RAX
+
+        // jz static_path (jump if null - static delegate)
+        _code.EmitByte(0x74);  // JZ rel8
+        int jmpOffset = _code.Position;
+        _code.EmitByte(0x00);  // Placeholder for offset
+
+        // === Instance delegate path ===
+        // RCX = _firstParameter (target)
+        // RDX = arg0, R8 = arg1, R9 = arg2
+        X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);  // RCX = _firstParameter
+        if (delegateArgCount >= 1)
+            X64Emitter.MovRR(ref _code, VReg.R2, VReg.R8);  // RDX = arg0
+        if (delegateArgCount >= 2)
+            X64Emitter.MovRR(ref _code, VReg.R3, VReg.R9);  // R8 = arg1
+        if (delegateArgCount >= 3)
+            X64Emitter.MovRR(ref _code, VReg.R4, VReg.R10);  // R9 = arg2
+        // jmp to call
+        _code.EmitByte(0xEB);  // JMP rel8
+        int jmpToCall = _code.Position;
+        _code.EmitByte(0x00);  // Placeholder
+
+        // === Static delegate path ===
+        int staticPath = _code.Position;
+        // Patch the jz offset
+        _code.PatchByte(jmpOffset, (byte)(staticPath - jmpOffset - 1));
+
+        // For static: RCX = arg0, RDX = arg1, R8 = arg2, R9 = arg3
+        if (delegateArgCount >= 1)
+            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // RCX = arg0
+        if (delegateArgCount >= 2)
+            X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);  // RDX = arg1
+        if (delegateArgCount >= 3)
+            X64Emitter.MovRR(ref _code, VReg.R3, VReg.R10);  // R8 = arg2
+        if (delegateArgCount >= 4)
+            X64Emitter.MovRR(ref _code, VReg.R4, VReg.R11);  // R9 = arg3
+
+        // === Call site ===
+        int callSite = _code.Position;
+        // Patch jmp to call offset
+        _code.PatchByte(jmpToCall, (byte)(callSite - jmpToCall - 1));
+
+        // Call through function pointer (in R6/RSI)
+        X64Emitter.CallR(ref _code, VReg.R6);
+        RecordSafePoint();
+
+        // Restore shadow space
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+        // Handle return value
+        switch (method.ReturnKind)
+        {
+            case ReturnKind.Void:
+                break;
+
+            case ReturnKind.Int32:
+                _code.EmitByte(0x48);  // REX.W
+                _code.EmitByte(0x63);  // MOVSXD
+                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.Int32);
+                break;
+
+            case ReturnKind.Int64:
+            case ReturnKind.IntPtr:
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+                break;
+
+            case ReturnKind.Float32:
+                X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.Float32);
+                break;
+
+            case ReturnKind.Float64:
+                X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.Float64);
+                break;
+
+            default:
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+                break;
+        }
 
         return true;
     }
@@ -6923,6 +7091,15 @@ public unsafe struct ILCompiler
             // DebugConsole.WriteDecimal(mt->BaseSize);
             // DebugConsole.WriteLine();
 
+            // Special case: Delegate constructor
+            // Delegates have "runtime managed" constructors with no IL body
+            // Stack: ..., target, functionPointer
+            // The runtime provides the implementation: allocate delegate, set _firstParameter and _functionPointer
+            if (mt->IsDelegate)
+            {
+                return CompileNewobjDelegate(mt, ctor.ArgCount);
+            }
+
             // We have a constructor with MethodTable - full newobj implementation
             // Stack before: ..., arg1, ..., argN (constructor args, not including 'this')
             // Stack after: ..., obj (reference type) or value (value type)
@@ -7097,6 +7274,73 @@ public unsafe struct ILCompiler
         DebugConsole.WriteHex(token);
         DebugConsole.WriteLine();
         return false;
+    }
+
+    /// <summary>
+    /// Compile delegate constructor (runtime-provided).
+    /// Stack: ..., target, functionPointer -> ..., delegate
+    ///
+    /// Delegate constructors are "runtime managed" with no IL body.
+    /// The runtime provides: allocate delegate, set _firstParameter and _functionPointer.
+    ///
+    /// Delegate layout (from Delegate base class):
+    /// - Offset 0: MethodTable*
+    /// - Offset 8: _firstParameter (object) - target for instance delegates, null/this for static
+    /// - Offset 16: _helperObject (object)
+    /// - Offset 24: _extraFunctionPointerOrData (nint)
+    /// - Offset 32: _functionPointer (IntPtr) - the actual method to invoke
+    /// </summary>
+    private bool CompileNewobjDelegate(MethodTable* mt, int ctorArgCount)
+    {
+        // Delegate.ctor(object target, IntPtr functionPointer)
+        // Should have exactly 2 arguments
+        if (ctorArgCount != 2)
+        {
+            DebugConsole.Write("[JIT] newobj delegate: unexpected arg count ");
+            DebugConsole.WriteDecimal((uint)ctorArgCount);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        DebugConsole.Write("[newobj delegate] MT=0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.WriteLine();
+
+        // Pop args from eval stack: functionPointer first, then target
+        // Stack order: ..., target, functionPointer (functionPointer on top)
+        // VReg.R8 = x64 R12 (callee-saved), VReg.R9 = x64 R13 (callee-saved)
+        X64Emitter.Pop(ref _code, VReg.R8);   // R12 = functionPointer
+        PopEntry();
+        X64Emitter.Pop(ref _code, VReg.R9);   // R13 = target
+        PopEntry();
+
+        // Reserve shadow space
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Allocate delegate object: RhpNewFast(MethodTable* mt)
+        X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)mt);  // RCX = MT
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+        X64Emitter.CallR(ref _code, VReg.R0);
+        RecordSafePoint();
+        // RAX = new delegate object
+
+        // Store _firstParameter (offset 8) = target
+        // For instance delegates, this is the target object
+        // For static delegates, this could be null or the delegate itself
+        // The C# compiler pushes null for static methods
+        X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R9);   // [RAX+8] = R13
+
+        // Store _functionPointer (offset 32) = functionPointer
+        X64Emitter.MovMR(ref _code, VReg.R0, 32, VReg.R8);  // [RAX+32] = R12
+
+        // Restore shadow space
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+        // Push delegate object onto eval stack
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.NativeInt);
+
+        return true;
     }
 
     /// <summary>
@@ -7978,23 +8222,66 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdftn(uint token)
     {
-        // For testing: token is the function pointer address
-        // In production: would use method resolver to get address
-        ulong fnPtr = token;
-
-        // If we have a method resolver, try to resolve the token
-        if (_resolver != null)
+        // Resolve the method token using the method resolver
+        if (_resolver == null)
         {
-            ResolvedMethod resolved;
-            if (_resolver(token, out resolved) && resolved.IsValid && resolved.NativeCode != null)
-            {
-                fnPtr = (ulong)resolved.NativeCode;
-            }
-            // Otherwise fall back to treating token as direct address
+            DebugConsole.Write("[JIT] ldftn: no method resolver for token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        ResolvedMethod resolved;
+        if (!_resolver(token, out resolved) || !resolved.IsValid)
+        {
+            DebugConsole.Write("[JIT] ldftn: failed to resolve token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // For ldftn, we need a direct function pointer, not an indirect reference.
+        // If the method isn't compiled yet, we need to emit code that loads
+        // from the registry entry at runtime (since it may be compiled by then).
+        ulong fnPtr = 0;
+
+        if (resolved.NativeCode != null)
+        {
+            // Method is already compiled - use direct address
+            fnPtr = (ulong)resolved.NativeCode;
+            DebugConsole.Write("[ldftn] token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" -> fnPtr=0x");
+            DebugConsole.WriteHex(fnPtr);
+            DebugConsole.WriteLine();
+            X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
+        }
+        else if (resolved.RegistryEntry != null)
+        {
+            // Method is registered but not yet compiled.
+            // For delegates, we need the actual function pointer at delegate creation time.
+            // Emit code to load from the registry entry at runtime.
+            // By the time the ldftn executes, the target method should be compiled.
+            CompiledMethodInfo* entry = (CompiledMethodInfo*)resolved.RegistryEntry;
+            DebugConsole.Write("[ldftn] token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" -> INDIRECT via registry 0x");
+            DebugConsole.WriteHex((ulong)entry);
+            DebugConsole.WriteLine();
+
+            // Emit: mov rax, [registry + 8]  ; Load NativeCode from registry
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)entry);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);  // RAX = entry->NativeCode
+        }
+        else
+        {
+            DebugConsole.Write("[JIT] ldftn: no native code or registry for token 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
         }
 
         // Push the function pointer onto the stack
-        X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
         X64Emitter.Push(ref _code, VReg.R0);
         PushEntry(EvalStackEntry.NativeInt);  // Function pointers are native int
 

@@ -86,6 +86,9 @@ public static class TestRunner
         // Nullable<T> tests - tests generic value type with special semantics
         RunNullableTests();
 
+        // Delegate tests - tests delegate creation and invocation
+        RunDelegateTests();
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -198,6 +201,15 @@ public static class TestRunner
         RecordResult("NullableTests.TestLiftedEqualsBothDifferent", NullableTests.TestLiftedEqualsBothDifferent() == 1);
         RecordResult("NullableTests.TestLiftedEqualsBothNull", NullableTests.TestLiftedEqualsBothNull() == 1);
         RecordResult("NullableTests.TestLiftedEqualsOneNull", NullableTests.TestLiftedEqualsOneNull() == 1);
+    }
+
+    private static void RunDelegateTests()
+    {
+        RecordResult("DelegateTests.TestStaticDelegate", DelegateTests.TestStaticDelegate() == 42);
+        RecordResult("DelegateTests.TestStaticDelegateTwoArgs", DelegateTests.TestStaticDelegateTwoArgs() == 42);
+        RecordResult("DelegateTests.TestVoidDelegate", DelegateTests.TestVoidDelegate() == 42);
+        RecordResult("DelegateTests.TestDelegateInvoke", DelegateTests.TestDelegateInvoke() == 42);
+        RecordResult("DelegateTests.TestDelegateReassign", DelegateTests.TestDelegateReassign() == 42);
     }
 
     private static void RecordResult(string testName, bool passed)
@@ -2573,6 +2585,82 @@ public static class NullableTests
         int? b = null;
         bool result = a == b;
         return result ? 0 : 1;  // Should return 1 (false - value != null)
+    }
+}
+
+// =============================================================================
+// Delegate Tests
+// =============================================================================
+
+// Simple delegate type for testing
+public delegate int IntFunc(int x);
+public delegate int IntIntFunc(int x, int y);
+public delegate void VoidAction();
+
+public class DelegateTests
+{
+    // Static methods to be used as delegate targets
+    public static int Double(int x) => x * 2;
+    public static int Triple(int x) => x * 3;
+    public static int Add(int x, int y) => x + y;
+
+    private static int _sideEffect;
+    public static void SetSideEffect() { _sideEffect = 42; }
+
+    // Instance field for instance delegate testing
+    public int InstanceValue = 2;
+    public int InstanceDouble(int x) => x * InstanceValue;
+
+    /// <summary>
+    /// Test simple static delegate creation and invocation.
+    /// Creates a delegate pointing to a static method and invokes it.
+    /// </summary>
+    public static int TestStaticDelegate()
+    {
+        IntFunc f = Double;
+        return f(21);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test static delegate with two arguments.
+    /// </summary>
+    public static int TestStaticDelegateTwoArgs()
+    {
+        IntIntFunc f = Add;
+        return f(20, 22);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test void delegate invocation.
+    /// </summary>
+    public static int TestVoidDelegate()
+    {
+        _sideEffect = 0;
+        VoidAction a = SetSideEffect;
+        a();
+        return _sideEffect;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test delegate invocation with explicit .Invoke() call.
+    /// (This is semantically identical to f(21) but uses different IL)
+    /// </summary>
+    public static int TestDelegateInvoke()
+    {
+        IntFunc f = Double;
+        return f.Invoke(21);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test reassigning a delegate to a different method.
+    /// </summary>
+    public static int TestDelegateReassign()
+    {
+        IntFunc f = Double;
+        int first = f(10);  // 20
+        f = Triple;
+        int second = f(10);  // 30
+        return first + second - 8;  // 20 + 30 - 8 = 42
     }
 }
 

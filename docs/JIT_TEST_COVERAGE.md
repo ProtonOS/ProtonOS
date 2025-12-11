@@ -56,7 +56,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ### Special Calls
 - ⚠️ Tail calls (tail. prefix parsed but ignored)
-- ❌ Indirect calls through delegates
+- ✅ Indirect calls through delegates (Delegate.Invoke)
 - ❌ calli (indirect call through function pointer)
 
 ---
@@ -207,10 +207,19 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ## 8. Delegates and Events
 
 ### Delegate Creation
-- ❌ ldftn (load function pointer)
-- ❌ ldvirtftn (load virtual function pointer)
-- ❌ newobj for delegate
-- ❌ Delegate.Invoke
+- ✅ ldftn (load function pointer)
+- ⚠️ ldvirtftn (load virtual function pointer) - infrastructure ready, untested
+- ✅ newobj for delegate (static delegates)
+- ✅ Delegate.Invoke (inline dispatch code generation)
+
+### Delegate Invocation Details
+- ✅ Static delegate (target=null, function pointer called directly)
+- ⚠️ Instance delegate (target=object, function pointer called with target as first arg) - untested
+- ✅ Single-argument delegates
+- ✅ Multi-argument delegates (2+ args)
+- ✅ Void-returning delegates
+- ✅ Value-returning delegates
+- ✅ Delegate reassignment
 
 ### Multicast Delegates
 - ❌ Delegate.Combine

@@ -1425,12 +1425,16 @@ public static unsafe class AssemblyLoader
 
         // Check if it's a value type (extends System.ValueType or System.Enum)
         bool isValueType = false;
+        bool isDelegate = false;
         bool isInterface = (typeDefFlags & 0x00000020) != 0;  // tdInterface
 
         if (!isInterface && extendsIdx.RowId != 0)
         {
             // Check if extends System.ValueType or System.Enum
             isValueType = IsValueTypeBase(asm, extendsIdx);
+            // Check if extends System.MulticastDelegate
+            if (!isValueType)
+                isDelegate = IsDelegateBase(asm, extendsIdx);
         }
 
         // Compute instance size from fields
@@ -1479,6 +1483,8 @@ public static unsafe class AssemblyLoader
             flags |= (ushort)(MTFlags.IsInterface >> 16);
         if (isValueType)
             flags |= (ushort)(MTFlags.IsValueType >> 16);
+        if (isDelegate)
+            flags |= (ushort)(MTFlags.IsDelegate >> 16);
         mt->_usFlags = flags;
         mt->_uBaseSize = instanceSize;
         mt->_relatedType = baseMT;  // Point to base class MT
@@ -1958,6 +1964,46 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Check if a TypeDefOrRef coded index refers to System.MulticastDelegate.
+    /// </summary>
+    private static bool IsDelegateBase(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // TypeDefOrRef: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            // Get the TypeRef name and namespace
+            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            // Check for System.MulticastDelegate
+            if (ns != null && name != null)
+            {
+                bool isSysNs = IsSystemNamespace(ns);
+                bool isMcd = IsMulticastDelegateName(name);
+                // Debug: trace delegate base check
+                // (Enable for specific types)
+                // DebugConsole.Write("[IsDelegateBase] ns='");
+                // for (int i = 0; i < 10 && ns[i] != 0; i++)
+                //     DebugConsole.WriteByte(ns[i]);
+                // DebugConsole.Write("' name='");
+                // for (int i = 0; i < 20 && name[i] != 0; i++)
+                //     DebugConsole.WriteByte(name[i]);
+                // DebugConsole.Write("' isSystem=");
+                // DebugConsole.Write(isSysNs ? "Y" : "N");
+                // DebugConsole.Write(" isMCD=");
+                // DebugConsole.Write(isMcd ? "Y" : "N");
+                // DebugConsole.WriteLine();
+                if (isSysNs && isMcd)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Compute instance size for a type from its fields, including base class.
     /// </summary>
     private static uint ComputeInstanceSize(LoadedAssembly* asm, uint typeDefRow, bool isValueType)
@@ -1971,17 +2017,32 @@ public static unsafe class AssemblyLoader
             CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
             if (extendsIdx.RowId != 0 && !IsValueTypeBase(asm, extendsIdx) && !IsObjectBase(asm, extendsIdx))
             {
-                // Get the base class's method table to get its size
-                uint baseSize = GetBaseClassSize(asm, extendsIdx);
-                // Instance size base class debug (verbose - commented out)
-                // DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
-                // DebugConsole.WriteDecimal(typeDefRow);
-                // DebugConsole.Write(" baseSize=");
-                // DebugConsole.WriteDecimal(baseSize);
-                if (baseSize > 8)
+                // Special handling for delegates: System.Delegate and System.MulticastDelegate
+                // may not be resolved from external assemblies, but we know their layout:
+                // - offset 0: MethodTable* (8 bytes)
+                // - offset 8: _firstParameter (object, 8 bytes)
+                // - offset 16: _helperObject (object, 8 bytes)
+                // - offset 24: _extraFunctionPointerOrData (nint, 8 bytes)
+                // - offset 32: _functionPointer (IntPtr, 8 bytes)
+                // Total: 40 bytes
+                if (IsDelegateBase(asm, extendsIdx))
                 {
-                    // Base class size already includes the object header
-                    size = baseSize;
+                    size = 40;  // Fixed delegate base size
+                }
+                else
+                {
+                    // Get the base class's method table to get its size
+                    uint baseSize = GetBaseClassSize(asm, extendsIdx);
+                    // Instance size base class debug (verbose - commented out)
+                    // DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
+                    // DebugConsole.WriteDecimal(typeDefRow);
+                    // DebugConsole.Write(" baseSize=");
+                    // DebugConsole.WriteDecimal(baseSize);
+                    if (baseSize > 8)
+                    {
+                        // Base class size already includes the object header
+                        size = baseSize;
+                    }
                 }
             }
         }
@@ -2711,6 +2772,19 @@ public static unsafe class AssemblyLoader
         return name[0] == 'N' && name[1] == 'u' && name[2] == 'l' && name[3] == 'l' &&
                name[4] == 'a' && name[5] == 'b' && name[6] == 'l' && name[7] == 'e' &&
                name[8] == '`' && name[9] == '1' && name[10] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is "MulticastDelegate".
+    /// </summary>
+    private static bool IsMulticastDelegateName(byte* name)
+    {
+        // "MulticastDelegate" = M u l t i c a s t D e l e g a t e \0
+        return name[0] == 'M' && name[1] == 'u' && name[2] == 'l' && name[3] == 't' &&
+               name[4] == 'i' && name[5] == 'c' && name[6] == 'a' && name[7] == 's' &&
+               name[8] == 't' && name[9] == 'D' && name[10] == 'e' && name[11] == 'l' &&
+               name[12] == 'e' && name[13] == 'g' && name[14] == 'a' && name[15] == 't' &&
+               name[16] == 'e' && name[17] == 0;
     }
 
     /// <summary>
@@ -3500,6 +3574,359 @@ public static unsafe class AssemblyLoader
             b++;
         }
         return *a == *b;
+    }
+
+    /// <summary>
+    /// Check if the name is "Invoke".
+    /// </summary>
+    private static bool IsInvokeName(byte* name)
+    {
+        // "Invoke" = I n v o k e \0
+        return name[0] == 'I' && name[1] == 'n' && name[2] == 'v' &&
+               name[3] == 'o' && name[4] == 'k' && name[5] == 'e' && name[6] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is ".ctor".
+    /// </summary>
+    private static bool IsCtorName(byte* name)
+    {
+        // ".ctor" = . c t o r \0
+        return name[0] == '.' && name[1] == 'c' && name[2] == 't' &&
+               name[3] == 'o' && name[4] == 'r' && name[5] == 0;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef token is a delegate constructor.
+    /// Delegates have "runtime managed" constructors with no IL body.
+    /// </summary>
+    /// <param name="asmId">Assembly ID containing the MethodDef</param>
+    /// <param name="methodDefToken">MethodDef token (0x06xxxxxx)</param>
+    /// <param name="delegateMT">Output: the delegate type's MethodTable</param>
+    /// <param name="argCount">Output: number of constructor args (excluding 'this')</param>
+    /// <returns>True if this is a delegate constructor</returns>
+    public static bool IsDelegateConstructor(uint asmId, uint methodDefToken,
+                                              out MethodTable* delegateMT, out int argCount)
+    {
+        delegateMT = null;
+        argCount = 0;
+
+        LoadedAssembly* asm = GetAssembly(asmId);
+        if (asm == null)
+        {
+            DebugConsole.Write("[IsDelegateCtor] asm null for ");
+            DebugConsole.WriteDecimal(asmId);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        uint methodRow = methodDefToken & 0x00FFFFFF;
+        if (methodRow == 0)
+            return false;
+
+        // Check if method name is ".ctor"
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+        // Debug: trace ctor name check for delegate candidate tokens
+        if (methodRow >= 0xF0 && methodRow <= 0xFF)
+        {
+            DebugConsole.Write("[IsDelegateCtor] token 0x");
+            DebugConsole.WriteHex(methodDefToken);
+            DebugConsole.Write(" name='");
+            if (methodName != null)
+            {
+                for (int i = 0; i < 10 && methodName[i] != 0; i++)
+                    DebugConsole.WriteByte(methodName[i]);
+            }
+            DebugConsole.Write("' isCtorName=");
+            DebugConsole.Write((methodName != null && IsCtorName(methodName)) ? "Y" : "N");
+            DebugConsole.WriteLine();
+        }
+
+        if (methodName == null || !IsCtorName(methodName))
+            return false;
+
+        // Find which TypeDef owns this MethodDef
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint ownerTypeRow = 0;
+
+        // Debug: passed name check, now finding owner type
+        if (methodRow >= 0xF0 && methodRow <= 0xFF)
+        {
+            DebugConsole.Write("[IsDelegateCtor] passed name check, typeDefCount=");
+            DebugConsole.WriteDecimal(typeDefCount);
+            DebugConsole.WriteLine();
+        }
+
+        for (uint t = 1; t <= typeDefCount; t++)
+        {
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t);
+            uint methodEnd = (t == typeDefCount)
+                ? asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1
+                : MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t + 1);
+
+            if (methodRow >= methodStart && methodRow < methodEnd)
+            {
+                ownerTypeRow = t;
+                break;
+            }
+        }
+
+        if (ownerTypeRow == 0)
+        {
+            if (methodRow >= 0xF0 && methodRow <= 0xFF)
+            {
+                DebugConsole.Write("[IsDelegateCtor] ownerTypeRow=0 for method ");
+                DebugConsole.WriteDecimal(methodRow);
+                DebugConsole.WriteLine();
+            }
+            return false;
+        }
+
+        // Debug: found owner type
+        if (methodRow >= 0xF0 && methodRow <= 0xFF)
+        {
+            DebugConsole.Write("[IsDelegateCtor] ownerTypeRow=");
+            DebugConsole.WriteDecimal(ownerTypeRow);
+            DebugConsole.WriteLine();
+        }
+
+        // Get or create the type's MethodTable
+        uint typeDefToken = 0x02000000 | ownerTypeRow;
+        delegateMT = asm->Types.Lookup(typeDefToken);
+        if (delegateMT == null)
+        {
+            delegateMT = CreateTypeDefMethodTable(asm, typeDefToken);
+        }
+        if (delegateMT == null)
+        {
+            if (methodRow >= 0xF0 && methodRow <= 0xFF)
+                DebugConsole.WriteLine("[IsDelegateCtor] delegateMT null after create");
+            return false;
+        }
+
+        // Check if it's a delegate type
+        if (!delegateMT->IsDelegate)
+        {
+            if (methodRow >= 0xF0 && methodRow <= 0xFF)
+            {
+                DebugConsole.Write("[IsDelegateCtor] MT not delegate. MT=0x");
+                DebugConsole.WriteHex((ulong)delegateMT);
+                DebugConsole.Write(" flags=0x");
+                DebugConsole.WriteHex(delegateMT->CombinedFlags);
+                DebugConsole.WriteLine();
+            }
+            return false;
+        }
+
+        // Parse signature to get arg count
+        // Delegate constructor signature: instance void(object, native int)
+        // Should have 2 args (target, functionPointer)
+        uint sigBlobIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigBlobIdx, out uint sigLen);
+        if (sig != null && sigLen >= 2)
+        {
+            // sig[0] = calling convention (should have HASTHIS)
+            // sig[1] = param count
+            argCount = sig[1];
+        }
+        else
+        {
+            // Assume 2 args (standard delegate ctor)
+            argCount = 2;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if a MethodDef token is a delegate Invoke method.
+    /// Used when resolving callvirt with MethodDef tokens (not MemberRef).
+    /// </summary>
+    /// <param name="asmId">Assembly ID where the MethodDef is defined</param>
+    /// <param name="methodDefToken">The MethodDef token (0x06 table)</param>
+    /// <param name="delegateMT">Output: the delegate type's MethodTable</param>
+    /// <param name="argCount">Output: number of Invoke args (excluding 'this')</param>
+    /// <param name="returnKind">Output: return type kind</param>
+    /// <returns>True if this is a delegate Invoke method</returns>
+    public static bool IsDelegateInvokeMethodDef(uint asmId, uint methodDefToken,
+                                                  out MethodTable* delegateMT, out int argCount,
+                                                  out ReturnKind returnKind)
+    {
+        delegateMT = null;
+        argCount = 0;
+        returnKind = ReturnKind.Void;
+
+        LoadedAssembly* asm = GetAssembly(asmId);
+        if (asm == null)
+            return false;
+
+        uint methodRow = methodDefToken & 0x00FFFFFF;
+        if (methodRow == 0)
+            return false;
+
+        // Check if method name is "Invoke"
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+        // Debug: trace Invoke check for delegate candidate tokens
+        if (methodRow >= 0xF0 && methodRow <= 0xFF)
+        {
+            DebugConsole.Write("[IsDelegateInvoke] token 0x");
+            DebugConsole.WriteHex(methodDefToken);
+            DebugConsole.Write(" name='");
+            if (methodName != null)
+            {
+                for (int i = 0; i < 10 && methodName[i] != 0; i++)
+                    DebugConsole.WriteByte(methodName[i]);
+            }
+            DebugConsole.Write("' isInvoke=");
+            DebugConsole.Write((methodName != null && IsInvokeName(methodName)) ? "Y" : "N");
+            DebugConsole.WriteLine();
+        }
+
+        if (methodName == null || !IsInvokeName(methodName))
+            return false;
+
+        // Find which TypeDef owns this MethodDef
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint ownerTypeRow = 0;
+
+        for (uint t = 1; t <= typeDefCount; t++)
+        {
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t);
+            uint methodEnd = (t == typeDefCount)
+                ? asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1
+                : MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t + 1);
+
+            if (methodRow >= methodStart && methodRow < methodEnd)
+            {
+                ownerTypeRow = t;
+                break;
+            }
+        }
+
+        if (ownerTypeRow == 0)
+            return false;
+
+        // Get or create the type's MethodTable
+        uint typeDefToken = 0x02000000 | ownerTypeRow;
+        delegateMT = asm->Types.Lookup(typeDefToken);
+        if (delegateMT == null)
+        {
+            delegateMT = CreateTypeDefMethodTable(asm, typeDefToken);
+        }
+        if (delegateMT == null)
+            return false;
+
+        // Check if it's a delegate type
+        if (!delegateMT->IsDelegate)
+            return false;
+
+        // Parse signature to get arg count and return type
+        uint sigBlobIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigBlobIdx, out uint sigLen);
+        if (sig != null && sigLen >= 3)
+        {
+            // sig[0] = calling convention (should have HASTHIS)
+            // sig[1] = param count
+            argCount = sig[1];
+
+            // sig[2] = return type (element type)
+            byte retType = sig[2];
+            returnKind = retType switch
+            {
+                0x01 => ReturnKind.Void,       // ELEMENT_TYPE_VOID
+                0x04 => ReturnKind.Int32,      // ELEMENT_TYPE_I1 (sign-extend to int32)
+                0x05 => ReturnKind.Int32,      // ELEMENT_TYPE_U1 (zero-extend to int32)
+                0x06 => ReturnKind.Int32,      // ELEMENT_TYPE_I2 (sign-extend to int32)
+                0x07 => ReturnKind.Int32,      // ELEMENT_TYPE_U2 (zero-extend to int32)
+                0x08 => ReturnKind.Int32,      // ELEMENT_TYPE_I4
+                0x09 => ReturnKind.Int32,      // ELEMENT_TYPE_U4 (treated as int32)
+                0x0A => ReturnKind.Int64,      // ELEMENT_TYPE_I8
+                0x0B => ReturnKind.Int64,      // ELEMENT_TYPE_U8 (treated as int64)
+                0x0C => ReturnKind.Float32,    // ELEMENT_TYPE_R4
+                0x0D => ReturnKind.Float64,    // ELEMENT_TYPE_R8
+                0x18 => ReturnKind.IntPtr,     // ELEMENT_TYPE_I
+                0x19 => ReturnKind.IntPtr,     // ELEMENT_TYPE_U
+                _ => ReturnKind.IntPtr,        // Default for objects/refs
+            };
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef token refers to a delegate Invoke method.
+    /// Returns true if this is a delegate.Invoke call that needs runtime handling.
+    /// </summary>
+    /// <param name="sourceAsmId">Source assembly ID where the MemberRef is defined</param>
+    /// <param name="memberRefToken">The MemberRef token (0x0A table)</param>
+    /// <param name="delegateMT">Output: the delegate type's MethodTable</param>
+    /// <returns>True if this is a delegate Invoke method</returns>
+    public static bool IsDelegateInvoke(uint sourceAsmId, uint memberRefToken, out MethodTable* delegateMT)
+    {
+        delegateMT = null;
+
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+            return false;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get member name to check if it's "Invoke"
+        uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        if (memberName == null || !IsInvokeName(memberName))
+            return false;  // Not "Invoke"
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        // Resolve the containing type
+        LoadedAssembly* targetAsm = null;
+        uint typeDefToken = 0;
+
+        if (classRef.Table == MetadataTableId.TypeRef)
+        {
+            // MemberRef in another assembly via TypeRef
+            if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
+                return false;
+        }
+        else if (classRef.Table == MetadataTableId.TypeDef)
+        {
+            // MemberRef in same assembly
+            targetAsm = sourceAsm;
+            typeDefToken = 0x02000000 | classRef.RowId;
+        }
+        else
+        {
+            // TypeSpec or other - could be generic delegate, handle later if needed
+            return false;
+        }
+
+        if (targetAsm == null || typeDefToken == 0)
+            return false;
+
+        // Get the type's MethodTable
+        delegateMT = targetAsm->Types.Lookup(typeDefToken);
+        if (delegateMT == null)
+        {
+            // Not created yet - create on demand
+            delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+        }
+        if (delegateMT == null)
+            return false;
+
+        // Check if it's a delegate type
+        if (!delegateMT->IsDelegate)
+            return false;
+
+        return true;
     }
 
     /// <summary>

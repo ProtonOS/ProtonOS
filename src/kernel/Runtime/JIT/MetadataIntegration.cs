@@ -1638,6 +1638,33 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
+        // Check if this MemberRef is a delegate Invoke method
+        // Delegate Invoke methods have "runtime managed" attribute - no IL body
+        // We return delegate invoke info so callvirt can generate runtime dispatch code
+        MethodTable* delegateMT;
+        if (AssemblyLoader.IsDelegateInvoke(_currentAssemblyId, token, out delegateMT))
+        {
+            result.IsValid = true;
+            result.IsDelegateInvoke = true;
+            result.MethodTable = delegateMT;
+            result.NativeCode = null;  // No native code - runtime dispatched
+            result.HasThis = true;  // Invoke is always instance method
+            result.ArgCount = 0;  // Will be parsed from MemberRef signature
+            result.ReturnKind = ReturnKind.IntPtr;  // Generic fallback
+            result.IsVirtual = false;
+            result.VtableSlot = -1;
+            result.IsInterfaceMethod = false;
+            result.InterfaceMT = null;
+            result.InterfaceMethodSlot = -1;
+            result.RegistryEntry = null;
+
+            // Parse the MemberRef signature to get arg count and return type
+            // This is needed for proper delegate invocation code generation
+            ParseMemberRefSignatureForDelegate(_currentAssemblyId, token, ref result);
+
+            return true;
+        }
+
         // Check if this MemberRef is on a generic instantiation (e.g., SimpleList<int>)
         // If so, get the instantiated MethodTable which has the type argument info
         MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);
@@ -2881,6 +2908,23 @@ public static unsafe class MetadataIntegration
     {
         result = default;
 
+        // Debug: trace which tokens are being resolved
+        uint tableId = (token >> 24) & 0xFF;
+        if (tableId == 0x06)
+        {
+            // Only trace MethodDef tokens that might be delegate ctors
+            uint methodRow = token & 0x00FFFFFF;
+            // Tokens 0xF6, 0xFA, 0xFE are the delegate ctors based on error messages
+            if (methodRow >= 0xF0 && methodRow <= 0xFF)
+            {
+                DebugConsole.Write("[ResolveMethod] MethodDef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" asm=");
+                DebugConsole.WriteDecimal(_currentAssemblyId);
+                DebugConsole.WriteLine();
+            }
+        }
+
         // First check if already in registry (use assembly-aware lookup)
         CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(token, _currentAssemblyId);
         if (info != null)
@@ -2928,8 +2972,7 @@ public static unsafe class MetadataIntegration
         }
 
         // Not compiled yet - need to JIT it
-        // Extract table ID from token to determine token type
-        uint tableId = (token >> 24) & 0xFF;
+        // Extract table ID from token to determine token type (reusing tableId from above)
 
         if (tableId == 0x06) // MethodDef token
         {
@@ -2959,6 +3002,55 @@ public static unsafe class MetadataIntegration
                 result.VtableSlot = -1;  // Not a direct vtable slot
                 result.MethodTable = null;
                 result.RegistryEntry = null;
+                return true;
+            }
+
+            // Check if this MethodDef is a delegate constructor
+            // Delegates have "runtime managed" constructors with no IL body
+            // We return delegate info so newobj can generate runtime dispatch code
+            MethodTable* delegateMT;
+            int delegateArgCount;
+            if (AssemblyLoader.IsDelegateConstructor(_currentAssemblyId, token, out delegateMT, out delegateArgCount))
+            {
+                DebugConsole.Write("[ResolveMethod] Delegate ctor detected 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)delegateMT);
+                DebugConsole.Write(" args=");
+                DebugConsole.WriteDecimal((uint)delegateArgCount);
+                DebugConsole.WriteLine();
+                result.IsValid = true;
+                result.NativeCode = null;  // No native code - runtime handled
+                result.HasThis = true;  // Constructor is instance method
+                result.ArgCount = (byte)delegateArgCount;
+                result.ReturnKind = ReturnKind.Void;  // Constructors return void
+                result.MethodTable = delegateMT;  // Important: set MT so newobj can detect delegate
+                result.RegistryEntry = null;
+                result.IsVirtual = false;
+                result.VtableSlot = -1;
+                return true;
+            }
+
+            // Check if this MethodDef is a delegate Invoke method
+            // Delegates have "runtime managed" Invoke methods with no IL body
+            // We return delegate invoke info so callvirt can generate runtime dispatch code
+            int invokeArgCount;
+            ReturnKind invokeReturnKind;
+            if (AssemblyLoader.IsDelegateInvokeMethodDef(_currentAssemblyId, token, out delegateMT, out invokeArgCount, out invokeReturnKind))
+            {
+                result.IsValid = true;
+                result.IsDelegateInvoke = true;
+                result.NativeCode = null;  // No native code - runtime dispatched
+                result.HasThis = true;  // Invoke is always instance method
+                result.ArgCount = (byte)invokeArgCount;
+                result.ReturnKind = invokeReturnKind;
+                result.MethodTable = delegateMT;
+                result.RegistryEntry = null;
+                result.IsVirtual = false;
+                result.VtableSlot = -1;
+                result.IsInterfaceMethod = false;
+                result.InterfaceMT = null;
+                result.InterfaceMethodSlot = -1;
                 return true;
             }
 
@@ -3112,5 +3204,87 @@ public static unsafe class MetadataIntegration
         DebugConsole.Write("/");
         DebugConsole.WriteDecimal(MaxFieldLayoutEntries);
         DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Parse a MemberRef signature to get arg count and return type for delegate Invoke.
+    /// </summary>
+    private static void ParseMemberRefSignatureForDelegate(uint asmId, uint memberRefToken, ref ResolvedMethod result)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(asmId);
+        if (asm == null)
+            return;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return;
+
+        uint sigIdx = MetadataReader.GetMemberRefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 2)
+            return;
+
+        // Parse method signature
+        int sigPos = 0;
+        byte callConv = sig[sigPos++];
+        result.HasThis = (callConv & 0x20) != 0;
+
+        // Decode compressed parameter count
+        byte b = sig[sigPos++];
+        uint paramCount = 0;
+        if ((b & 0x80) == 0)
+            paramCount = b;
+        else if ((b & 0xC0) == 0x80)
+            paramCount = (uint)(((b & 0x3F) << 8) | sig[sigPos++]);
+        else if ((b & 0xE0) == 0xC0)
+        {
+            paramCount = (uint)(((b & 0x1F) << 24) | (sig[sigPos] << 16) | (sig[sigPos + 1] << 8) | sig[sigPos + 2]);
+            sigPos += 3;
+        }
+
+        result.ArgCount = (byte)paramCount;
+
+        // Parse return type
+        if (sigPos < sigLen)
+        {
+            byte retType = sig[sigPos];
+
+            // Map ECMA-335 element types to ReturnKind
+            switch (retType)
+            {
+                case 0x01: // ELEMENT_TYPE_VOID
+                    result.ReturnKind = ReturnKind.Void;
+                    break;
+                case 0x02: // ELEMENT_TYPE_BOOLEAN
+                case 0x03: // ELEMENT_TYPE_CHAR
+                case 0x04: // ELEMENT_TYPE_I1
+                case 0x05: // ELEMENT_TYPE_U1
+                case 0x06: // ELEMENT_TYPE_I2
+                case 0x07: // ELEMENT_TYPE_U2
+                case 0x08: // ELEMENT_TYPE_I4
+                case 0x09: // ELEMENT_TYPE_U4
+                    result.ReturnKind = ReturnKind.Int32;
+                    break;
+                case 0x0A: // ELEMENT_TYPE_I8
+                case 0x0B: // ELEMENT_TYPE_U8
+                    result.ReturnKind = ReturnKind.Int64;
+                    break;
+                case 0x0C: // ELEMENT_TYPE_R4
+                    result.ReturnKind = ReturnKind.Float32;
+                    break;
+                case 0x0D: // ELEMENT_TYPE_R8
+                    result.ReturnKind = ReturnKind.Float64;
+                    break;
+                case 0x18: // ELEMENT_TYPE_I (native int)
+                case 0x19: // ELEMENT_TYPE_U (native uint)
+                case 0x1C: // ELEMENT_TYPE_OBJECT
+                case 0x0E: // ELEMENT_TYPE_STRING
+                case 0x12: // ELEMENT_TYPE_CLASS
+                case 0x14: // ELEMENT_TYPE_SZARRAY
+                default:
+                    result.ReturnKind = ReturnKind.IntPtr;
+                    break;
+            }
+        }
     }
 }

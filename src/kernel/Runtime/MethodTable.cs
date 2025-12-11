@@ -61,6 +61,9 @@ public static class MTFlags
 
     /// <summary>Type is Nullable&lt;T&gt; (requires special boxing/unboxing semantics).</summary>
     public const uint IsNullable = 0x00010000;
+
+    /// <summary>Type is a delegate (inherits from MulticastDelegate).</summary>
+    public const uint IsDelegate = 0x00800000;  // In upper 16 bits (flags region)
 }
 
 /// <summary>
@@ -144,6 +147,9 @@ public unsafe struct MethodTable
 
     /// <summary>Whether this is Nullable&lt;T&gt; (requires special boxing/unboxing).</summary>
     public bool IsNullable => (CombinedFlags & MTFlags.IsNullable) != 0;
+
+    /// <summary>Whether this is a delegate type (inherits from MulticastDelegate).</summary>
+    public bool IsDelegate => (CombinedFlags & MTFlags.IsDelegate) != 0;
 
     /// <summary>Whether this type has a component size (array or string).</summary>
     public bool HasComponentSize => (CombinedFlags & MTFlags.HasComponentSize) != 0;
