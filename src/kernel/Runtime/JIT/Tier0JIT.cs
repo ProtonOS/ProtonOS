@@ -142,12 +142,12 @@ public static unsafe class Tier0JIT
         if (assemblyId == 4 && methodToken == 0x0600002E)
         {
             // DebugConsole.Write("[MethodHeader] Raw 12 bytes: ");
-            for (int i = 0; i < 12; i++)
-            {
-                DebugConsole.WriteHex((ulong)methodBodyPtr[i]);
-                DebugConsole.Write(" ");
-            }
-            DebugConsole.WriteLine();
+            // for (int i = 0; i < 12; i++)
+            // {
+            //     DebugConsole.WriteHex((ulong)methodBodyPtr[i]);
+            //     DebugConsole.Write(" ");
+            // }
+            // DebugConsole.WriteLine();
             // DebugConsole.Write("[MethodHeader] Parsed: IsTiny=");
             // DebugConsole.WriteDecimal(body.IsTiny ? 1 : 0);
             // DebugConsole.Write(" MaxStack=");
@@ -168,19 +168,19 @@ public static unsafe class Tier0JIT
         if (sigBlob != null && sigLen > 0)
         {
             // Targeted signature dump for VirtioDevice.Initialize (asm 3, token 0x06000015)
-            if (assemblyId == 3 && methodToken == 0x06000015)
-            {
-                // DebugConsole.Write("[Tier0JIT] Sig dump len=");
-                // DebugConsole.WriteDecimal((int)sigLen);
-                // DebugConsole.Write(": ");
-                byte* p = sigBlob;
-                for (int i = 0; i < sigLen && i < 32; i++)
-                {
-                    DebugConsole.WriteHex((ulong)p[i]);
-                    DebugConsole.Write(" ");
-                }
-                DebugConsole.WriteLine();
-            }
+            // if (assemblyId == 3 && methodToken == 0x06000015)
+            // {
+            //     DebugConsole.Write("[Tier0JIT] Sig dump len=");
+            //     DebugConsole.WriteDecimal((int)sigLen);
+            //     DebugConsole.Write(": ");
+            //     byte* p = sigBlob;
+            //     for (int i = 0; i < sigLen && i < 32; i++)
+            //     {
+            //         DebugConsole.WriteHex((ulong)p[i]);
+            //         DebugConsole.Write(" ");
+            //     }
+            //     DebugConsole.WriteLine();
+            // }
 
             if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out var methodSig))
             {
@@ -227,80 +227,80 @@ public static unsafe class Tier0JIT
         DebugConsole.WriteHex(body.LocalVarSigToken);
         DebugConsole.WriteLine();
 
-        if (assemblyId == 4 && methodToken == 0x0600002A)
-        {
-            // DebugConsole.Write("[Tier0JIT] IL dump Bind size=");
-            // DebugConsole.WriteDecimal((uint)body.CodeSize);
-            // DebugConsole.WriteLine();
-            byte* ilPtr = body.ILCode;
-            int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
-            for (int i = 0; i < dumpLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)ilPtr[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((dumpLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
-        else if (assemblyId == 3 && methodToken == 0x06000006)
-        {
-            // DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.Initialize size=");
-            // DebugConsole.WriteDecimal((uint)body.CodeSize);
-            // DebugConsole.WriteLine();
-            byte* ilPtr = body.ILCode;
-            int dumpLen = body.CodeSize < 512 ? (int)body.CodeSize : 512;
-            for (int i = 0; i < dumpLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)ilPtr[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((dumpLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
-        else if (assemblyId == 3 && (methodToken == 0x06000007 || methodToken == 0x06000008))
-        {
-            // DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.InitializeVariant token=0x");
-            // DebugConsole.WriteHex(methodToken);
-            // DebugConsole.Write(" size=");
-            // DebugConsole.WriteDecimal((uint)body.CodeSize);
-            // DebugConsole.WriteLine();
-            byte* ilPtr = body.ILCode;
-            int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
-            for (int i = 0; i < dumpLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)ilPtr[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((dumpLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
+        // if (assemblyId == 4 && methodToken == 0x0600002A)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] IL dump Bind size=");
+        //     DebugConsole.WriteDecimal((uint)body.CodeSize);
+        //     DebugConsole.WriteLine();
+        //     byte* ilPtr = body.ILCode;
+        //     int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
+        //     for (int i = 0; i < dumpLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)ilPtr[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((dumpLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
+        // else if (assemblyId == 3 && methodToken == 0x06000006)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.Initialize size=");
+        //     DebugConsole.WriteDecimal((uint)body.CodeSize);
+        //     DebugConsole.WriteLine();
+        //     byte* ilPtr = body.ILCode;
+        //     int dumpLen = body.CodeSize < 512 ? (int)body.CodeSize : 512;
+        //     for (int i = 0; i < dumpLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)ilPtr[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((dumpLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
+        // else if (assemblyId == 3 && (methodToken == 0x06000007 || methodToken == 0x06000008))
+        // {
+        //     DebugConsole.Write("[Tier0JIT] IL dump VirtioDevice.InitializeVariant token=0x");
+        //     DebugConsole.WriteHex(methodToken);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal((uint)body.CodeSize);
+        //     DebugConsole.WriteLine();
+        //     byte* ilPtr = body.ILCode;
+        //     int dumpLen = body.CodeSize < 1024 ? (int)body.CodeSize : 1024;
+        //     for (int i = 0; i < dumpLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)ilPtr[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((dumpLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
 
         // Fetch method name for targeted debugging
         uint dbgMethodNameIdx = MetadataReader.GetMethodDefName(ref assembly->Tables, ref assembly->Sizes, methodRid);
         byte* dbgMethodName = MetadataReader.GetString(ref assembly->Metadata, dbgMethodNameIdx);
 
-        if (assemblyId == 3)
-        {
-            // DebugConsole.Write("[Tier0JIT] asm3 method token=0x");
-            // DebugConsole.WriteHex(methodToken);
-            // DebugConsole.Write(" name=");
-            if (dbgMethodName != null)
-            {
-                byte* p = dbgMethodName;
-                while (p != null && *p != 0)
-                {
-                    DebugConsole.WriteByte(*p);
-                    p++;
-                }
-            }
-            DebugConsole.WriteLine();
-        }
+        // if (assemblyId == 3)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] asm3 method token=0x");
+        //     DebugConsole.WriteHex(methodToken);
+        //     DebugConsole.Write(" name=");
+        //     if (dbgMethodName != null)
+        //     {
+        //         byte* p = dbgMethodName;
+        //         while (p != null && *p != 0)
+        //         {
+        //             DebugConsole.WriteByte(*p);
+        //             p++;
+        //         }
+        //     }
+        //     DebugConsole.WriteLine();
+        // }
 
         if (assemblyId == 3 && NameEquals(dbgMethodName, "Initialize"))
         {
@@ -440,67 +440,67 @@ public static unsafe class Tier0JIT
 
         int codeSize = (int)compiler.CodeSize;
 
-        bool isTargetedDump = (assemblyId == 4 && methodToken == 0x0600002A) ||
-                              (assemblyId == 3 && (methodToken == 0x06000006 || methodToken == 0x06000007 ||
-                                                   methodToken == 0x06000008 || methodToken == 0x06000009));
-
-        if (isTargetedDump)
-        {
-            // DebugConsole.Write("[Tier0JIT] Code dump 0x");
-            // DebugConsole.WriteHex(methodToken);
-            // DebugConsole.Write(" size=");
-            // DebugConsole.WriteDecimal((uint)codeSize);
-            // DebugConsole.WriteLine();
-            byte* codeBytes = (byte*)code;
-            int dumpLen = codeSize < 2048 ? codeSize : 2048;
-            for (int i = 0; i < dumpLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)codeBytes[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((dumpLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
-
-        // Focused dump: MapBars (token 0x06000009) first 256 bytes to inspect prologue
-        if (assemblyId == 3 && methodToken == 0x06000009)
-        {
-            // DebugConsole.Write("[Tier0JIT] Code dump partial 0x06000009 len=");
-            int partialLen = codeSize < 256 ? codeSize : 256;
-            DebugConsole.WriteDecimal((uint)partialLen);
-            DebugConsole.WriteLine();
-            byte* codeBytes = (byte*)code;
-            for (int i = 0; i < partialLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)codeBytes[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((partialLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
-
-        // Focused dump: Virtqueue.AllocateBuffers (token 0x0600001D) around the failing offset ~0x459
-        if (assemblyId == 3 && methodToken == 0x0600001D)
-        {
-            // DebugConsole.Write("[Tier0JIT] Code dump partial 0x0600001D len=");
-            int partialLen = codeSize < 1400 ? codeSize : 1400; // cover the failing offset at ~0x459
-            DebugConsole.WriteDecimal((uint)partialLen);
-            DebugConsole.WriteLine();
-            byte* codeBytes = (byte*)code;
-            for (int i = 0; i < partialLen; i++)
-            {
-                DebugConsole.WriteHex((ulong)codeBytes[i]);
-                DebugConsole.Write(" ");
-                if ((i & 0x0F) == 0x0F)
-                    DebugConsole.WriteLine();
-            }
-            if ((partialLen & 0x0F) != 0)
-                DebugConsole.WriteLine();
-        }
+        // bool isTargetedDump = (assemblyId == 4 && methodToken == 0x0600002A) ||
+        //                       (assemblyId == 3 && (methodToken == 0x06000006 || methodToken == 0x06000007 ||
+        //                                            methodToken == 0x06000008 || methodToken == 0x06000009));
+        //
+        // if (isTargetedDump)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] Code dump 0x");
+        //     DebugConsole.WriteHex(methodToken);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal((uint)codeSize);
+        //     DebugConsole.WriteLine();
+        //     byte* codeBytes = (byte*)code;
+        //     int dumpLen = codeSize < 2048 ? codeSize : 2048;
+        //     for (int i = 0; i < dumpLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)codeBytes[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((dumpLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
+        //
+        // // Focused dump: MapBars (token 0x06000009) first 256 bytes to inspect prologue
+        // if (assemblyId == 3 && methodToken == 0x06000009)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] Code dump partial 0x06000009 len=");
+        //     int partialLen = codeSize < 256 ? codeSize : 256;
+        //     DebugConsole.WriteDecimal((uint)partialLen);
+        //     DebugConsole.WriteLine();
+        //     byte* codeBytes = (byte*)code;
+        //     for (int i = 0; i < partialLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)codeBytes[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((partialLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
+        //
+        // // Focused dump: Virtqueue.AllocateBuffers (token 0x0600001D) around the failing offset ~0x459
+        // if (assemblyId == 3 && methodToken == 0x0600001D)
+        // {
+        //     DebugConsole.Write("[Tier0JIT] Code dump partial 0x0600001D len=");
+        //     int partialLen = codeSize < 1400 ? codeSize : 1400; // cover the failing offset at ~0x459
+        //     DebugConsole.WriteDecimal((uint)partialLen);
+        //     DebugConsole.WriteLine();
+        //     byte* codeBytes = (byte*)code;
+        //     for (int i = 0; i < partialLen; i++)
+        //     {
+        //         DebugConsole.WriteHex((ulong)codeBytes[i]);
+        //         DebugConsole.Write(" ");
+        //         if ((i & 0x0F) == 0x0F)
+        //             DebugConsole.WriteLine();
+        //     }
+        //     if ((partialLen & 0x0F) != 0)
+        //         DebugConsole.WriteLine();
+        // }
 
         bool logCodePtr = (assemblyId == 3) || (assemblyId == 4 && methodToken == 0x0600002A);
         if (logCodePtr)
@@ -658,44 +658,44 @@ public static unsafe class Tier0JIT
         int numLocals = (int)(count < (uint)maxLocals ? count : (uint)maxLocals);
 
         // Debug for assembly 4 StandAloneSig table
-        if (assembly->AssemblyId == 4 && rid == 9)
-        {
-            // DebugConsole.Write("[ParseLocal] asm=4 rid=");
-            // DebugConsole.WriteHex(rid);
-            // DebugConsole.Write(" blobIdx=");
-            // DebugConsole.WriteHex(sigIdx);
-            // DebugConsole.Write(" count=");
-            // DebugConsole.WriteHex(count);
-            // DebugConsole.WriteLine();
-
-            // Dump all StandAloneSig rows for assembly 4
-            int numRows = (int)assembly->Tables.RowCounts[0x11];
-            int rowSz = assembly->Sizes.RowSizes[0x11];
-            DebugConsole.Write("  StandAloneSig dump: rows=");
-            DebugConsole.WriteDecimal(numRows);
-            DebugConsole.Write(" rowSz=");
-            DebugConsole.WriteDecimal(rowSz);
-            DebugConsole.WriteLine();
-            byte* tableBase = assembly->Tables.TableData + assembly->Sizes.TableOffsets[0x11];
-            for (int r = 0; r < numRows && r < 15; r++)
-            {
-                byte* rowPtr = tableBase + r * rowSz;
-                uint blobVal = rowSz == 2 ? *(ushort*)rowPtr : *(uint*)rowPtr;
-                DebugConsole.Write("    row ");
-                DebugConsole.WriteDecimal(r + 1);
-                DebugConsole.Write(": blobIdx=0x");
-                DebugConsole.WriteHex(blobVal);
-                // Read first few bytes of that blob
-                byte* blobPtr = assembly->Metadata.BlobHeap + blobVal;
-                DebugConsole.Write(" -> ");
-                for (int b = 0; b < 5; b++)
-                {
-                    DebugConsole.WriteHex(blobPtr[b]);
-                    DebugConsole.Write(" ");
-                }
-                DebugConsole.WriteLine();
-            }
-        }
+        // if (assembly->AssemblyId == 4 && rid == 9)
+        // {
+        //     DebugConsole.Write("[ParseLocal] asm=4 rid=");
+        //     DebugConsole.WriteHex(rid);
+        //     DebugConsole.Write(" blobIdx=");
+        //     DebugConsole.WriteHex(sigIdx);
+        //     DebugConsole.Write(" count=");
+        //     DebugConsole.WriteHex(count);
+        //     DebugConsole.WriteLine();
+        //
+        //     // Dump all StandAloneSig rows for assembly 4
+        //     int numRows = (int)assembly->Tables.RowCounts[0x11];
+        //     int rowSz = assembly->Sizes.RowSizes[0x11];
+        //     DebugConsole.Write("  StandAloneSig dump: rows=");
+        //     DebugConsole.WriteDecimal(numRows);
+        //     DebugConsole.Write(" rowSz=");
+        //     DebugConsole.WriteDecimal(rowSz);
+        //     DebugConsole.WriteLine();
+        //     byte* tableBase = assembly->Tables.TableData + assembly->Sizes.TableOffsets[0x11];
+        //     for (int r = 0; r < numRows && r < 15; r++)
+        //     {
+        //         byte* rowPtr = tableBase + r * rowSz;
+        //         uint blobVal = rowSz == 2 ? *(ushort*)rowPtr : *(uint*)rowPtr;
+        //         DebugConsole.Write("    row ");
+        //         DebugConsole.WriteDecimal(r + 1);
+        //         DebugConsole.Write(": blobIdx=0x");
+        //         DebugConsole.WriteHex(blobVal);
+        //         // Read first few bytes of that blob
+        //         byte* blobPtr = assembly->Metadata.BlobHeap + blobVal;
+        //         DebugConsole.Write(" -> ");
+        //         for (int b = 0; b < 5; b++)
+        //         {
+        //             DebugConsole.WriteHex(blobPtr[b]);
+        //             DebugConsole.Write(" ");
+        //         }
+        //         DebugConsole.WriteLine();
+        //     }
+        // }
 
         // Parse each local's type
         for (int i = 0; i < numLocals && ptr < end; i++)
@@ -725,7 +725,7 @@ public static unsafe class Tier0JIT
             // Note: byref to a value type is a pointer, not a value type itself
             if (!isByRef && (elemType == 0x11 || elemType == 0x12)) // ValueType or Class that's actually a struct
             {
-                DebugConsole.Write(" VALUETYPE");
+                // DebugConsole.Write(" VALUETYPE");
                 isValueType[i] = (elemType == 0x11); // Only ValueType is truly a value type
                 // Read the TypeDefOrRef token and compute size
                 uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
@@ -747,15 +747,15 @@ public static unsafe class Tier0JIT
                     uint size = MetadataIntegration.GetTypeSize(fullToken);
                     typeSize[i] = (ushort)size;
                     // Debug: log token and size for value types
-                    DebugConsole.Write(" tok=0x");
-                    DebugConsole.WriteHex(fullToken);
-                    DebugConsole.Write(" sz=");
-                    DebugConsole.WriteDecimal(size);
+                    // DebugConsole.Write(" tok=0x");
+                    // DebugConsole.WriteHex(fullToken);
+                    // DebugConsole.Write(" sz=");
+                    // DebugConsole.WriteDecimal(size);
                 }
             }
             else if (!isByRef && (elemType >= 0x02 && elemType <= 0x0D))
             {
-                DebugConsole.Write(" PRIM");
+                // DebugConsole.Write(" PRIM");
                 // Primitive types: Boolean, Char, I1, U1, I2, U2, I4, U4, I8, U8, R4, R8
                 // These are value types
                 isValueType[i] = true;
@@ -782,7 +782,7 @@ public static unsafe class Tier0JIT
             }
             else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
             {
-                DebugConsole.Write(" SZARRAY");
+                // DebugConsole.Write(" SZARRAY");
                 // Single-dimension array - skip element type
                 isValueType[i] = false;
                 typeSize[i] = 8; // Arrays are references (8 bytes on x64)
@@ -790,8 +790,8 @@ public static unsafe class Tier0JIT
                 if (ptr < end)
                 {
                     byte arrElemType = *ptr++;
-                    DebugConsole.Write(" arrElem=");
-                    DebugConsole.WriteHex(arrElemType);
+                    // DebugConsole.Write(" arrElem=");
+                    // DebugConsole.WriteHex(arrElemType);
                     if (arrElemType == 0x11 || arrElemType == 0x12) // ValueType or Class
                         MetadataReader.ReadCompressedUInt(ref ptr);
                 }
@@ -824,17 +824,17 @@ public static unsafe class Tier0JIT
             }
             else
             {
-                DebugConsole.Write(" OTHER");
+                // DebugConsole.Write(" OTHER");
                 // Other types (Class, Object, String, SzArray, Ptr, etc.) are reference types
                 isValueType[i] = false;
                 // Skip any following token if it's a ValueType or Class
                 if (elemType == 0x12) // Class
                     MetadataReader.ReadCompressedUInt(ref ptr);
             }
-            DebugConsole.WriteLine(); // End of this local's debug line
+            // DebugConsole.WriteLine(); // End of this local's debug line
         }
 
-        DebugConsole.WriteLine();
+        // DebugConsole.WriteLine();
         return numLocals;
     }
 

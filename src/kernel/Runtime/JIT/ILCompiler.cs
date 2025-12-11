@@ -1089,16 +1089,16 @@ public unsafe struct ILCompiler
 
             byte opcode = _il[_ilOffset++];
 
-            if (IsDebugBoolBugMethod())
-            {
-                // DebugConsole.Write("[BindDbg] IL op il=0x");
-                DebugConsole.WriteHex((ulong)(_ilOffset - 1));
-                DebugConsole.Write(" opcode=0x");
-                DebugConsole.WriteHex(opcode);
-                DebugConsole.Write(" depth=");
-                DebugConsole.WriteDecimal((uint)_evalStackDepth);
-                DebugConsole.WriteLine();
-            }
+            // if (IsDebugBoolBugMethod())
+            // {
+            //     // DebugConsole.Write("[BindDbg] IL op il=0x");
+            //     DebugConsole.WriteHex((ulong)(_ilOffset - 1));
+            //     DebugConsole.Write(" opcode=0x");
+            //     DebugConsole.WriteHex(opcode);
+            //     DebugConsole.Write(" depth=");
+            //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            //     DebugConsole.WriteLine();
+            // }
 
             if (!CompileOpcode(opcode))
             {
@@ -1179,47 +1179,47 @@ public unsafe struct ILCompiler
 
     private void PatchBranches()
     {
-        bool debug = IsDebugBoolBugMethod() || IsDebugBarMethod();
-        if (debug)
-        {
-            // DebugConsole.Write("[BindDbg] patch branches count=");
-            DebugConsole.WriteDecimal((uint)_branchCount);
-            DebugConsole.WriteLine();
-        }
+        // bool debug = IsDebugBoolBugMethod() || IsDebugBarMethod();
+        // if (debug)
+        // {
+        //     // DebugConsole.Write("[BindDbg] patch branches count=");
+        //     DebugConsole.WriteDecimal((uint)_branchCount);
+        //     DebugConsole.WriteLine();
+        // }
         for (int i = 0; i < _branchCount; i++)
         {
             int targetIL = _branchTargetIL[i];
             int patchOffset = _branchPatchOffset[i];
             int codeOffset = FindCodeOffset(targetIL);
 
-            if (debug)
-            {
-                // DebugConsole.Write("[BindDbg] patch idx=");
-                DebugConsole.WriteDecimal((uint)i);
-                DebugConsole.Write(" tgtIL=0x");
-                DebugConsole.WriteHex((ulong)targetIL);
-                DebugConsole.Write(" pOff=0x");
-                DebugConsole.WriteHex((ulong)patchOffset);
-                DebugConsole.Write(" cOff=");
-                DebugConsole.WriteDecimal((uint)codeOffset);
-            }
+            // if (debug)
+            // {
+            //     // DebugConsole.Write("[BindDbg] patch idx=");
+            //     DebugConsole.WriteDecimal((uint)i);
+            //     DebugConsole.Write(" tgtIL=0x");
+            //     DebugConsole.WriteHex((ulong)targetIL);
+            //     DebugConsole.Write(" pOff=0x");
+            //     DebugConsole.WriteHex((ulong)patchOffset);
+            //     DebugConsole.Write(" cOff=");
+            //     DebugConsole.WriteDecimal((uint)codeOffset);
+            // }
 
             if (codeOffset >= 0)
             {
                 // Calculate relative offset: target - (patch + 4)
                 int rel = codeOffset - (patchOffset + 4);
                 _code.PatchInt32(patchOffset, rel);
-                if (debug)
-                {
-                    DebugConsole.Write(" rel=0x");
-                    DebugConsole.WriteHex((ulong)(uint)rel);
-                    DebugConsole.WriteLine();
-                }
+                // if (debug)
+                // {
+                //     DebugConsole.Write(" rel=0x");
+                //     DebugConsole.WriteHex((ulong)(uint)rel);
+                //     DebugConsole.WriteLine();
+                // }
             }
-            else if (debug)
-            {
-                DebugConsole.WriteLine(" UNRESOLVED");
-            }
+            // else if (debug)
+            // {
+            //     DebugConsole.WriteLine(" UNRESOLVED");
+            // }
         }
     }
 
@@ -2114,30 +2114,30 @@ public unsafe struct ILCompiler
         // Check if this local is a value type - affects stack type marking
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
-        bool debugBind = IsDebugBindMethod() && index == 4;
-
-        // Debug: Log large struct ldloc
-        if (typeSize > 8)
-        {
-            // DebugConsole.Write("[ldloc] idx=");
-            DebugConsole.WriteHex((ulong)index);
-            DebugConsole.Write(" isVT=");
-            DebugConsole.WriteHex(isValueType ? 1UL : 0UL);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteHex(typeSize);
-            DebugConsole.WriteLine();
-        }
-
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] ldloc.4 il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" codePos=");
-            DebugConsole.WriteHex((ulong)_code.Position);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // bool debugBind = IsDebugBindMethod() && index == 4;
+        //
+        // // Debug: Log large struct ldloc
+        // if (typeSize > 8)
+        // {
+        //     // DebugConsole.Write("[ldloc] idx=");
+        //     DebugConsole.WriteHex((ulong)index);
+        //     DebugConsole.Write(" isVT=");
+        //     DebugConsole.WriteHex(isValueType ? 1UL : 0UL);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteHex(typeSize);
+        //     DebugConsole.WriteLine();
+        // }
+        //
+        // if (debugBind)
+        // {
+        //     // DebugConsole.Write("[BindDbg] ldloc.4 il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" codePos=");
+        //     DebugConsole.WriteHex((ulong)_code.Position);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
 
         byte stackType;
         if (isValueType && typeSize > 16)
@@ -2222,12 +2222,12 @@ public unsafe struct ILCompiler
         // Default: push as Int32 (primitives, references)
         X64Emitter.Push(ref _code, VReg.R0);
         PushEntry(EvalStackEntry.Int32);
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // if (debugBind)
+        // {
+        //     // DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
         return true;
     }
 
@@ -2235,42 +2235,42 @@ public unsafe struct ILCompiler
     {
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
-        bool debugBind = IsDebugBindMethod();
-
-        // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
-        if (_debugAssemblyId == 3 && _debugMethodToken == 0x0600001D)
-        {
-            // DebugConsole.Write("[AllocBuf stloc] idx=");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" isVT=");
-            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-            DebugConsole.Write(" sz=");
-            DebugConsole.WriteDecimal(typeSize);
-            DebugConsole.Write(" _localIsVT=");
-            DebugConsole.WriteHex((ulong)(_localIsValueType != null ? 1 : 0));
-            DebugConsole.Write(" _localSz=");
-            DebugConsole.WriteHex((ulong)(_localTypeSize != null ? 1 : 0));
-            DebugConsole.Write(" cnt=");
-            DebugConsole.WriteDecimal((uint)_localCount);
-            DebugConsole.WriteLine();
-        }
-
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] stloc.");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" codePos=");
-            DebugConsole.WriteHex((ulong)_code.Position);
-            DebugConsole.Write(" depth=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.Write(" isVT=");
-            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(typeSize);
-            DebugConsole.WriteLine();
-        }
+        // bool debugBind = IsDebugBindMethod();
+        //
+        // // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
+        // if (_debugAssemblyId == 3 && _debugMethodToken == 0x0600001D)
+        // {
+        //     // DebugConsole.Write("[AllocBuf stloc] idx=");
+        //     DebugConsole.WriteDecimal((uint)index);
+        //     DebugConsole.Write(" isVT=");
+        //     DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+        //     DebugConsole.Write(" sz=");
+        //     DebugConsole.WriteDecimal(typeSize);
+        //     DebugConsole.Write(" _localIsVT=");
+        //     DebugConsole.WriteHex((ulong)(_localIsValueType != null ? 1 : 0));
+        //     DebugConsole.Write(" _localSz=");
+        //     DebugConsole.WriteHex((ulong)(_localTypeSize != null ? 1 : 0));
+        //     DebugConsole.Write(" cnt=");
+        //     DebugConsole.WriteDecimal((uint)_localCount);
+        //     DebugConsole.WriteLine();
+        // }
+        //
+        // if (debugBind)
+        // {
+        //     // DebugConsole.Write("[BindDbg] stloc.");
+        //     DebugConsole.WriteDecimal((uint)index);
+        //     DebugConsole.Write(" il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" codePos=");
+        //     DebugConsole.WriteHex((ulong)_code.Position);
+        //     DebugConsole.Write(" depth=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.Write(" isVT=");
+        //     DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+        //     DebugConsole.Write(" size=");
+        //     DebugConsole.WriteDecimal(typeSize);
+        //     DebugConsole.WriteLine();
+        // }
 
         // Use new type system: PeekEntry tells us the actual byte size on stack
         EvalStackEntry tosEntry = PeekEntry();
@@ -2355,16 +2355,16 @@ public unsafe struct ILCompiler
         int offset = X64Emitter.GetLocalOffset(index);
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
 
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BindDbg] stloc.");
-            DebugConsole.WriteDecimal((uint)index);
-            DebugConsole.Write(" stored offset=");
-            DebugConsole.WriteDecimal((uint)offset);
-            DebugConsole.Write(" depthNow=");
-            DebugConsole.WriteDecimal((uint)_evalStackDepth);
-            DebugConsole.WriteLine();
-        }
+        // if (debugBind)
+        // {
+        //     // DebugConsole.Write("[BindDbg] stloc.");
+        //     DebugConsole.WriteDecimal((uint)index);
+        //     DebugConsole.Write(" stored offset=");
+        //     DebugConsole.WriteDecimal((uint)offset);
+        //     DebugConsole.Write(" depthNow=");
+        //     DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        //     DebugConsole.WriteLine();
+        // }
         return true;
     }
 
@@ -3609,17 +3609,17 @@ public unsafe struct ILCompiler
 
     private bool CompileBr(int targetIL)
     {
-        bool debugBind = IsDebugBarMethod();
-        if (debugBind)
-        {
-            // DebugConsole.Write("[BarDbg] br il=0x");
-            DebugConsole.WriteHex((ulong)_ilOffset);
-            DebugConsole.Write(" target=0x");
-            DebugConsole.WriteHex((ulong)targetIL);
-            DebugConsole.Write(" codeOff=0x");
-            DebugConsole.WriteHex((ulong)_code.Position);
-            DebugConsole.WriteLine();
-        }
+        // bool debugBind = IsDebugBarMethod();
+        // if (debugBind)
+        // {
+        //     // DebugConsole.Write("[BarDbg] br il=0x");
+        //     DebugConsole.WriteHex((ulong)_ilOffset);
+        //     DebugConsole.Write(" target=0x");
+        //     DebugConsole.WriteHex((ulong)targetIL);
+        //     DebugConsole.Write(" codeOff=0x");
+        //     DebugConsole.WriteHex((ulong)_code.Position);
+        //     DebugConsole.WriteLine();
+        // }
         int patchOffset = X64Emitter.JmpRel32(ref _code);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
