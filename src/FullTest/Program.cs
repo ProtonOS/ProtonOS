@@ -83,6 +83,12 @@ public static class TestRunner
         // Interface tests - tests interface dispatch via callvirt
         RunInterfaceTests();
 
+        // Struct with reference type fields
+        RunStructWithRefTests();
+
+        // Generic method on generic class
+        RunGenericMethodOnGenericClassTests();
+
         // Nullable<T> tests - tests generic value type with special semantics
         RunNullableTests();
 
@@ -199,6 +205,25 @@ public static class TestRunner
         RecordResult("InterfaceTests.TestIsinstMultipleFirst", InterfaceTests.TestIsinstMultipleFirst() == 10);
         RecordResult("InterfaceTests.TestIsinstMultipleSecond", InterfaceTests.TestIsinstMultipleSecond() == 40);
         RecordResult("InterfaceTests.TestCastclassInterfaceSuccess", InterfaceTests.TestCastclassInterfaceSuccess() == 42);
+        // Explicit interface implementation tests
+        RecordResult("InterfaceTests.TestExplicitInterfaceImplicit", InterfaceTests.TestExplicitInterfaceImplicit() == 10);
+        RecordResult("InterfaceTests.TestExplicitInterfaceExplicit", InterfaceTests.TestExplicitInterfaceExplicit() == 42);
+        RecordResult("InterfaceTests.TestExplicitInterfaceBoth", InterfaceTests.TestExplicitInterfaceBoth() == 52);
+    }
+
+    private static void RunStructWithRefTests()
+    {
+        RecordResult("StructWithRefTests.TestStructWithRefCreate", StructWithRefTests.TestStructWithRefCreate() == 42);
+        RecordResult("StructWithRefTests.TestStructWithRefReadString", StructWithRefTests.TestStructWithRefReadString() == 5);
+        RecordResult("StructWithRefTests.TestStructWithRefModify", StructWithRefTests.TestStructWithRefModify() == 104);
+        RecordResult("StructWithRefTests.TestStructWithRefNull", StructWithRefTests.TestStructWithRefNull() == 42);
+    }
+
+    private static void RunGenericMethodOnGenericClassTests()
+    {
+        RecordResult("GenericMethodOnGenericClassTests.TestGenericContainerInt", GenericMethodOnGenericClassTests.TestGenericContainerInt() == 42);
+        RecordResult("GenericMethodOnGenericClassTests.TestGenericMethodOnGenericClass", GenericMethodOnGenericClassTests.TestGenericMethodOnGenericClass() == 42);
+        RecordResult("GenericMethodOnGenericClassTests.TestGenericMethodDifferentType", GenericMethodOnGenericClassTests.TestGenericMethodDifferentType() == 100);
     }
 
     private static void RunNullableTests()
@@ -2513,6 +2538,67 @@ public class MultiInterfaceImpl : IValue, IMultiplier, IAdder
     public int Add(int x) => _base + x;
 }
 
+/// <summary>
+/// Interface for testing explicit implementation.
+/// </summary>
+public interface IExplicit
+{
+    int GetValue();
+}
+
+/// <summary>
+/// Class that implements IValue implicitly and IExplicit explicitly.
+/// Both interfaces have GetValue() method.
+/// </summary>
+public class ExplicitImpl : IValue, IExplicit
+{
+    // Implicit implementation - accessible via class or IValue
+    public int GetValue() => 10;
+
+    // Explicit implementation - only accessible via IExplicit
+    int IExplicit.GetValue() => 42;
+}
+
+/// <summary>
+/// Struct containing a reference type field.
+/// </summary>
+public struct StructWithRef
+{
+    public int Value;
+    public string Name;
+
+    public StructWithRef(int value, string name)
+    {
+        Value = value;
+        Name = name;
+    }
+}
+
+/// <summary>
+/// Generic class with a generic method.
+/// </summary>
+public class GenericContainer<T>
+{
+    private T _value;
+
+    public GenericContainer(T value)
+    {
+        _value = value;
+    }
+
+    public T GetValue() => _value;
+
+    /// <summary>
+    /// Generic method on generic class - converts stored value using provided converter.
+    /// </summary>
+    public TResult Convert<TResult>(TResult defaultValue)
+    {
+        // Simple test: just return the default value
+        // This tests that generic method on generic class compiles and runs
+        return defaultValue;
+    }
+}
+
 public static class InterfaceTests
 {
     /// <summary>
@@ -2615,6 +2701,124 @@ public static class InterfaceTests
         object obj = new ValueImpl();
         IValue v = (IValue)obj;  // castclass - should succeed
         return v.GetValue();  // Should return 42
+    }
+
+    /// <summary>
+    /// Test explicit interface implementation.
+    /// ExplicitImpl implements IValue.GetValue() returning 10
+    /// and IExplicit.GetValue() explicitly returning 42.
+    /// </summary>
+    public static int TestExplicitInterfaceImplicit()
+    {
+        ExplicitImpl obj = new ExplicitImpl();
+        IValue v = obj;
+        return v.GetValue();  // Should return 10 (implicit implementation)
+    }
+
+    /// <summary>
+    /// Test explicit interface implementation - call via explicit interface.
+    /// </summary>
+    public static int TestExplicitInterfaceExplicit()
+    {
+        ExplicitImpl obj = new ExplicitImpl();
+        IExplicit e = obj;
+        return e.GetValue();  // Should return 42 (explicit implementation)
+    }
+
+    /// <summary>
+    /// Test both interfaces on same object return different values.
+    /// </summary>
+    public static int TestExplicitInterfaceBoth()
+    {
+        ExplicitImpl obj = new ExplicitImpl();
+        IValue v = obj;
+        IExplicit e = obj;
+        int implicitVal = v.GetValue();  // 10
+        int explicitVal = e.GetValue();  // 42
+        return implicitVal + explicitVal;  // Should return 52
+    }
+}
+
+// =============================================================================
+// Struct with Reference Tests
+// =============================================================================
+
+public static class StructWithRefTests
+{
+    /// <summary>
+    /// Test creating a struct with a reference type field.
+    /// </summary>
+    public static int TestStructWithRefCreate()
+    {
+        StructWithRef s = new StructWithRef(42, "test");
+        return s.Value;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test reading reference field from struct.
+    /// </summary>
+    public static int TestStructWithRefReadString()
+    {
+        StructWithRef s = new StructWithRef(10, "hello");
+        return s.Name != null ? s.Name.Length : 0;  // Should return 5
+    }
+
+    /// <summary>
+    /// Test modifying struct with reference field.
+    /// </summary>
+    public static int TestStructWithRefModify()
+    {
+        StructWithRef s;
+        s.Value = 100;
+        s.Name = "test";
+        return s.Value + s.Name.Length;  // Should return 104
+    }
+
+    /// <summary>
+    /// Test struct with null reference field.
+    /// </summary>
+    public static int TestStructWithRefNull()
+    {
+        StructWithRef s;
+        s.Value = 42;
+        s.Name = null;
+        return s.Name == null ? s.Value : 0;  // Should return 42
+    }
+}
+
+// =============================================================================
+// Generic Method on Generic Class Tests
+// =============================================================================
+
+public static class GenericMethodOnGenericClassTests
+{
+    /// <summary>
+    /// Test generic class with int.
+    /// </summary>
+    public static int TestGenericContainerInt()
+    {
+        var container = new GenericContainer<int>(42);
+        return container.GetValue();  // Should return 42
+    }
+
+    /// <summary>
+    /// Test generic method on generic class - Convert<TResult>.
+    /// </summary>
+    public static int TestGenericMethodOnGenericClass()
+    {
+        var container = new GenericContainer<int>(10);
+        int result = container.Convert<int>(42);  // Generic method with int
+        return result;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test generic method with different type parameter than class.
+    /// </summary>
+    public static int TestGenericMethodDifferentType()
+    {
+        var container = new GenericContainer<string>("hello");
+        int result = container.Convert<int>(100);  // Class is string, method is int
+        return result;  // Should return 100
     }
 }
 

@@ -125,7 +125,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Special Cases
 - ✅ Nested structs
 - ✅ Struct arrays
-- ⚠️ Struct with reference type fields
+- ✅ Struct with reference type fields (tested with StructWithRef containing string)
 - ❌ Explicit layout structs ([StructLayout])
 - ❌ Fixed-size buffers
 
@@ -140,7 +140,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ### Generic Methods
 - ✅ Generic method on non-generic class
-- ⚠️ Generic method on generic class
+- ✅ Generic method on generic class (tested with GenericContainer<T>.Convert<TResult>)
 - ❌ Generic method with multiple type parameters
 
 ### Generic Constraints
@@ -244,7 +244,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Interface map population from InterfaceImpl metadata table
 - ✅ Lazy JIT compilation of interface implementations
 - ✅ Multiple interfaces on same type (tested with 3 interfaces)
-- ⚠️ Explicit interface implementation (same mechanism, untested)
+- ✅ Explicit interface implementation (tested with IExplicit.GetValue vs IValue.GetValue)
 
 ### Interface Casting
 - ✅ isinst with interface (as T)
@@ -349,13 +349,20 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 191 passing
+- Current test count: 201 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
 
-### Struct Boxing Fix (2024-12)
+### Verified ⚠️ Items (2025-12)
+Tested and verified three items that were marked as partially tested:
+- ✅ Explicit interface implementation: ExplicitImpl with IValue (implicit) and IExplicit (explicit)
+- ✅ Struct with reference type fields: StructWithRef containing int Value and string Name
+- ✅ Generic method on generic class: GenericContainer<T>.Convert<TResult>()
+- 10 new tests added, test count increased from 191 to 201
+
+### Struct Boxing Fix (2025-12)
 Fixed boxing of JIT-created structs (SimpleStruct, MediumStruct, LargeStruct):
 - Bug: `RhpNewFast` allocated `BaseSize` bytes, but JIT structs have BaseSize = raw value size (no MT overhead)
 - AOT primitives have BaseSize = 8 + value size (includes MT pointer overhead)
@@ -366,12 +373,12 @@ Fixed boxing of JIT-created structs (SimpleStruct, MediumStruct, LargeStruct):
 - 5 boxing tests now pass: TestBoxInt, TestBoxStruct, TestBoxMediumStruct, TestBoxLargeStruct, TestNewObjManyArgs
 - 7 instance tests also enabled and passing
 
-### Filter Handler Tests (2024-12)
+### Filter Handler Tests (2025-12)
 - Added and verified `catch when (condition)` filter tests
 - TestCatchWhenTrue: filter evaluates to true, catch block executes
 - TestCatchWhenFalse: filter evaluates to false, falls through to next catch
 
-### Catch Handler Funclet Fix (2024-12)
+### Catch Handler Funclet Fix (2025-12)
 Fixed exception propagation from catch handlers (throw inside catch block):
 - Bug: Catch funclets didn't push exception object (RCX) onto eval stack
 - IL handler starts with `pop` to discard exception, but funclet had nothing to pop
@@ -379,7 +386,7 @@ Fixed exception propagation from catch handlers (throw inside catch block):
 - Fix: Catch funclets now emit `push rcx` after prolog and track exception on eval stack
 - TestNestedTryCatch now passes (throw from inner catch to outer catch)
 
-### Nullable<T> Lifted Operators (2024-12)
+### Nullable<T> Lifted Operators (2025-12)
 Verified lifted operators work without additional JIT changes:
 - C# compiler generates inline code using HasValue, GetValueOrDefault(), and newobj
 - 11 new tests added for lifted operators:
@@ -387,7 +394,7 @@ Verified lifted operators work without additional JIT changes:
   - Subtraction, multiplication, division
   - Equality comparisons (same values, different values, both null, one null)
 
-### Nullable<T> Boxing/Unboxing (2024-12)
+### Nullable<T> Boxing/Unboxing (2025-12)
 Completed Nullable<T> boxing/unboxing support:
 - Nullable boxing: if HasValue is false, box returns null; if true, boxes inner T value
 - Nullable unboxing: null reference creates Nullable with HasValue=false; non-null creates HasValue=true
@@ -401,7 +408,7 @@ Completed Nullable<T> boxing/unboxing support:
   - Unboxing from boxed int, unboxing from null
   - Round-trip boxing/unboxing with value and null
 
-### Nullable<T> Support (2024-12)
+### Nullable<T> Support (2025-12)
 Added Nullable<T> support:
 - Added `GetValueOrDefault()` and `GetValueOrDefault(T)` to korlib Nullable<T>
 - Added `Nullable<T>` struct to System.Runtime to match korlib
@@ -413,7 +420,7 @@ Added Nullable<T> support:
   - Implicit conversion, null assignment (initobj)
   - Parameter passing and return values (fixed)
 
-### Interface Dispatch (2024-12)
+### Interface Dispatch (2025-12)
 Implemented interface dispatch via `callvirt` on interface types:
 - Added `IsInterfaceMethod()` / `IsMethodDefInterfaceMethod()` to detect interface method calls
 - Added `CountInterfacesForType()` / `PopulateInterfaceMap()` to build interface maps in MethodTables
@@ -421,7 +428,7 @@ Implemented interface dispatch via `callvirt` on interface types:
 - Modified `GetInterfaceMethod()` to call `EnsureVtableSlotCompiled()` for lazy compilation
 - Test: `InterfaceTests.TestSimpleInterface()` - IValue interface with ValueImpl implementation
 
-### Multiple Interfaces Fix (2024-12)
+### Multiple Interfaces Fix (2025-12)
 Fixed interface method argument count parsing:
 - Interface methods were hardcoded to `ArgCount = 0` causing wrong argument counts
 - Added signature parsing for MemberRef (cross-assembly) and MethodDef interface methods
@@ -429,7 +436,7 @@ Fixed interface method argument count parsing:
 - Added `ParseMethodDefSignature()` for MethodDef interface method tokens
 - 3 new tests: TestMultipleInterfacesFirst/Second/Third with IValue, IMultiplier, IAdder interfaces
 
-### Static Constructor Support (2024-12)
+### Static Constructor Support (2025-12)
 Implemented static constructor (.cctor) invocation:
 - `EnsureCctorContextRegistered()` finds and compiles cctors, registers context
 - Context registered BEFORE compiling cctor to prevent infinite recursion when cctor accesses own type's fields
@@ -443,7 +450,7 @@ Implemented static constructor (.cctor) invocation:
   - TestStaticCtorOnWrite - writing to static field triggers cctor first
   - TestStaticCtorWithDependency - cctor with dependency on another type's static
 
-### Finally in Loop Fix (2024-12)
+### Finally in Loop Fix (2025-12)
 Fixed stack corruption in finally handlers called from loops:
 - Bug 1: Missing shadow space allocation when calling finally funclets from `leave`
   - The finally funclet's shadow space was overwriting caller's stack data
@@ -455,7 +462,7 @@ Fixed stack corruption in finally handlers called from loops:
 - Symptom: Loop variable `i` showed corrupted values (e.g., 1066888 instead of 0,1,2)
 - Test: `TestFinallyInLoopWithBreak` - finally runs on each loop iteration including break
 
-### Interface Casting Tests (2024-12)
+### Interface Casting Tests (2025-12)
 Added tests for isinst/castclass with interface types:
 - TestIsinstInterfaceSuccess - object implements interface, returns object
 - TestIsinstInterfaceFailure - object doesn't implement interface, returns null
