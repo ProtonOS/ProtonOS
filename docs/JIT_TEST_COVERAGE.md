@@ -193,7 +193,11 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ⚠️ catch when (condition) - infrastructure exists (ExecuteFilterFunclet), untested
 
 ### Fault
-- ⚠️ fault blocks - treated like finally, untested
+- ✅ fault blocks - code review verified (not testable from C#)
+  - Fault handlers only run during exception unwinding, NOT on normal leave
+  - `CompileLeave` only calls Finally handlers (line 5968: `flags != Finally` check)
+  - Exception handler dispatch calls both Finally and Fault (line 2116: `Finally || Fault` check)
+  - `endfault` uses same opcode as `endfinally` (0xDC) - handled by `CompileEndfinally`
 
 ### Implementation Details
 - Two-pass exception dispatch: Pass 1 finds handler, Pass 2 executes finally handlers
