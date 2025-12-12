@@ -195,6 +195,16 @@ public static unsafe class JitStubs
         // Look up the method in the registry by MethodTable and vtable slot
         CompiledMethodInfo* info = CompiledMethodRegistry.LookupByVtableSlot((void*)methodTable, vtableSlot);
 
+        // If not found and this is an instantiated generic type, try the generic definition MT
+        if (info == null)
+        {
+            MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT((MethodTable*)methodTable);
+            if (genDefMT != null)
+            {
+                info = CompiledMethodRegistry.LookupByVtableSlot(genDefMT, vtableSlot);
+            }
+        }
+
         if (info != null)
         {
             // Found a registered method for this slot

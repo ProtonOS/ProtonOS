@@ -1918,6 +1918,15 @@ public static unsafe class MetadataIntegration
         _tablesHeader = savedTables;
         _tableSizes = savedSizes;
 
+        // If this MemberRef is on a generic instantiation (e.g., Container<string>),
+        // override the MethodTable with the instantiated type's MT.
+        // This is critical for newobj to allocate the correct instantiated type
+        // which has the properly substituted interface map.
+        if (success && genericInstMT != null && result.MethodTable != null)
+        {
+            result.MethodTable = genericInstMT;
+        }
+
         // Restore type argument context if we set it up
         if (hasGenericContext)
         {

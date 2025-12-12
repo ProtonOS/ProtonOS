@@ -1852,13 +1852,23 @@ public static unsafe class Tier0JIT
             DebugConsole.WriteDecimal((uint)vtableSlot);
             DebugConsole.Write(" out of range (max ");
             DebugConsole.WriteDecimal(mt->_usNumVtableSlots);
-            DebugConsole.WriteLine(")");
+            DebugConsole.Write(") MT=0x");
+            DebugConsole.WriteHex((ulong)mt);
+            DebugConsole.Write(" type=0x");
+            DebugConsole.WriteHex(typeToken);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.WriteLine();
             return;
         }
 
         // Set the vtable entry
         nint* vtable = mt->GetVtablePtr();
         vtable[vtableSlot] = nativeCode;
+
+        // If this is a generic type, also update all instantiated MTs in the cache
+        // because they copied the vtable when they were created (possibly with null entries)
+        AssemblyLoader.PropagateVtableSlotToInstantiations(assemblyId, typeRow, vtableSlot, nativeCode);
 
         DebugConsole.Write("[PopulateVT] token=0x");
         DebugConsole.WriteHex(methodToken);

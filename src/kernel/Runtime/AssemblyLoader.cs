@@ -974,6 +974,15 @@ public static unsafe class AssemblyLoader
                 return null;
             }
 
+            // Normalize the generic type token to a canonical form for cache consistency
+            // TypeRef tokens need to be resolved to TypeDef tokens
+            uint normalizedGenericToken = NormalizeGenericDefToken(asm, genericTypeToken);
+            if (normalizedGenericToken == 0)
+            {
+                // Fall back to original token if normalization fails
+                normalizedGenericToken = genericTypeToken;
+            }
+
             // Read the generic argument count (compressed uint)
             uint genArgCount = 0;
             if (pos < (int)sigLen)
@@ -1007,7 +1016,8 @@ public static unsafe class AssemblyLoader
                 if (allResolved)
                 {
                     // Create instantiated generic type with type arguments
-                    MethodTable* instMT = GetOrCreateGenericInstMethodTable(genericTypeToken, typeArgMTs, (int)genArgCount, isValueType);
+                    // Use normalized token for cache consistency
+                    MethodTable* instMT = GetOrCreateGenericInstMethodTable(normalizedGenericToken, typeArgMTs, (int)genArgCount, isValueType);
                     if (instMT != null)
                     {
                         return instMT;
@@ -1016,7 +1026,7 @@ public static unsafe class AssemblyLoader
             }
 
             // Fallback: use the open generic type's MethodTable
-            MethodTable* genericMt = ResolveType(asm->AssemblyId, genericTypeToken);
+            MethodTable* genericMt = ResolveType(asm->AssemblyId, normalizedGenericToken);
             if (genericMt != null)
             {
                 // Skip over any remaining type arguments
@@ -1218,6 +1228,40 @@ public static unsafe class AssemblyLoader
             case 2: return 0x1B000000 | row;  // TypeSpec
             default: return 0;
         }
+    }
+
+    /// <summary>
+    /// Normalize a generic type definition token to a canonical form for cache consistency.
+    /// TypeRef tokens are resolved to TypeDef tokens to ensure the same type always
+    /// maps to the same cache key regardless of how it's referenced.
+    /// </summary>
+    private static uint NormalizeGenericDefToken(LoadedAssembly* asm, uint token)
+    {
+        uint table = token >> 24;
+        uint row = token & 0x00FFFFFF;
+
+        // TypeDef tokens are already canonical
+        if (table == 0x02)
+        {
+            // Include assembly ID to make it globally unique
+            return (asm->AssemblyId << 24) | row;
+        }
+
+        // TypeRef - resolve to TypeDef in target assembly
+        if (table == 0x01)
+        {
+            LoadedAssembly* targetAsm = null;
+            uint targetToken = 0;
+            if (ResolveTypeRefToTypeDef(asm, row, out targetAsm, out targetToken))
+            {
+                // Return normalized token with target assembly ID
+                return (targetAsm->AssemblyId << 24) | (targetToken & 0x00FFFFFF);
+            }
+            // Fall through if resolution fails
+        }
+
+        // TypeSpec or failed resolution - return original with assembly context
+        return (asm->AssemblyId << 24) | row;
     }
 
     /// <summary>
@@ -2120,7 +2164,13 @@ public static unsafe class AssemblyLoader
                         interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
                 }
             }
-            // TypeSpec (tag == 2) not supported for now
+            else if (tag == 2)  // TypeSpec - generic interface instantiation
+            {
+                // TypeSpec is used for generic interfaces like IContainer<int>
+                // ResolveTypeSpec handles deduplication via GetOrCreateGenericInstMethodTable
+                uint typeSpecToken = 0x1B000000 | rowId;
+                interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+            }
 
             if (interfaceMT != null)
             {
@@ -2130,6 +2180,75 @@ public static unsafe class AssemblyLoader
                 // Advance slot by number of methods in the interface
                 // For now, just use 1 (most interfaces have few methods)
                 // TODO: Get actual method count from interface's MT
+                currentSlot++;
+                mapIndex++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Populate the interface map for a generic instantiation MethodTable.
+    /// This is similar to PopulateInterfaceMap but uses the type context for type variable substitution.
+    /// </summary>
+    /// <param name="asm">The assembly containing the generic type definition</param>
+    /// <param name="typeDefRow">The TypeDef row ID of the generic type definition</param>
+    /// <param name="mt">The instantiated MethodTable to populate</param>
+    /// <param name="interfaceStartSlot">The first vtable slot for interface methods</param>
+    private static void PopulateGenericInstInterfaceMap(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, ushort interfaceStartSlot)
+    {
+        uint interfaceImplCount = asm->Tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int mapIndex = 0;
+        ushort currentSlot = interfaceStartSlot;
+
+        for (uint i = 1; i <= interfaceImplCount; i++)
+        {
+            uint classRowId = MetadataReader.GetInterfaceImplClass(ref asm->Tables, ref asm->Sizes, i);
+            if (classRowId != typeDefRow)
+                continue;
+
+            // Get the interface TypeDefOrRef
+            uint rawInterface = MetadataReader.GetInterfaceImplInterface(ref asm->Tables, ref asm->Sizes, i);
+
+            // Decode TypeDefOrRef coded index (2-bit tag)
+            uint tag = rawInterface & 0x03;
+            uint rowId = rawInterface >> 2;
+
+            MethodTable* interfaceMT = null;
+
+            if (tag == 0)  // TypeDef
+            {
+                uint interfaceToken = 0x02000000 | rowId;
+                interfaceMT = asm->Types.Lookup(interfaceToken);
+                if (interfaceMT == null)
+                    interfaceMT = CreateTypeDefMethodTable(asm, interfaceToken);
+            }
+            else if (tag == 1)  // TypeRef
+            {
+                // Resolve TypeRef to another assembly's TypeDef
+                LoadedAssembly* targetAsm = null;
+                uint targetToken = 0;
+                if (ResolveTypeRefToTypeDef(asm, rowId, out targetAsm, out targetToken) && targetAsm != null)
+                {
+                    interfaceMT = targetAsm->Types.Lookup(targetToken);
+                    if (interfaceMT == null)
+                        interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                }
+            }
+            else if (tag == 2)  // TypeSpec - generic interface instantiation
+            {
+                // TypeSpec is used for generic interfaces like IContainer<T>
+                // With the type context set, ResolveTypeSpec will substitute type variables
+                uint typeSpecToken = 0x1B000000 | rowId;
+                interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+            }
+
+            if (interfaceMT != null)
+            {
+                map[mapIndex].InterfaceMT = interfaceMT;
+                map[mapIndex].StartSlot = currentSlot;
+
+                // Advance slot by number of methods in the interface
                 currentSlot++;
                 mapIndex++;
             }
@@ -5139,18 +5258,42 @@ public static unsafe class AssemblyLoader
             argHash = argHash * 31 + (ulong)typeArgMTs[i];
         }
 
+        // Debug: show cache lookup
+        DebugConsole.Write("[GenInst] Lookup: def=0x");
+        DebugConsole.WriteHex(genDefToken);
+        DebugConsole.Write(" argHash=0x");
+        DebugConsole.WriteHex(argHash);
+        DebugConsole.Write(" args=[");
+        for (int i = 0; i < typeArgCount; i++)
+        {
+            if (i > 0) DebugConsole.Write(",");
+            DebugConsole.Write("0x");
+            DebugConsole.WriteHex((ulong)typeArgMTs[i]);
+        }
+        DebugConsole.WriteLine("]");
+
         // Check cache for existing instantiation
         for (int i = 0; i < _genericInstCacheCount; i++)
         {
             if (_genericInstCacheDefTokens[i] == genDefToken && _genericInstCacheArgHashes[i] == argHash)
             {
+                DebugConsole.Write("[GenInst] CACHE HIT at ");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)_genericInstCacheInstMTs[i]);
+                DebugConsole.WriteLine();
                 return _genericInstCacheInstMTs[i];
             }
         }
 
         // Try to resolve the generic type definition to get base info
-        void* genDefMtPtr;
-        if (!MetadataIntegration.ResolveType(genDefToken, out genDefMtPtr))
+        // The normalized token format is (asmId << 24) | typeDefRow, so we need to
+        // extract the assembly ID and use AssemblyLoader.ResolveType directly
+        uint defAsmId = genDefToken >> 24;
+        uint defTypeDefRow = genDefToken & 0x00FFFFFF;
+        uint defTypeDefToken = 0x02000000 | defTypeDefRow;
+        MethodTable* genDefMT = ResolveType(defAsmId, defTypeDefToken);
+        if (genDefMT == null)
         {
             // Generic type definition not found - create a minimal MT
             // This happens for types like List<T> from System.Collections.Generic
@@ -5160,17 +5303,30 @@ public static unsafe class AssemblyLoader
             DebugConsole.WriteLine(" not resolved, creating minimal MT");
         }
 
-        MethodTable* genDefMT = (MethodTable*)genDefMtPtr;
-
-        // Determine vtable slots count from the generic definition
+        // Determine vtable slots count and interface count from the generic definition
         ushort numVtableSlots = 3;  // Default: Object's 3 virtual methods (ToString, Equals, GetHashCode)
+        ushort numInterfaces = 0;
         if (genDefMT != null)
         {
             numVtableSlots = genDefMT->_usNumVtableSlots;
+            numInterfaces = genDefMT->_usNumInterfaces;
+            DebugConsole.Write("[GenInst] genDefMT=0x");
+            DebugConsole.WriteHex((ulong)genDefMT);
+            DebugConsole.Write(" slots=");
+            DebugConsole.WriteDecimal(numVtableSlots);
+            DebugConsole.Write(" ifaces=");
+            DebugConsole.WriteDecimal(numInterfaces);
+            DebugConsole.WriteLine();
+        }
+        else
+        {
+            DebugConsole.Write("[GenInst] genDefMT is NULL for token 0x");
+            DebugConsole.WriteHex(genDefToken);
+            DebugConsole.WriteLine();
         }
 
-        // Create new instantiated MethodTable with vtable space
-        ulong mtSize = (ulong)(MethodTable.HeaderSize + numVtableSlots * sizeof(nint));
+        // Create new instantiated MethodTable with vtable and interface map space
+        ulong mtSize = (ulong)(MethodTable.HeaderSize + numVtableSlots * sizeof(nint) + numInterfaces * InterfaceMapEntry.Size);
         MethodTable* instMT = (MethodTable*)HeapAllocator.AllocZeroed(mtSize);
         if (instMT == null)
         {
@@ -5194,6 +5350,35 @@ public static unsafe class AssemblyLoader
                 for (int i = 0; i < numVtableSlots; i++)
                 {
                     dstVtable[i] = srcVtable[i];
+                }
+            }
+
+            // Populate interface map with instantiated interface MTs
+            if (numInterfaces > 0)
+            {
+                // Extract assembly ID and TypeDef row from normalized token
+                uint asmId = genDefToken >> 24;
+                uint typeDefRow = genDefToken & 0x00FFFFFF;
+                LoadedAssembly* defAsm = GetAssembly(asmId);
+
+                if (defAsm != null)
+                {
+                    // Set the type context so type variable resolution works
+                    JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
+
+                    // Calculate base vtable slots (from parent type, typically Object=3)
+                    // Interface methods start after inherited slots
+                    ushort baseVtableSlots = 3;  // Default: Object has 3 slots
+                    if (genDefMT->_relatedType != null)
+                    {
+                        baseVtableSlots = genDefMT->_relatedType->_usNumVtableSlots;
+                    }
+
+                    // Populate the interface map
+                    PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, baseVtableSlots);
+
+                    // Clear the type context
+                    JIT.MetadataIntegration.ClearTypeTypeArgs();
                 }
             }
         }
@@ -5233,6 +5418,11 @@ public static unsafe class AssemblyLoader
         // Cache the new instantiated MT
         if (_genericInstCacheCount < MaxGenericInstCache)
         {
+            DebugConsole.Write("[GenInst] CACHE MISS - creating at ");
+            DebugConsole.WriteDecimal((uint)_genericInstCacheCount);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)instMT);
+            DebugConsole.WriteLine();
             _genericInstCacheDefTokens[_genericInstCacheCount] = genDefToken;
             _genericInstCacheArgHashes[_genericInstCacheCount] = argHash;
             _genericInstCacheInstMTs[_genericInstCacheCount] = instMT;
@@ -5251,6 +5441,82 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteLine();
 
         return instMT;
+    }
+
+    /// <summary>
+    /// Propagate a vtable slot update to all instantiated MTs for a generic type.
+    /// When a virtual method on a generic type is JIT compiled, the vtable slot is updated
+    /// on the generic definition's MT. But instantiated MTs (like Container`1<int>)
+    /// that were created earlier may have copied null vtable entries before the methods
+    /// were compiled. This function updates those cached instantiated MTs.
+    /// </summary>
+    public static void PropagateVtableSlotToInstantiations(uint assemblyId, uint typeDefRow, int vtableSlot, nint nativeCode)
+    {
+        // Create normalized token for this type definition
+        uint normalizedGenDefToken = (assemblyId << 24) | typeDefRow;
+
+        // Debug: show what we're looking for
+        DebugConsole.Write("[PropagateVT] Searching for def 0x");
+        DebugConsole.WriteHex(normalizedGenDefToken);
+        DebugConsole.Write(" slot ");
+        DebugConsole.WriteDecimal((uint)vtableSlot);
+        DebugConsole.Write(" in cache (count=");
+        DebugConsole.WriteDecimal((uint)_genericInstCacheCount);
+        DebugConsole.WriteLine(")");
+
+        // Scan the generic instantiation cache for MTs derived from this generic definition
+        for (int i = 0; i < _genericInstCacheCount; i++)
+        {
+            if (_genericInstCacheDefTokens[i] == normalizedGenDefToken)
+            {
+                MethodTable* instMT = _genericInstCacheInstMTs[i];
+                if (instMT != null && vtableSlot < instMT->_usNumVtableSlots)
+                {
+                    nint* vtable = instMT->GetVtablePtr();
+                    if (vtable[vtableSlot] == 0)  // Only update if currently null
+                    {
+                        DebugConsole.Write("[PropagateVT] Updated slot ");
+                        DebugConsole.WriteDecimal((uint)vtableSlot);
+                        DebugConsole.Write(" on MT 0x");
+                        DebugConsole.WriteHex((ulong)instMT);
+                        DebugConsole.Write(" with code 0x");
+                        DebugConsole.WriteHex((ulong)nativeCode);
+                        DebugConsole.WriteLine();
+                        vtable[vtableSlot] = nativeCode;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get the generic definition MethodTable for an instantiated generic type.
+    /// Returns null if the MT is not an instantiated generic or if the definition can't be found.
+    /// </summary>
+    public static MethodTable* GetGenericDefinitionMT(MethodTable* instMT)
+    {
+        if (instMT == null || _genericInstCacheCount == 0)
+            return null;
+
+        // Search the cache for this instantiated MT
+        for (int i = 0; i < _genericInstCacheCount; i++)
+        {
+            if (_genericInstCacheInstMTs[i] == instMT)
+            {
+                // Found it - now resolve the generic definition token
+                uint genDefToken = _genericInstCacheDefTokens[i];
+
+                // The genDefToken is in normalized format: (asmId << 24) | typeDefRow
+                uint defAsmId = genDefToken >> 24;
+                uint defTypeDefRow = genDefToken & 0x00FFFFFF;
+                uint defTypeDefToken = 0x02000000 | defTypeDefRow;
+
+                // Resolve to get the generic definition MT
+                return ResolveType(defAsmId, defTypeDefToken);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

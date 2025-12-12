@@ -189,11 +189,10 @@ public static class TestRunner
         RecordResult("GenericTests.TestMultiTypeParamConvert", GenericTests.TestMultiTypeParamConvert() == 42);
         RecordResult("GenericTests.TestMultiTypeParamCombine", GenericTests.TestMultiTypeParamCombine() == 42);
 
-        // TODO: Generic interface tests - interface dispatch requires deduplication of generic interface MTs
-        // The interface MT used in callvirt must match the MT stored in the class's interface map
-        // RecordResult("GenericTests.TestGenericInterfaceInt", GenericTests.TestGenericInterfaceInt() == 42);
-        // RecordResult("GenericTests.TestGenericInterfaceSetGet", GenericTests.TestGenericInterfaceSetGet() == 42);
-        // RecordResult("GenericTests.TestGenericInterfaceString", GenericTests.TestGenericInterfaceString() == 5);
+        // Generic interface tests - interface dispatch with generic interfaces
+        RecordResult("GenericTests.TestGenericInterfaceInt", GenericTests.TestGenericInterfaceInt() == 42);
+        RecordResult("GenericTests.TestGenericInterfaceSetGet", GenericTests.TestGenericInterfaceSetGet() == 42);
+        RecordResult("GenericTests.TestGenericInterfaceString", GenericTests.TestGenericInterfaceString() == 5);
 
         // TODO: Generic delegate tests - delegate newobj for generic delegates not yet implemented
         // RecordResult("GenericTests.TestGenericDelegate", GenericTests.TestGenericDelegate() == 42);

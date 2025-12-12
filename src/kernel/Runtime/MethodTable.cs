@@ -454,6 +454,20 @@ public static unsafe class TypeHelpers
             DebugConsole.Write(" numIfaces=");
             DebugConsole.WriteDecimal(objectMT->_usNumInterfaces);
             DebugConsole.WriteLine(" NOT FOUND");
+
+            // Show what interfaces are actually in the map
+            InterfaceMapEntry* map = objectMT->GetInterfaceMapPtr();
+            for (int i = 0; i < objectMT->_usNumInterfaces; i++)
+            {
+                DebugConsole.Write("  map[");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write("] = 0x");
+                DebugConsole.WriteHex((ulong)map[i].InterfaceMT);
+                DebugConsole.Write(" slot=");
+                DebugConsole.WriteDecimal((uint)map[i].StartSlot);
+                DebugConsole.WriteLine();
+            }
+
             return null;
         }
 
