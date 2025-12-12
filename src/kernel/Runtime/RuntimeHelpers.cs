@@ -332,7 +332,18 @@ public static unsafe class RuntimeHelpers
             DebugConsole.WriteLine();
         }
 
-        byte* result = (byte*)GCHeap.Alloc(pMT->BaseSize);
+        // Calculate allocation size.
+        // For AOT types (primitives), BaseSize already includes 8-byte MT pointer overhead.
+        // For JIT-created structs, BaseSize is just the raw value size, so we need to add 8.
+        // Detection: AOT primitives have ComponentSize > 0, JIT structs have ComponentSize = 0.
+        uint allocSize = pMT->BaseSize;
+        if (pMT->IsValueType && pMT->ComponentSize == 0)
+        {
+            // JIT-created struct: add 8 for MT pointer
+            allocSize += 8;
+        }
+
+        byte* result = (byte*)GCHeap.Alloc(allocSize);
         if (result == null)
         {
             // DebugConsole.WriteLine(" ALLOC FAILED!");

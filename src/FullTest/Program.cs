@@ -61,12 +61,10 @@ public static class TestRunner
         RunStringTests();
 
         // Boxing and advanced newobj tests (Phase 4)
-        // TEMPORARILY DISABLED - investigating crash
-        // RunBoxingTests();
+        RunBoxingTests();
 
         // Instance member tests (Phase 5)
-        // TEMPORARILY DISABLED - crashes with CR2=0x64
-        // RunInstanceTests();
+        RunInstanceTests();
 
         // Exception tests - uses AOT well-known type exposure for Exception base class
         Debug.WriteLine("[PHASE] Starting Exception tests...");

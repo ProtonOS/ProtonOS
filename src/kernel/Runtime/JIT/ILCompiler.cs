@@ -7664,12 +7664,23 @@ public unsafe struct ILCompiler
                     }
                 }
 
-                // For value types, BaseSize includes the 8-byte MT pointer overhead.
-                // The actual value size is BaseSize - 8.
+                // For value types, we need the raw value size (bytes to copy when boxing).
+                // - AOT primitives: ComponentSize is raw size, BaseSize is boxed size (includes +8)
+                // - JIT-created structs: ComponentSize is 0, BaseSize IS the raw size (no +8)
                 // For reference types (boxing a ref type is a no-op), use 8 (pointer size).
                 if (mt->IsValueType)
                 {
-                    valueSize = baseSize - 8;
+                    ushort componentSize = mt->_usComponentSize;
+                    if (componentSize > 0)
+                    {
+                        // AOT primitive: ComponentSize is the raw value size
+                        valueSize = componentSize;
+                    }
+                    else
+                    {
+                        // JIT-created struct: BaseSize IS the raw value size
+                        valueSize = baseSize;
+                    }
                 }
                 else
                 {
@@ -7828,6 +7839,12 @@ public unsafe struct ILCompiler
                 X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, copyOffset);
                 X64Emitter.MovMR8(ref _code, VReg.R0, 8 + copyOffset, VReg.R2);
             }
+        }
+
+        // Clean up the original struct data from the stack (for multi-slot structs)
+        if (isMultiSlotStruct && structByteSize > 0)
+        {
+            X64Emitter.AddRI(ref _code, VReg.SP, structByteSize);
         }
 
         // Push the boxed object reference onto eval stack

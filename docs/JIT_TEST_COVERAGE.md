@@ -190,7 +190,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ throw in catch block (new exception from catch handler)
 
 ### Filter
-- ⚠️ catch when (condition) - infrastructure exists (ExecuteFilterFunclet), untested
+- ✅ catch when (condition) - tested with filter true and filter false cases
 
 ### Fault
 - ✅ fault blocks - code review verified (not testable from C#)
@@ -349,11 +349,27 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 179 passing
+- Current test count: 191 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Struct Boxing Fix (2024-12)
+Fixed boxing of JIT-created structs (SimpleStruct, MediumStruct, LargeStruct):
+- Bug: `RhpNewFast` allocated `BaseSize` bytes, but JIT structs have BaseSize = raw value size (no MT overhead)
+- AOT primitives have BaseSize = 8 + value size (includes MT pointer overhead)
+- JIT structs have BaseSize = value size only (no overhead included)
+- Fix: `RhpNewFast` now detects JIT structs (ComponentSize == 0) and adds 8 bytes for MT pointer
+- Also fixed `CompileBox` to use ComponentSize for AOT types, BaseSize for JIT structs
+- Also fixed multi-slot struct stack cleanup in `CompileBox` (was leaking struct data on stack)
+- 5 boxing tests now pass: TestBoxInt, TestBoxStruct, TestBoxMediumStruct, TestBoxLargeStruct, TestNewObjManyArgs
+- 7 instance tests also enabled and passing
+
+### Filter Handler Tests (2024-12)
+- Added and verified `catch when (condition)` filter tests
+- TestCatchWhenTrue: filter evaluates to true, catch block executes
+- TestCatchWhenFalse: filter evaluates to false, falls through to next catch
 
 ### Catch Handler Funclet Fix (2024-12)
 Fixed exception propagation from catch handlers (throw inside catch block):
