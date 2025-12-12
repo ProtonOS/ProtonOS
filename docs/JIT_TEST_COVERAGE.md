@@ -144,19 +144,19 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Generic method with multiple type parameters (Combine<T1, T2>)
 
 ### Generic Constraints
-- ❌ where T : class
-- ❌ where T : struct
-- ❌ where T : new()
-- ❌ where T : SomeBase
-- ❌ where T : ISomeInterface
+- ✅ where T : class (reference type constraint)
+- ✅ where T : struct (value type constraint)
+- ❌ where T : new() (requires Activator.CreateInstance<T>)
+- ✅ where T : SomeBase (base class constraint)
+- ✅ where T : ISomeInterface (interface constraint)
 
 ### Variance
-- ❌ Covariance (out T)
-- ❌ Contravariance (in T)
+- ❌ Covariance (out T) - requires runtime interface compatibility checking
+- ❌ Contravariance (in T) - requires runtime interface compatibility checking
 
 ### Complex Scenarios
 - ✅ Generic arrays (T[])
-- ❌ Nested generic types (Outer<T>.Inner<U>)
+- ✅ Nested generic types (Outer<T>.Inner<U>) - fixed compressed int parsing in TypeSpec
 - ✅ Generic interfaces (IContainer<int>, IContainer<string>) - TypeSpec handling in interface dispatch
 - ✅ Generic delegates (Transformer<TIn, TOut>) - TypeSpec handling in delegate ctor/Invoke
 
@@ -298,8 +298,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ⚠️ ldind.* (load indirect)
 - ⚠️ stind.* (store indirect)
 - ⚠️ localloc (stack allocation)
-- ❌ cpblk (memory copy)
-- ❌ initblk (memory init)
+- ⚠️ cpblk (memory copy) - implemented but untested (needs Unsafe.CopyBlock)
+- ⚠️ initblk (memory init) - implemented but untested (needs Unsafe.InitBlock)
 
 ### Prefix Opcodes
 - ✅ constrained. (for value type virtcalls)
@@ -349,7 +349,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 208 passing
+- Current test count: 218 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -358,6 +358,26 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Generic Constraints Fix (2025-12)
+- Fixed `box T` for reference types - was allocating a new object instead of no-op
+- For `where T : class`, boxing null should return null (not a new object)
+- 4 new tests: TestConstraintClass, TestConstraintClassNotNull, TestConstraintStruct, TestConstraintInterface
+- Test count increased from 211 to 215
+
+### Nested Generic Types Fix (2025-12)
+Added support for nested generic types like `Outer<T>.Inner<U>`:
+- **Bug**: Field resolution for nested generic types returned garbage offsets (45, 46)
+- **Root cause**: TypeSpec signature parsing used LEB128-style decoding instead of CLI compressed integer format
+  - LEB128: `(b0 & 0x7F) | ((b1 & 0x7F) << 7) | ...`
+  - CLI compressed: 1-byte (`< 0x80`), 2-byte (`(b0 & 0x3F) << 8 | b1`), or 4-byte
+  - For `0x81 0x2C`: LEB128 = 5633 (wrong), CLI = 300 (correct)
+- **Fix 1**: Use existing `DecodeCompressedUInt()` in `ResolveMemberRefField()` for TypeSpec parsing
+- **Fix 2**: Handle reference types in `constrained.` prefix - must dereference managed pointer before callvirt
+  - Stack has pointer to reference (from ldflda), not the reference itself
+  - Added code to dereference pointer for reference types before virtual dispatch
+- 3 new tests: TestNestedGenericSimple, TestNestedGenericInnerValue, TestNestedGenericMethod
+- Test count increased from 208 to 211
 
 ### Generic Delegates and Interfaces Fix (2025-12)
 Fixed generic delegates and generic interfaces for TypeSpec tokens:

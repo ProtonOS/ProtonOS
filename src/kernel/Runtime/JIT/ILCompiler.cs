@@ -4810,7 +4810,29 @@ public unsafe struct ILCompiler
                     // Now fall through to callvirt handling with boxed object on stack
                     // Virtual dispatch will work via the vtable entries in the MethodTable
                 }
-                // For reference types with constrained prefix, just proceed normally
+                else
+                {
+                    // Reference type with constrained prefix
+                    // Stack has: managed pointer to a reference (not the reference itself)
+                    // We need to dereference it to get the actual object reference
+                    //
+                    // Example: ldflda StringField; constrained. string; callvirt ToString
+                    // Stack has: &(this.StringField) which is a pointer to a string reference
+                    // We need: the string reference itself
+
+                    // Pop managed pointer to RAX
+                    X64Emitter.Pop(ref _code, VReg.R0);
+                    PopEntry();
+
+                    // Dereference: RAX = [RAX] - read the object reference from the pointer
+                    X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
+
+                    // Push the actual object reference back on stack
+                    X64Emitter.Push(ref _code, VReg.R0);
+                    PushEntry(EvalStackEntry.NativeInt);
+
+                    // Now fall through to callvirt handling with the reference on stack
+                }
             }
         }
 
@@ -7666,7 +7688,7 @@ public unsafe struct ILCompiler
                 // For value types, we need the raw value size (bytes to copy when boxing).
                 // - AOT primitives: ComponentSize is raw size, BaseSize is boxed size (includes +8)
                 // - JIT-created structs: ComponentSize is 0, BaseSize IS the raw size (no +8)
-                // For reference types (boxing a ref type is a no-op), use 8 (pointer size).
+                // For reference types (boxing a ref type is a no-op), just return - leave value on stack.
                 if (mt->IsValueType)
                 {
                     ushort componentSize = mt->_usComponentSize;
@@ -7680,16 +7702,16 @@ public unsafe struct ILCompiler
                         // JIT-created struct: BaseSize IS the raw value size
                         valueSize = baseSize;
                     }
+                    DebugConsole.Write(" valueSize=");
+                    DebugConsole.WriteHex(valueSize);
+                    DebugConsole.WriteLine("");
                 }
                 else
                 {
-                    // Reference type - shouldn't really be boxing, but treat as pointer
-                    valueSize = 8;
+                    // Reference type - box is a no-op, just leave value on stack
+                    DebugConsole.WriteLine(" REF-NOOP");
+                    return true;
                 }
-
-                DebugConsole.Write(" valueSize=");
-                DebugConsole.WriteHex(valueSize);
-                DebugConsole.WriteLine("");
             }
             else
             {

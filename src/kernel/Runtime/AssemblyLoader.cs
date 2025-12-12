@@ -3441,19 +3441,11 @@ public static unsafe class AssemblyLoader
             // TypeSpec for generic instantiation: GENERICINST (0x15) CLASS/VALUETYPE TypeDefOrRef GenArgCount ...
             if (typeSpecSig[0] == 0x15) // GENERICINST
             {
-                int pos = 1;
+                uint pos = 1;
                 byte classOrVt = typeSpecSig[pos++];  // CLASS (0x12) or VALUETYPE (0x11)
 
-                // Parse the TypeDefOrRef coded index
-                uint codedIdx = 0;
-                int shift = 0;
-                while (pos < (int)typeSpecLen)
-                {
-                    byte b = typeSpecSig[pos++];
-                    codedIdx |= (uint)(b & 0x7F) << shift;
-                    if ((b & 0x80) == 0) break;
-                    shift += 7;
-                }
+                // Parse the TypeDefOrRef coded index using proper CLI compressed int format
+                uint codedIdx = DecodeCompressedUInt(typeSpecSig, typeSpecLen, ref pos);
 
                 // Decode TypeDefOrRef: low 2 bits = table, rest = row
                 uint table = codedIdx & 0x03;
