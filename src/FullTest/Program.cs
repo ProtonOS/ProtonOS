@@ -194,9 +194,9 @@ public static class TestRunner
         RecordResult("GenericTests.TestGenericInterfaceSetGet", GenericTests.TestGenericInterfaceSetGet() == 42);
         RecordResult("GenericTests.TestGenericInterfaceString", GenericTests.TestGenericInterfaceString() == 5);
 
-        // TODO: Generic delegate tests - delegate newobj for generic delegates not yet implemented
-        // RecordResult("GenericTests.TestGenericDelegate", GenericTests.TestGenericDelegate() == 42);
-        // RecordResult("GenericTests.TestGenericDelegateStringToInt", GenericTests.TestGenericDelegateStringToInt() == 5);
+        // Generic delegate tests
+        RecordResult("GenericTests.TestGenericDelegate", GenericTests.TestGenericDelegate() == 42);
+        RecordResult("GenericTests.TestGenericDelegateStringToInt", GenericTests.TestGenericDelegateStringToInt() == 5);
 
         // TODO: Generic constraint tests - require Activator.CreateInstance<T> and other features
         // RecordResult("GenericTests.TestConstraintClass", GenericTests.TestConstraintClass() == 42);

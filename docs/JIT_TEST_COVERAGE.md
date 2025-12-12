@@ -157,8 +157,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Complex Scenarios
 - ✅ Generic arrays (T[])
 - ❌ Nested generic types (Outer<T>.Inner<U>)
-- ⚠️ Generic interfaces (MT deduplication needed - see notes)
-- ❌ Generic delegates
+- ✅ Generic interfaces (IContainer<int>, IContainer<string>) - TypeSpec handling in interface dispatch
+- ✅ Generic delegates (Transformer<TIn, TOut>) - TypeSpec handling in delegate ctor/Invoke
 
 ---
 
@@ -349,15 +349,37 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 203 passing
+- Current test count: 208 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ### Known Limitations
 
-**Generic Interface Dispatch**: Generic interfaces like `IContainer<int>` don't work with interface dispatch. The issue is MT (MethodTable) deduplication - when resolving a `callvirt` on `IContainer<int>`, the JIT creates a new MT for the generic instantiation, but the object's interface map contains a different MT created during class building. The MTs are semantically equivalent but have different addresses, so the interface lookup fails. This requires implementing an MT cache/deduplication system to fix.
+*No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Generic Delegates and Interfaces Fix (2025-12)
+Fixed generic delegates and generic interfaces for TypeSpec tokens:
+- **Generic Delegates** (`Transformer<int, int>`, `Transformer<string, int>`):
+  - Added `IsDelegateCtor()` to detect delegate constructors with TypeSpec class reference
+  - Added TypeSpec handling to `IsDelegateInvoke()` for generic delegate Invoke methods
+  - Uses `GetMemberRefGenericInstMT()` to resolve instantiated delegate MethodTable
+  - Both `newobj` and `callvirt Invoke` now work for generic delegate types
+  - 2 new tests: TestGenericDelegate, TestGenericDelegateStringToInt
+
+- **Generic Interfaces** (`IContainer<int>`, `IContainer<string>`):
+  - Fixed `PopulateGenericInstInterfaceMap()` to use correct base vtable slot count
+  - Was passing `numVtableSlots` (5) instead of `baseVtableSlots` (3), causing StartSlot overflow
+  - Added `GetGenericDefinitionMT()` for fallback lookup in `EnsureVtableSlotCompiled`
+  - 3 new tests: TestGenericInterfaceInt, TestGenericInterfaceSetGet, TestGenericInterfaceString
+
+- **Nullable<T> Boxing Fix**:
+  - Fixed `IsNullableGenericDef()` token format - was expecting standard metadata token but received normalized `(asmId << 24) | typeDefRow`
+  - This caused `IsNullable` flag to never be set, breaking special boxing/unboxing semantics
+  - All 7 Nullable boxing tests now pass
+
+- Test count increased from 201 to 208
 
 ### Generic Method Multiple Type Parameters Fix (2025-12)
 Fixed `Combine<T1, T2>(T1 first, T2 second)` test failure:
@@ -370,12 +392,11 @@ Fixed `Combine<T1, T2>(T1 first, T2 second)` test failure:
 - Test count increased from 201 to 203
 
 ### Generic Interface Investigation (2025-12)
-Investigated generic interface dispatch (`IContainer<int>.GetValue()`):
+Investigated and fixed generic interface dispatch (`IContainer<int>.GetValue()`):
 - Added TypeSpec handling to `IsInterfaceMethod()` for generic interface tokens
 - Fixed MVAR resolution to use `GetMethodTypeArgMethodTable()` instead of class type args
-- Discovered MT deduplication issue: interface MT created during callvirt differs from class's interface map MT
-- Documented as known limitation - requires MT cache/deduplication to fix
-- Test remains disabled pending future work
+- Initial MT deduplication issue was actually caused by wrong interface StartSlot calculation
+- **FIXED**: See "Generic Delegates and Interfaces Fix" above - tests now enabled and passing
 
 ### Verified ⚠️ Items (2025-12)
 Tested and verified three items that were marked as partially tested:

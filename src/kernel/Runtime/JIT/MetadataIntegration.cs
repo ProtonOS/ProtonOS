@@ -1756,6 +1756,28 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
+        // Check if this MemberRef is a delegate constructor (.ctor on a delegate type)
+        // Delegate constructors are "runtime managed" with no IL body - the JIT handles them specially
+        MethodTable* delegateCtorMT;
+        if (AssemblyLoader.IsDelegateCtor(_currentAssemblyId, token, out delegateCtorMT))
+        {
+            result.IsValid = true;
+            result.IsDelegateCtor = true;
+            result.MethodTable = delegateCtorMT;
+            result.NativeCode = null;  // No native code - handled by CompileNewobjDelegate
+            result.HasThis = true;  // Constructor is instance method
+            result.ArgCount = 2;    // Delegate .ctor takes (object, IntPtr)
+            result.ReturnKind = ReturnKind.Void;
+            result.IsVirtual = false;
+            result.VtableSlot = -1;
+            result.IsInterfaceMethod = false;
+            result.InterfaceMT = null;
+            result.InterfaceMethodSlot = -1;
+            result.RegistryEntry = null;
+
+            return true;
+        }
+
         // Check if this MemberRef is on a generic instantiation (e.g., SimpleList<int>)
         // If so, get the instantiated MethodTable which has the type argument info
         MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);

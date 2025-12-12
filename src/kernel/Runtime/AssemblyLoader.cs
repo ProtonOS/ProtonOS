@@ -3143,58 +3143,31 @@ public static unsafe class AssemblyLoader
 
     /// <summary>
     /// Check if a generic definition token refers to System.Nullable`1.
+    /// The token format is normalized: (assemblyId << 24) | typeDefRow
     /// </summary>
     private static bool IsNullableGenericDef(uint genDefToken)
     {
-        uint tableType = genDefToken >> 24;
-        uint rid = genDefToken & 0x00FFFFFF;
+        // Normalized token format: (assemblyId << 24) | typeDefRow
+        uint asmId = genDefToken >> 24;
+        uint typeDefRow = genDefToken & 0x00FFFFFF;
 
-        if (tableType == 0x02)  // TypeDef
-        {
-            // Check each loaded assembly for this TypeDef
-            for (int i = 0; i < _assemblyCount; i++)
-            {
-                if (!_assemblies[i].IsLoaded)
-                    continue;
+        if (asmId == 0 || typeDefRow == 0)
+            return false;
 
-                LoadedAssembly* asm = &_assemblies[i];
-                uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
-                if (rid > 0 && rid <= typeDefCount)
-                {
-                    uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, rid);
-                    uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, rid);
-                    byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
-                    byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+        LoadedAssembly* asm = GetAssembly(asmId);
+        if (asm == null)
+            return false;
 
-                    if (IsSystemNamespace(ns) && IsNullableName(name))
-                        return true;
-                }
-            }
-        }
-        else if (tableType == 0x01)  // TypeRef
-        {
-            // TypeRefs point to external types - check the name/namespace from the TypeRef table
-            for (int i = 0; i < _assemblyCount; i++)
-            {
-                if (!_assemblies[i].IsLoaded)
-                    continue;
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        if (typeDefRow > typeDefCount)
+            return false;
 
-                LoadedAssembly* asm = &_assemblies[i];
-                uint typeRefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeRef];
-                if (rid > 0 && rid <= typeRefCount)
-                {
-                    uint refNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, rid);
-                    uint refNsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, rid);
-                    byte* name = MetadataReader.GetString(ref asm->Metadata, refNameIdx);
-                    byte* ns = MetadataReader.GetString(ref asm->Metadata, refNsIdx);
+        uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
 
-                    if (IsSystemNamespace(ns) && IsNullableName(name))
-                        return true;
-                }
-            }
-        }
-
-        return false;
+        return IsSystemNamespace(ns) && IsNullableName(name);
     }
 
     /// <summary>
@@ -4309,29 +4282,116 @@ public static unsafe class AssemblyLoader
             // MemberRef in another assembly via TypeRef
             if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
                 return false;
+
+            delegateMT = targetAsm->Types.Lookup(typeDefToken);
+            if (delegateMT == null)
+            {
+                delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            }
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
         {
             // MemberRef in same assembly
             targetAsm = sourceAsm;
             typeDefToken = 0x02000000 | classRef.RowId;
+
+            delegateMT = targetAsm->Types.Lookup(typeDefToken);
+            if (delegateMT == null)
+            {
+                delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            }
+        }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - could be generic delegate instantiation (e.g., Transformer<int, int>)
+            // Use GetMemberRefGenericInstMT to get the instantiated MethodTable
+            delegateMT = GetMemberRefGenericInstMT(sourceAsmId, memberRefToken);
         }
         else
         {
-            // TypeSpec or other - could be generic delegate, handle later if needed
             return false;
         }
 
-        if (targetAsm == null || typeDefToken == 0)
-            return false;
-
-        // Get the type's MethodTable
-        delegateMT = targetAsm->Types.Lookup(typeDefToken);
         if (delegateMT == null)
+            return false;
+
+        // Check if it's a delegate type
+        if (!delegateMT->IsDelegate)
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef token is a delegate constructor (.ctor method on a delegate type).
+    /// This handles both regular delegates and generic delegate instantiations.
+    /// </summary>
+    /// <param name="sourceAsmId">The assembly containing the MemberRef token</param>
+    /// <param name="memberRefToken">MemberRef token (0x0Axxxxxx)</param>
+    /// <param name="delegateMT">Output: the delegate type's MethodTable</param>
+    /// <returns>True if this is a delegate constructor</returns>
+    public static bool IsDelegateCtor(uint sourceAsmId, uint memberRefToken, out MethodTable* delegateMT)
+    {
+        delegateMT = null;
+
+        LoadedAssembly* sourceAsm = GetAssembly(sourceAsmId);
+        if (sourceAsm == null)
+            return false;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get member name to check if it's ".ctor"
+        uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+        byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+        if (memberName == null || !IsCtorName(memberName))
+            return false;  // Not ".ctor"
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(
+            ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
+
+        // Resolve the containing type
+        LoadedAssembly* targetAsm = null;
+        uint typeDefToken = 0;
+
+        if (classRef.Table == MetadataTableId.TypeRef)
         {
-            // Not created yet - create on demand
-            delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            // MemberRef in another assembly via TypeRef
+            if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
+                return false;
+
+            // Get the type's MethodTable
+            delegateMT = targetAsm->Types.Lookup(typeDefToken);
+            if (delegateMT == null)
+            {
+                delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            }
         }
+        else if (classRef.Table == MetadataTableId.TypeDef)
+        {
+            // MemberRef in same assembly
+            targetAsm = sourceAsm;
+            typeDefToken = 0x02000000 | classRef.RowId;
+
+            delegateMT = targetAsm->Types.Lookup(typeDefToken);
+            if (delegateMT == null)
+            {
+                delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            }
+        }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - could be generic delegate instantiation (e.g., Transformer<int, int>)
+            // Use GetMemberRefGenericInstMT to get the instantiated MethodTable
+            delegateMT = GetMemberRefGenericInstMT(sourceAsmId, memberRefToken);
+        }
+        else
+        {
+            return false;
+        }
+
         if (delegateMT == null)
             return false;
 
@@ -4442,14 +4502,6 @@ public static unsafe class AssemblyLoader
         CodedIndex classRef = MetadataReader.GetMemberRefClass(
             ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
 
-        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: token=0x");
-        DebugConsole.WriteHex(memberRefToken);
-        DebugConsole.Write(" classTable=");
-        DebugConsole.WriteDecimal((uint)classRef.Table);
-        DebugConsole.Write(" row=");
-        DebugConsole.WriteDecimal(classRef.RowId);
-        DebugConsole.WriteLine();
-
         // Only handle TypeSpec references
         if (classRef.Table != MetadataTableId.TypeSpec)
         {
@@ -4472,10 +4524,6 @@ public static unsafe class AssemblyLoader
             return null;
         }
 
-        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: TypeSpec sig[0]=0x");
-        DebugConsole.WriteHex(tsSig[0]);
-        DebugConsole.WriteLine();
-
         // Check if it's a GenericInst
         if (tsSig[0] != 0x15)  // ELEMENT_TYPE_GENERICINST
         {
@@ -4486,14 +4534,6 @@ public static unsafe class AssemblyLoader
         // This will resolve the full generic instantiation including type arguments
         uint typeSpecToken = 0x1B000000 | typeSpecRow;
         MethodTable* result = ResolveTypeSpec(sourceAsm, typeSpecToken);
-        DebugConsole.Write("[AsmLoader] GetMemberRefGenericInstMT: resolved MT=0x");
-        DebugConsole.WriteHex((ulong)result);
-        if (result != null)
-        {
-            DebugConsole.Write(" relatedType=0x");
-            DebugConsole.WriteHex((ulong)result->_relatedType);
-        }
-        DebugConsole.WriteLine();
         return result;
     }
 

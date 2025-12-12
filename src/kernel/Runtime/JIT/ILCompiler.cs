@@ -363,6 +363,9 @@ public unsafe struct ResolvedMethod
 
     /// <summary>True if this is a delegate Invoke method (runtime-provided).</summary>
     public bool IsDelegateInvoke;
+
+    /// <summary>True if this is a delegate constructor (runtime-provided).</summary>
+    public bool IsDelegateCtor;
 }
 
 /// <summary>
@@ -7488,10 +7491,6 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
             return false;
         }
-
-        DebugConsole.Write("[newobj delegate] MT=0x");
-        DebugConsole.WriteHex((ulong)mt);
-        DebugConsole.WriteLine();
 
         // Pop args from eval stack: functionPointer first, then target
         // Stack order: ..., target, functionPointer (functionPointer on top)
