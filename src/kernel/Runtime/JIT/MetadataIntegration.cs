@@ -51,6 +51,24 @@ public unsafe struct StaticFieldEntry
 }
 
 /// <summary>
+/// Entry for tracking static constructor (cctor) contexts per type.
+/// </summary>
+public unsafe struct CctorRegistryEntry
+{
+    /// <summary>TypeDef token (0x02xxxxxx) for the type.</summary>
+    public uint TypeToken;
+
+    /// <summary>Assembly ID containing the type.</summary>
+    public uint AssemblyId;
+
+    /// <summary>Pointer to the StaticClassConstructionContext for this type.</summary>
+    public nint* ContextAddress;
+
+    /// <summary>True if this slot is in use.</summary>
+    public bool IsUsed => TypeToken != 0;
+}
+
+/// <summary>
 /// Cached field layout information for faster subsequent lookups.
 /// </summary>
 public unsafe struct FieldLayoutEntry
@@ -87,6 +105,12 @@ public unsafe struct FieldLayoutEntry
 
     /// <summary>True if the field type itself is a value type.</summary>
     public bool IsFieldTypeValueType;
+
+    /// <summary>Declaring type token (TypeDef 0x02) for the field.</summary>
+    public uint DeclaringTypeToken;
+
+    /// <summary>Assembly ID containing the declaring type (for cctor lookup).</summary>
+    public uint DeclaringTypeAssemblyId;
 
     /// <summary>True if this slot is in use.</summary>
     public bool IsUsed => Token != 0;
@@ -146,6 +170,12 @@ public static unsafe class MetadataIntegration
     private static MethodTable** _typeTypeArgMTs;  // MethodTable pointers for each type arg
     private static int _typeTypeArgCount;
 
+    // Static constructor (cctor) context registry
+    // Tracks StaticClassConstructionContext addresses for types with static constructors
+    private const int MaxCctorEntries = 256;
+    private static CctorRegistryEntry* _cctorRegistry;
+    private static int _cctorCount;
+
     private static bool _initialized;
 
     /// <summary>
@@ -202,6 +232,16 @@ public static unsafe class MetadataIntegration
             return;
         }
         _typeTypeArgCount = 0;
+
+        // Allocate cctor registry
+        _cctorRegistry = (CctorRegistryEntry*)HeapAllocator.AllocZeroed(
+            (ulong)(MaxCctorEntries * sizeof(CctorRegistryEntry)));
+        if (_cctorRegistry == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to allocate cctor registry");
+            return;
+        }
+        _cctorCount = 0;
 
         _typeCount = 0;
         _staticFieldCount = 0;
@@ -1004,7 +1044,8 @@ public static unsafe class MetadataIntegration
     public static void CacheFieldLayout(uint token, int offset, byte size, bool isSigned,
                                          bool isStatic, bool isGCRef, void* staticAddress,
                                          bool isDeclaringTypeValueType = false, int declaringTypeSize = 0,
-                                         bool isFieldTypeValueType = false)
+                                         bool isFieldTypeValueType = false,
+                                         uint declaringTypeToken = 0, uint declaringTypeAssemblyId = 0)
     {
         if (!_initialized)
             Initialize();
@@ -1027,6 +1068,8 @@ public static unsafe class MetadataIntegration
                 _fieldLayoutCache[i].IsDeclaringTypeValueType = isDeclaringTypeValueType;
                 _fieldLayoutCache[i].DeclaringTypeSize = declaringTypeSize;
                 _fieldLayoutCache[i].IsFieldTypeValueType = isFieldTypeValueType;
+                _fieldLayoutCache[i].DeclaringTypeToken = declaringTypeToken;
+                _fieldLayoutCache[i].DeclaringTypeAssemblyId = declaringTypeAssemblyId;
                 return;
             }
         }
@@ -1049,6 +1092,8 @@ public static unsafe class MetadataIntegration
         _fieldLayoutCache[_fieldLayoutCount].IsDeclaringTypeValueType = isDeclaringTypeValueType;
         _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeSize = declaringTypeSize;
         _fieldLayoutCache[_fieldLayoutCount].IsFieldTypeValueType = isFieldTypeValueType;
+        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeToken = declaringTypeToken;
+        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeAssemblyId = declaringTypeAssemblyId;
         _fieldLayoutCount++;
     }
 
@@ -1266,6 +1311,10 @@ public static unsafe class MetadataIntegration
         }
         result.Size = size;
 
+        // Get the declaring type token for cctor lookup
+        uint declaringTypeToken = FindContainingType(rowId);
+        uint declaringTypeRow = declaringTypeToken & 0x00FFFFFF;
+
         if (isStatic)
         {
             // Static field - allocate or look up storage from per-assembly storage
@@ -1281,8 +1330,7 @@ public static unsafe class MetadataIntegration
                     if (addr == null)
                     {
                         // Allocate in per-assembly storage
-                        uint typeToken = FindContainingType(rowId);
-                        addr = asm->Statics.Register(token, typeToken, size, isGCRef);
+                        addr = asm->Statics.Register(token, declaringTypeToken, size, isGCRef);
                     }
                 }
             }
@@ -1293,8 +1341,7 @@ public static unsafe class MetadataIntegration
                 addr = LookupStaticField(token);
                 if (addr == null)
                 {
-                    uint typeToken = FindContainingType(rowId);
-                    addr = RegisterStaticField(token, typeToken, size, isGCRef);
+                    addr = RegisterStaticField(token, declaringTypeToken, size, isGCRef);
                 }
             }
 
@@ -1311,9 +1358,7 @@ public static unsafe class MetadataIntegration
 
             // Check if this field belongs to a value type
             // Value types accessed via byref don't have an MT pointer, so offsets start at 0
-            uint typeToken = FindContainingType(rowId);
-            uint typeRow = typeToken & 0x00FFFFFF;
-            bool isValueType = (typeRow > 0) && IsTypeDefValueType(typeRow);
+            bool isValueType = (declaringTypeRow > 0) && IsTypeDefValueType(declaringTypeRow);
 
             // Check FieldLayout table for explicit offset
             uint explicitOffset;
@@ -1335,11 +1380,15 @@ public static unsafe class MetadataIntegration
 
             // Set value type info for the declaring type
             result.IsDeclaringTypeValueType = isValueType;
-            if (isValueType && typeRow > 0)
+            if (isValueType && declaringTypeRow > 0)
             {
-                result.DeclaringTypeSize = (int)CalculateTypeDefSize(typeRow);
+                result.DeclaringTypeSize = (int)CalculateTypeDefSize(declaringTypeRow);
             }
         }
+
+        // Set declaring type info for cctor lookup
+        result.DeclaringTypeToken = declaringTypeToken;
+        result.DeclaringTypeAssemblyId = _currentAssemblyId;
 
         result.IsValid = true;
 
@@ -1347,7 +1396,8 @@ public static unsafe class MetadataIntegration
         CacheFieldLayout(token, result.Offset, result.Size, result.IsSigned,
                         result.IsStatic, result.IsGCRef, result.StaticAddress,
                         result.IsDeclaringTypeValueType, result.DeclaringTypeSize,
-                        result.IsFieldTypeValueType);
+                        result.IsFieldTypeValueType,
+                        declaringTypeToken, _currentAssemblyId);
 
         return true;
     }
@@ -1629,12 +1679,17 @@ public static unsafe class MetadataIntegration
             result.InterfaceMethodSlot = interfaceSlot;
             result.NativeCode = null;  // Will be resolved at runtime via interface dispatch
             result.HasThis = true;  // Interface methods are always instance methods
-            result.ArgCount = 0;  // Will be determined at call site from signature
+            result.ArgCount = 0;  // Will be parsed from MemberRef signature
             result.ReturnKind = ReturnKind.IntPtr;  // Generic fallback, actual return handled by call
             result.IsVirtual = true;
             result.VtableSlot = -1;  // Not a direct vtable slot
             result.MethodTable = null;
             result.RegistryEntry = null;
+
+            // Parse the MemberRef signature to get arg count and return type
+            // This is needed for proper interface method invocation
+            ParseMemberRefSignatureForDelegate(_currentAssemblyId, token, ref result);
+
             return true;
         }
 
@@ -2996,12 +3051,16 @@ public static unsafe class MetadataIntegration
                 result.InterfaceMethodSlot = interfaceSlot;
                 result.NativeCode = null;  // Will be resolved at runtime via interface dispatch
                 result.HasThis = true;  // Interface methods are always instance methods
-                result.ArgCount = 0;  // Will be determined at call site from signature
+                result.ArgCount = 0;  // Will be parsed from MethodDef signature
                 result.ReturnKind = ReturnKind.IntPtr;  // Generic fallback, actual return handled by call
                 result.IsVirtual = true;
                 result.VtableSlot = -1;  // Not a direct vtable slot
                 result.MethodTable = null;
                 result.RegistryEntry = null;
+
+                // Parse the MethodDef signature to get arg count and return type
+                ParseMethodDefSignature(_currentAssemblyId, token, ref result);
+
                 return true;
             }
 
@@ -3286,5 +3345,296 @@ public static unsafe class MetadataIntegration
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Parse a MethodDef signature to get arg count and return type for interface methods.
+    /// </summary>
+    private static void ParseMethodDefSignature(uint asmId, uint methodDefToken, ref ResolvedMethod result)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(asmId);
+        if (asm == null)
+            return;
+
+        uint rowId = methodDefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return;
+
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 2)
+            return;
+
+        // Parse method signature
+        int sigPos = 0;
+        byte callConv = sig[sigPos++];
+        result.HasThis = (callConv & 0x20) != 0;
+
+        // Decode compressed parameter count
+        byte b = sig[sigPos++];
+        uint paramCount = 0;
+        if ((b & 0x80) == 0)
+            paramCount = b;
+        else if ((b & 0xC0) == 0x80)
+            paramCount = (uint)(((b & 0x3F) << 8) | sig[sigPos++]);
+        else if ((b & 0xE0) == 0xC0)
+        {
+            paramCount = (uint)(((b & 0x1F) << 24) | (sig[sigPos] << 16) | (sig[sigPos + 1] << 8) | sig[sigPos + 2]);
+            sigPos += 3;
+        }
+
+        result.ArgCount = (byte)paramCount;
+
+        // Parse return type
+        if (sigPos < sigLen)
+        {
+            byte retType = sig[sigPos];
+
+            // Map ECMA-335 element types to ReturnKind
+            switch (retType)
+            {
+                case 0x01: // ELEMENT_TYPE_VOID
+                    result.ReturnKind = ReturnKind.Void;
+                    break;
+                case 0x02: // ELEMENT_TYPE_BOOLEAN
+                case 0x03: // ELEMENT_TYPE_CHAR
+                case 0x04: // ELEMENT_TYPE_I1
+                case 0x05: // ELEMENT_TYPE_U1
+                case 0x06: // ELEMENT_TYPE_I2
+                case 0x07: // ELEMENT_TYPE_U2
+                case 0x08: // ELEMENT_TYPE_I4
+                case 0x09: // ELEMENT_TYPE_U4
+                    result.ReturnKind = ReturnKind.Int32;
+                    break;
+                case 0x0A: // ELEMENT_TYPE_I8
+                case 0x0B: // ELEMENT_TYPE_U8
+                    result.ReturnKind = ReturnKind.Int64;
+                    break;
+                case 0x0C: // ELEMENT_TYPE_R4
+                    result.ReturnKind = ReturnKind.Float32;
+                    break;
+                case 0x0D: // ELEMENT_TYPE_R8
+                    result.ReturnKind = ReturnKind.Float64;
+                    break;
+                case 0x18: // ELEMENT_TYPE_I (native int)
+                case 0x19: // ELEMENT_TYPE_U (native uint)
+                case 0x1C: // ELEMENT_TYPE_OBJECT
+                case 0x0E: // ELEMENT_TYPE_STRING
+                case 0x12: // ELEMENT_TYPE_CLASS
+                case 0x14: // ELEMENT_TYPE_SZARRAY
+                default:
+                    result.ReturnKind = ReturnKind.IntPtr;
+                    break;
+            }
+        }
+    }
+
+    // ========================================================================
+    // Static Constructor (cctor) Registry
+    // ========================================================================
+
+    /// <summary>
+    /// Register a static constructor context for a type.
+    /// Called when a type with a .cctor is loaded.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID containing the type.</param>
+    /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
+    /// <param name="contextAddress">Address of StaticClassConstructionContext.</param>
+    public static void RegisterCctorContext(uint assemblyId, uint typeToken, nint* contextAddress)
+    {
+        if (_cctorRegistry == null || _cctorCount >= MaxCctorEntries)
+        {
+            DebugConsole.WriteLine("[MetaInt] Cctor registry full or not initialized");
+            return;
+        }
+
+        // Check if already registered
+        for (int i = 0; i < _cctorCount; i++)
+        {
+            if (_cctorRegistry[i].AssemblyId == assemblyId &&
+                _cctorRegistry[i].TypeToken == typeToken)
+            {
+                return;  // Already registered
+            }
+        }
+
+        _cctorRegistry[_cctorCount].AssemblyId = assemblyId;
+        _cctorRegistry[_cctorCount].TypeToken = typeToken;
+        _cctorRegistry[_cctorCount].ContextAddress = contextAddress;
+        _cctorCount++;
+
+        // DebugConsole.Write("[MetaInt] Registered cctor for type 0x");
+        // DebugConsole.WriteHex(typeToken);
+        // DebugConsole.Write(" asm ");
+        // DebugConsole.WriteDecimal(assemblyId);
+        // DebugConsole.Write(" ctx=0x");
+        // DebugConsole.WriteHex((ulong)contextAddress);
+        // DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Look up the StaticClassConstructionContext address for a type.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID containing the type.</param>
+    /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
+    /// <returns>Pointer to the context, or null if no cctor.</returns>
+    public static nint* GetCctorContext(uint assemblyId, uint typeToken)
+    {
+        if (_cctorRegistry == null)
+            return null;
+
+        for (int i = 0; i < _cctorCount; i++)
+        {
+            if (_cctorRegistry[i].AssemblyId == assemblyId &&
+                _cctorRegistry[i].TypeToken == typeToken)
+            {
+                return _cctorRegistry[i].ContextAddress;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Get the address of the CheckStaticClassConstruction helper function.
+    /// Used by the JIT to emit cctor check calls.
+    /// </summary>
+    public static nint CheckStaticClassConstructionAddress { get; private set; }
+
+    /// <summary>
+    /// Set the address of CheckStaticClassConstruction.
+    /// Called during initialization after the helper is available.
+    /// </summary>
+    public static void SetCheckStaticClassConstructionAddress(nint address)
+    {
+        CheckStaticClassConstructionAddress = address;
+        DebugConsole.Write("[MetaInt] CheckStaticClassConstruction at 0x");
+        DebugConsole.WriteHex((ulong)address);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Find the .cctor (static constructor) method token for a type, if any.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID containing the type.</param>
+    /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
+    /// <returns>MethodDef token (0x06xxxxxx) of the .cctor, or 0 if none.</returns>
+    public static uint FindTypeCctor(uint assemblyId, uint typeToken)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint typeRow = typeToken & 0x00FFFFFF;
+        if (typeRow == 0)
+            return 0;
+
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+        uint methodEnd;
+
+        // Get the number of TypeDef rows
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        if (typeRow < typeDefCount)
+        {
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+        }
+        else
+        {
+            // Last type - methods extend to end of MethodDef table
+            methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+        }
+
+        // Scan methods for .cctor
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (name != null && IsCctorName(name))
+            {
+                return 0x06000000 | methodRow;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Check if a method name is ".cctor" (static constructor).
+    /// </summary>
+    private static bool IsCctorName(byte* name)
+    {
+        if (name == null)
+            return false;
+
+        // Check for ".cctor"
+        return name[0] == '.' &&
+               name[1] == 'c' &&
+               name[2] == 'c' &&
+               name[3] == 't' &&
+               name[4] == 'o' &&
+               name[5] == 'r' &&
+               name[6] == 0;
+    }
+
+    /// <summary>
+    /// Ensure a cctor context is registered for a type.
+    /// Called the first time a static field is accessed for a type.
+    /// If the type has a .cctor, this allocates a context and registers it.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID containing the type.</param>
+    /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
+    /// <returns>Pointer to the context if type has cctor, null otherwise.</returns>
+    public static nint* EnsureCctorContextRegistered(uint assemblyId, uint typeToken)
+    {
+        // Check if already registered
+        nint* existing = GetCctorContext(assemblyId, typeToken);
+        if (existing != null)
+            return existing;
+
+        // Find if this type has a .cctor
+        uint cctorToken = FindTypeCctor(assemblyId, typeToken);
+        if (cctorToken == 0)
+            return null;  // No cctor - no need for context
+
+        // Allocate StaticClassConstructionContext (single IntPtr field)
+        nint* context = (nint*)HeapAllocator.AllocZeroed((ulong)sizeof(nint));
+        if (context == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] Failed to allocate cctor context");
+            return null;
+        }
+
+        // IMPORTANT: Register the context BEFORE compiling the cctor.
+        // The cctor may access static fields of its own type, which would trigger
+        // a recursive call to EnsureCctorContextRegistered. By registering first
+        // with address=0, those accesses will find the context and skip the cctor check
+        // (since 0 means "already run" or "being run").
+        RegisterCctorContext(assemblyId, typeToken, context);
+
+        // The context holds the cctor method address
+        // We need to compile the cctor and store its address
+        var result = Tier0JIT.CompileMethod(assemblyId, cctorToken);
+        if (result.Success && result.CodeAddress != null)
+        {
+            *context = (nint)result.CodeAddress;
+
+            // DebugConsole.Write("[MetaInt] Cctor compiled for type 0x");
+            // DebugConsole.WriteHex(typeToken);
+            // DebugConsole.Write(" addr=0x");
+            // DebugConsole.WriteHex((ulong)result.CodeAddress);
+            // DebugConsole.WriteLine();
+        }
+        else
+        {
+            DebugConsole.Write("[MetaInt] Failed to compile cctor for type 0x");
+            DebugConsole.WriteHex(typeToken);
+            DebugConsole.WriteLine();
+            // Leave context as 0 - will be treated as "already run"
+        }
+
+        return context;
     }
 }

@@ -427,6 +427,12 @@ public unsafe struct ResolvedField
 
     /// <summary>True if the field type itself is a value type (for propagating through ldfld chains).</summary>
     public bool IsFieldTypeValueType;
+
+    /// <summary>Declaring type token (TypeDef 0x02) for the field.</summary>
+    public uint DeclaringTypeToken;
+
+    /// <summary>Assembly ID containing the declaring type.</summary>
+    public uint DeclaringTypeAssemblyId;
 }
 
 /// <summary>
@@ -657,10 +663,13 @@ public unsafe struct ILCompiler
     // EvalStackEntry is 5 bytes (Kind:1 + ByteSize:2 + RawSize:2) but we use 8 for alignment
     private const int EvalStackEntrySize = 8;  // sizeof(EvalStackEntry) with padding
     // Layout: evalStack[256] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
-    //       + branchTargetStackDepth[64] + labelILOffset[2048] + labelCodeOffset[2048] + ehClauseData[320] + funcletInfo[192]
-    //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128] + argTypeSize[64]
+    //       + branchTargetStackDepth[64] + labelILOffset[2048] + labelCodeOffset[2048] + ehClauseData[384] + funcletInfo[512]
+    //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128] + argTypeSize[64] + finallyCallPatches[128]
     // Note: evalStack = MaxStackDepth(32) * 8 bytes = 256 bytes for rich type tracking
-    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 320 + 192 + 64 + 32 + 128 + 64; // 5984 bytes
+    // funcletInfo = 32 funclets * 4 ints * 4 bytes = 512 bytes (doubled for filter clause support)
+    // Finally call tracking: each entry is 2 ints (patchOffset, ehClauseIndex)
+    private const int MaxFinallyCalls = 16;
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8); // 6496 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -708,6 +717,7 @@ public unsafe struct ILCompiler
         compiler._ehClauseCount = 0;
         compiler._funcletCount = 0;
         compiler._compilingFunclet = false;
+        compiler._funcletCatchHandlerEntry = false;
 
         // Initialize all pointer fields to null first (required for struct initialization)
         compiler._heapBuffers = null;
@@ -725,6 +735,8 @@ public unsafe struct ILCompiler
         compiler._argIsValueType = null;
         compiler._localTypeSize = null;
         compiler._argTypeSize = null;
+        compiler._finallyCallPatches = null;
+        compiler._finallyCallCount = 0;
 
         // Allocate heap buffer for all arrays (reduces stack usage during nested JIT)
         compiler._heapBuffers = (byte*)HeapAllocator.AllocZeroed(HeapBufferSize);
@@ -740,12 +752,13 @@ public unsafe struct ILCompiler
             compiler._branchTargetStackDepth = p + 1024;       // offset 1024, 64 bytes
             compiler._labelILOffset = (int*)(p + 1088);        // offset 1088, 2048 bytes
             compiler._labelCodeOffset = (int*)(p + 3136);      // offset 3136, 2048 bytes
-            compiler._ehClauseData = (int*)(p + 5184);         // offset 5184, 320 bytes
-            compiler._funcletInfo = (int*)(p + 5504);          // offset 5504, 192 bytes
-            compiler._localIsValueType = (bool*)(p + 5696);    // offset 5696, 64 bytes
-            compiler._argIsValueType = (bool*)(p + 5760);      // offset 5760, 32 bytes
-            compiler._localTypeSize = (ushort*)(p + 5792);     // offset 5792, 128 bytes
-            compiler._argTypeSize = (ushort*)(p + 5920);       // offset 5920, 64 bytes (MaxArgs * 2)
+            compiler._ehClauseData = (int*)(p + 5184);         // offset 5184, 384 bytes (16 * 6 * 4)
+            compiler._funcletInfo = (int*)(p + 5568);          // offset 5568, 512 bytes (32 funclets * 4 ints * 4 bytes)
+            compiler._localIsValueType = (bool*)(p + 6080);    // offset 6080, 64 bytes
+            compiler._argIsValueType = (bool*)(p + 6144);      // offset 6144, 32 bytes
+            compiler._localTypeSize = (ushort*)(p + 6176);     // offset 6176, 128 bytes
+            compiler._argTypeSize = (ushort*)(p + 6304);       // offset 6304, 64 bytes (MaxArgs * 2)
+            compiler._finallyCallPatches = (int*)(p + 6368);   // offset 6368, 128 bytes (MaxFinallyCalls * 8)
         }
 
         // Create code buffer sized based on IL length
@@ -948,7 +961,8 @@ public unsafe struct ILCompiler
             out nativeClauses,
             _labelILOffset,
             _labelCodeOffset,
-            _labelCount);
+            _labelCount,
+            MetadataIntegration.GetCurrentAssemblyId());
     }
 
     /// <summary>
@@ -1624,15 +1638,17 @@ public unsafe struct ILCompiler
             // === Exception handling ===
             case ILOpcode.Leave_S:
                 {
+                    int leaveILOffset = _ilOffset - 1;  // IL offset of the leave.s opcode
                     sbyte offset = (sbyte)_il[_ilOffset++];
-                    return CompileLeave(_ilOffset + offset);
+                    return CompileLeave(_ilOffset + offset, leaveILOffset);
                 }
 
             case ILOpcode.Leave:
                 {
+                    int leaveILOffset = _ilOffset - 1;  // IL offset of the leave opcode
                     int offset = *(int*)(_il + _ilOffset);
                     _ilOffset += 4;
-                    return CompileLeave(_ilOffset + offset);
+                    return CompileLeave(_ilOffset + offset, leaveILOffset);
                 }
 
             case ILOpcode.Throw:
@@ -2466,6 +2482,15 @@ public unsafe struct ILCompiler
 
     private bool CompilePop()
     {
+        // Special case: at catch handler funclet entry, the exception object is in RCX, not on stack.
+        // The IL 'pop' to discard the exception should be a no-op (don't adjust RSP).
+        if (_funcletCatchHandlerEntry)
+        {
+            _funcletCatchHandlerEntry = false;  // Clear flag - only first pop is special
+            // Don't emit any code - the exception in RCX is just ignored
+            return true;
+        }
+
         // Use new type system: PopEntry tells us actual byte size to deallocate
         EvalStackEntry entry = PopEntry();
         int byteSize = entry.ByteSize;
@@ -5853,10 +5878,11 @@ public unsafe struct ILCompiler
     /// <summary>
     /// Compile leave/leave.s - Exit a try or catch block.
     /// The leave instruction empties the evaluation stack and branches to the target.
-    /// If leaving a try block with a finally handler, the finally is executed first
-    /// (handled by the runtime, not by this instruction).
+    /// If leaving a try block with a finally handler, the finally is executed first.
     /// </summary>
-    private bool CompileLeave(int targetIL)
+    /// <param name="targetIL">IL offset to branch to after leaving</param>
+    /// <param name="leaveILOffset">IL offset of the leave instruction itself</param>
+    private bool CompileLeave(int targetIL, int leaveILOffset)
     {
         // Leave empties the evaluation stack (reset to 0)
         // We don't need to emit pops since we're jumping away and the
@@ -5867,19 +5893,89 @@ public unsafe struct ILCompiler
         {
             // In a funclet, leave exits by returning from the funclet.
             // The exception dispatch code sets up the return address to be
-            // the leave target address, so we just do pop rbp; ret
-            // Note: The runtime also needs to pass the leave target correctly!
+            // the leave target address.
+            // Funclet prolog did: push rbp; mov rbp, rdx
+            // So we need: pop rbp; ret
             _code.EmitByte(0x5D);  // pop rbp
             _code.EmitByte(0xC3);  // ret
         }
         else
         {
-            // In main method, emit unconditional jump to target
-            int patchOffset = X64Emitter.JmpRel32(ref _code);
-            RecordBranch(_ilOffset, targetIL, patchOffset);
+            // In main method, check if we're leaving a try block with a finally handler
+            // If so, we need to call the finally funclet first
+            int finallyClauseIdx = FindEnclosingFinallyClause(leaveILOffset);
+
+            if (finallyClauseIdx >= 0)
+            {
+                // We're leaving a try block that has a finally handler.
+                // Emit a call to the finally funclet. The funclet expects:
+                //   RDX = parent frame pointer (RBP)
+                // We'll emit: sub rsp, 32; mov rdx, rbp; call <funclet>; add rsp, 32
+                // The call target will be patched after funclet compilation.
+
+                // CRITICAL: Allocate 32-byte shadow space before call
+                // Without this, the callee's shadow space corrupts caller's stack data!
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+                // mov rdx, rbp  (48 89 EA)
+                _code.EmitByte(0x48);
+                _code.EmitByte(0x89);
+                _code.EmitByte(0xEA);
+
+                // call rel32 (E8 xx xx xx xx)
+                // Record patch location for later
+                _code.EmitByte(0xE8);
+                int patchOffset = _code.Position;
+                _code.EmitInt32(0);  // Placeholder for rel32
+
+                // Record this call for patching after funclet compilation
+                if (_finallyCallPatches != null && _finallyCallCount < MaxFinallyCalls)
+                {
+                    int idx = _finallyCallCount * 2;
+                    _finallyCallPatches[idx + 0] = patchOffset;
+                    _finallyCallPatches[idx + 1] = finallyClauseIdx;
+                    _finallyCallCount++;
+                }
+
+                // Deallocate shadow space
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            }
+
+            // Jump to target (after finally has run, if any)
+            int jmpPatchOffset = X64Emitter.JmpRel32(ref _code);
+            RecordBranch(_ilOffset, targetIL, jmpPatchOffset);
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Find a Finally clause that encloses the given IL offset.
+    /// Returns the clause index, or -1 if not found.
+    /// </summary>
+    private int FindEnclosingFinallyClause(int ilOffset)
+    {
+        if (_ehClauseData == null) return -1;
+
+        for (int i = 0; i < _ehClauseCount; i++)
+        {
+            int idx = i * 6;
+            int flags = _ehClauseData[idx + 0];
+            int tryStart = _ehClauseData[idx + 1];
+            int tryEnd = _ehClauseData[idx + 2];
+
+            // Check if this is a Finally clause
+            if (flags != (int)ILExceptionClauseFlags.Finally)
+                continue;
+
+            // Check if ilOffset is within the try block
+            if (ilOffset >= tryStart && ilOffset < tryEnd)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -5899,6 +5995,12 @@ public unsafe struct ILCompiler
         // Pop exception object into RCX (first arg for RhpThrowEx)
         X64Emitter.Pop(ref _code, VReg.R1);
         PopEntry();
+
+        // Debug: Print the exception object address and its MT before throwing
+        // mov rax, rcx (save exception ptr)
+        // X64Emitter.MovRR(ref _code, VReg.R0, VReg.R1);
+        // Actually, let's call a debug helper that prints the object details
+        // For now, skip this - can use GDB instead
 
         // Call RhpThrowEx (defined in native.asm)
         // This captures context and dispatches the exception
@@ -5956,12 +6058,13 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // When compiling a funclet, we need to emit the full funclet epilog:
-        // pop rbp; ret - to restore the saved rbp and return to EH runtime.
+        // When compiling a funclet, we need to emit the funclet epilog:
+        // pop rbp; ret - to restore RBP and return.
         // When compiling inline handler, just emit 'ret'.
         if (_compilingFunclet)
         {
-            // Funclet epilog: pop rbp (0x5D), ret (0xC3)
+            // Funclet epilog: pop rbp; ret
+            // (matches prolog: push rbp; mov rbp, rdx)
             _code.EmitByte(0x5D);  // pop rbp
         }
 
@@ -6589,6 +6692,47 @@ public unsafe struct ILCompiler
     }
 
     /// <summary>
+    /// Emit inline code to check and run the static constructor for a type if needed.
+    /// Called at JIT compile time; emits code that runs at runtime.
+    ///
+    /// Generated code:
+    ///   mov r8, contextAddress
+    ///   mov r9, [r8]           ; Load cctorMethodAddress
+    ///   test r9, r9
+    ///   jz skip_cctor          ; Already run (address is 0)
+    ///   mov qword [r8], 0      ; Mark as running/complete
+    ///   call r9                ; Call the cctor
+    /// skip_cctor:
+    /// </summary>
+    /// <param name="contextAddress">Address of the StaticClassConstructionContext.</param>
+    private void EmitCctorCheck(nint contextAddress)
+    {
+        // Load context address into R8
+        X64Emitter.MovRI64(ref _code, VReg.R8, (ulong)contextAddress);
+
+        // Load cctorMethodAddress from context into R9
+        X64Emitter.MovRM(ref _code, VReg.R9, VReg.R8, 0);
+
+        // Test if cctorMethodAddress is zero (already run)
+        X64Emitter.TestRR(ref _code, VReg.R9, VReg.R9);
+
+        // Jump to skip if zero (JE = jump if equal/zero)
+        int jzPatchOffset = X64Emitter.JccRel32(ref _code, X64Emitter.CC_E);
+
+        // Clear the context (mark as complete) before calling
+        // mov qword [R8], 0
+        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);
+        X64Emitter.MovMR(ref _code, VReg.R8, 0, VReg.R0);
+
+        // Call the cctor (address is in R9)
+        X64Emitter.CallR(ref _code, VReg.R9);
+
+        // Patch the jz to jump here (skip_cctor)
+        int skipOffset = _code.Position;
+        X64Emitter.PatchJump(ref _code, jzPatchOffset, skipOffset);
+    }
+
+    /// <summary>
     /// Compile ldsfld - Load static field.
     /// For testing: token is direct address of static.
     /// Stack: ... -> ..., value
@@ -6598,6 +6742,8 @@ public unsafe struct ILCompiler
         ulong staticAddr;
         int size;
         bool signed;
+        uint declaringTypeToken = 0;
+        uint declaringTypeAsmId = 0;
 
         // Try field resolver first, fall back to test token (direct address)
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
@@ -6605,6 +6751,8 @@ public unsafe struct ILCompiler
             staticAddr = (ulong)field.StaticAddress;
             size = field.Size;
             signed = field.IsSigned;
+            declaringTypeToken = field.DeclaringTypeToken;
+            declaringTypeAsmId = field.DeclaringTypeAssemblyId;
         }
         else
         {
@@ -6612,6 +6760,16 @@ public unsafe struct ILCompiler
             staticAddr = token;
             size = 8;
             signed = false;
+        }
+
+        // Emit cctor check if the declaring type has a static constructor
+        if (declaringTypeToken != 0)
+        {
+            nint* cctorContext = MetadataIntegration.EnsureCctorContextRegistered(declaringTypeAsmId, declaringTypeToken);
+            if (cctorContext != null)
+            {
+                EmitCctorCheck((nint)cctorContext);
+            }
         }
 
         // Load static address
@@ -6657,16 +6815,30 @@ public unsafe struct ILCompiler
     private bool CompileLdsflda(uint token)
     {
         ulong staticAddr;
+        uint declaringTypeToken = 0;
+        uint declaringTypeAsmId = 0;
 
         // Try field resolver first, fall back to test token (direct address)
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
         {
             staticAddr = (ulong)field.StaticAddress;
+            declaringTypeToken = field.DeclaringTypeToken;
+            declaringTypeAsmId = field.DeclaringTypeAssemblyId;
         }
         else
         {
             // For testing, token is address of static
             staticAddr = token;
+        }
+
+        // Emit cctor check if the declaring type has a static constructor
+        if (declaringTypeToken != 0)
+        {
+            nint* cctorContext = MetadataIntegration.EnsureCctorContextRegistered(declaringTypeAsmId, declaringTypeToken);
+            if (cctorContext != null)
+            {
+                EmitCctorCheck((nint)cctorContext);
+            }
         }
 
         X64Emitter.MovRI64(ref _code, VReg.R0, staticAddr);
@@ -6684,18 +6856,33 @@ public unsafe struct ILCompiler
     {
         ulong staticAddr;
         int size;
+        uint declaringTypeToken = 0;
+        uint declaringTypeAsmId = 0;
 
         // Try field resolver first, fall back to test token (direct address)
         if (_fieldResolver != null && _fieldResolver(token, out var field) && field.IsValid && field.IsStatic)
         {
             staticAddr = (ulong)field.StaticAddress;
             size = field.Size;
+            declaringTypeToken = field.DeclaringTypeToken;
+            declaringTypeAsmId = field.DeclaringTypeAssemblyId;
         }
         else
         {
             // For testing, token is address of static (assume 8-byte)
             staticAddr = token;
             size = 8;
+        }
+
+        // Emit cctor check if the declaring type has a static constructor
+        // Note: Must happen BEFORE we pop the value from the stack, since cctor may throw
+        if (declaringTypeToken != 0)
+        {
+            nint* cctorContext = MetadataIntegration.EnsureCctorContextRegistered(declaringTypeAsmId, declaringTypeToken);
+            if (cctorContext != null)
+            {
+                EmitCctorCheck((nint)cctorContext);
+            }
         }
 
         // Pop value
@@ -8306,6 +8493,12 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdvirtftn(uint token)
     {
+        DebugConsole.Write("[ldvirtftn] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" stackDepth=");
+        DebugConsole.WriteDecimal((uint)_evalStackDepth);
+        DebugConsole.WriteLine();
+
         // Verify we have an object on the stack
         if (_evalStackDepth < 1)
         {
@@ -8325,7 +8518,21 @@ public unsafe struct ILCompiler
 
         // Use ResolveMethod to get method info (supports registry fallback when _resolver is null)
         ResolvedMethod resolved;
-        if (ResolveMethod(token, out resolved) && resolved.IsValid && resolved.NativeCode != null)
+        bool resolveOk = ResolveMethod(token, out resolved);
+        DebugConsole.Write("[ldvirtftn] resolveOk=");
+        DebugConsole.WriteDecimal(resolveOk ? 1u : 0u);
+        DebugConsole.Write(" IsValid=");
+        DebugConsole.WriteDecimal(resolved.IsValid ? 1u : 0u);
+        DebugConsole.Write(" NativeCode=0x");
+        DebugConsole.WriteHex((ulong)resolved.NativeCode);
+        DebugConsole.Write(" IsVirtual=");
+        DebugConsole.WriteDecimal(resolved.IsVirtual ? 1u : 0u);
+        DebugConsole.Write(" VtableSlot=");
+        DebugConsole.WriteDecimal((uint)(resolved.VtableSlot >= 0 ? resolved.VtableSlot : 0));
+        if (resolved.VtableSlot < 0) DebugConsole.Write("(neg)");
+        DebugConsole.WriteLine();
+
+        if (resolveOk && resolved.IsValid && resolved.NativeCode != null)
         {
             fnPtr = (ulong)resolved.NativeCode;
 
@@ -8338,12 +8545,35 @@ public unsafe struct ILCompiler
         }
         // Otherwise fall back to treating token as direct address
 
+        DebugConsole.Write("[ldvirtftn] useVtable=");
+        DebugConsole.WriteDecimal(useVtable ? 1u : 0u);
+        DebugConsole.Write(" fnPtr=0x");
+        DebugConsole.WriteHex(fnPtr);
+        DebugConsole.WriteLine();
+
         if (useVtable)
         {
             // Virtual dispatch: load function pointer from vtable
             // RAX already contains the object reference from pop above
-            DebugConsole.Write("[JIT] ldvirtftn: vtable dispatch slot=");
+            DebugConsole.Write("[ldvirtftn] vtable dispatch slot=");
             DebugConsole.WriteDecimal((uint)vtableSlot);
+
+            // 0. Call EnsureVtableSlotCompiled(objPtr, vtableSlot) to make sure the slot is populated
+            //    This is needed because the slot might be 0 (lazy JIT not yet triggered)
+            //    Save RAX (object ptr) to R7 (RBX = callee-saved) since we'll clobber RCX/RDX
+            X64Emitter.MovRR(ref _code, VReg.R7, VReg.R0);  // RBX = obj ptr (callee-saved)
+
+            // Set up args using Microsoft x64 ABI: RCX = objPtr, RDX = vtableSlot
+            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);  // RCX = objPtr (Arg0)
+            X64Emitter.MovRI32(ref _code, VReg.R2, vtableSlot);  // RDX = vtableSlot (Arg1)
+
+            // Call EnsureVtableSlotCompiled
+            ulong ensureAddr = (ulong)JitStubs.EnsureVtableSlotCompiledAddress;
+            X64Emitter.MovRI64(ref _code, VReg.R0, ensureAddr);  // RAX = function address
+            X64Emitter.CallR(ref _code, VReg.R0);
+
+            // Restore object pointer from RBX
+            X64Emitter.MovRR(ref _code, VReg.R0, VReg.R7);  // RAX = obj ptr
 
             // 1. Load MethodTable* from [RAX] (object header is the MT pointer)
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);  // RAX = *obj = MethodTable*
@@ -8358,6 +8588,7 @@ public unsafe struct ILCompiler
         else
         {
             // Devirtualized: use direct address
+            DebugConsole.WriteLine("[ldvirtftn] using direct fnPtr (no vtable)");
             X64Emitter.MovRI64(ref _code, VReg.R0, fnPtr);
         }
 
@@ -8739,10 +8970,20 @@ public unsafe struct ILCompiler
 
         // Pop the filter result into RAX (return value)
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopEntry();  // Only need PopEntry, not both
+        PopEntry();
 
         // Return from the filter funclet
-        X64Emitter.EmitEpilogue(ref _code, _stackAdjust);
+        // Filter funclet prolog was: push rbp; mov rbp, rdx; push rcx (exception object)
+        // So the epilog is: pop rbp; ret
+        // The pushed rcx has already been consumed by the eval stack operations.
+        // The eval stack was initialized with depth 1 for the pushed exception,
+        // and endfilter pops the final result, so RSP should be at the pushed rbp.
+
+        // pop rbp
+        _code.EmitByte(0x5D);
+
+        // ret
+        _code.EmitByte(0xC3);
 
         return true;
     }
@@ -8967,17 +9208,27 @@ public unsafe struct ILCompiler
     private const int MaxEHClauses = 16;
     private int _ehClauseCount;
 
-    // Each clause uses 5 ints: flags, tryStart, tryEnd, handlerStart, handlerEnd (IL offsets)
+    // Each clause uses 6 ints: flags, tryStart, tryEnd, handlerStart, handlerEnd, classToken (IL offsets)
     // Heap-allocated as part of _heapBuffers to reduce stack usage
-    private int* _ehClauseData;   // [MaxEHClauses * 5]
+    private int* _ehClauseData;   // [MaxEHClauses * 6]
 
     // Funclet compilation results (filled by CompileWithFunclets)
-    // Each funclet has: nativeStart (code offset), nativeSize, clauseIndex
-    private int* _funcletInfo;    // [MaxEHClauses * 3]
+    // Each funclet has: nativeStart (code offset), nativeSize, clauseIndex, isFilterExpr (0 or 1)
+    // Filter clauses generate TWO funclets: one for filter expression, one for handler
+    private int* _funcletInfo;    // [MaxEHClauses * 2 * 4] - doubled for filter clauses
     private int _funcletCount;
 
     // Flag to indicate we're compiling a funclet (not main method)
     private bool _compilingFunclet;
+
+    // Flag to indicate we're at the entry of a catch handler funclet
+    // The first 'pop' instruction should be a no-op (exception is in RCX, not on stack)
+    private bool _funcletCatchHandlerEntry;
+
+    // Finally call tracking (for calls from leave instructions in main body)
+    // Each entry: [patchOffset, ehClauseIndex]
+    private int* _finallyCallPatches;  // [MaxFinallyCalls * 2]
+    private int _finallyCallCount;
 
     /// <summary>
     /// Set EH clauses for funclet compilation.
@@ -8994,12 +9245,13 @@ public unsafe struct ILCompiler
         for (int i = 0; i < count; i++)
         {
             var clause = clauses.GetClause(i);
-            int idx = i * 5;
+            int idx = i * 6;
             _ehClauseData[idx + 0] = (int)clause.Flags;
             _ehClauseData[idx + 1] = (int)clause.TryOffset;
             _ehClauseData[idx + 2] = (int)(clause.TryOffset + clause.TryLength);
             _ehClauseData[idx + 3] = (int)clause.HandlerOffset;
             _ehClauseData[idx + 4] = (int)(clause.HandlerOffset + clause.HandlerLength);
+            _ehClauseData[idx + 5] = (int)clause.ClassTokenOrFilterOffset;
             _ehClauseCount++;
         }
     }
@@ -9013,7 +9265,7 @@ public unsafe struct ILCompiler
 
         for (int i = 0; i < _ehClauseCount; i++)
         {
-            int idx = i * 5;
+            int idx = i * 6;
             int handlerStart = _ehClauseData[idx + 3];
             int handlerEnd = _ehClauseData[idx + 4];
             if (ilOffset >= handlerStart && ilOffset < handlerEnd)
@@ -9032,7 +9284,7 @@ public unsafe struct ILCompiler
 
         for (int i = 0; i < _ehClauseCount; i++)
         {
-            int idx = i * 5;
+            int idx = i * 6;
             int handlerStart = _ehClauseData[idx + 3];
             int handlerEnd = _ehClauseData[idx + 4];
             if (ilOffset == handlerStart)
@@ -9077,7 +9329,10 @@ public unsafe struct ILCompiler
         _compilingFunclet = false;
 
         // Emit main method prologue
-        int localBytes = _localCount * 8 + 64;
+        // Calculate local space: localCount * 64 + eval stack space
+        // Use 64 bytes per local to support value type locals up to 64 bytes
+        // (MUST match GetLocalOffset which uses 64 bytes per local)
+        int localBytes = _localCount * 64 + 64;  // 64 bytes per local + eval stack
         _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes);
 
         if (_argCount > 0)
@@ -9090,7 +9345,8 @@ public unsafe struct ILCompiler
             int skipTo = SkipHandler(_ilOffset);
             if (skipTo >= 0)
             {
-                // Record a label for the handler start (needed for leave instructions)
+                // Record label for handler start (this is tryEnd in IL terms)
+                // This marks the native position where we would have compiled the handler
                 RecordLabel(_ilOffset, _code.Position);
                 // Skip to end of handler
                 _ilOffset = skipTo;
@@ -9124,43 +9380,119 @@ public unsafe struct ILCompiler
 
         if (_ehClauseData != null && _funcletInfo != null)
         {
+            // Save main method labels once (up to 32 to avoid huge stack usage)
+            int saveLabelCount = _labelCount;
+            int saveBranchCount = _branchCount;
+            int savedLabelDataCount = saveLabelCount < 32 ? saveLabelCount : 32;
+            int* savedLabelIL = stackalloc int[savedLabelDataCount];
+            int* savedLabelCode = stackalloc int[savedLabelDataCount];
+            for (int j = 0; j < savedLabelDataCount; j++)
+            {
+                savedLabelIL[j] = _labelILOffset[j];
+                savedLabelCode[j] = _labelCodeOffset[j];
+            }
+
             for (int i = 0; i < _ehClauseCount; i++)
             {
-                int idx = i * 5;
+                int idx = i * 6;
                 int handlerStart = _ehClauseData[idx + 3];
                 int handlerEnd = _ehClauseData[idx + 4];
                 int flags = _ehClauseData[idx + 0];
+                int filterOrClassToken = _ehClauseData[idx + 5];
 
-                // Record funclet start
-                int funcletCodeStart = _code.Position;
-
-                // Emit funclet prolog (4 bytes):
-                // push rbp       (0x55)
-                // mov rbp, rdx   (0x48 0x89 0xD5) - RDX contains parent frame pointer
-                _code.EmitByte(0x55);       // push rbp
-                _code.EmitByte(0x48);       // REX.W
-                _code.EmitByte(0x89);       // mov r/m64, r64
-                _code.EmitByte(0xD5);       // rbp, rdx
-
-                // Reset label tracking for funclet
-                // (branches within funclet are relative to funclet)
-                // Important: We need to save main method labels because funclet compilation
-                // will overwrite them, and we need them later for GetNativeOffset
-                int saveLabelCount = _labelCount;
-                int saveBranchCount = _branchCount;
-
-                // Save main method labels to stack (up to 32 to avoid huge stack usage)
-                int savedLabelDataCount = saveLabelCount < 32 ? saveLabelCount : 32;
-                int* savedLabelIL = stackalloc int[savedLabelDataCount];
-                int* savedLabelCode = stackalloc int[savedLabelDataCount];
-                for (int j = 0; j < savedLabelDataCount; j++)
+                // For filter clauses, compile the filter expression funclet FIRST
+                if (flags == (int)ILExceptionClauseFlags.Filter)
                 {
-                    savedLabelIL[j] = _labelILOffset[j];
-                    savedLabelCode[j] = _labelCodeOffset[j];
+                    int filterStart = filterOrClassToken;  // IL offset of filter expression
+                    int filterEnd = handlerStart;          // Filter expression ends where handler begins
+
+                    // Record filter funclet start
+                    int filterCodeStart = _code.Position;
+
+                    // Emit filter funclet prolog
+                    _code.EmitByte(0x55);              // push rbp
+                    _code.EmitByte(0x48);              // mov rbp, rdx
+                    _code.EmitByte(0x89);
+                    _code.EmitByte(0xD5);
+
+                    // Push exception object (in RCX) onto the eval stack
+                    // The filter expression IL expects the exception on the stack for isinst
+                    // push rcx (51)
+                    _code.EmitByte(0x51);
+
+                    // Reset for funclet
+                    _labelCount = 0;
+                    _branchCount = 0;
+                    _evalStackDepth = 1;        // Exception is on the stack
+                    _evalStackByteSize = 8;     // 8 bytes (object reference)
+
+                    // DO NOT set _funcletCatchHandlerEntry for filter expressions!
+                    // The exception is now on the real stack, not just in RCX
+                    _funcletCatchHandlerEntry = false;
+
+                    // Compile filter expression IL
+                    _ilOffset = filterStart;
+                    while (_ilOffset < filterEnd)
+                    {
+                        RecordLabel(_ilOffset, _code.Position);
+                        byte opcode = _il[_ilOffset++];
+
+                        if (!CompileOpcode(opcode))
+                        {
+                            DebugConsole.Write("[JIT] Filter funclet opcode error at IL ");
+                            DebugConsole.WriteHex((uint)(_ilOffset - 1));
+                            DebugConsole.WriteLine();
+                            return null;
+                        }
+                    }
+
+                    // Patch branches within filter funclet
+                    PatchBranches();
+
+                    // Safety epilog (endfilter should have already emitted return code)
+                    _code.EmitByte(0x5D);  // pop rbp
+                    _code.EmitByte(0xC3);  // ret
+
+                    int filterCodeEnd = _code.Position;
+                    int filterCodeSize = filterCodeEnd - filterCodeStart;
+
+                    // Store filter expression funclet info
+                    int funcIdx = _funcletCount * 4;
+                    _funcletInfo[funcIdx + 0] = filterCodeStart;
+                    _funcletInfo[funcIdx + 1] = filterCodeSize;
+                    _funcletInfo[funcIdx + 2] = i;  // clause index
+                    _funcletInfo[funcIdx + 3] = 1;  // isFilterExpr = 1 (this IS the filter expression)
+                    _funcletCount++;
                 }
 
+                // Compile the handler funclet
+                int funcletCodeStart = _code.Position;
+
+                // Emit funclet prolog:
+                // push rbp                    ; 1 byte (0x55) - save caller's RBP
+                // mov rbp, rdx                ; 3 bytes (0x48 0x89 0xD5) - set RBP to parent frame pointer
+                _code.EmitByte(0x55);
+                _code.EmitByte(0x48);
+                _code.EmitByte(0x89);
+                _code.EmitByte(0xD5);
+
+                // Reset label tracking for funclet
                 _labelCount = 0;
                 _branchCount = 0;
+
+                // Reset eval stack for funclet compilation
+                _evalStackDepth = 0;
+                _evalStackByteSize = 0;
+
+                // For catch handlers (Exception=0 or Filter=1), the exception object is passed in RCX.
+                // The IL handler starts with 'pop' to discard the exception object.
+                bool isCatchHandler = (flags == (int)ILExceptionClauseFlags.Exception ||
+                                       flags == (int)ILExceptionClauseFlags.Filter);
+                if (isCatchHandler)
+                {
+                    // Track that the first pop should be a no-op (exception is in RCX, not on stack)
+                    _funcletCatchHandlerEntry = true;
+                }
 
                 // Compile handler IL
                 _ilOffset = handlerStart;
@@ -9181,32 +9513,65 @@ public unsafe struct ILCompiler
                 // Patch branches within funclet
                 PatchBranches();
 
-                // Emit funclet epilog:
-                // pop rbp  (0x5D)
-                // ret      (0xC3)
-                // Note: endfinally/ret in handler should have already emitted appropriate code
-                // We add a safety epilog in case control falls through
+                // Emit funclet epilog (safety - endfinally/leave should have already emitted appropriate code)
                 _code.EmitByte(0x5D);  // pop rbp
                 _code.EmitByte(0xC3);  // ret
 
                 int funcletCodeEnd = _code.Position;
                 int funcletCodeSize = funcletCodeEnd - funcletCodeStart;
 
-                // Store funclet info
-                int funcIdx = _funcletCount * 3;
-                _funcletInfo[funcIdx + 0] = funcletCodeStart;
-                _funcletInfo[funcIdx + 1] = funcletCodeSize;
-                _funcletInfo[funcIdx + 2] = i;  // clause index
+                // Store handler funclet info
+                int hFuncIdx = _funcletCount * 4;
+                _funcletInfo[hFuncIdx + 0] = funcletCodeStart;
+                _funcletInfo[hFuncIdx + 1] = funcletCodeSize;
+                _funcletInfo[hFuncIdx + 2] = i;  // clause index
+                _funcletInfo[hFuncIdx + 3] = 0;  // isFilterExpr = 0 (this is the handler)
                 _funcletCount++;
+            }
 
-                // Restore main method labels from saved data
-                for (int j = 0; j < savedLabelDataCount; j++)
+            // Restore main method labels from saved data
+            for (int j = 0; j < savedLabelDataCount; j++)
+            {
+                _labelILOffset[j] = savedLabelIL[j];
+                _labelCodeOffset[j] = savedLabelCode[j];
+            }
+            _labelCount = saveLabelCount;
+            _branchCount = saveBranchCount;
+        }
+
+        // ========== Patch finally calls in main method ==========
+        // Now that funclets are compiled, patch the call instructions that call finally funclets
+        if (_finallyCallPatches != null && _funcletInfo != null)
+        {
+            for (int i = 0; i < _finallyCallCount; i++)
+            {
+                int patchIdx = i * 2;
+                int patchOffset = _finallyCallPatches[patchIdx + 0];
+                int clauseIndex = _finallyCallPatches[patchIdx + 1];
+
+                // Find the funclet for this clause
+                int funcletStart = -1;
+                for (int f = 0; f < _funcletCount; f++)
                 {
-                    _labelILOffset[j] = savedLabelIL[j];
-                    _labelCodeOffset[j] = savedLabelCode[j];
+                    int funcIdx = f * 4;
+                    int fClauseIdx = _funcletInfo[funcIdx + 2];
+                    int isFilterExpr = _funcletInfo[funcIdx + 3];
+                    // Skip filter expression funclets, we only want handler funclets
+                    if (fClauseIdx == clauseIndex && isFilterExpr == 0)
+                    {
+                        funcletStart = _funcletInfo[funcIdx + 0];
+                        break;
+                    }
                 }
-                _labelCount = saveLabelCount;
-                _branchCount = saveBranchCount;
+
+                if (funcletStart >= 0)
+                {
+                    // Patch the call rel32 at patchOffset
+                    // rel32 = target - (patchOffset + 4)
+                    int callEnd = patchOffset + 4;  // Address after the call instruction
+                    int rel32 = funcletStart - callEnd;
+                    _code.PatchInt32(patchOffset, rel32);
+                }
             }
         }
 
@@ -9236,17 +9601,19 @@ public unsafe struct ILCompiler
 
             for (int i = 0; i < _funcletCount; i++)
             {
-                int funcIdx = i * 3;
+                int funcIdx = i * 4;
                 int funcletCodeStart = _funcletInfo[funcIdx + 0];
                 int funcletCodeSize = _funcletInfo[funcIdx + 1];
                 int clauseIdx = _funcletInfo[funcIdx + 2];
+                int isFilterExprFunclet = _funcletInfo[funcIdx + 3];
 
-                int ehIdx = clauseIdx * 5;
+                int ehIdx = clauseIdx * 6;
                 int flags = _ehClauseData[ehIdx + 0];
-                bool isFilter = (flags == (int)ILExceptionClauseFlags.Filter);
+                bool isFilterClause = (flags == (int)ILExceptionClauseFlags.Filter);
 
                 ulong funcletAddr = codeBase + (ulong)funcletCodeStart;
-                methodInfo.AddFunclet(funcletAddr, (uint)funcletCodeSize, isFilter, clauseIdx);
+                // isFilter here means it's a filter expression funclet
+                methodInfo.AddFunclet(funcletAddr, (uint)funcletCodeSize, isFilterExprFunclet == 1, clauseIdx);
             }
         }
 
@@ -9255,10 +9622,11 @@ public unsafe struct ILCompiler
         {
             for (int i = 0; i < _ehClauseCount; i++)
             {
-                int ehIdx = i * 5;
+                int ehIdx = i * 6;
                 int flags = _ehClauseData[ehIdx + 0];
                 int tryStartIL = _ehClauseData[ehIdx + 1];
                 int tryEndIL = _ehClauseData[ehIdx + 2];
+                int classToken = _ehClauseData[ehIdx + 5];
 
                 // Get native try offsets
                 int nativeTryStartInt = GetNativeOffset(tryStartIL);
@@ -9282,23 +9650,58 @@ public unsafe struct ILCompiler
                 // Handler offset is the funclet's code offset
                 uint nativeHandlerStart = 0;
                 uint nativeHandlerEnd = 0;
+                uint nativeFilterStart = 0;
 
-                // Find the funclet for this clause
+                // Find the funclets for this clause
+                // For filter clauses, we need both the filter expression funclet and handler funclet
                 for (int f = 0; f < _funcletCount; f++)
                 {
-                    int funcIdx = f * 3;
+                    int funcIdx = f * 4;
                     if (_funcletInfo[funcIdx + 2] == i)
                     {
-                        nativeHandlerStart = (uint)_funcletInfo[funcIdx + 0];
-                        nativeHandlerEnd = nativeHandlerStart + (uint)_funcletInfo[funcIdx + 1];
-                        break;
+                        int isFilterExpr = _funcletInfo[funcIdx + 3];
+                        if (isFilterExpr == 1)
+                        {
+                            // This is the filter expression funclet
+                            nativeFilterStart = (uint)_funcletInfo[funcIdx + 0];
+                        }
+                        else
+                        {
+                            // This is the handler funclet
+                            nativeHandlerStart = (uint)_funcletInfo[funcIdx + 0];
+                            nativeHandlerEnd = nativeHandlerStart + (uint)_funcletInfo[funcIdx + 1];
+                        }
                     }
                 }
 
-                // The leave target is typically the first instruction after the try/catch block.
-                // In IL, this is usually the tryEnd offset (where leave instructions jump to).
-                // For catch handlers, the leave target is tryEndIL.
-                uint nativeLeaveTarget = nativeTryEnd;
+                // The leave target is the first instruction after the handler block ends.
+                // This is where leave instructions in the catch handler should return to.
+                // We need the handler end IL offset and convert it to native offset.
+                int handlerEndIL = _ehClauseData[ehIdx + 4];
+                int nativeLeaveTargetInt = GetNativeOffset(handlerEndIL);
+                uint nativeLeaveTarget = (uint)nativeLeaveTargetInt;
+
+                // Resolve catch type token to MethodTable pointer for typed catch clauses
+                ulong catchTypeMT = 0;
+                uint filterOrClassToken = (uint)classToken;
+
+                if (flags == (int)ILExceptionClauseFlags.Exception && classToken != 0)
+                {
+                    uint asmId = MetadataIntegration.GetCurrentAssemblyId();
+                    if (asmId != 0)
+                    {
+                        MethodTable* resolved = AssemblyLoader.ResolveType(asmId, (uint)classToken);
+                        if (resolved != null)
+                        {
+                            catchTypeMT = (ulong)resolved;
+                        }
+                    }
+                }
+                else if (flags == (int)ILExceptionClauseFlags.Filter)
+                {
+                    // For filter clauses, store the native filter funclet offset instead of IL offset
+                    filterOrClassToken = nativeFilterStart;
+                }
 
                 JITExceptionClause clause;
                 clause.Flags = (ILExceptionClauseFlags)flags;
@@ -9306,9 +9709,10 @@ public unsafe struct ILCompiler
                 clause.TryEndOffset = nativeTryEnd;
                 clause.HandlerStartOffset = nativeHandlerStart;
                 clause.HandlerEndOffset = nativeHandlerEnd;
-                clause.ClassTokenOrFilterOffset = 0;
+                clause.ClassTokenOrFilterOffset = filterOrClassToken;
                 clause.LeaveTargetOffset = nativeLeaveTarget;
                 clause.IsValid = true;
+                clause.CatchTypeMethodTable = catchTypeMT;
 
                 nativeClauses.AddClause(clause);
             }

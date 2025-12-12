@@ -69,7 +69,9 @@ public static class TestRunner
         // RunInstanceTests();
 
         // Exception tests - uses AOT well-known type exposure for Exception base class
+        Debug.WriteLine("[PHASE] Starting Exception tests...");
         RunExceptionTests();
+        Debug.WriteLine("[PHASE] Exception tests complete");
 
         // Generic tests - tests MethodSpec (0x2B) token resolution
         RunGenericTests();
@@ -88,6 +90,12 @@ public static class TestRunner
 
         // Delegate tests - tests delegate creation and invocation
         RunDelegateTests();
+
+        // Sizeof tests - tests sizeof IL opcode
+        RunSizeofTests();
+
+        // Static constructor tests - tests .cctor invocation
+        RunStaticCtorTests();
 
         return (_passCount << 16) | _failCount;
     }
@@ -140,9 +148,28 @@ public static class TestRunner
 
     private static void RunExceptionTests()
     {
+        Debug.WriteLine("[EXC] Running TestTryCatch...");
         RecordResult("ExceptionTests.TestTryCatch", ExceptionTests.TestTryCatch() == 42);
+        Debug.WriteLine("[EXC] Running TestTryFinally...");
         RecordResult("ExceptionTests.TestTryFinally", ExceptionTests.TestTryFinally() == 42);
+        Debug.WriteLine("[EXC] Running TestNestedTryCatch...");
         RecordResult("ExceptionTests.TestNestedTryCatch", ExceptionTests.TestNestedTryCatch() == 42);
+        Debug.WriteLine("[EXC] Running TestMultipleCatchFirst...");
+        RecordResult("ExceptionTests.TestMultipleCatchFirst", ExceptionTests.TestMultipleCatchFirst() == 42);
+        Debug.WriteLine("[EXC] Running TestMultipleCatchSecond...");
+        RecordResult("ExceptionTests.TestMultipleCatchSecond", ExceptionTests.TestMultipleCatchSecond() == 42);
+        Debug.WriteLine("[EXC] Running TestFinallyWithReturn...");
+        RecordResult("ExceptionTests.TestFinallyWithReturn", ExceptionTests.TestFinallyWithReturn() == 42);
+        Debug.WriteLine("[EXC] Running TestFinallyWithExceptionCaught...");
+        RecordResult("ExceptionTests.TestFinallyWithExceptionCaught", ExceptionTests.TestFinallyWithExceptionCaught() == 42);
+        Debug.WriteLine("[EXC] Running TestCatchWhenTrue...");
+        RecordResult("ExceptionTests.TestCatchWhenTrue", ExceptionTests.TestCatchWhenTrue() == 42);
+        Debug.WriteLine("[EXC] Running TestCatchWhenFalse...");
+        RecordResult("ExceptionTests.TestCatchWhenFalse", ExceptionTests.TestCatchWhenFalse() == 42);
+        Debug.WriteLine("[EXC] Running TestFinallyInLoopWithBreak...");
+        RecordResult("ExceptionTests.TestFinallyInLoopWithBreak", ExceptionTests.TestFinallyInLoopWithBreak() == 42);
+        Debug.WriteLine("[EXC] Running TestFinallyInLoopWithContinue...");
+        RecordResult("ExceptionTests.TestFinallyInLoopWithContinue", ExceptionTests.TestFinallyInLoopWithContinue() == 42);
     }
 
     private static void RunGenericTests()
@@ -165,6 +192,15 @@ public static class TestRunner
     private static void RunInterfaceTests()
     {
         RecordResult("InterfaceTests.TestSimpleInterface", InterfaceTests.TestSimpleInterface() == 42);
+        RecordResult("InterfaceTests.TestMultipleInterfacesFirst", InterfaceTests.TestMultipleInterfacesFirst() == 10);
+        RecordResult("InterfaceTests.TestMultipleInterfacesSecond", InterfaceTests.TestMultipleInterfacesSecond() == 40);
+        RecordResult("InterfaceTests.TestMultipleInterfacesThird", InterfaceTests.TestMultipleInterfacesThird() == 42);
+        RecordResult("InterfaceTests.TestIsinstInterfaceSuccess", InterfaceTests.TestIsinstInterfaceSuccess() == 42);
+        RecordResult("InterfaceTests.TestIsinstInterfaceFailure", InterfaceTests.TestIsinstInterfaceFailure() == 42);
+        RecordResult("InterfaceTests.TestIsinstNull", InterfaceTests.TestIsinstNull() == 42);
+        RecordResult("InterfaceTests.TestIsinstMultipleFirst", InterfaceTests.TestIsinstMultipleFirst() == 10);
+        RecordResult("InterfaceTests.TestIsinstMultipleSecond", InterfaceTests.TestIsinstMultipleSecond() == 40);
+        RecordResult("InterfaceTests.TestCastclassInterfaceSuccess", InterfaceTests.TestCastclassInterfaceSuccess() == 42);
     }
 
     private static void RunNullableTests()
@@ -210,16 +246,42 @@ public static class TestRunner
         RecordResult("DelegateTests.TestVoidDelegate", DelegateTests.TestVoidDelegate() == 42);
         RecordResult("DelegateTests.TestDelegateInvoke", DelegateTests.TestDelegateInvoke() == 42);
         RecordResult("DelegateTests.TestDelegateReassign", DelegateTests.TestDelegateReassign() == 42);
+        RecordResult("DelegateTests.TestInstanceDelegate", DelegateTests.TestInstanceDelegate() == 42);
+        RecordResult("DelegateTests.TestVirtualDelegate", DelegateTests.TestVirtualDelegate() == 42);
+    }
+
+    private static void RunSizeofTests()
+    {
+        RecordResult("SizeofTests.TestSizeofByte", SizeofTests.TestSizeofByte() == 42);
+        RecordResult("SizeofTests.TestSizeofShort", SizeofTests.TestSizeofShort() == 42);
+        RecordResult("SizeofTests.TestSizeofInt", SizeofTests.TestSizeofInt() == 42);
+        RecordResult("SizeofTests.TestSizeofLong", SizeofTests.TestSizeofLong() == 42);
+        RecordResult("SizeofTests.TestSizeofPointer", SizeofTests.TestSizeofPointer() == 42);
+        RecordResult("SizeofTests.TestSizeofStruct", SizeofTests.TestSizeofStruct() == 42);
+    }
+
+    private static void RunStaticCtorTests()
+    {
+        RecordResult("StaticCtorTests.TestStaticCtorInitializesField", StaticCtorTests.TestStaticCtorInitializesField() == 42);
+        RecordResult("StaticCtorTests.TestStaticCtorRunsOnce", StaticCtorTests.TestStaticCtorRunsOnce() == 42);
+        RecordResult("StaticCtorTests.TestStaticCtorOnWrite", StaticCtorTests.TestStaticCtorOnWrite() == 100);
+        RecordResult("StaticCtorTests.TestStaticCtorWithDependency", StaticCtorTests.TestStaticCtorWithDependency() == 50);
     }
 
     private static void RecordResult(string testName, bool passed)
     {
+        Debug.Write("[TEST] ");
+        Debug.Write(testName);
+        Debug.Write(" ... ");
         if (passed)
+        {
             _passCount++;
+            Debug.WriteLine("PASS");
+        }
         else
         {
             _failCount++;
-            Debug.WriteLine(string.Format("[FAIL] {0}", testName));
+            Debug.WriteLine("FAIL");
         }
     }
 
@@ -380,7 +442,6 @@ public static class TestRunner
 
         // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
         RecordResult("VirtqueueExactTests.TestThreeAllocationsAndReadBack", VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
-
     }
 }
 
@@ -1597,6 +1658,203 @@ public static class ExceptionTests
         }
         return 0;
     }
+
+    /// <summary>
+    /// Test multiple catch blocks - first matching block should execute.
+    /// Throws TestException which matches the first catch block.
+    /// </summary>
+    public static int TestMultipleCatchFirst()
+    {
+        try
+        {
+            throw new TestException("Test");
+        }
+        catch (TestException)
+        {
+            return 42;  // Should hit this - TestException matches first
+        }
+        catch (TestException2)
+        {
+            return 0;   // Should NOT hit this
+        }
+        catch
+        {
+            return 0;   // Should NOT hit this
+        }
+    }
+
+    /// <summary>
+    /// Test multiple catch blocks - second block should match.
+    /// Throws TestException2 which skips first block, matches second.
+    /// </summary>
+    public static int TestMultipleCatchSecond()
+    {
+        try
+        {
+            throw new TestException2("Test");
+        }
+        catch (TestException)
+        {
+            return 0;   // Should NOT hit this - TestException2 doesn't match TestException
+        }
+        catch (TestException2)
+        {
+            return 42;  // Should hit this
+        }
+        catch
+        {
+            return 0;   // Should NOT hit this
+        }
+    }
+
+    /// <summary>
+    /// Test finally executes when returning early from try block.
+    /// The leave instruction should transfer control through finally.
+    /// </summary>
+    public static int TestFinallyWithReturn()
+    {
+        int finallyRan = 0;
+        int result = TestFinallyWithReturnHelper(ref finallyRan);
+        // result should be 10 (from return in try)
+        // finallyRan should be 1 (finally executed)
+        return (result == 10 && finallyRan == 1) ? 42 : 0;
+    }
+
+    private static int TestFinallyWithReturnHelper(ref int finallyRan)
+    {
+        try
+        {
+            return 10;  // Early return - finally should still run
+        }
+        finally
+        {
+            finallyRan = 1;
+        }
+    }
+
+    /// <summary>
+    /// Test finally executes when breaking out of a loop from inside try.
+    /// </summary>
+    public static int TestFinallyInLoopWithBreak()
+    {
+        int finallyCount = 0;
+        int iterations = 0;
+
+        for (int i = 0; i < 5; i++)
+        {
+            try
+            {
+                iterations++;
+                if (i == 2)
+                    break;  // Break after 3 iterations (0, 1, 2)
+            }
+            finally
+            {
+                finallyCount++;
+            }
+        }
+
+        // iterations should be 3 (0, 1, 2)
+        // finallyCount should be 3 (finally runs each time, including on break)
+        return (iterations == 3 && finallyCount == 3) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test finally executes even when exception is thrown and caught.
+    /// </summary>
+    public static int TestFinallyWithExceptionCaught()
+    {
+        int finallyRan = 0;
+        int catchRan = 0;
+
+        try
+        {
+            try
+            {
+                throw new TestException("Test");
+            }
+            finally
+            {
+                finallyRan = 1;
+            }
+        }
+        catch (TestException)
+        {
+            catchRan = 1;
+        }
+
+        // Both finally and catch should have run
+        return (finallyRan == 1 && catchRan == 1) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test finally with continue in loop.
+    /// </summary>
+    public static int TestFinallyInLoopWithContinue()
+    {
+        int finallyCount = 0;
+        int bodyCount = 0;
+
+        for (int i = 0; i < 3; i++)
+        {
+            try
+            {
+                bodyCount++;
+                if (i == 1)
+                    continue;  // Skip rest of iteration 1
+                bodyCount += 10;  // Only executes for i=0 and i=2
+            }
+            finally
+            {
+                finallyCount++;
+            }
+        }
+
+        // bodyCount should be 3 (increments) + 20 (two +10s for i=0 and i=2) = 23
+        // finallyCount should be 3 (runs every iteration)
+        return (bodyCount == 23 && finallyCount == 3) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test catch when filter clause - filter evaluates to true.
+    /// Uses "catch (Exception e) when (condition)" syntax.
+    /// </summary>
+    public static int TestCatchWhenTrue()
+    {
+        int filterValue = 42;  // Will be compared in filter
+        int result = 0;
+        try
+        {
+            throw new TestException("Filter test");
+        }
+        catch (Exception) when (filterValue == 42)
+        {
+            result = 42;  // Should execute - filter is true
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Test catch when filter clause - filter evaluates to false, falls through to next catch.
+    /// </summary>
+    public static int TestCatchWhenFalse()
+    {
+        int filterValue = 0;  // Will be compared in filter
+        int result = 0;
+        try
+        {
+            throw new TestException("Filter test");
+        }
+        catch (Exception) when (filterValue == 42)
+        {
+            result = 0;  // Should NOT execute - filter is false
+        }
+        catch (Exception)
+        {
+            result = 42;  // Should execute - fallback catch
+        }
+        return result;
+    }
 }
 
 // =============================================================================
@@ -2227,12 +2485,34 @@ public interface IValue
     int GetValue();
 }
 
+public interface IMultiplier
+{
+    int Multiply(int x);
+}
+
+public interface IAdder
+{
+    int Add(int x);
+}
+
 /// <summary>
 /// Implementation of IValue that returns 42.
 /// </summary>
 public class ValueImpl : IValue
 {
     public int GetValue() => 42;
+}
+
+/// <summary>
+/// Implementation of multiple interfaces.
+/// </summary>
+public class MultiInterfaceImpl : IValue, IMultiplier, IAdder
+{
+    private int _base = 10;
+
+    public int GetValue() => _base;
+    public int Multiply(int x) => _base * x;
+    public int Add(int x) => _base + x;
 }
 
 public static class InterfaceTests
@@ -2246,6 +2526,96 @@ public static class InterfaceTests
     public static int TestSimpleInterface()
     {
         IValue v = new ValueImpl();
+        return v.GetValue();  // Should return 42
+    }
+
+    /// <summary>
+    /// Test multiple interfaces on same type - call first interface method.
+    /// </summary>
+    public static int TestMultipleInterfacesFirst()
+    {
+        MultiInterfaceImpl obj = new MultiInterfaceImpl();
+        IValue v = obj;
+        return v.GetValue();  // Should return 10
+    }
+
+    /// <summary>
+    /// Test multiple interfaces on same type - call second interface method.
+    /// </summary>
+    public static int TestMultipleInterfacesSecond()
+    {
+        MultiInterfaceImpl obj = new MultiInterfaceImpl();
+        IMultiplier m = obj;
+        return m.Multiply(4);  // Should return 10 * 4 = 40
+    }
+
+    /// <summary>
+    /// Test multiple interfaces on same type - call third interface method.
+    /// </summary>
+    public static int TestMultipleInterfacesThird()
+    {
+        MultiInterfaceImpl obj = new MultiInterfaceImpl();
+        IAdder a = obj;
+        return a.Add(32);  // Should return 10 + 32 = 42
+    }
+
+    /// <summary>
+    /// Test isinst with interface - object implements the interface.
+    /// </summary>
+    public static int TestIsinstInterfaceSuccess()
+    {
+        object obj = new ValueImpl();
+        IValue v = obj as IValue;  // isinst
+        return v != null ? 42 : 0;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test isinst with interface - object does NOT implement the interface.
+    /// </summary>
+    public static int TestIsinstInterfaceFailure()
+    {
+        object obj = new ValueImpl();  // ValueImpl only implements IValue, not IMultiplier
+        IMultiplier m = obj as IMultiplier;  // isinst - should return null
+        return m == null ? 42 : 0;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test isinst with null - should return null.
+    /// </summary>
+    public static int TestIsinstNull()
+    {
+        object obj = null;
+        IValue v = obj as IValue;  // isinst with null
+        return v == null ? 42 : 0;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test isinst with multiple interfaces - check first interface.
+    /// </summary>
+    public static int TestIsinstMultipleFirst()
+    {
+        object obj = new MultiInterfaceImpl();
+        IValue v = obj as IValue;  // isinst - MultiInterfaceImpl implements IValue
+        return v != null ? v.GetValue() : 0;  // Should return 10
+    }
+
+    /// <summary>
+    /// Test isinst with multiple interfaces - check second interface.
+    /// </summary>
+    public static int TestIsinstMultipleSecond()
+    {
+        object obj = new MultiInterfaceImpl();
+        IMultiplier m = obj as IMultiplier;  // isinst - MultiInterfaceImpl implements IMultiplier
+        return m != null ? m.Multiply(4) : 0;  // Should return 40
+    }
+
+    /// <summary>
+    /// Test castclass with interface - success case.
+    /// </summary>
+    public static int TestCastclassInterfaceSuccess()
+    {
+        object obj = new ValueImpl();
+        IValue v = (IValue)obj;  // castclass - should succeed
         return v.GetValue();  // Should return 42
     }
 }
@@ -2661,6 +3031,193 @@ public class DelegateTests
         f = Triple;
         int second = f(10);  // 30
         return first + second - 8;  // 20 + 30 - 8 = 42
+    }
+
+    /// <summary>
+    /// Test instance delegate - delegate pointing to instance method.
+    /// The delegate captures 'this' and calls the instance method.
+    /// </summary>
+    public static int TestInstanceDelegate()
+    {
+        DelegateTests obj = new DelegateTests();
+        obj.InstanceValue = 3;
+        IntFunc f = obj.InstanceDouble;  // Instance delegate: target=obj, method=InstanceDouble
+        return f(14);  // Should return 14 * 3 = 42
+    }
+
+    /// <summary>
+    /// Test virtual delegate - delegate pointing to virtual method.
+    /// Uses ldvirtftn to load the virtual function pointer.
+    /// The actual method called depends on the runtime type.
+    /// </summary>
+    public static int TestVirtualDelegate()
+    {
+        // Create derived class instance, store in base class variable
+        VirtualDelegateBase obj = new VirtualDelegateDerived();
+        // Create delegate to virtual method - should use ldvirtftn
+        IntFunc f = obj.GetValue;
+        // Invoke - should call derived implementation
+        return f(21);  // Base returns x*1=21, Derived returns x*2=42
+    }
+}
+
+// Test classes for virtual delegate testing
+public class VirtualDelegateBase
+{
+    public virtual int GetValue(int x) => x * 1;  // Base: multiply by 1
+}
+
+public class VirtualDelegateDerived : VirtualDelegateBase
+{
+    public override int GetValue(int x) => x * 2;  // Derived: multiply by 2
+}
+
+// =============================================================================
+// Sizeof Tests - test the sizeof IL opcode
+// =============================================================================
+
+public unsafe class SizeofTests
+{
+    /// <summary>
+    /// Test sizeof for byte (1 byte).
+    /// </summary>
+    public static int TestSizeofByte()
+    {
+        return sizeof(byte) == 1 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test sizeof for short (2 bytes).
+    /// </summary>
+    public static int TestSizeofShort()
+    {
+        return sizeof(short) == 2 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test sizeof for int (4 bytes).
+    /// </summary>
+    public static int TestSizeofInt()
+    {
+        return sizeof(int) == 4 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test sizeof for long (8 bytes).
+    /// </summary>
+    public static int TestSizeofLong()
+    {
+        return sizeof(long) == 8 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test sizeof for pointer (8 bytes on x64).
+    /// </summary>
+    public static int TestSizeofPointer()
+    {
+        return sizeof(void*) == 8 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test sizeof for SimpleStruct (8 bytes: two int fields).
+    /// </summary>
+    public static int TestSizeofStruct()
+    {
+        return sizeof(SimpleStruct) == 8 ? 42 : 0;
+    }
+}
+
+// =============================================================================
+// Static Constructor Tests - Type initializer (.cctor) invocation
+// =============================================================================
+
+// Helper class with a static constructor
+public static class StaticCtorHelper1
+{
+    public static int InitializedValue;
+
+    static StaticCtorHelper1()
+    {
+        InitializedValue = 42;
+    }
+}
+
+// Another helper class to test multiple static constructors
+public static class StaticCtorHelper2
+{
+    public static int Counter;
+    public static int FirstAccess;
+
+    static StaticCtorHelper2()
+    {
+        Counter = Counter + 1;  // Should only run once
+        FirstAccess = 100;
+    }
+}
+
+// Helper class to test static constructor with dependency
+public static class StaticCtorHelper3
+{
+    public static int Value;
+
+    static StaticCtorHelper3()
+    {
+        // Access StaticCtorHelper1.InitializedValue which triggers its cctor first
+        Value = StaticCtorHelper1.InitializedValue + 8;  // Should be 50
+    }
+}
+
+public static class StaticCtorTests
+{
+    /// <summary>
+    /// Test that static constructor initializes a static field before first read.
+    /// </summary>
+    public static int TestStaticCtorInitializesField()
+    {
+        // Reading InitializedValue should trigger StaticCtorHelper1's static constructor
+        // which sets InitializedValue to 42
+        return StaticCtorHelper1.InitializedValue;
+    }
+
+    /// <summary>
+    /// Test that static constructor only runs once even with multiple accesses.
+    /// </summary>
+    public static int TestStaticCtorRunsOnce()
+    {
+        // First access triggers cctor which sets Counter to 1
+        int first = StaticCtorHelper2.Counter;
+        // Second access should NOT re-run cctor, Counter should still be 1
+        int second = StaticCtorHelper2.Counter;
+        // Third access
+        int third = StaticCtorHelper2.Counter;
+
+        // If cctor only ran once, all three should be 1
+        return (first == 1 && second == 1 && third == 1) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test writing to a static field triggers cctor first.
+    /// </summary>
+    public static int TestStaticCtorOnWrite()
+    {
+        // Write to Counter - should trigger cctor first (setting Counter to 1)
+        // Then we add 10, so Counter should be 11
+        StaticCtorHelper2.Counter = StaticCtorHelper2.Counter + 10;
+
+        // But FirstAccess should be 100 (set by cctor)
+        return StaticCtorHelper2.FirstAccess;
+    }
+
+    /// <summary>
+    /// Test static constructor with dependency on another type's static.
+    /// </summary>
+    public static int TestStaticCtorWithDependency()
+    {
+        // Access StaticCtorHelper3.Value triggers Helper3's cctor
+        // Helper3's cctor accesses Helper1.InitializedValue, triggering Helper1's cctor
+        // Helper1's cctor sets InitializedValue to 42
+        // Helper3's cctor then computes Value = 42 + 8 = 50
+        return StaticCtorHelper3.Value;
     }
 }
 

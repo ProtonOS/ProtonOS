@@ -750,6 +750,9 @@ public static unsafe class AssemblyLoader
             case 0x1B:  // TypeSpec - array types, generic instantiations
                 return ResolveTypeSpec(asm, token);
 
+            case 0xF0:  // Well-known type - look up in MetadataIntegration registry
+                return JIT.MetadataIntegration.LookupType(token);
+
             default:
                 return null;
         }
@@ -1539,10 +1542,9 @@ public static unsafe class AssemblyLoader
 
         // Register override methods in CompiledMethodRegistry for lazy JIT lookup
         // This allows EnsureVtableSlotCompiled to find and compile them on first call
-        if (overriddenSlots != 0)
-        {
-            RegisterOverrideMethodsForLazyJit(asm, rowId, mt, overriddenSlots);
-        }
+        // Always call this since there may be overrides of user-defined virtual methods
+        // (not just Object methods tracked in overriddenSlots)
+        RegisterOverrideMethodsForLazyJit(asm, rowId, mt, overriddenSlots);
 
         // Register new virtual methods (newslot) for lazy JIT compilation
         // These are methods introduced by this type (like interface implementations)
@@ -1637,17 +1639,33 @@ public static unsafe class AssemblyLoader
 
             if (isVirtual && !isNewSlot && !isStatic)
             {
-                // This is an override - check if it's ToString, Equals, or GetHashCode
+                // This is an override - determine vtable slot
                 uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
                 byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
 
                 short vtableSlot = -1;
+
+                // Check well-known Object method slots first
                 if (NameEquals(methodName, "ToString"))
                     vtableSlot = 0;
                 else if (NameEquals(methodName, "Equals"))
                     vtableSlot = 1;
                 else if (NameEquals(methodName, "GetHashCode"))
                     vtableSlot = 2;
+                else
+                {
+                    // Not an Object override - search base class hierarchy for vtable slot
+                    vtableSlot = FindVtableSlotInBaseClass(asm, typeDefRow, methodName);
+                    if (vtableSlot < 0)
+                    {
+                        DebugConsole.Write("[LazyJIT] WARN: Could not find vtable slot for override '");
+                        for (int k = 0; methodName[k] != 0 && k < 32; k++)
+                            DebugConsole.WriteChar((char)methodName[k]);
+                        DebugConsole.Write("' in type row ");
+                        DebugConsole.WriteDecimal(typeDefRow);
+                        DebugConsole.WriteLine();
+                    }
+                }
 
                 if (vtableSlot >= 0)
                 {
@@ -1666,6 +1684,196 @@ public static unsafe class AssemblyLoader
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Find the vtable slot for an overridden method by searching the base class hierarchy.
+    /// Returns -1 if not found.
+    /// </summary>
+    private static short FindVtableSlotInBaseClass(LoadedAssembly* asm, uint typeDefRow, byte* methodName)
+    {
+        // Get the base type for this TypeDef
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        if (extendsIdx.RowId == 0)
+            return -1;  // No base type
+
+        LoadedAssembly* baseAsm = asm;
+        uint baseTypeDefRow = 0;
+
+        if (extendsIdx.Table == MetadataTableId.TypeDef)  // Base class in same assembly
+        {
+            baseTypeDefRow = extendsIdx.RowId;
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeRef)  // Base class in different assembly
+        {
+            // Resolve TypeRef to get the base assembly and TypeDef
+            CodedIndex resScope = MetadataReader.GetTypeRefResolutionScope(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            if (resScope.Table == MetadataTableId.AssemblyRef)
+            {
+                uint refNameIdx = MetadataReader.GetAssemblyRefName(ref asm->Tables, ref asm->Sizes, resScope.RowId);
+                byte* refName = MetadataReader.GetString(ref asm->Metadata, refNameIdx);
+
+                baseAsm = GetLoadedAssemblyByName(refName);
+                if (baseAsm == null)
+                    return -1;
+
+                // Find TypeDef in base assembly by name
+                uint typeNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+                byte* typeName = MetadataReader.GetString(ref asm->Metadata, typeNameIdx);
+
+                baseTypeDefRow = FindTypeDefByName(baseAsm, typeName);
+                if (baseTypeDefRow == 0)
+                    return -1;
+            }
+            else
+            {
+                return -1;  // Unsupported resolution scope
+            }
+        }
+        else
+        {
+            return -1;  // TypeSpec or unsupported
+        }
+
+        // Search for the method in the base class
+        short slot = FindVirtualMethodSlotByName(baseAsm, baseTypeDefRow, methodName);
+        if (slot >= 0)
+            return slot;
+
+        // Recurse up the hierarchy
+        return FindVtableSlotInBaseClass(baseAsm, baseTypeDefRow, methodName);
+    }
+
+    /// <summary>
+    /// Find a virtual method's slot in a TypeDef by name.
+    /// Returns the slot index (3+) for newslot virtuals, or -1 if not found.
+    /// </summary>
+    private static short FindVirtualMethodSlotByName(LoadedAssembly* asm, uint typeDefRow, byte* methodName)
+    {
+        // First count inherited slots from base class
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        ushort baseSlots = 3;  // Default: Object's 3 slots
+
+        if (extendsIdx.RowId != 0)
+        {
+            if (extendsIdx.Table == MetadataTableId.TypeDef)  // TypeDef in same assembly
+            {
+                baseSlots = CountTotalVtableSlots(asm, extendsIdx.RowId);
+            }
+            else if (extendsIdx.Table == MetadataTableId.TypeRef)  // TypeRef
+            {
+                // Resolve and count base class slots
+                CodedIndex resScope = MetadataReader.GetTypeRefResolutionScope(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+                if (resScope.Table == MetadataTableId.AssemblyRef)
+                {
+                    uint refNameIdx = MetadataReader.GetAssemblyRefName(ref asm->Tables, ref asm->Sizes, resScope.RowId);
+                    byte* refName = MetadataReader.GetString(ref asm->Metadata, refNameIdx);
+
+                    LoadedAssembly* baseAsm = GetLoadedAssemblyByName(refName);
+                    if (baseAsm != null)
+                    {
+                        uint typeNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+                        byte* typeName = MetadataReader.GetString(ref asm->Metadata, typeNameIdx);
+
+                        uint baseTypeDefRow = FindTypeDefByName(baseAsm, typeName);
+                        if (baseTypeDefRow > 0)
+                            baseSlots = CountTotalVtableSlots(baseAsm, baseTypeDefRow);
+                    }
+                }
+            }
+        }
+
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        short currentSlot = (short)baseSlots;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+
+            if (isVirtual && isNewSlot && !isStatic)
+            {
+                // This is a new virtual method - check if it matches
+                uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+                byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+                if (NameEquals(name, methodName))
+                    return currentSlot;
+
+                currentSlot++;
+            }
+        }
+
+        return -1;  // Not found in this type
+    }
+
+    /// <summary>
+    /// Count total vtable slots for a type (inherited + new).
+    /// </summary>
+    private static ushort CountTotalVtableSlots(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Get inherited slots from base
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        ushort baseSlots = 3;  // Default: Object's 3 slots
+
+        if (extendsIdx.RowId != 0)
+        {
+            if (extendsIdx.Table == MetadataTableId.TypeDef)  // TypeDef in same assembly
+            {
+                baseSlots = CountTotalVtableSlots(asm, extendsIdx.RowId);
+            }
+            // For TypeRef, we'd need to resolve - for now assume 3 for System.Object
+        }
+
+        // Add new slots from this type
+        ushort newSlots = CountNewVirtualSlots(asm, typeDefRow);
+        return (ushort)(baseSlots + newSlots);
+    }
+
+    /// <summary>
+    /// Find a TypeDef row by type name.
+    /// </summary>
+    private static uint FindTypeDefByName(LoadedAssembly* asm, byte* typeName)
+    {
+        uint count = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        for (uint row = 1; row <= count; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            if (NameEquals(name, typeName))
+                return row;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Get a loaded assembly by name.
+    /// </summary>
+    private static LoadedAssembly* GetLoadedAssemblyByName(byte* name)
+    {
+        // Check if it's System.Runtime (resolves to Object having only 3 slots)
+        if (NameEquals(name, "System.Runtime"))
+            return null;  // Can't look up slots in System.Runtime base types
+
+        // Search loaded assemblies
+        for (int i = 0; i < _assemblyCount; i++)
+        {
+            if (_assemblies[i].IsLoaded && NameEquals(_assemblies[i].Name, name))
+                return &_assemblies[i];
+        }
+        return null;
     }
 
     /// <summary>
@@ -1815,6 +2023,25 @@ public static unsafe class AssemblyLoader
                 return false;
         }
         return name[expected.Length] == 0;
+    }
+
+    /// <summary>
+    /// Compare two null-terminated byte* strings for equality.
+    /// </summary>
+    private static bool NameEquals(byte* name1, byte* name2)
+    {
+        if (name1 == null || name2 == null)
+            return name1 == name2;
+
+        int i = 0;
+        while (true)
+        {
+            if (name1[i] != name2[i])
+                return false;
+            if (name1[i] == 0)
+                return true;
+            i++;
+        }
     }
 
     /// <summary>

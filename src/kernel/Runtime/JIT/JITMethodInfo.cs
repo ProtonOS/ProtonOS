@@ -305,9 +305,10 @@ public unsafe struct JITMethodInfo
             // Type-specific data
             if (kind == EHClauseKind.Typed)
             {
-                // Type RVA as 4-byte relative (write 0 for now - type matching TBD)
-                *(int*)ptr = 0;
-                ptr += 4;
+                // Write the MethodTable pointer as 8-byte value
+                // This will be used by FindMatchingEHClause to check type compatibility
+                *(ulong*)ptr = clause.CatchTypeMethodTable;
+                ptr += 8;
             }
             else if (kind == EHClauseKind.Filter)
             {
@@ -561,35 +562,39 @@ public unsafe struct JITMethodInfo
         // Flags = 0 (funclets don't have their own handlers)
         p[0] = 1;  // Version 1, no flags
 
-        // Prolog size
+        // Prolog size = 4 bytes for funclet prolog
+        // (push rbp=1 + mov rbp,rdx=3)
         p[1] = prologSize;
 
-        // Count of unwind codes = 2 (SET_FPREG + PUSH_NONVOL)
-        p[2] = 2;
+        // Count of unwind codes = 1
+        // 1. PUSH_NONVOL(RBP) at offset 1
+        p[2] = 1;
 
-        // Frame register = RBP (5), frame offset = 0
-        p[3] = 5;
+        // Frame register = 0 (none) - RBP doesn't track the stack in funclets
+        // RBP points to parent frame, not funclet's stack
+        p[3] = 0;
 
         // Unwind codes (reverse order of operations):
-        // 1. UWOP_SET_FPREG at offset 4 (after push rbp + mov rbp, rdx)
-        // 2. UWOP_PUSH_NONVOL(RBP) at offset 1
         var codes = (UnwindCode*)(p + 4);
 
-        // SET_FPREG at offset 4
-        codes[0].CodeOffset = 4;
-        codes[0].OpAndInfo = (byte)UnwindOpCodes.UWOP_SET_FPREG;
-
         // PUSH_NONVOL(RBP) at offset 1
-        codes[1].CodeOffset = 1;
-        codes[1].OpAndInfo = (byte)(UnwindOpCodes.UWOP_PUSH_NONVOL | (UnwindRegister.RBP << 4));
+        codes[0].CodeOffset = 1;
+        codes[0].OpAndInfo = (byte)(UnwindOpCodes.UWOP_PUSH_NONVOL | (UnwindRegister.RBP << 4));
 
         // After unwind codes: NativeAOT unwind block flags (1 byte)
-        // Offset = 4 (header) + 2 * 2 (codes) = 8
-        byte* flagsPtr = p + 8;
+        // Offset = 4 (header) + 1 * 2 (codes) = 6
+        byte* flagsPtr = p + 6;
 
-        // Get funclet kind from metadata
+        // Get funclet metadata
+        // metaPtr byte 0: bit 0 = isFilter, bits 2-7 = ehClauseIndex
         bool isFilter = (*metaPtr & 0x01) != 0;
-        *flagsPtr = isFilter ? UBF_FUNC_KIND_FILTER : UBF_FUNC_KIND_HANDLER;
+        int ehClauseIndex = (*metaPtr >> 2) & 0x3F;
+
+        // Encode funclet kind and clause index in flags byte:
+        // bits 0-1: func kind (ROOT=0, HANDLER=1, FILTER=2)
+        // bits 2-7: EH clause index (0-63)
+        byte kind = isFilter ? UBF_FUNC_KIND_FILTER : UBF_FUNC_KIND_HANDLER;
+        *flagsPtr = (byte)(kind | (ehClauseIndex << 2));
 
         // Calculate UNWIND_INFO RVA and patch into RUNTIME_FUNCTION
         uint unwindInfoRva = (uint)((ulong)p - CodeBase);
@@ -732,7 +737,7 @@ public unsafe struct JITMethodInfo
         // Type-specific
         if (kind == (byte)EHClauseKind.Typed)
         {
-            ptr += 4;  // Type RVA
+            ptr += 8;  // MethodTable pointer (8 bytes)
         }
         else if (kind == (byte)EHClauseKind.Filter)
         {

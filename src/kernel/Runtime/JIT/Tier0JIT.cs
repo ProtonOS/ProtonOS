@@ -603,33 +603,14 @@ public static unsafe class Tier0JIT
         {
             // Find the declaring type and set its MethodTable
             uint declaringTypeToken = AssemblyLoader.FindDeclaringType(assemblyId, methodToken);
-            // DebugConsole.Write("[Tier0JIT] .ctor 0x");
-            // DebugConsole.WriteHex(methodToken);
-            // DebugConsole.Write(" declaring type=0x");
-            // DebugConsole.WriteHex(declaringTypeToken);
-
             if (declaringTypeToken != 0)
             {
                 MethodTable* mt = AssemblyLoader.ResolveType(assemblyId, declaringTypeToken);
-                // DebugConsole.Write(" MT=0x");
-                // DebugConsole.WriteHex((ulong)mt);
-
                 if (mt != null)
                 {
-                    bool ok = CompiledMethodRegistry.SetMethodTable(methodToken, mt, assemblyId);
-                    // DebugConsole.Write(" set=");
-                    // DebugConsole.Write(ok ? "OK" : "FAIL");
+                    CompiledMethodRegistry.SetMethodTable(methodToken, mt, assemblyId);
                 }
-                // else
-                // {
-                //     DebugConsole.Write(" (ResolveType failed)");
-                // }
             }
-            // else
-            // {
-            //     DebugConsole.Write(" (FindDeclaringType failed)");
-            // }
-            // DebugConsole.WriteLine();
         }
 
         return JitResult.Ok(code, codeSize);

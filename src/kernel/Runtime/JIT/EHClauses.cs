@@ -164,6 +164,12 @@ public struct JITExceptionClause
 
     /// <summary>True if this clause was successfully converted (all offsets valid).</summary>
     public bool IsValid;
+
+    /// <summary>
+    /// For typed catch: resolved MethodTable pointer for the catch type.
+    /// Set during IL-to-native conversion when assemblyId is available.
+    /// </summary>
+    public ulong CatchTypeMethodTable;
 }
 
 /// <summary>
@@ -180,7 +186,7 @@ public unsafe struct JITExceptionClauses
     public int Count;
 
     // Fixed-size storage for clauses
-    private fixed byte _clauseData[MaxClauses * 28]; // sizeof(JITExceptionClause) = 28
+    private fixed byte _clauseData[MaxClauses * 40]; // sizeof(JITExceptionClause) = 40 (with CatchTypeMethodTable)
 
     /// <summary>Get a clause by index.</summary>
     public JITExceptionClause GetClause(int index)
@@ -544,19 +550,22 @@ public static unsafe class EHClauseConverter
 {
     /// <summary>
     /// Convert IL exception clauses to JIT exception clauses with native offsets.
+    /// Uses assemblyId to resolve catch type tokens to MethodTable pointers.
     /// </summary>
     /// <param name="ilClauses">Source IL clauses</param>
     /// <param name="nativeClauses">Output native clauses</param>
     /// <param name="labelILOffsets">Array of IL offsets for recorded labels</param>
     /// <param name="labelNativeOffsets">Array of native offsets for recorded labels</param>
     /// <param name="labelCount">Number of labels</param>
+    /// <param name="assemblyId">Assembly ID for resolving type tokens</param>
     /// <returns>True if all clauses converted successfully</returns>
     public static bool ConvertClauses(
         ref ILExceptionClauses ilClauses,
         out JITExceptionClauses nativeClauses,
         int* labelILOffsets,
         int* labelNativeOffsets,
-        int labelCount)
+        int labelCount,
+        uint assemblyId = 0)
     {
         nativeClauses = default;
         bool allValid = true;
@@ -567,6 +576,7 @@ public static unsafe class EHClauseConverter
 
             JITExceptionClause nativeClause;
             nativeClause.Flags = ilClause.Flags;
+            nativeClause.CatchTypeMethodTable = 0;  // Initialize to 0
 
             // Look up native offsets for IL offsets
             int tryStart = FindNativeOffset((int)ilClause.TryOffset, labelILOffsets, labelNativeOffsets, labelCount);
@@ -622,9 +632,25 @@ public static unsafe class EHClauseConverter
                         nativeClause.IsValid = true;
                     }
                 }
+                else if (ilClause.Flags == ILExceptionClauseFlags.Exception)
+                {
+                    // For typed catch, keep the type token and resolve to MethodTable
+                    nativeClause.ClassTokenOrFilterOffset = ilClause.ClassTokenOrFilterOffset;
+                    nativeClause.IsValid = true;
+
+                    // Resolve type token to MethodTable pointer if we have assemblyId
+                    if (assemblyId != 0 && ilClause.ClassTokenOrFilterOffset != 0)
+                    {
+                        MethodTable* catchType = AssemblyLoader.ResolveType(assemblyId, ilClause.ClassTokenOrFilterOffset);
+                        if (catchType != null)
+                        {
+                            nativeClause.CatchTypeMethodTable = (ulong)catchType;
+                        }
+                    }
+                }
                 else
                 {
-                    // For typed catch, keep the type token as-is
+                    // Finally/Fault clauses
                     nativeClause.ClassTokenOrFilterOffset = ilClause.ClassTokenOrFilterOffset;
                     nativeClause.IsValid = true;
                 }

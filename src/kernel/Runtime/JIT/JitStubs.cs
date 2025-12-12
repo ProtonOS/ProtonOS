@@ -194,6 +194,7 @@ public static unsafe class JitStubs
         // Slow path: Need to find and compile the method for this slot
         // Look up the method in the registry by MethodTable and vtable slot
         CompiledMethodInfo* info = CompiledMethodRegistry.LookupByVtableSlot((void*)methodTable, vtableSlot);
+
         if (info != null)
         {
             // Found a registered method for this slot
@@ -207,30 +208,17 @@ public static unsafe class JitStubs
             // Method is registered but not compiled - compile it
             if (!info->IsBeingCompiled)
             {
-                DebugConsole.Write("[JitStubs] Lazy compiling vtable slot ");
-                DebugConsole.WriteDecimal((uint)vtableSlot);
-                DebugConsole.Write(" token 0x");
-                DebugConsole.WriteHex(info->Token);
-                DebugConsole.Write(" asm ");
-                DebugConsole.WriteDecimal(info->AssemblyId);
-                DebugConsole.Write(" objMT=0x");
-                DebugConsole.WriteHex((ulong)methodTable);
-                DebugConsole.WriteLine();
+                // DebugConsole.Write("[JitStubs] Lazy compiling vtable slot ");
+                // DebugConsole.WriteDecimal((uint)vtableSlot);
+                // DebugConsole.Write(" token 0x");
+                // DebugConsole.WriteHex(info->Token);
+                // DebugConsole.WriteLine();
 
                 var result = Tier0JIT.CompileMethod(info->AssemblyId, info->Token);
                 if (result.Success && result.CodeAddress != null)
                 {
                     // Update vtable slot with compiled code
                     vtable[vtableSlot] = (nint)result.CodeAddress;
-                    DebugConsole.Write("[JitStubs] Updated vtable slot ");
-                    DebugConsole.WriteDecimal((uint)vtableSlot);
-                    DebugConsole.Write(" to 0x");
-                    DebugConsole.WriteHex((ulong)result.CodeAddress);
-                    // Read back to verify
-                    nint readBack = vtable[vtableSlot];
-                    DebugConsole.Write(" readBack=0x");
-                    DebugConsole.WriteHex((ulong)readBack);
-                    DebugConsole.WriteLine();
                 }
                 else
                 {

@@ -78,11 +78,11 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ box (value type to object)
 - ✅ unbox.any (object to value type)
 - ✅ unbox (get pointer to boxed value)
-- ❌ Nullable<T> boxing (special semantics - box null = null)
+- ✅ Nullable<T> boxing (special semantics - box null = null, see Section 10)
 
 ### Type Checks
-- ⚠️ isinst (safe cast)
-- ⚠️ castclass (throwing cast)
+- ✅ isinst (safe cast) - tested with classes and interfaces
+- ✅ castclass (throwing cast) - tested with interfaces
 - ❌ typeof / ldtoken for types
 
 ---
@@ -176,13 +176,13 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Basic Try/Catch
 - ✅ try { } catch { } - basic catch-all
 - ✅ try { } catch (Exception) { } - typed catch clause
-- ⚠️ Multiple catch blocks - infrastructure ready, untested
-- ⚠️ Nested try/catch - infrastructure ready, untested
+- ✅ Multiple catch blocks - tested with 2 typed catches + catch-all
+- ✅ Nested try/catch - tested with inner/outer try-catch
 
 ### Finally
 - ✅ try { } finally { } - finally handler executes on normal and exceptional paths
 - ✅ try { } catch { } finally { } - two-pass exception handling
-- ⚠️ finally with return/break - leave instruction handling in finally
+- ✅ finally with return/break - leave instruction handling in finally (tested with break in loop)
 
 ### Throw
 - ✅ throw new Exception() - exception allocation and dispatch
@@ -198,7 +198,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Implementation Details
 - Two-pass exception dispatch: Pass 1 finds handler, Pass 2 executes finally handlers
 - Funclet calling convention: RCX = exception object, RDX = parent frame pointer
-- Funclet prologue: `push rbp; mov rbp, rdx` - establishes frame from parent
+- Catch funclet prologue: `push rbp; mov rbp, rdx; push rcx` - establishes frame and pushes exception to eval stack
+- Finally/fault funclet prologue: `push rbp; mov rbp, rdx` - no exception on stack
 - Leave in funclet: `pop rbp; ret` - returns to LeaveTargetOffset (code after try/catch)
 - Stack setup for funclet: RSP-16 with return address at RSP+8
 
@@ -208,13 +209,13 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ### Delegate Creation
 - ✅ ldftn (load function pointer)
-- ⚠️ ldvirtftn (load virtual function pointer) - infrastructure ready, untested
+- ✅ ldvirtftn (load virtual function pointer) - tested with virtual delegate dispatch
 - ✅ newobj for delegate (static delegates)
 - ✅ Delegate.Invoke (inline dispatch code generation)
 
 ### Delegate Invocation Details
 - ✅ Static delegate (target=null, function pointer called directly)
-- ⚠️ Instance delegate (target=object, function pointer called with target as first arg) - untested
+- ✅ Instance delegate (target=object, function pointer called with target as first arg)
 - ✅ Single-argument delegates
 - ✅ Multi-argument delegates (2+ args)
 - ✅ Void-returning delegates
@@ -238,12 +239,12 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Interface method resolution (InterfaceMap in MethodTable)
 - ✅ Interface map population from InterfaceImpl metadata table
 - ✅ Lazy JIT compilation of interface implementations
+- ✅ Multiple interfaces on same type (tested with 3 interfaces)
 - ⚠️ Explicit interface implementation (same mechanism, untested)
-- ⚠️ Multiple interfaces on same type (map populated, untested)
 
 ### Interface Casting
-- ❌ Cast to interface type
-- ❌ isinst with interface
+- ✅ isinst with interface (as T)
+- ✅ castclass with interface ((T)obj)
 
 ### Default Interface Methods
 - 🔲 Not planned (C# 8+ feature)
@@ -269,9 +270,12 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ## 11. Static Constructors
 
-- ❌ Type initializer (.cctor) invocation
-- ❌ beforefieldinit semantics
-- ❌ Circular static initialization
+- ✅ Type initializer (.cctor) invocation
+- ✅ Static field access triggers cctor before first use
+- ✅ Cctor runs only once (subsequent accesses skip)
+- ✅ Cctor with dependencies (type A's cctor accesses type B's static field)
+- ⚠️ beforefieldinit semantics (types without beforefieldinit work correctly)
+- ⚠️ Circular static initialization (basic case works, complex cycles untested)
 
 ---
 
@@ -303,7 +307,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Rare Opcodes
 - ❌ arglist (varargs)
 - ❌ mkrefany / refanyval / refanytype (TypedReference)
-- ❌ sizeof (should be easy)
+- ✅ sizeof (primitive types and structs)
 
 ---
 
@@ -312,11 +316,11 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### P0 - Critical for Drivers
 1. ✅ Exception handling (try/catch/finally)
 2. ✅ Interface dispatch
-3. ⚠️ Nullable<T> (basic operations work; passing/returning structs needs work)
+3. ✅ Nullable<T> (full support including boxing/unboxing)
 
 ### P1 - Important for Robustness
-4. Delegates (for callbacks)
-5. Static constructors
+4. ✅ Delegates (for callbacks) - static and instance delegates working
+5. ✅ Static constructors - cctor invocation working
 6. Complex generics
 
 ### P2 - Nice to Have
@@ -341,11 +345,19 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 142 passing
+- Current test count: 179 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Catch Handler Funclet Fix (2024-12)
+Fixed exception propagation from catch handlers (throw inside catch block):
+- Bug: Catch funclets didn't push exception object (RCX) onto eval stack
+- IL handler starts with `pop` to discard exception, but funclet had nothing to pop
+- This caused `add rsp, 8` to corrupt the stack layout (shifting return address)
+- Fix: Catch funclets now emit `push rcx` after prolog and track exception on eval stack
+- TestNestedTryCatch now passes (throw from inner catch to outer catch)
 
 ### Nullable<T> Lifted Operators (2024-12)
 Verified lifted operators work without additional JIT changes:
@@ -388,3 +400,45 @@ Implemented interface dispatch via `callvirt` on interface types:
 - Added `RegisterNewVirtualMethodsForLazyJit()` to register interface implementations for lazy JIT
 - Modified `GetInterfaceMethod()` to call `EnsureVtableSlotCompiled()` for lazy compilation
 - Test: `InterfaceTests.TestSimpleInterface()` - IValue interface with ValueImpl implementation
+
+### Multiple Interfaces Fix (2024-12)
+Fixed interface method argument count parsing:
+- Interface methods were hardcoded to `ArgCount = 0` causing wrong argument counts
+- Added signature parsing for MemberRef (cross-assembly) and MethodDef interface methods
+- `ParseMemberRefSignatureForDelegate()` now shared for both delegates and interface methods
+- Added `ParseMethodDefSignature()` for MethodDef interface method tokens
+- 3 new tests: TestMultipleInterfacesFirst/Second/Third with IValue, IMultiplier, IAdder interfaces
+
+### Static Constructor Support (2024-12)
+Implemented static constructor (.cctor) invocation:
+- `EnsureCctorContextRegistered()` finds and compiles cctors, registers context
+- Context registered BEFORE compiling cctor to prevent infinite recursion when cctor accesses own type's fields
+- `EmitCctorCheck()` generates inline code: load context, check if zero, if not zero clear and call
+- `FindTypeCctor()` locates .cctor method for a TypeDef token
+- cctor context stored as `StaticClassConstructionContext` with single `cctorMethodAddress` field
+- Address=0 means "already run" or "being run", non-zero means "needs to run"
+- 4 tests added:
+  - TestStaticCtorInitializesField - cctor sets field to 42
+  - TestStaticCtorRunsOnce - cctor only runs once across multiple accesses
+  - TestStaticCtorOnWrite - writing to static field triggers cctor first
+  - TestStaticCtorWithDependency - cctor with dependency on another type's static
+
+### Finally in Loop Fix (2024-12)
+Fixed stack corruption in finally handlers called from loops:
+- Bug 1: Missing shadow space allocation when calling finally funclets from `leave`
+  - The finally funclet's shadow space was overwriting caller's stack data
+  - Fix: Added `sub rsp, 32` before call and `add rsp, 32` after in `CompileLeave()`
+- Bug 2: Wrong local allocation formula in `CompileWithFunclets()`
+  - Used `_localCount * 8 + 64` instead of `_localCount * 64 + 64`
+  - This caused stack underallocation for methods with 3+ locals and EH clauses
+  - Fix: Changed formula to match regular `Compile()` path (64 bytes per local)
+- Symptom: Loop variable `i` showed corrupted values (e.g., 1066888 instead of 0,1,2)
+- Test: `TestFinallyInLoopWithBreak` - finally runs on each loop iteration including break
+
+### Interface Casting Tests (2024-12)
+Added tests for isinst/castclass with interface types:
+- TestIsinstInterfaceSuccess - object implements interface, returns object
+- TestIsinstInterfaceFailure - object doesn't implement interface, returns null
+- TestIsinstNull - null input returns null
+- TestIsinstMultipleFirst/Second - isinst with multiple interfaces, then call through result
+- TestCastclassInterfaceSuccess - explicit cast to interface type

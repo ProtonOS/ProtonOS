@@ -300,7 +300,7 @@ public struct NativeAotEHClause
     public uint TryEndOffset;     // RVA offset from function start
     public uint HandlerOffset;    // RVA offset of handler funclet from function start
     public uint FilterOffset;     // RVA offset of filter funclet (for Filter kind)
-    public ulong CatchTypeRva;    // RVA of catch type (for Typed kind)
+    public ulong CatchTypeMethodTable;    // MethodTable pointer for catch type (for Typed kind)
     public uint LeaveTargetOffset; // RVA offset where execution continues after catch/filter handler returns
 }
 
@@ -359,10 +359,17 @@ public static unsafe class ExceptionHandling
     [UnmanagedCallersOnly(EntryPoint = "RhpThrowEx_Handler")]
     public static void RhpThrowEx_Handler(void* exceptionObject, ExceptionContext* context)
     {
+        ulong entryRsp = CPU.GetRsp();
         DebugConsole.Write("[EH] RhpThrowEx_Handler called, exception=0x");
         DebugConsole.WriteHex((ulong)exceptionObject);
         DebugConsole.Write(" RIP=0x");
         DebugConsole.WriteHex(context->Rip);
+        DebugConsole.Write(" ctx=0x");
+        DebugConsole.WriteHex((ulong)context);
+        DebugConsole.Write(" ctx->Rsp=0x");
+        DebugConsole.WriteHex(context->Rsp);
+        DebugConsole.Write(" entryRSP=0x");
+        DebugConsole.WriteHex(entryRsp);
         DebugConsole.WriteLine();
 
         // Dispatch the exception using NativeAOT EH tables
@@ -389,6 +396,36 @@ public static unsafe class ExceptionHandling
 
         // If handled, the context has been modified to point to the handler.
         // Assembly will restore context and jump to handler address.
+        DebugConsole.Write("[EH] Handler returning, ctx=0x");
+        DebugConsole.WriteHex((ulong)context);
+        DebugConsole.Write(" Rip=0x");
+        DebugConsole.WriteHex(context->Rip);
+        DebugConsole.Write(" Rsp=0x");
+        DebugConsole.WriteHex(context->Rsp);
+        DebugConsole.WriteLine();
+
+        // Double-check by reading from memory
+        ulong* ctxMem = (ulong*)context;
+        ulong exitRsp = CPU.GetRsp();
+        DebugConsole.Write("[EH] Memory at ctx: [0]=0x");
+        DebugConsole.WriteHex(ctxMem[0]);  // Rip
+        DebugConsole.Write(" [1]=0x");
+        DebugConsole.WriteHex(ctxMem[1]);  // Rsp
+        DebugConsole.Write(" exitRSP=0x");
+        DebugConsole.WriteHex(exitRsp);
+        DebugConsole.WriteLine();
+
+        // Assembly will read from [RSP+32+0] and [RSP+32+8] after we return
+        // RSP at return = entryRSP - (C# stack frame size)
+        // After add rsp, 32, RSP should = context address
+        // Let's print what memory at context looks like
+        DebugConsole.Write("[EH] Final verify: ctx=0x");
+        DebugConsole.WriteHex((ulong)context);
+        DebugConsole.Write(" *ctx=");
+        DebugConsole.WriteHex(*(ulong*)context);
+        DebugConsole.Write(" *(ctx+8)=");
+        DebugConsole.WriteHex(*((ulong*)context + 1));
+        DebugConsole.WriteLine();
     }
 
     /// <summary>
@@ -934,6 +971,58 @@ public static unsafe class ExceptionHandling
                         imageBase = baseAddr;
                         _lock.Release();
                         return func;
+                    }
+                }
+            }
+        }
+
+        _lock.Release();
+        return null;
+    }
+
+    /// <summary>
+    /// Look up the main function (RVA 0) for a code region with the given base address.
+    /// Used when handling exceptions in funclets - we need to find the parent method.
+    /// </summary>
+    /// <param name="targetBase">Base address of the code region to search</param>
+    /// <returns>Pointer to RUNTIME_FUNCTION for main function, or null if not found</returns>
+    public static RuntimeFunction* LookupMainFunctionByBase(ulong targetBase)
+    {
+        if (!_initialized)
+            return null;
+
+        _lock.Acquire();
+
+        fixed (byte* ptr = _tableStorage.Data)
+        {
+            var tables = (FunctionTableEntry*)ptr;
+
+            for (int i = 0; i < MaxFunctionTables; i++)
+            {
+                if (!tables[i].InUse)
+                    continue;
+
+                ulong baseAddr = tables[i].BaseAddress;
+                if (baseAddr != targetBase)
+                    continue;
+
+                var functions = tables[i].Functions;
+                uint count = tables[i].FunctionCount;
+
+                // The main function should be at index 0 (RVA 0) for JIT methods
+                if (count > 0 && functions[0].BeginAddress == 0)
+                {
+                    _lock.Release();
+                    return &functions[0];
+                }
+
+                // If not at index 0, search for it
+                for (uint j = 0; j < count; j++)
+                {
+                    if (functions[j].BeginAddress == 0)
+                    {
+                        _lock.Release();
+                        return &functions[j];
                     }
                 }
             }
@@ -1585,6 +1674,41 @@ public static unsafe class ExceptionHandling
         return funcKind != UBF_FUNC_KIND_ROOT;
     }
 
+    /// <summary>
+    /// Get the EH clause index that a funclet belongs to.
+    /// The clause index is stored in bits 2-7 of the unwind block flags byte.
+    /// </summary>
+    /// <param name="unwindInfo">Pointer to UNWIND_INFO</param>
+    /// <returns>EH clause index (0-63), or -1 if not a funclet</returns>
+    public static int GetFuncletClauseIndex(UnwindInfo* unwindInfo)
+    {
+        if (unwindInfo == null)
+            return -1;
+
+        // Calculate offset to end of UNWIND_INFO structure
+        int headerSize = 4;
+        int unwindArrayBytes = unwindInfo->CountOfUnwindCodes * 2;
+        int unwindInfoSize = headerSize + unwindArrayBytes;
+
+        if ((unwindInfo->Flags & (UnwindFlags.UNW_FLAG_EHANDLER | UnwindFlags.UNW_FLAG_UHANDLER)) != 0)
+        {
+            unwindInfoSize = (unwindInfoSize + 3) & ~3;
+            unwindInfoSize += 4;
+        }
+
+        // Read unwind block flags byte
+        byte* p = (byte*)unwindInfo + unwindInfoSize;
+        byte unwindBlockFlags = *p;
+
+        // Check if this is actually a funclet
+        byte funcKind = (byte)(unwindBlockFlags & UBF_FUNC_KIND_MASK);
+        if (funcKind == UBF_FUNC_KIND_ROOT)
+            return -1;
+
+        // Extract clause index from bits 2-7
+        return (unwindBlockFlags >> 2) & 0x3F;
+    }
+
     public static byte* GetNativeAotEHInfo(ulong imageBase, UnwindInfo* unwindInfo)
     {
         if (unwindInfo == null)
@@ -1793,15 +1917,14 @@ public static unsafe class ExceptionHandling
 
             // Read type-specific data
             uint filterOffset = 0;
-            uint catchTypeRva = 0;
+            ulong catchTypeMethodTable = 0;
             uint leaveTargetOffset = 0;
 
             if (kind == (byte)EHClauseKind.Typed)
             {
-                // Type RVA is a 32-bit relative offset (signed)
-                int typeRvaOffset = *(int*)ptr;
-                ptr += 4;
-                catchTypeRva = (uint)((long)(ulong)ptr - 4 + typeRvaOffset - (long)imageBase);
+                // Read MethodTable pointer (8 bytes)
+                catchTypeMethodTable = *(ulong*)ptr;
+                ptr += 8;
             }
             else if (kind == (byte)EHClauseKind.Filter)
             {
@@ -1828,8 +1951,8 @@ public static unsafe class ExceptionHandling
             DebugConsole.WriteHex(handlerOffset);
             if (kind == (byte)EHClauseKind.Typed)
             {
-                DebugConsole.Write(" typeRva=0x");
-                DebugConsole.WriteHex(catchTypeRva);
+                DebugConsole.Write(" catchType=0x");
+                DebugConsole.WriteHex(catchTypeMethodTable);
             }
             DebugConsole.WriteLine();
 
@@ -1846,19 +1969,42 @@ public static unsafe class ExceptionHandling
                 // Finally/Fault handlers are executed in Pass 2
                 if (kind == (byte)EHClauseKind.Typed)
                 {
-                    clause.Kind = (EHClauseKind)kind;
-                    clause.TryStartOffset = tryStart;
-                    clause.TryEndOffset = tryEnd;
-                    clause.HandlerOffset = handlerOffset;
-                    clause.FilterOffset = filterOffset;
-                    clause.CatchTypeRva = catchTypeRva;
-                    clause.LeaveTargetOffset = leaveTargetOffset;
-                    foundClauseIndex = i;
+                    // Check if exception type is assignable to catch type
+                    // If no catch type is specified (0), it catches all exceptions
+                    bool typeMatches = false;
+                    if (catchTypeMethodTable == 0)
+                    {
+                        // catch { } or catch (Exception) where type wasn't resolved
+                        typeMatches = true;
+                        DebugConsole.WriteLine("[EH] Typed catch with no type restriction - matches all");
+                    }
+                    else if (exceptionObject != 0)
+                    {
+                        // Get exception object's MethodTable (first field of any object)
+                        MethodTable* exceptionMT = *(MethodTable**)exceptionObject;
+                        MethodTable* catchMT = (MethodTable*)catchTypeMethodTable;
 
-                    DebugConsole.Write("[EH] Found matching catch clause! leaveTarget=0x");
-                    DebugConsole.WriteHex(leaveTargetOffset);
-                    DebugConsole.WriteLine();
-                    return true;
+                        // Use IsAssignableTo to check if exception type is compatible with catch type
+                        typeMatches = TypeHelpers.IsAssignableTo(exceptionMT, catchMT);
+                    }
+
+                    if (typeMatches)
+                    {
+                        clause.Kind = (EHClauseKind)kind;
+                        clause.TryStartOffset = tryStart;
+                        clause.TryEndOffset = tryEnd;
+                        clause.HandlerOffset = handlerOffset;
+                        clause.FilterOffset = filterOffset;
+                        clause.CatchTypeMethodTable = catchTypeMethodTable;
+                        clause.LeaveTargetOffset = leaveTargetOffset;
+                        foundClauseIndex = i;
+
+                        DebugConsole.Write("[EH] Found matching catch clause! leaveTarget=0x");
+                        DebugConsole.WriteHex(leaveTargetOffset);
+                        DebugConsole.WriteLine();
+                        return true;
+                    }
+                    // Type doesn't match - continue to next clause
                 }
                 else if (kind == (byte)EHClauseKind.Filter)
                 {
@@ -1890,7 +2036,7 @@ public static unsafe class ExceptionHandling
                         clause.TryEndOffset = tryEnd;
                         clause.HandlerOffset = handlerOffset;
                         clause.FilterOffset = filterOffset;
-                        clause.CatchTypeRva = 0;  // Filter clauses don't have a type
+                        clause.CatchTypeMethodTable = 0;  // Filter clauses don't have a type
                         clause.LeaveTargetOffset = leaveTargetOffset;
                         foundClauseIndex = i;
 
@@ -1954,12 +2100,14 @@ public static unsafe class ExceptionHandling
             // Skip type-specific data
             if (kind == (byte)EHClauseKind.Typed)
             {
-                ptr += 4; // Skip type RVA
+                ptr += 8; // Skip MethodTable pointer (8 bytes)
+                ReadNativeUnsigned(ref ptr); // Skip leave target offset
             }
             else if (kind == (byte)EHClauseKind.Filter)
             {
                 ReadNativeUnsigned(ref ptr); // handler offset
                 ReadNativeUnsigned(ref ptr); // filter offset
+                ReadNativeUnsigned(ref ptr); // Skip leave target offset
             }
 
             // Check if this is a finally/fault that covers our offset
@@ -1972,7 +2120,7 @@ public static unsafe class ExceptionHandling
                     clauses[foundCount].TryEndOffset = tryEnd;
                     clauses[foundCount].HandlerOffset = handlerOffset;
                     clauses[foundCount].FilterOffset = 0;
-                    clauses[foundCount].CatchTypeRva = 0;
+                    clauses[foundCount].CatchTypeMethodTable = 0;
                     foundCount++;
 
                     DebugConsole.Write("[EH] Found finally/fault clause at handler offset 0x");
@@ -2114,26 +2262,180 @@ public static unsafe class ExceptionHandling
             DebugConsole.WriteDecimal(unwindInfo->CountOfUnwindCodes);
             DebugConsole.WriteLine();
 
-            // Check if this is a funclet (catch/finally handler) - if so, skip EH search
+            // Check if this is a funclet (catch/finally handler) - if so, continue EH search
+            // in the PARENT function, not in whoever called the funclet
             // Funclets don't have their own EH clauses, their parent function does
             bool isFunclet = IsFunclet(imageBase, unwindInfo);
             if (isFunclet)
             {
-                DebugConsole.Write("[EH]   (funclet - skipping EH search, unwinding)");
-                // Unwind through the funclet to get to its caller
-                ulong funcletEstablisherFrame;
-                RtlVirtualUnwind(
-                    UNW_HandlerType.UNW_FLAG_NHANDLER,
-                    imageBase,
-                    searchContext.Rip,
-                    funcEntry,
-                    &searchContext,
-                    null,
-                    &funcletEstablisherFrame,
-                    null);
-                DebugConsole.Write(" -> new RIP=0x");
+                DebugConsole.Write("[EH]   (funclet - switching to parent method)");
+                DebugConsole.Write(" searchCtx.Rsp=0x");
+                DebugConsole.WriteHex(searchContext.Rsp);
+                DebugConsole.Write(" searchCtx.Rbp=0x");
+                DebugConsole.WriteHex(searchContext.Rbp);
+
+                // Get the parent frame pointer - with the simple funclet prolog
+                // (push rbp; mov rbp, rdx), RBP IS the parent frame pointer
+                ulong parentFramePtr = searchContext.Rbp;
+                DebugConsole.Write(" parentFP=0x");
+                DebugConsole.WriteHex(parentFramePtr);
+
+                // Find the main (parent) function for this code region
+                var mainFunc = LookupMainFunctionByBase(imageBase);
+                if (mainFunc == null)
+                {
+                    DebugConsole.WriteLine(" [ERROR: no parent function found, unwinding instead]");
+                    // Fall back to unwinding
+                    ulong funcletEstablisherFrame;
+                    RtlVirtualUnwind(
+                        UNW_HandlerType.UNW_FLAG_NHANDLER,
+                        imageBase,
+                        searchContext.Rip,
+                        funcEntry,
+                        &searchContext,
+                        null,
+                        &funcletEstablisherFrame,
+                        null);
+                    frame++;
+                    continue;
+                }
+
+                // Get the parent function's unwind info
+                var mainUnwindInfo = (UnwindInfo*)(imageBase + mainFunc->UnwindInfoAddress);
+                byte* mainEhInfo = GetNativeAotEHInfo(imageBase, mainUnwindInfo);
+
+                DebugConsole.Write(" mainFunc=0x");
+                DebugConsole.WriteHex(imageBase + mainFunc->BeginAddress);
+                DebugConsole.WriteLine();
+
+                if (mainEhInfo != null)
+                {
+                    // The exception occurred while executing a catch/finally handler (funclet).
+                    // Get the clause index this funclet belongs to.
+                    int funcletClauseIdx = GetFuncletClauseIndex(unwindInfo);
+                    DebugConsole.Write("[EH]   funcletClauseIdx=");
+                    DebugConsole.WriteDecimal((uint)funcletClauseIdx);
+
+                    // When an exception escapes from clause N's handler, search starting
+                    // from clause N+1. This implements the correct nested try/catch semantics.
+                    uint startSearchClause = (funcletClauseIdx >= 0) ? (uint)(funcletClauseIdx + 1) : 0;
+
+                    // We need to use an offset that's inside the outer try block.
+                    // For nested try/catch compiled with funclets, the try ranges in native
+                    // code cover the main body code only. We use offset 0x2F (just after prolog)
+                    // which should be inside all try blocks.
+                    // Actually, we should read the try start from clause N and use that offset,
+                    // since outer try blocks have the same or earlier start offset.
+                    // For simplicity, use the offset right after the prolog (typically 0x2F).
+                    uint searchOffset = 0x2F;  // Standard prolog size for frame-based functions
+
+                    DebugConsole.Write(" startClause=");
+                    DebugConsole.WriteDecimal(startSearchClause);
+                    DebugConsole.Write(" searchOff=0x");
+                    DebugConsole.WriteHex(searchOffset);
+                    DebugConsole.WriteLine();
+
+                    NativeAotEHClause clause;
+                    uint foundClauseIndex;
+                    if (FindMatchingEHClause(mainEhInfo, imageBase, mainFunc->BeginAddress, searchOffset, 0,
+                        out clause, out foundClauseIndex, startSearchClause, parentFramePtr, (ulong)exceptionObject))
+                    {
+                        // Found a handler in the parent function!
+                        DebugConsole.Write("[EH] Found catch handler in parent at offset 0x");
+                        DebugConsole.WriteHex(clause.HandlerOffset);
+                        DebugConsole.Write(" (clause ");
+                        DebugConsole.WriteDecimal(foundClauseIndex);
+                        DebugConsole.WriteLine(")");
+
+                        // ========== Pass 2: Execute finally/fault handlers ==========
+                        // Note: For exceptions in funclets, there shouldn't be any finally
+                        // handlers to execute between the funclet and its parent - they're
+                        // already part of the same method's EH.
+                        DebugConsole.WriteLine("[EH] Pass 2: No finally handlers needed (same method)");
+
+                        // Transfer to the handler
+                        ulong handlerAddr = imageBase + mainFunc->BeginAddress + clause.HandlerOffset;
+                        DebugConsole.Write("[EH] Transferring to handler at 0x");
+                        DebugConsole.WriteHex(handlerAddr);
+                        DebugConsole.Write(" estFrame=0x");
+                        DebugConsole.WriteHex(parentFramePtr);
+                        DebugConsole.Write(" bytes: ");
+                        byte* handlerBytes = (byte*)handlerAddr;
+                        for (int b = 0; b < 8; b++)
+                        {
+                            DebugConsole.WriteHex(handlerBytes[b]);
+                            DebugConsole.Write(" ");
+                        }
+                        DebugConsole.WriteLine();
+
+                        // Set up context for transfer to handler
+                        // Use the ORIGINAL throw context's RSP (not searchContext which was corrupted by unwinding)
+                        // The searchContext.Rsp became parentFramePtr due to UWOP_SET_FPREG unwinding in callee
+                        // The new funclet prolog (push rbp; mov rbp, rdx) needs room for push + ret addr
+                        context->Rip = handlerAddr;
+                        context->Rsp = context->Rsp - 16;  // Use original RSP from throw site, leave room for push and ret
+                        context->Rbp = parentFramePtr;  // Keep parent frame for new funclet's RBP source
+                        context->Rcx = (ulong)exceptionObject;
+                        context->Rdx = parentFramePtr;  // Pass parent's frame pointer to new handler
+
+                        // Write return address at RSP
+                        ulong leaveTargetAddr = imageBase + mainFunc->BeginAddress + clause.LeaveTargetOffset;
+                        DebugConsole.Write("[EH] Leave target addr=0x");
+                        DebugConsole.WriteHex(leaveTargetAddr);
+                        DebugConsole.WriteLine();
+                        *(ulong*)(context->Rsp) = leaveTargetAddr;
+
+                        // Debug: Print final context values and verify memory
+                        DebugConsole.Write("[EH] Context: Rip=0x");
+                        DebugConsole.WriteHex(context->Rip);
+                        DebugConsole.Write(" Rsp=0x");
+                        DebugConsole.WriteHex(context->Rsp);
+                        DebugConsole.Write(" Rbp=0x");
+                        DebugConsole.WriteHex(context->Rbp);
+                        DebugConsole.Write(" searchRsp=0x");
+                        DebugConsole.WriteHex(searchContext.Rsp);
+                        DebugConsole.WriteLine();
+
+                        // Debug: Verify by re-reading from memory
+                        ulong* ctxPtr = (ulong*)context;
+                        DebugConsole.Write("[EH] Memory verify: [0]=0x");
+                        DebugConsole.WriteHex(ctxPtr[0]);  // Rip
+                        DebugConsole.Write(" [1]=0x");
+                        DebugConsole.WriteHex(ctxPtr[1]);  // Rsp
+                        DebugConsole.Write(" addr=0x");
+                        DebugConsole.WriteHex((ulong)context);
+                        DebugConsole.WriteLine();
+
+                        // Debug: Show what's at the return address location
+                        DebugConsole.Write("[EH] *[Rsp]=0x");
+                        DebugConsole.WriteHex(*(ulong*)(context->Rsp));
+                        DebugConsole.Write(" *[Rsp+8]=0x");
+                        DebugConsole.WriteHex(*(ulong*)(context->Rsp + 8));
+                        DebugConsole.WriteLine();
+
+                        // Update exception tracking for nested rethrow
+                        SetCurrentException(exceptionObject);
+                        SetCurrentExceptionRip(searchContext.Rip);
+                        SetCurrentHandlerClause(foundClauseIndex);
+
+                        return true;
+                    }
+                }
+
+                // No handler found in parent function - continue unwinding from the parent
+                // Use parent's frame to find the return address and continue the search
+                DebugConsole.WriteLine("[EH]   No handler in parent, continuing unwind from parent frame");
+
+                // Set up search context to continue from parent's caller
+                // Parent's return address is at [parentFramePtr + 8]
+                searchContext.Rip = *(ulong*)(parentFramePtr + 8);
+                searchContext.Rsp = parentFramePtr + 16;  // After the return address
+                searchContext.Rbp = *(ulong*)parentFramePtr;  // Saved RBP from parent's prolog
+
+                DebugConsole.Write("[EH]   Parent caller RIP=0x");
                 DebugConsole.WriteHex(searchContext.Rip);
                 DebugConsole.WriteLine();
+
                 frame++;
                 continue;
             }
@@ -2266,24 +2568,41 @@ public static unsafe class ExceptionHandling
 
                     // Transfer control to handler
                     // The funclet prologue is: push rbp; mov rbp, rdx
-                    // So the funclet will do a push at entry, then ret reads from RSP+8 at exit
-                    // We need to set up the stack so:
-                    // - RSP points to where the funclet will push rbp
-                    // - RSP+8 contains the return address (read by ret after pop rbp)
+                    // The funclet epilogue is: pop rbp; ret
+                    //
+                    // Stack layout at funclet entry (RSP = unwindRsp - 16):
+                    //   [RSP]   = leaveTargetAddr (return addr for ret AFTER pop)
+                    //   [RSP-8] = space for push rbp (will decrement RSP first)
+                    //
+                    // After push rbp (RSP becomes unwindRsp - 24):
+                    //   [RSP]    = saved RBP
+                    //   [RSP+8]  = leaveTargetAddr
+                    //
+                    // After pop rbp (RSP becomes unwindRsp - 16):
+                    //   [RSP]    = leaveTargetAddr
+                    //
+                    // After ret:
+                    //   RIP = leaveTargetAddr (correct!)
+                    // Use catchSearchContext.Rsp as the target RSP after funclet returns.
+                    // This is the working RSP of the function (after prolog), not the entry RSP.
+                    // We subtract 8 to leave room for the return address (leave target).
+                    ulong targetRsp = catchSearchContext.Rsp - 8;
+
                     context->Rip = handlerAddr;
-                    context->Rsp = unwindContext.Rsp - 16;  // Leave room for push rbp AND return addr
+                    context->Rsp = targetRsp - 8;  // Leave room for push rbp
                     context->Rbp = catchSearchContext.Rbp;  // Keep the frame pointer
                     context->Rcx = (ulong)exceptionObject;
                     context->Rdx = catchSearchContext.Rbp;  // Pass frame pointer
 
-                    // Write the return address at RSP+8 so handler's RET works after pop rbp
-                    // The return address is the leave target - where execution continues after the handler
-                    // This is calculated as: imageBase + functionStart + leaveTargetOffset
+                    // Write the return address at RSP
+                    // After funclet does push rbp (RSP-=8), leaveTargetAddr is at [new_RSP + 8]
+                    // After pop rbp (RSP+=8), RSP points to leaveTargetAddr
+                    // ret reads [RSP] = leaveTargetAddr
                     ulong leaveTargetAddr = catchImageBase + catchFuncEntry->BeginAddress + clause.LeaveTargetOffset;
                     DebugConsole.Write("[EH] Leave target addr=0x");
                     DebugConsole.WriteHex(leaveTargetAddr);
                     DebugConsole.WriteLine();
-                    *(ulong*)(context->Rsp + 8) = leaveTargetAddr;
+                    *(ulong*)(context->Rsp) = leaveTargetAddr;
 
                     // Set current exception info for rethrow support
                     SetCurrentException(exceptionObject);

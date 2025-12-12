@@ -867,9 +867,21 @@ RhpThrowEx:
     ; rcx = exceptionObject (already there)
     ; rdx = pointer to context on stack
     mov rdx, rsp
+    ; Save context pointer in r15 (callee-saved) for verification after call
+    mov r15, rsp
     sub rsp, 32             ; shadow space
     call RhpThrowEx_Handler
     add rsp, 32
+
+    ; DEBUG: Verify RSP = saved context pointer
+    cmp rsp, r15
+    je .rsp_ok
+    ; RSP doesn't match! Trigger breakpoint for debugging
+    int3
+.rsp_ok:
+
+    ; Save context pointer again for second verification after reads
+    mov r14, rsp
 
     ; If we return here, handler modified context to point to catch funclet
     ; NativeAOT funclets:
@@ -882,6 +894,29 @@ RhpThrowEx:
     ; Load handler address (funclet) and establisher frame
     mov rax, [rsp + 0x00]   ; new Rip = funclet address
     mov r11, [rsp + 0x08]   ; new Rsp = establisher frame RSP
+
+    ; DEBUG: Verify we're reading from the right context
+    ; R14 should equal RSP (both should be context pointer)
+    cmp r14, rsp
+    je .ctx_ok
+    int3                    ; Context pointer changed!
+.ctx_ok:
+
+    ; DEBUG: Verify R11 is reasonable (not parent frame pointer which indicates wrong context)
+    ; If R11 equals the context address, something is very wrong (reading wrong field)
+    cmp r11, r14
+    jne .rsp_value_ok
+    int3                    ; R11 == context address, wrong!
+.rsp_value_ok:
+
+    ; DEBUG: Verify RAX is a valid code address (high bits should be 0x00000002 for JIT code)
+    mov r8, rax
+    shr r8, 32
+    cmp r8d, 2
+    je .rax_ok
+    ; RAX doesn't look like JIT code address, might be reading wrong field
+    int3
+.rax_ok:
 
     ; Load the funclet arguments from context (set by C# handler)
     mov rcx, [rsp + 0x30]   ; Rcx = exception object
@@ -899,6 +934,17 @@ RhpThrowEx:
     ; For inline handlers (not funclets), context->Rsp already points to return address
     ; Handler's RET will pop the return address and return to the original caller
     mov rsp, r11
+
+    ; DEBUG: Before jmp, print the values we're using
+    ; We'll use int 0xF0 as a special debug marker that our exception handler can recognize
+    ; Actually, let's just do a simple validation: verify [rsp] contains a JIT code address
+    mov r8, [rsp]        ; Load the return address
+    shr r8, 32
+    cmp r8d, 2           ; Should be 0x00000002xxxxxxxx
+    je .ret_addr_ok
+    ; Return address doesn't look like JIT code - BAD!
+    int3
+.ret_addr_ok:
 
     ; Jump directly to handler - it will RET to the original caller
     ; The C# code has set up RSP to point at the return address
