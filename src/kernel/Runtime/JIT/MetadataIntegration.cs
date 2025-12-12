@@ -523,6 +523,20 @@ public static unsafe class MetadataIntegration
         nint uint64ToString = AotMethodRegistry.LookupByName("System.UInt64", "ToString");
         nint sbyteToString = AotMethodRegistry.LookupByName("System.SByte", "ToString");
 
+        // GetHashCode overrides for primitives
+        nint int32GetHashCode = AotMethodRegistry.LookupByName("System.Int32", "GetHashCode");
+        nint int64GetHashCode = AotMethodRegistry.LookupByName("System.Int64", "GetHashCode");
+        nint boolGetHashCode = AotMethodRegistry.LookupByName("System.Boolean", "GetHashCode");
+        nint byteGetHashCode = AotMethodRegistry.LookupByName("System.Byte", "GetHashCode");
+        nint charGetHashCode = AotMethodRegistry.LookupByName("System.Char", "GetHashCode");
+        nint doubleGetHashCode = AotMethodRegistry.LookupByName("System.Double", "GetHashCode");
+        nint singleGetHashCode = AotMethodRegistry.LookupByName("System.Single", "GetHashCode");
+        nint int16GetHashCode = AotMethodRegistry.LookupByName("System.Int16", "GetHashCode");
+        nint uint16GetHashCode = AotMethodRegistry.LookupByName("System.UInt16", "GetHashCode");
+        nint uint32GetHashCode = AotMethodRegistry.LookupByName("System.UInt32", "GetHashCode");
+        nint uint64GetHashCode = AotMethodRegistry.LookupByName("System.UInt64", "GetHashCode");
+        nint sbyteGetHashCode = AotMethodRegistry.LookupByName("System.SByte", "GetHashCode");
+
         // Use fallbacks for missing type-specific methods
         if (int32ToString == 0) int32ToString = objectToString;
         if (int64ToString == 0) int64ToString = objectToString;
@@ -537,6 +551,19 @@ public static unsafe class MetadataIntegration
         if (uint64ToString == 0) uint64ToString = objectToString;
         if (sbyteToString == 0) sbyteToString = objectToString;
 
+        if (int32GetHashCode == 0) int32GetHashCode = objectGetHashCode;
+        if (int64GetHashCode == 0) int64GetHashCode = objectGetHashCode;
+        if (boolGetHashCode == 0) boolGetHashCode = objectGetHashCode;
+        if (byteGetHashCode == 0) byteGetHashCode = objectGetHashCode;
+        if (charGetHashCode == 0) charGetHashCode = objectGetHashCode;
+        if (doubleGetHashCode == 0) doubleGetHashCode = objectGetHashCode;
+        if (singleGetHashCode == 0) singleGetHashCode = objectGetHashCode;
+        if (int16GetHashCode == 0) int16GetHashCode = objectGetHashCode;
+        if (uint16GetHashCode == 0) uint16GetHashCode = objectGetHashCode;
+        if (uint32GetHashCode == 0) uint32GetHashCode = objectGetHashCode;
+        if (uint64GetHashCode == 0) uint64GetHashCode = objectGetHashCode;
+        if (sbyteGetHashCode == 0) sbyteGetHashCode = objectGetHashCode;
+
         int count = 0;
         MethodTable* mt;
 
@@ -546,57 +573,57 @@ public static unsafe class MetadataIntegration
 
         // Int32 - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(0);
-        InitPrimitiveMT(mt, 4, 12, int32ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 4, 12, int32ToString, objectEquals, int32GetHashCode);
         if (RegisterType(WellKnownTypes.Int32, mt)) count++;
 
         // Int64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(1);
-        InitPrimitiveMT(mt, 8, 16, int64ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 8, 16, int64ToString, objectEquals, int64GetHashCode);
         if (RegisterType(WellKnownTypes.Int64, mt)) count++;
 
         // Boolean - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(2);
-        InitPrimitiveMT(mt, 1, 9, boolToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 1, 9, boolToString, objectEquals, boolGetHashCode);
         if (RegisterType(WellKnownTypes.Boolean, mt)) count++;
 
         // Byte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(3);
-        InitPrimitiveMT(mt, 1, 9, byteToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 1, 9, byteToString, objectEquals, byteGetHashCode);
         if (RegisterType(WellKnownTypes.Byte, mt)) count++;
 
         // Char - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(4);
-        InitPrimitiveMT(mt, 2, 10, charToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 2, 10, charToString, objectEquals, charGetHashCode);
         if (RegisterType(WellKnownTypes.Char, mt)) count++;
 
         // Double - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(5);
-        InitPrimitiveMT(mt, 8, 16, doubleToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 8, 16, doubleToString, objectEquals, doubleGetHashCode);
         if (RegisterType(WellKnownTypes.Double, mt)) count++;
 
         // Single - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(6);
-        InitPrimitiveMT(mt, 4, 12, singleToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 4, 12, singleToString, objectEquals, singleGetHashCode);
         if (RegisterType(WellKnownTypes.Single, mt)) count++;
 
         // Int16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(7);
-        InitPrimitiveMT(mt, 2, 10, int16ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 2, 10, int16ToString, objectEquals, int16GetHashCode);
         if (RegisterType(WellKnownTypes.Int16, mt)) count++;
 
         // UInt16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(8);
-        InitPrimitiveMT(mt, 2, 10, uint16ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 2, 10, uint16ToString, objectEquals, uint16GetHashCode);
         if (RegisterType(WellKnownTypes.UInt16, mt)) count++;
 
         // UInt32 - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(9);
-        InitPrimitiveMT(mt, 4, 12, uint32ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 4, 12, uint32ToString, objectEquals, uint32GetHashCode);
         if (RegisterType(WellKnownTypes.UInt32, mt)) count++;
 
         // UInt64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(10);
-        InitPrimitiveMT(mt, 8, 16, uint64ToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 8, 16, uint64ToString, objectEquals, uint64GetHashCode);
         if (RegisterType(WellKnownTypes.UInt64, mt)) count++;
 
         // IntPtr - 8 bytes value, 16 bytes boxed (64-bit)
@@ -611,7 +638,7 @@ public static unsafe class MetadataIntegration
 
         // SByte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(13);
-        InitPrimitiveMT(mt, 1, 9, objectToString, objectEquals, objectGetHashCode);
+        InitPrimitiveMT(mt, 1, 9, sbyteToString, objectEquals, sbyteGetHashCode);
         if (RegisterType(WellKnownTypes.SByte, mt)) count++;
 
         return count;
@@ -1577,7 +1604,16 @@ public static unsafe class MetadataIntegration
             result.HasThis = entry.HasThis;
             result.IsValid = true;
             result.IsVirtual = entry.IsVirtual;
-            result.VtableSlot = 0;
+            // Determine vtable slot for virtual Object methods
+            // Slot 0: ToString, Slot 1: Equals, Slot 2: GetHashCode
+            if (entry.IsVirtual && IsObjectMethod(typeName))
+            {
+                result.VtableSlot = GetObjectMethodVtableSlot(memberName);
+            }
+            else
+            {
+                result.VtableSlot = -1;  // Not a vtable method
+            }
             result.MethodTable = null;
             result.IsInterfaceMethod = false;
             result.InterfaceMT = null;
@@ -3228,6 +3264,26 @@ public static unsafe class MetadataIntegration
                 return false;
         }
         return name[expected.Length] == 0;
+    }
+
+    /// <summary>
+    /// Check if a type name is System.Object (for vtable slot determination).
+    /// </summary>
+    private static bool IsObjectMethod(byte* typeName)
+    {
+        return NameEquals(typeName, "System.Object");
+    }
+
+    /// <summary>
+    /// Get the vtable slot for an Object virtual method.
+    /// Slot 0: ToString, Slot 1: Equals, Slot 2: GetHashCode
+    /// </summary>
+    private static short GetObjectMethodVtableSlot(byte* methodName)
+    {
+        if (NameEquals(methodName, "ToString")) return 0;
+        if (NameEquals(methodName, "Equals")) return 1;
+        if (NameEquals(methodName, "GetHashCode")) return 2;
+        return -1;  // Unknown virtual method
     }
 
     // ============================================================================

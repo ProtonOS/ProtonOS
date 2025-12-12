@@ -184,6 +184,27 @@ public static class TestRunner
         // SimpleList<int> tests (no array usage)
         RecordResult("GenericTests.TestSimpleListIntBasic", GenericTests.TestSimpleListIntBasic() == 0);  // Empty list count = 0
         RecordResult("GenericTests.TestSimpleListIntCount", GenericTests.TestSimpleListIntCount() == 3);  // Three items
+
+        // Generic method with multiple type parameters
+        RecordResult("GenericTests.TestMultiTypeParamConvert", GenericTests.TestMultiTypeParamConvert() == 42);
+        RecordResult("GenericTests.TestMultiTypeParamCombine", GenericTests.TestMultiTypeParamCombine() == 42);
+
+        // TODO: Generic interface tests - interface dispatch requires deduplication of generic interface MTs
+        // The interface MT used in callvirt must match the MT stored in the class's interface map
+        // RecordResult("GenericTests.TestGenericInterfaceInt", GenericTests.TestGenericInterfaceInt() == 42);
+        // RecordResult("GenericTests.TestGenericInterfaceSetGet", GenericTests.TestGenericInterfaceSetGet() == 42);
+        // RecordResult("GenericTests.TestGenericInterfaceString", GenericTests.TestGenericInterfaceString() == 5);
+
+        // TODO: Generic delegate tests - delegate newobj for generic delegates not yet implemented
+        // RecordResult("GenericTests.TestGenericDelegate", GenericTests.TestGenericDelegate() == 42);
+        // RecordResult("GenericTests.TestGenericDelegateStringToInt", GenericTests.TestGenericDelegateStringToInt() == 5);
+
+        // TODO: Generic constraint tests - require Activator.CreateInstance<T> and other features
+        // RecordResult("GenericTests.TestConstraintClass", GenericTests.TestConstraintClass() == 42);
+        // RecordResult("GenericTests.TestConstraintClassNotNull", GenericTests.TestConstraintClassNotNull() == 42);
+        // RecordResult("GenericTests.TestConstraintStruct", GenericTests.TestConstraintStruct() == 42);
+        // RecordResult("GenericTests.TestConstraintNew", GenericTests.TestConstraintNew() == 42);
+        // RecordResult("GenericTests.TestConstraintInterface", GenericTests.TestConstraintInterface() == 42);
     }
 
     private static void RunStringInterpolationTests()
@@ -2342,6 +2363,103 @@ public static class GenericTests
         list.Add(30);
         return list.Count;  // Expected: 3
     }
+
+    // =========================================================================
+    // Generic method with multiple type parameters
+    // =========================================================================
+
+    public static int TestMultiTypeParamConvert()
+    {
+        // Convert<string, int>("hello", 42) should return 42
+        int result = MultiTypeParamHelper.Convert<string, int>("hello", 42);
+        return result;  // Expected: 42
+    }
+
+    public static int TestMultiTypeParamCombine()
+    {
+        // Combine two values and verify both type params work
+        // Using values that give predictable XOR result
+        int result = MultiTypeParamHelper.Combine<int, int>(0, 42);
+        return result;  // Expected: 0 ^ 42 = 42
+    }
+
+    // =========================================================================
+    // Generic interface tests
+    // =========================================================================
+
+    public static int TestGenericInterfaceInt()
+    {
+        IContainer<int> container = new Container<int>(42);
+        return container.GetValue();  // Expected: 42
+    }
+
+    public static int TestGenericInterfaceSetGet()
+    {
+        IContainer<int> container = new Container<int>(0);
+        container.SetValue(42);
+        return container.GetValue();  // Expected: 42
+    }
+
+    public static int TestGenericInterfaceString()
+    {
+        IContainer<string> container = new Container<string>("hello");
+        return container.GetValue().Length;  // Expected: 5
+    }
+
+    // =========================================================================
+    // Generic delegate tests
+    // =========================================================================
+
+    public static int TestGenericDelegate()
+    {
+        Transformer<int, int> doubler = x => x * 2;
+        return doubler(21);  // Expected: 42
+    }
+
+    public static int TestGenericDelegateStringToInt()
+    {
+        Transformer<string, int> lengthGetter = s => s.Length;
+        return lengthGetter("hello");  // Expected: 5
+    }
+
+    // =========================================================================
+    // Generic constraint tests
+    // =========================================================================
+
+    public static int TestConstraintClass()
+    {
+        // where T : class - test with null
+        bool isNull = ConstrainedMethods.IsNull<string>(null);
+        return isNull ? 42 : 0;  // Expected: 42
+    }
+
+    public static int TestConstraintClassNotNull()
+    {
+        // where T : class - test with non-null
+        bool isNull = ConstrainedMethods.IsNull<string>("hello");
+        return isNull ? 0 : 42;  // Expected: 42
+    }
+
+    public static int TestConstraintStruct()
+    {
+        // where T : struct - default(int) is 0
+        int result = ConstrainedMethods.GetDefault<int>();
+        return result == 0 ? 42 : 0;  // Expected: 42
+    }
+
+    public static int TestConstraintNew()
+    {
+        // where T : new() - create new Creatable
+        Creatable obj = ConstrainedMethods.CreateNew<Creatable>();
+        return obj.Value;  // Expected: 42
+    }
+
+    public static int TestConstraintInterface()
+    {
+        // where T : IValue - ValueImpl implements IValue
+        ValueImpl impl = new ValueImpl();
+        return ConstrainedMethods.GetFromInterface<ValueImpl>(impl);  // Expected: 42
+    }
 }
 
 public class SimpleList<T>
@@ -2380,6 +2498,97 @@ public class Box<T>
     {
         Value = value;
     }
+}
+
+// =============================================================================
+// Advanced Generic Types for Testing
+// =============================================================================
+
+/// <summary>
+/// Generic method with multiple type parameters.
+/// </summary>
+public static class MultiTypeParamHelper
+{
+    public static TResult Convert<TInput, TResult>(TInput input, TResult defaultValue)
+    {
+        // Simple test - just returns the default value
+        // Tests that multiple type parameters compile and resolve correctly
+        return defaultValue;
+    }
+
+    public static int Combine<T1, T2>(T1 first, T2 second)
+    {
+        // Return hash combination to verify both params work
+        return first.GetHashCode() ^ second.GetHashCode();
+    }
+}
+
+/// <summary>
+/// Generic interface for testing.
+/// </summary>
+public interface IContainer<T>
+{
+    T GetValue();
+    void SetValue(T value);
+}
+
+/// <summary>
+/// Implementation of generic interface.
+/// </summary>
+public class Container<T> : IContainer<T>
+{
+    private T _value;
+
+    public Container(T value)
+    {
+        _value = value;
+    }
+
+    public T GetValue() => _value;
+    public void SetValue(T value) => _value = value;
+}
+
+/// <summary>
+/// Generic delegate for testing.
+/// </summary>
+public delegate TResult Transformer<TInput, TResult>(TInput input);
+
+/// <summary>
+/// Class with constrained generic methods.
+/// </summary>
+public static class ConstrainedMethods
+{
+    // where T : class constraint
+    public static bool IsNull<T>(T value) where T : class
+    {
+        return value == null;
+    }
+
+    // where T : struct constraint
+    public static T GetDefault<T>() where T : struct
+    {
+        return default(T);
+    }
+
+    // where T : new() constraint
+    public static T CreateNew<T>() where T : new()
+    {
+        return new T();
+    }
+
+    // where T : IValue constraint (interface constraint)
+    public static int GetFromInterface<T>(T item) where T : IValue
+    {
+        return item.GetValue();
+    }
+}
+
+/// <summary>
+/// Class that can be created with new() constraint.
+/// </summary>
+public class Creatable
+{
+    public int Value = 42;
 }
 
 // =============================================================================

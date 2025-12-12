@@ -879,7 +879,15 @@ public static unsafe class AssemblyLoader
                 return null;
             }
 
-            // Get the element type for this MVAR index from the MethodSpec context
+            // Get the MethodTable directly from the method type arg context
+            // This was already computed during SetupMethodTypeArgs with proper MT lookup
+            MethodTable* mvarMt = JIT.MetadataIntegration.GetMethodTypeArgMethodTable((int)index);
+            if (mvarMt != null)
+            {
+                return mvarMt;
+            }
+
+            // Fallback: get element type and try to map to primitive MT
             byte mvarElemType = JIT.MetadataIntegration.GetMethodTypeArgElementType((int)index);
             if (mvarElemType == 0)
             {
@@ -889,8 +897,8 @@ public static unsafe class AssemblyLoader
                 return null;
             }
 
-            // Get the MethodTable for this element type
-            MethodTable* mvarMt = GetPrimitiveMethodTable(mvarElemType);
+            // Try primitive MT lookup as fallback
+            mvarMt = GetPrimitiveMethodTable(mvarElemType);
             if (mvarMt != null)
             {
                 return mvarMt;
@@ -3726,9 +3734,64 @@ public static unsafe class AssemblyLoader
             targetAsm = sourceAsm;
             typeDefToken = 0x02000000 | classRef.RowId;
         }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - could be a generic interface instantiation like IContainer<int>
+            // Get the TypeSpec signature and check if it's a generic interface
+            uint typeSpecRow = classRef.RowId;
+            uint sigIdx = MetadataReader.GetTypeSpecSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeSpecRow);
+            byte* sig = MetadataReader.GetBlob(ref sourceAsm->Metadata, sigIdx, out uint sigLen);
+            if (sig == null || sigLen == 0)
+                return false;
+
+            // Check for GENERICINST (0x15) signature
+            if (sig[0] != 0x15)
+                return false;
+
+            // sig[1] is CLASS (0x12) or VALUETYPE (0x11)
+            // sig[2..] is TypeDefOrRefOrSpecEncoded (compressed token)
+            int pos = 1;
+            byte elemType = sig[pos++];
+            if (elemType != 0x12)  // Must be CLASS for interfaces
+                return false;
+
+            // Read the TypeDefOrRefOrSpecEncoded token
+            uint encoded = 0;
+            byte b = sig[pos++];
+            if ((b & 0x80) == 0)
+                encoded = b;
+            else if ((b & 0xC0) == 0x80)
+                encoded = ((uint)(b & 0x3F) << 8) | sig[pos++];
+            else
+                encoded = ((uint)(b & 0x1F) << 24) | ((uint)sig[pos++] << 16) | ((uint)sig[pos++] << 8) | sig[pos++];
+
+            // Decode TypeDefOrRef coded index
+            uint tag = encoded & 0x03;
+            uint idx = encoded >> 2;
+
+            if (tag == 0) // TypeDef
+            {
+                targetAsm = sourceAsm;
+                typeDefToken = 0x02000000 | idx;
+            }
+            else if (tag == 1) // TypeRef
+            {
+                if (!ResolveTypeRefToTypeDef(sourceAsm, idx, out targetAsm, out typeDefToken))
+                    return false;
+            }
+            else
+            {
+                return false;  // TypeSpec nested - not supported
+            }
+
+            // Now we have the generic type definition token
+            // Get the instantiated interface MT for proper interface dispatch
+            // Use ResolveTypeSpec to get/create the generic instantiation MT
+            interfaceMT = ResolveTypeSpec(sourceAsm, 0x1B000000 | typeSpecRow);
+        }
         else
         {
-            // TypeSpec or other - not interface
+            // Unknown table - not interface
             return false;
         }
 
@@ -3745,18 +3808,22 @@ public static unsafe class AssemblyLoader
             return false;  // Not an interface
 
         // This is an interface method - get the interface's MethodTable
-        interfaceMT = targetAsm->Types.Lookup(typeDefToken);
+        // For TypeSpec (generic interfaces), interfaceMT was already set above
         if (interfaceMT == null)
         {
-            // Not created yet - create on demand
-            interfaceMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
-        }
-        if (interfaceMT == null)
-        {
-            DebugConsole.Write("[AsmLoader] IsInterfaceMethod: failed to get interface MT for 0x");
-            DebugConsole.WriteHex(typeDefToken);
-            DebugConsole.WriteLine();
-            return false;
+            interfaceMT = targetAsm->Types.Lookup(typeDefToken);
+            if (interfaceMT == null)
+            {
+                // Not created yet - create on demand
+                interfaceMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
+            }
+            if (interfaceMT == null)
+            {
+                DebugConsole.Write("[AsmLoader] IsInterfaceMethod: failed to get interface MT for 0x");
+                DebugConsole.WriteHex(typeDefToken);
+                DebugConsole.WriteLine();
+                return false;
+            }
         }
 
         // Find the method slot within the interface

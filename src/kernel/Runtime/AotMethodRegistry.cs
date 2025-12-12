@@ -216,6 +216,12 @@ public static unsafe class AotMethodRegistry
             "System.Int32", "ToString",
             (nint)(delegate*<nint, string>)&Int32Helpers.ToString,
             0, ReturnKind.IntPtr, true, false);
+
+        // Int32.GetHashCode() - returns the int value itself
+        Register(
+            "System.Int32", "GetHashCode",
+            (nint)(delegate*<nint, int>)&Int32Helpers.GetHashCode,
+            0, ReturnKind.Int32, true, true);  // virtual method
     }
 
     /// <summary>
@@ -732,6 +738,20 @@ public static unsafe class Int32Helpers
         // Value is at offset 8
         int* valuePtr = (int*)(thisPtr + 8);
         return System.Int32.FormatInt32(*valuePtr);
+    }
+
+    /// <summary>
+    /// Wrapper for Int32.GetHashCode() when called on a boxed Int32.
+    /// Returns the int value itself as the hash code.
+    /// </summary>
+    public static int GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0)
+            return 0;
+        // thisPtr is a boxed object: [MethodTable*][int value]
+        // Value is at offset 8
+        int* valuePtr = (int*)(thisPtr + 8);
+        return *valuePtr;
     }
 }
 

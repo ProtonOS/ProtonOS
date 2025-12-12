@@ -441,7 +441,21 @@ public static unsafe class TypeHelpers
         MethodTable* objectMT = *(MethodTable**)obj;
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
         if (slot < 0)
+        {
+            // Debug: interface not found
+            DebugConsole.Write("[GetInterfaceMethod] obj=0x");
+            DebugConsole.WriteHex((ulong)obj);
+            DebugConsole.Write(" objMT=0x");
+            DebugConsole.WriteHex((ulong)objectMT);
+            DebugConsole.Write(" ifaceMT=0x");
+            DebugConsole.WriteHex((ulong)interfaceMT);
+            DebugConsole.Write(" idx=");
+            DebugConsole.WriteDecimal((uint)methodIndex);
+            DebugConsole.Write(" numIfaces=");
+            DebugConsole.WriteDecimal(objectMT->_usNumInterfaces);
+            DebugConsole.WriteLine(" NOT FOUND");
             return null;
+        }
 
         // Ensure the vtable slot is compiled (may be lazy-compiled)
         JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);

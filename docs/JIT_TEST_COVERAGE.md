@@ -141,7 +141,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Generic Methods
 - ✅ Generic method on non-generic class
 - ✅ Generic method on generic class (tested with GenericContainer<T>.Convert<TResult>)
-- ❌ Generic method with multiple type parameters
+- ✅ Generic method with multiple type parameters (Combine<T1, T2>)
 
 ### Generic Constraints
 - ❌ where T : class
@@ -157,7 +157,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Complex Scenarios
 - ✅ Generic arrays (T[])
 - ❌ Nested generic types (Outer<T>.Inner<U>)
-- ❌ Generic interfaces
+- ⚠️ Generic interfaces (MT deduplication needed - see notes)
 - ❌ Generic delegates
 
 ---
@@ -349,11 +349,33 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 201 passing
+- Current test count: 203 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
+### Known Limitations
+
+**Generic Interface Dispatch**: Generic interfaces like `IContainer<int>` don't work with interface dispatch. The issue is MT (MethodTable) deduplication - when resolving a `callvirt` on `IContainer<int>`, the JIT creates a new MT for the generic instantiation, but the object's interface map contains a different MT created during class building. The MTs are semantically equivalent but have different addresses, so the interface lookup fails. This requires implementing an MT cache/deduplication system to fix.
+
 ## Recent Updates
+
+### Generic Method Multiple Type Parameters Fix (2025-12)
+Fixed `Combine<T1, T2>(T1 first, T2 second)` test failure:
+- Bug: Test returned 0 instead of 42 when calling `first.GetHashCode() ^ second.GetHashCode()` with ints
+- Root cause: Primitive MTs used Object.GetHashCode (returns object address) instead of type-specific GetHashCode
+- Fix 1: Added `Int32Helpers.GetHashCode()` to AotMethodRegistry that reads value from boxed int
+- Fix 2: Added GetHashCode lookups for all primitives in MetadataIntegration
+- Fix 3: Fixed vtable slot assignment for AOT methods - Object methods get correct slots (ToString=0, Equals=1, GetHashCode=2)
+- Fix 4: Updated primitive MT initialization to use type-specific GetHashCode in vtable slot 2
+- Test count increased from 201 to 203
+
+### Generic Interface Investigation (2025-12)
+Investigated generic interface dispatch (`IContainer<int>.GetValue()`):
+- Added TypeSpec handling to `IsInterfaceMethod()` for generic interface tokens
+- Fixed MVAR resolution to use `GetMethodTypeArgMethodTable()` instead of class type args
+- Discovered MT deduplication issue: interface MT created during callvirt differs from class's interface map MT
+- Documented as known limitation - requires MT cache/deduplication to fix
+- Test remains disabled pending future work
 
 ### Verified ⚠️ Items (2025-12)
 Tested and verified three items that were marked as partially tested:
