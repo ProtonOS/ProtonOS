@@ -5347,10 +5347,34 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCalli(uint sigToken)
     {
-        // Decode the signature token
-        // For our test purposes, we encode: (ReturnKind << 8) | ArgCount
-        int argCount = (int)(sigToken & 0xFF);
-        ReturnKind returnKind = (ReturnKind)((sigToken >> 8) & 0xFF);
+        int argCount;
+        ReturnKind returnKind;
+        bool hasThis;
+
+        // Check if this is a real StandAloneSig token (0x11xxxxxx)
+        uint tableId = (sigToken >> 24) & 0xFF;
+        if (tableId == 0x11)
+        {
+            // Parse the real StandAloneSig signature
+            if (!MetadataIntegration.ParseCalliSignature(sigToken, out argCount, out returnKind, out hasThis))
+            {
+                DebugConsole.Write("[JIT] Calli: failed to parse StandAloneSig 0x");
+                DebugConsole.WriteHex(sigToken);
+                DebugConsole.WriteLine();
+                return false;
+            }
+
+            // For instance calls (hasThis), the 'this' pointer is the first argument
+            // but it's already counted in the IL arg count on the stack
+            // So we don't need to adjust argCount here
+        }
+        else
+        {
+            // Legacy test encoding: (ReturnKind << 8) | ArgCount
+            argCount = (int)(sigToken & 0xFF);
+            returnKind = (ReturnKind)((sigToken >> 8) & 0xFF);
+            hasThis = false;
+        }
 
         // Total stack items needed: argCount args + 1 function pointer
         int totalStackItems = argCount + 1;

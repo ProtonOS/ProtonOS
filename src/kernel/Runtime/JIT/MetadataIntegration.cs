@@ -3983,6 +3983,121 @@ public static unsafe class MetadataIntegration
         }
     }
 
+    /// <summary>
+    /// Parse a StandAloneSig token for calli instruction.
+    /// Returns the argument count, return kind, and whether the method has 'this'.
+    /// </summary>
+    /// <param name="sigToken">StandAloneSig token (0x11xxxxxx)</param>
+    /// <param name="argCount">Output: number of arguments</param>
+    /// <param name="returnKind">Output: return value kind</param>
+    /// <param name="hasThis">Output: true if instance call (has 'this' parameter)</param>
+    /// <returns>True if parsing succeeded</returns>
+    public static bool ParseCalliSignature(uint sigToken, out int argCount, out ReturnKind returnKind, out bool hasThis)
+    {
+        argCount = 0;
+        returnKind = ReturnKind.Void;
+        hasThis = false;
+
+        // StandAloneSig token format: 0x11xxxxxx
+        uint tableId = (sigToken >> 24) & 0xFF;
+        uint rid = sigToken & 0x00FFFFFF;
+
+        if (tableId != 0x11 || rid == 0)
+        {
+            DebugConsole.Write("[ParseCalliSig] Invalid token 0x");
+            DebugConsole.WriteHex(sigToken);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Get the assembly - use current assembly context
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+        if (asm == null)
+        {
+            DebugConsole.WriteLine("[ParseCalliSig] No current assembly");
+            return false;
+        }
+
+        // Get signature blob from StandAloneSig table
+        uint sigIdx = MetadataReader.GetStandAloneSigSignature(ref asm->Tables, ref asm->Sizes, rid);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+        if (sig == null || sigLen < 2)
+        {
+            DebugConsole.WriteLine("[ParseCalliSig] Invalid signature blob");
+            return false;
+        }
+
+        // Parse call signature
+        // Format: CallingConvention ParamCount RetType [ParamTypes...]
+        int sigPos = 0;
+        byte callConv = sig[sigPos++];
+
+        // Check for HASTHIS (0x20) - instance method
+        hasThis = (callConv & 0x20) != 0;
+
+        // Decode compressed parameter count
+        byte b = sig[sigPos++];
+        uint paramCount = 0;
+        if ((b & 0x80) == 0)
+            paramCount = b;
+        else if ((b & 0xC0) == 0x80)
+            paramCount = (uint)(((b & 0x3F) << 8) | sig[sigPos++]);
+        else if ((b & 0xE0) == 0xC0)
+        {
+            paramCount = (uint)(((b & 0x1F) << 24) | (sig[sigPos] << 16) | (sig[sigPos + 1] << 8) | sig[sigPos + 2]);
+            sigPos += 3;
+        }
+
+        argCount = (int)paramCount;
+
+        // Parse return type
+        if (sigPos < sigLen)
+        {
+            byte retType = sig[sigPos];
+
+            // Map ECMA-335 element types to ReturnKind
+            switch (retType)
+            {
+                case 0x01: // ELEMENT_TYPE_VOID
+                    returnKind = ReturnKind.Void;
+                    break;
+                case 0x02: // ELEMENT_TYPE_BOOLEAN
+                case 0x03: // ELEMENT_TYPE_CHAR
+                case 0x04: // ELEMENT_TYPE_I1
+                case 0x05: // ELEMENT_TYPE_U1
+                case 0x06: // ELEMENT_TYPE_I2
+                case 0x07: // ELEMENT_TYPE_U2
+                case 0x08: // ELEMENT_TYPE_I4
+                case 0x09: // ELEMENT_TYPE_U4
+                    returnKind = ReturnKind.Int32;
+                    break;
+                case 0x0A: // ELEMENT_TYPE_I8
+                case 0x0B: // ELEMENT_TYPE_U8
+                    returnKind = ReturnKind.Int64;
+                    break;
+                case 0x0C: // ELEMENT_TYPE_R4
+                    returnKind = ReturnKind.Float32;
+                    break;
+                case 0x0D: // ELEMENT_TYPE_R8
+                    returnKind = ReturnKind.Float64;
+                    break;
+                case 0x18: // ELEMENT_TYPE_I (native int)
+                case 0x19: // ELEMENT_TYPE_U (native uint)
+                case 0x1C: // ELEMENT_TYPE_OBJECT
+                case 0x0E: // ELEMENT_TYPE_STRING
+                case 0x12: // ELEMENT_TYPE_CLASS
+                case 0x0F: // ELEMENT_TYPE_PTR
+                case 0x14: // ELEMENT_TYPE_SZARRAY
+                default:
+                    returnKind = ReturnKind.IntPtr;
+                    break;
+            }
+        }
+
+        return true;
+    }
+
     // ========================================================================
     // Static Constructor (cctor) Registry
     // ========================================================================

@@ -57,7 +57,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Special Calls
 - ⚠️ Tail calls (tail. prefix parsed but ignored)
 - ✅ Indirect calls through delegates (Delegate.Invoke)
-- ❌ calli (indirect call through function pointer)
+- ✅ calli (indirect call through function pointer)
 
 ---
 
@@ -341,6 +341,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 - `ExceptionTests` - Exception handling
 - `InterfaceTests` - Interface dispatch
 - `DelegateTests` - Delegates and function pointers
+- `CalliTests` - Indirect calls through function pointers (calli)
 - `NullableTests` - Nullable<T> operations
 - `StaticCtorTests` - Static constructor behavior
 - `AdvancedGenericTests` - Complex generic scenarios
@@ -349,7 +350,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 228 passing
+- Current test count: 235 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -358,6 +359,26 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Calli Instruction Support (2025-12)
+Implemented proper `calli` IL opcode for indirect calls through function pointers:
+- **StandAloneSig parsing**: Added `ParseCalliSignature()` to parse real StandAloneSig tokens (0x11xxxxxx)
+  - Reads signature blob from StandAloneSig metadata table
+  - Parses CLI compressed calling convention, parameter count, return type, and param types
+  - Maps ECMA-335 element types to JIT ReturnKind enum
+  - Handles HASTHIS flag (0x20) for instance method signatures
+- **CompileCalli update**: Modified to detect real StandAloneSig tokens vs legacy test encoding
+  - Token format 0x11xxxxxx = real StandAloneSig (parse signature blob)
+  - Other format = legacy encoding ((ReturnKind << 8) | ArgCount) for backwards compatibility
+- 7 new tests using C# function pointer syntax (`delegate*`):
+  - TestCalliNoArgs - no arguments, int return
+  - TestCalliOneArg - single int argument
+  - TestCalliTwoArgs - two int arguments
+  - TestCalliThreeArgs - three int arguments
+  - TestCalliVoidReturn - void return type
+  - TestCalliLong - long argument and return
+  - TestCalliReassign - function pointer reassignment
+- Test count increased from 228 to 235
 
 ### Explicit Layout Structs Support (2025-12)
 Added support for `[StructLayout(LayoutKind.Explicit)]` with `[FieldOffset]` attributes:

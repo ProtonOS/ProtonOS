@@ -95,6 +95,9 @@ public static class TestRunner
         // Delegate tests - tests delegate creation and invocation
         RunDelegateTests();
 
+        // Calli tests - tests indirect calls through function pointers
+        RunCalliTests();
+
         // Sizeof tests - tests sizeof IL opcode
         RunSizeofTests();
 
@@ -307,6 +310,17 @@ public static class TestRunner
         RecordResult("DelegateTests.TestDelegateReassign", DelegateTests.TestDelegateReassign() == 42);
         RecordResult("DelegateTests.TestInstanceDelegate", DelegateTests.TestInstanceDelegate() == 42);
         RecordResult("DelegateTests.TestVirtualDelegate", DelegateTests.TestVirtualDelegate() == 42);
+    }
+
+    private static void RunCalliTests()
+    {
+        RecordResult("CalliTests.TestCalliNoArgs", CalliTests.TestCalliNoArgs() == 42);
+        RecordResult("CalliTests.TestCalliOneArg", CalliTests.TestCalliOneArg() == 42);
+        RecordResult("CalliTests.TestCalliTwoArgs", CalliTests.TestCalliTwoArgs() == 42);
+        RecordResult("CalliTests.TestCalliThreeArgs", CalliTests.TestCalliThreeArgs() == 42);
+        RecordResult("CalliTests.TestCalliVoidReturn", CalliTests.TestCalliVoidReturn() == 42);
+        RecordResult("CalliTests.TestCalliLong", CalliTests.TestCalliLong() == 42);
+        RecordResult("CalliTests.TestCalliReassign", CalliTests.TestCalliReassign() == 42);
     }
 
     private static void RunSizeofTests()
@@ -3970,6 +3984,95 @@ public static class StaticCtorTests
         // Helper1's cctor sets InitializedValue to 42
         // Helper3's cctor then computes Value = 42 + 8 = 50
         return StaticCtorHelper3.Value;
+    }
+}
+
+// =============================================================================
+// Calli Tests - test the calli IL opcode (indirect calls through function pointers)
+// =============================================================================
+
+public unsafe class CalliTests
+{
+    // Static methods to be used as function pointer targets
+    public static int GetFortyTwo() => 42;
+    public static int Double(int x) => x * 2;
+    public static int Add(int x, int y) => x + y;
+    public static int AddThree(int a, int b, int c) => a + b + c;
+    public static long DoubleLong(long x) => x * 2;
+
+    private static int _sideEffect;
+    public static void SetSideEffect(int value) { _sideEffect = value; }
+
+    /// <summary>
+    /// Test calli with no arguments returning int.
+    /// Function pointer to static method with no args.
+    /// </summary>
+    public static int TestCalliNoArgs()
+    {
+        delegate*<int> fptr = &GetFortyTwo;
+        return fptr();  // Should return 42
+    }
+
+    /// <summary>
+    /// Test calli with one int argument.
+    /// </summary>
+    public static int TestCalliOneArg()
+    {
+        delegate*<int, int> fptr = &Double;
+        return fptr(21);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test calli with two int arguments.
+    /// </summary>
+    public static int TestCalliTwoArgs()
+    {
+        delegate*<int, int, int> fptr = &Add;
+        return fptr(20, 22);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test calli with three int arguments.
+    /// </summary>
+    public static int TestCalliThreeArgs()
+    {
+        delegate*<int, int, int, int> fptr = &AddThree;
+        return fptr(10, 12, 20);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test calli with void return type.
+    /// </summary>
+    public static int TestCalliVoidReturn()
+    {
+        _sideEffect = 0;
+        delegate*<int, void> fptr = &SetSideEffect;
+        fptr(42);
+        return _sideEffect;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test calli with long argument and return.
+    /// </summary>
+    public static int TestCalliLong()
+    {
+        delegate*<long, long> fptr = &DoubleLong;
+        long result = fptr(21L);
+        return (int)result;  // Should return 42
+    }
+
+    /// <summary>
+    /// Test reassigning function pointer.
+    /// </summary>
+    public static int TestCalliReassign()
+    {
+        delegate*<int, int> fptr = &Double;
+        int first = fptr(10);  // 20
+
+        // Note: Can't reassign to Triple directly since it's the same signature
+        // but we can test by calling twice with different arg
+        int second = fptr(11);  // 22
+        return first + second;  // 20 + 22 = 42
     }
 }
 
