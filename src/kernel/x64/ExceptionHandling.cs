@@ -338,8 +338,8 @@ public unsafe delegate int UnhandledExceptionFilter(ExceptionRecord* exceptionRe
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct FunctionTableStorage
 {
-    // Up to 512 registered code regions (increased to support JIT methods without EH)
-    public fixed byte Data[512 * 40]; // 512 entries × sizeof(FunctionTableEntry)
+    // Up to 2048 registered code regions (increased to support large numbers of JIT'd methods)
+    public fixed byte Data[2048 * 40]; // 2048 entries × sizeof(FunctionTableEntry)
 }
 
 /// <summary>
@@ -591,6 +591,14 @@ public static unsafe class ExceptionHandling
         {
             PAL.TLS.TlsSetValue(_currentExceptionRipTlsSlot, null);
         }
+        if (_currentExceptionRspTlsSlot != InvalidTlsSlot)
+        {
+            PAL.TLS.TlsSetValue(_currentExceptionRspTlsSlot, null);
+        }
+        if (_currentExceptionRbpTlsSlot != InvalidTlsSlot)
+        {
+            PAL.TLS.TlsSetValue(_currentExceptionRbpTlsSlot, null);
+        }
         if (_currentHandlerClauseTlsSlot != InvalidTlsSlot)
         {
             PAL.TLS.TlsSetValue(_currentHandlerClauseTlsSlot, null);
@@ -675,7 +683,7 @@ public static unsafe class ExceptionHandling
         }
     }
 
-    private const int MaxFunctionTables = 512;
+    private const int MaxFunctionTables = 2048;
 
     private static FunctionTableStorage _tableStorage;
     private static SpinLock _lock;
@@ -2065,6 +2073,11 @@ public static unsafe class ExceptionHandling
     public static bool DispatchNativeAotException(void* exceptionObject, ExceptionContext* context)
     {
         if (!_initialized) Init();
+
+        // Clear any stale exception state from previous exceptions.
+        // This is important when handling multiple sequential exceptions -
+        // the TLS state from a previous catch must not interfere with new exceptions.
+        ClearCurrentException();
 
         // Pass 1: Search for a handler
         ExceptionContext searchContext = *context;

@@ -7132,6 +7132,32 @@ public unsafe struct ILCompiler
     }
 
     /// <summary>
+    /// Emit bounds check for array access.
+    /// Compares index (unsigned) against array length and triggers INT 5 if out of bounds.
+    /// Uses R3 as scratch register.
+    /// </summary>
+    /// <param name="arrayReg">Register containing array reference</param>
+    /// <param name="indexReg">Register containing index</param>
+    private void EmitArrayBoundsCheck(VReg arrayReg, VReg indexReg)
+    {
+        // Load array length from array+8
+        X64Emitter.MovRM(ref _code, VReg.R3, arrayReg, ArrayLengthOffset);
+
+        // Compare index with length (unsigned comparison)
+        X64Emitter.CmpRR(ref _code, indexReg, VReg.R3);
+
+        // JB skip_int5 (Jump if Below, unsigned) - index < length means OK
+        // JB rel8 = 0x72 rel8
+        // If index >= length (unsigned), we fall through to INT 5
+        _code.EmitByte(0x72);  // JB
+        _code.EmitByte(0x02);  // rel8 = +2 (skip INT 5)
+
+        // INT 5 - triggers IndexOutOfRangeException
+        _code.EmitByte(0xCD);  // INT
+        _code.EmitByte(0x05);  // imm8 = 5 (array bounds exceeded)
+    }
+
+    /// <summary>
     /// Compile ldelem.* - Load array element.
     /// Stack: ..., array, index -> ..., value
     /// </summary>
@@ -7142,6 +7168,9 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopEntry();
         PopEntry();
+
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
 
         // Compute element address: array + 16 + index * elemSize
         // For now, use shift for power-of-2 sizes
@@ -7207,6 +7236,9 @@ public unsafe struct ILCompiler
         PopEntry();
         PopEntry();
 
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
+
         // Compute element address: array + 16 + index * elemSize
         switch (elemSize)
         {
@@ -7250,6 +7282,9 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopEntry();
         PopEntry();
+
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
 
         // Compute element address: array + 16 + index * elemSize
         if (elemSize == 4)
@@ -7296,6 +7331,9 @@ public unsafe struct ILCompiler
         PopEntry();
         PopEntry();
 
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
+
         // Compute element address: array + 16 + index * elemSize
         if (elemSize == 4)
         {
@@ -7337,6 +7375,9 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);  // array
         PopEntry();
         PopEntry();
+
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
 
         // Compute element address: array + ArrayDataOffset + index * elemSize
         // For generic sizes, use imul: R1 = index * elemSize
@@ -9018,6 +9059,9 @@ public unsafe struct ILCompiler
         PopEntry();
         PopEntry();
 
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
+
         // Compute element address: array + ArrayDataOffset + index * elemSize
         // R0 = array, R1 = index
         // R2 = index * elemSize
@@ -9146,6 +9190,9 @@ public unsafe struct ILCompiler
         // Load index and array from below struct data
         X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, alignedSize);      // R1 = index
         X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, alignedSize + 8);  // R0 = array
+
+        // Bounds check: throws IndexOutOfRangeException if index >= length
+        EmitArrayBoundsCheck(VReg.R0, VReg.R1);
 
         // Compute element address: array + ArrayDataOffset + index * elemSize
         X64Emitter.MovRR(ref _code, VReg.R3, VReg.R1);

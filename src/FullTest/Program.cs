@@ -572,6 +572,10 @@ public static class TestRunner
         RecordResult("ArrayTests.TestStelem", ArrayTests.TestStelem() == 42);
         RecordResult("ArrayTests.TestLdlen", ArrayTests.TestLdlen() == 5);
         RecordResult("ArrayTests.TestArraySum", ArrayTests.TestArraySum() == 15);
+        RecordResult("ArrayTests.TestBoundsCheckReadOverflow", ArrayTests.TestBoundsCheckReadOverflow() == 42);
+        RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
+        RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
+        RecordResult("ArrayTests.TestBoundsCheckValidLastIndex", ArrayTests.TestBoundsCheckValidLastIndex() == 42);
     }
 
     private static void RunFieldTests()
@@ -1552,6 +1556,73 @@ public static class ArrayTests
             sum += arr[i];
         }
         return sum;  // 15
+    }
+
+    /// <summary>
+    /// Test reading from out-of-bounds index (should throw IndexOutOfRangeException).
+    /// </summary>
+    public static int TestBoundsCheckReadOverflow()
+    {
+        try
+        {
+            int[] arr = new int[3];
+            arr[0] = 10;
+            arr[1] = 20;
+            arr[2] = 30;
+            int value = arr[3];  // Index 3 is out of bounds for array of length 3
+            return 0;  // Should not reach here
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return 42;  // Caught bounds error
+        }
+    }
+
+    /// <summary>
+    /// Test writing to out-of-bounds index (should throw IndexOutOfRangeException).
+    /// </summary>
+    public static int TestBoundsCheckWriteOverflow()
+    {
+        try
+        {
+            int[] arr = new int[3];
+            arr[3] = 999;  // Index 3 is out of bounds for array of length 3
+            return 0;  // Should not reach here
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return 42;  // Caught bounds error
+        }
+    }
+
+    /// <summary>
+    /// Test reading with negative index (should throw IndexOutOfRangeException).
+    /// Negative indices become large positive when treated as unsigned.
+    /// </summary>
+    public static int TestBoundsCheckNegativeIndex()
+    {
+        try
+        {
+            int[] arr = new int[3];
+            arr[0] = 100;
+            int index = -1;  // -1 becomes 0xFFFFFFFF (4294967295) as unsigned
+            int value = arr[index];  // Out of bounds
+            return 0;  // Should not reach here
+        }
+        catch (IndexOutOfRangeException)
+        {
+            return 42;  // Caught bounds error
+        }
+    }
+
+    /// <summary>
+    /// Test that valid access at last index works correctly.
+    /// </summary>
+    public static int TestBoundsCheckValidLastIndex()
+    {
+        int[] arr = new int[5];
+        arr[4] = 42;  // Last valid index
+        return arr[4];  // Should return 42
     }
 }
 

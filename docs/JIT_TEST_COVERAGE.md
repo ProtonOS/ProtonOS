@@ -104,7 +104,10 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - 🔲 ldelem/stelem for multi-dim
 
 ### Bounds Checking
-- ❌ Array bounds checks (currently no bounds checking)
+- ✅ Array bounds checks (ldelem, stelem, ldelema, ldelem.r4/r8, stelem.r4/r8, ldelem/stelem with token)
+  - Emits: load length from array+8, unsigned compare index with length, JB to skip INT 5
+  - Out-of-bounds access triggers INT 5 → IndexOutOfRangeException
+  - Tests: TestBoundsCheckReadOverflow, TestBoundsCheckWriteOverflow, TestBoundsCheckNegativeIndex, TestBoundsCheckValidLastIndex (all passing)
 
 ---
 
@@ -365,15 +368,29 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 296 passing
+- Current test count: 300 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
-### Known Limitations
-
-*No known critical limitations remaining.*
-
 ## Recent Updates
+
+### Function Table Capacity Fix (2025-12)
+Fixed exception handler registration failures due to function table exhaustion:
+- **Root cause**: `MaxFunctionTables` was set to 512, exhausted after JIT'ing many test methods
+- **Symptom**: Methods with exception handlers failed to register, causing `funcEntry=NULL` during exception dispatch
+- **Debug discovery**: Method 0x060001CF (TestCheckedConvOverflow) had 1 EH clause but registration failed with "used=512/512"
+- **Fix**: Increased `MaxFunctionTables` from 512 to 2048 in ExceptionHandling.cs
+- **Storage**: Updated fixed buffer from `512 * 40` to `2048 * 40` bytes (~80KB total)
+- All 300 tests now pass regardless of test order
+
+### Array Bounds Checking (2025-12)
+Implemented runtime bounds checking for all array access operations:
+- **EmitArrayBoundsCheck helper**: Loads array length from offset 8, performs unsigned comparison with index, emits JB to skip INT 5
+- **Covered operations**: CompileLdelem, CompileStelem, CompileLdelemFloat, CompileStelemFloat, CompileLdelema, CompileLdelemToken, CompileStelemToken
+- **INT 5 handler**: Already mapped to IndexOutOfRangeException via EXCEPTION_ARRAY_BOUNDS_EXCEEDED
+- **4 tests created**: TestBoundsCheckReadOverflow, TestBoundsCheckWriteOverflow, TestBoundsCheckNegativeIndex, TestBoundsCheckValidLastIndex
+- **Exception state fix**: ClearCurrentException() updated to clear all 5 TLS slots (added RSP and RBP)
+- All 4 bounds check tests now enabled and passing (test count: 300)
 
 ### ldtoken Method/Field Handle Support (2025-12)
 Implemented `ldtoken` for method and field handles:
