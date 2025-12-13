@@ -25,8 +25,12 @@ namespace System
     /// enumeration types, type parameters, generic type definitions, and open or closed
     /// constructed generic types.
     /// </summary>
-    public abstract class Type
+    public abstract class Type : Reflection.MemberInfo
     {
+        // MemberInfo abstract properties implementation
+        public override string Name => null!;
+        public override Type? DeclaringType => null;
+        public override Reflection.MemberTypes MemberType => Reflection.MemberTypes.TypeInfo;
         /// <summary>
         /// Gets a Type from a RuntimeTypeHandle.
         /// Required by the compiler for typeof() operator.
@@ -42,11 +46,6 @@ namespace System
         /// Gets the fully qualified name of the type.
         /// </summary>
         public virtual string? FullName => null;
-
-        /// <summary>
-        /// Gets the name of the current type.
-        /// </summary>
-        public virtual string? Name => null;
 
         /// <summary>
         /// Gets the namespace of the Type.

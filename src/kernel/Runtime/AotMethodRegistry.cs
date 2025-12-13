@@ -6,6 +6,7 @@ using System;
 using ProtonOS.Memory;
 using ProtonOS.Platform;
 using ProtonOS.Runtime.JIT;
+using ProtonOS.Runtime.Reflection;
 
 namespace ProtonOS.Runtime;
 
@@ -76,6 +77,9 @@ public static unsafe class AotMethodRegistry
         // Register well-known Object methods
         RegisterObjectMethods();
 
+        // Register well-known Type methods (for reflection)
+        RegisterTypeMethods();
+
         // Register well-known Int32 methods
         RegisterInt32Methods();
 
@@ -129,6 +133,18 @@ public static unsafe class AotMethodRegistry
             "System.String", "Equals",
             (nint)(delegate*<string, string?, bool>)&StringHelpers.Equals,
             1, ReturnKind.Int32, true, false);
+
+        // String.op_Equality (static) - 2 string parameters
+        Register(
+            "System.String", "op_Equality",
+            (nint)(delegate*<string?, string?, bool>)&StringHelpers.OpEquality,
+            2, ReturnKind.Int32, false, false);
+
+        // String.op_Inequality (static) - 2 string parameters
+        Register(
+            "System.String", "op_Inequality",
+            (nint)(delegate*<string?, string?, bool>)&StringHelpers.OpInequality,
+            2, ReturnKind.Int32, false, false);
 
         // String.GetPinnableReference() - 0 parameters, HasThis=true, returns ref char (pointer)
         Register(
@@ -206,6 +222,44 @@ public static unsafe class AotMethodRegistry
             "System.Object", "ToString",
             (nint)(delegate*<object, string>)&ObjectHelpers.ToString,
             0, ReturnKind.IntPtr, true, true);
+
+        // Object.GetType() - instance method, returns Type (non-virtual, final)
+        Register(
+            "System.Object", "GetType",
+            (nint)(delegate*<object, Type>)&ObjectHelpers.GetType,
+            0, ReturnKind.IntPtr, true, false);  // Not virtual - GetType is final
+    }
+
+    /// <summary>
+    /// Register Type methods (for reflection support).
+    /// These bypass virtual dispatch since RuntimeType's vtable isn't properly set up by AOT.
+    /// </summary>
+    private static void RegisterTypeMethods()
+    {
+        // Type.get_Name - property getter, returns string
+        Register(
+            "System.Type", "get_Name",
+            (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetName,
+            0, ReturnKind.IntPtr, true, true);  // Virtual
+
+        // MemberInfo.get_Name - In .NET, Type inherits from MemberInfo
+        // The compiler generates calls to MemberInfo.get_Name when calling t.Name on a Type
+        Register(
+            "System.Reflection.MemberInfo", "get_Name",
+            (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetName,
+            0, ReturnKind.IntPtr, true, true);  // Virtual
+
+        // Type.get_FullName - property getter, returns string
+        Register(
+            "System.Type", "get_FullName",
+            (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetFullName,
+            0, ReturnKind.IntPtr, true, true);  // Virtual
+
+        // Type.get_Namespace - property getter, returns string
+        Register(
+            "System.Type", "get_Namespace",
+            (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetNamespace,
+            0, ReturnKind.IntPtr, true, true);  // Virtual
     }
 
     /// <summary>
@@ -507,6 +561,14 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.MulticastDelegate"))
             return true;
 
+        // Reflection types
+        if (StringMatches(typeName, "System.Type"))
+            return true;
+        if (StringMatches(typeName, "System.RuntimeType"))
+            return true;
+        if (StringMatches(typeName, "System.Reflection.MemberInfo"))
+            return true;
+
         return false;
     }
 
@@ -621,6 +683,30 @@ public static unsafe class StringHelpers
         if (s == null)
             return other == null;
         return s.Equals(other);
+    }
+
+    /// <summary>
+    /// Wrapper for String.op_Equality (== operator).
+    /// </summary>
+    public static bool OpEquality(string? a, string? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a is null || b is null) return false;
+        if (a.Length != b.Length) return false;
+
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Wrapper for String.op_Inequality (!= operator).
+    /// </summary>
+    public static bool OpInequality(string? a, string? b)
+    {
+        return !OpEquality(a, b);
     }
 
     /// <summary>
@@ -753,6 +839,28 @@ public static unsafe class ObjectHelpers
         return "object";
     }
 
+    /// <summary>
+    /// Wrapper for Object.GetType().
+    /// Returns the Type object for this object's runtime type.
+    /// </summary>
+    public static Type GetType(object obj)
+    {
+        if (obj == null)
+            return null!;
+
+        // Get the MethodTable pointer from the object (first field)
+        // Object layout: [MethodTable* m_pMethodTable, ...fields...]
+        // First dereference: get the object pointer from the reference
+        void* objPtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref obj);
+
+        // Second dereference: read the MethodTable from the start of the object
+        void* mt = *(void**)objPtr;
+
+        // Create and return a RuntimeType wrapping the MethodTable
+        // Cast to System.Runtime.MethodTable* which RuntimeType expects
+        return new RuntimeType((System.Runtime.MethodTable*)mt);
+    }
+
     private static bool ReferenceEquals(object? a, object? b)
     {
         return (object?)a == (object?)b;
@@ -793,6 +901,120 @@ public static unsafe class Int32Helpers
         // Value is at offset 8
         int* valuePtr = (int*)(thisPtr + 8);
         return *valuePtr;
+    }
+}
+
+/// <summary>
+/// Helper methods for Type operations.
+/// These provide implementations for Type virtual methods that the JIT can call directly,
+/// bypassing the broken vtable dispatch for RuntimeType.
+/// </summary>
+public static unsafe class TypeMethodHelpers
+{
+    /// <summary>
+    /// Get the Name of a Type.
+    /// </summary>
+    public static string? GetName(Type type)
+    {
+        if (type == null)
+            return null;
+
+        // Get the RuntimeType's internal MethodTable pointer
+        // Type object layout: [MethodTable*][_pMethodTable field at offset 8]
+        void* typePtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref type);
+        if (typePtr == null)
+            return null;
+
+        // Read the _pMethodTable field (first field after MT pointer, at offset 8)
+        void* storedMT = *(void**)((byte*)typePtr + 8);
+        if (storedMT == null)
+            return "RuntimeType";
+
+        // Look up the type info from the reflection runtime
+        uint asmId = 0, token = 0;
+        ReflectionRuntime.GetTypeInfo(storedMT, &asmId, &token);
+
+        if (token == 0)
+            return "RuntimeType";
+
+        // Get the type name from metadata
+        byte* namePtr = ReflectionRuntime.GetTypeName(asmId, token);
+        if (namePtr == null)
+            return "RuntimeType";
+
+        return BytePtrToString(namePtr);
+    }
+
+    /// <summary>
+    /// Get the FullName of a Type (Namespace.Name).
+    /// </summary>
+    public static string? GetFullName(Type type)
+    {
+        if (type == null)
+            return null;
+
+        string? ns = GetNamespace(type);
+        string? name = GetName(type);
+
+        if (string.IsNullOrEmpty(ns))
+            return name;
+
+        return ns + "." + name;
+    }
+
+    /// <summary>
+    /// Get the Namespace of a Type.
+    /// </summary>
+    public static string? GetNamespace(Type type)
+    {
+        if (type == null)
+            return null;
+
+        // Get the RuntimeType's internal MethodTable pointer
+        void* typePtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref type);
+        if (typePtr == null)
+            return null;
+
+        // Read the _pMethodTable field (first field after MT pointer, at offset 8)
+        void* storedMT = *(void**)((byte*)typePtr + 8);
+        if (storedMT == null)
+            return null;
+
+        // Look up the type info from the reflection runtime
+        uint asmId = 0, token = 0;
+        ReflectionRuntime.GetTypeInfo(storedMT, &asmId, &token);
+
+        if (token == 0)
+            return null;
+
+        // Get the namespace from metadata
+        byte* nsPtr = ReflectionRuntime.GetTypeNamespace(asmId, token);
+        if (nsPtr == null || *nsPtr == 0)
+            return null;
+
+        return BytePtrToString(nsPtr);
+    }
+
+    /// <summary>
+    /// Convert a null-terminated UTF-8 byte pointer to a string.
+    /// </summary>
+    private static string BytePtrToString(byte* ptr)
+    {
+        if (ptr == null)
+            return string.Empty;
+
+        int len = 0;
+        while (ptr[len] != 0)
+            len++;
+
+        if (len == 0)
+            return string.Empty;
+
+        char* chars = stackalloc char[len];
+        for (int i = 0; i < len; i++)
+            chars[i] = (char)ptr[i];
+
+        return new string(chars, 0, len);
     }
 }
 

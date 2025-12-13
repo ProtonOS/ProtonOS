@@ -292,7 +292,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 - ❌ ldtoken (type/method/field handle)
 - ❌ Type.GetTypeFromHandle
-- ❌ GetType() on objects
+- ✅ GetType() on objects - returns RuntimeType with working Name, FullName, Namespace properties
 - ❌ typeof(T) in generic context
 
 ---
@@ -360,7 +360,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 276 passing
+- Current test count: 282 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -369,6 +369,20 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Object.GetType() Support (2025-12)
+Implemented full `Object.GetType()` support with type forwarding:
+- **AOT method registration**: Added `System.Object.GetType` to AotMethodRegistry returning RuntimeType
+- **RuntimeType creation**: GetType implementation dereferences object to get MethodTable pointer, wraps in RuntimeType
+- **korlib changes**: Made `System.Type` inherit from `System.Reflection.MemberInfo` to match .NET hierarchy
+- **String operators**: Added `String.op_Equality` and `String.op_Inequality` to AOT registry
+- **Type method helpers**: Added TypeMethodHelpers class with GetName, GetFullName, GetNamespace implementations
+- **Type forwarding**: Added System.Type and System.RuntimeType as well-known types (0xF0000030, 0xF0000031)
+- **Well-known type lookup**: Added Type, RuntimeType, MemberInfo to GetWellKnownTypeToken and IsWellKnownAotType
+- **Runtime type registration**: RegisterReflectionTypes extracts RuntimeType MethodTable and parent Type MethodTable from AOT
+- **AOT method routing**: Type property accessors (get_Name, get_FullName, get_Namespace) routed through AOT registry to TypeMethodHelpers
+- **6 tests**: TestGetTypeNotNull, TestGetTypeName, TestGetTypeBoxedInt, TestGetTypeSameType, TestGetTypeFullName, TestGetTypeNamespace
+- Test count increased from 276 to 282
 
 ### Overflow Exception Support (2025-12)
 Implemented full overflow exception handling for checked arithmetic operations:

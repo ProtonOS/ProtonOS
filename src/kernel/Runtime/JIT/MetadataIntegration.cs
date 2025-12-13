@@ -333,6 +333,10 @@ public static unsafe class MetadataIntegration
         public const uint NullReferenceException = 0xF0000028;
         public const uint InvalidCastException = 0xF0000029;
         public const uint FormatException = 0xF000002A;
+
+        // Reflection types - for GetType() support
+        public const uint Type = 0xF0000030;
+        public const uint RuntimeType = 0xF0000031;
     }
 
     /// <summary>
@@ -375,6 +379,9 @@ public static unsafe class MetadataIntegration
 
         // Delegate types: extract from concrete delegate inheritance chain
         count += RegisterDelegateTypes();
+
+        // Reflection types: Type and RuntimeType for GetType() support
+        count += RegisterReflectionTypes();
 
         DebugConsole.Write("[MetaInt] Registered ");
         DebugConsole.WriteDecimal((uint)count);
@@ -762,6 +769,38 @@ public static unsafe class MetadataIntegration
                     if (RegisterType(WellKnownTypes.Delegate, delegateMT))
                         count++;
                 }
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Register System.Type and System.RuntimeType for reflection support.
+    /// RuntimeType is concrete; Type is abstract, so we walk up from RuntimeType.
+    /// Inheritance: RuntimeType -> Type -> MemberInfo -> Object
+    /// </summary>
+    private static int RegisterReflectionTypes()
+    {
+        int count = 0;
+
+        // Create a RuntimeType instance to get its MethodTable
+        // Use a null MethodTable* - we just need the RuntimeType's own MT
+        var runtimeType = new RuntimeType(null);
+        MethodTable* runtimeTypeMT = (MethodTable*)runtimeType.m_pMethodTable;
+
+        if (runtimeTypeMT != null)
+        {
+            if (RegisterType(WellKnownTypes.RuntimeType, runtimeTypeMT))
+                count++;
+
+            // Walk up inheritance chain to get Type's MT
+            // RuntimeType -> Type -> MemberInfo -> Object
+            MethodTable* typeMT = runtimeTypeMT->GetParentType();
+            if (typeMT != null)
+            {
+                if (RegisterType(WellKnownTypes.Type, typeMT))
+                    count++;
             }
         }
 

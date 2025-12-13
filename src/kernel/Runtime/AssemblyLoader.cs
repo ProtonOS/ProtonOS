@@ -3484,6 +3484,18 @@ public static unsafe class AssemblyLoader
                     name[13] == 'g' && name[14] == 'a' && name[15] == 't' && name[16] == 'e' && name[17] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.MulticastDelegate;
                 break;
+
+            case (byte)'T':  // Type
+                if (name[1] == 'y' && name[2] == 'p' && name[3] == 'e' && name[4] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Type;
+                break;
+
+            case (byte)'R':  // RuntimeType
+                if (name[1] == 'u' && name[2] == 'n' && name[3] == 't' && name[4] == 'i' &&
+                    name[5] == 'm' && name[6] == 'e' && name[7] == 'T' && name[8] == 'y' &&
+                    name[9] == 'p' && name[10] == 'e' && name[11] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.RuntimeType;
+                break;
         }
 
         return 0;
