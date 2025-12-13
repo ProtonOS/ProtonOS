@@ -82,6 +82,9 @@ public static unsafe class AotMethodRegistry
         // Register well-known Exception methods
         RegisterExceptionMethods();
 
+        // Register Delegate methods
+        RegisterDelegateMethods();
+
         _initialized = true;
         DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", _count));
     }
@@ -344,6 +347,38 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register Delegate methods for multicast delegate support.
+    /// </summary>
+    private static void RegisterDelegateMethods()
+    {
+        // Delegate.Combine(Delegate?, Delegate?) - static method, returns Delegate?
+        Register(
+            "System.Delegate", "Combine",
+            (nint)(delegate*<Delegate?, Delegate?, Delegate?>)&DelegateHelpers.Combine,
+            2, ReturnKind.IntPtr, false, false);
+
+        // Delegate.Remove(Delegate?, Delegate?) - static method, returns Delegate?
+        Register(
+            "System.Delegate", "Remove",
+            (nint)(delegate*<Delegate?, Delegate?, Delegate?>)&DelegateHelpers.Remove,
+            2, ReturnKind.IntPtr, false, false);
+
+        // MulticastDelegate.CombineImpl(Delegate?) - instance virtual method for vtable slot 3
+        // This is called through the vtable when combining multicast delegates
+        Register(
+            "System.MulticastDelegate", "CombineImpl",
+            (nint)(delegate*<MulticastDelegate, Delegate?, Delegate?>)&DelegateHelpers.CombineImplWrapper,
+            1, ReturnKind.IntPtr, true, true);
+
+        // MulticastDelegate.RemoveImpl(Delegate) - instance virtual method for vtable slot 4
+        // This is called through the vtable when removing from multicast delegates
+        Register(
+            "System.MulticastDelegate", "RemoveImpl",
+            (nint)(delegate*<MulticastDelegate, Delegate, Delegate?>)&DelegateHelpers.RemoveImplWrapper,
+            1, ReturnKind.IntPtr, true, true);
+    }
+
+    /// <summary>
     /// Register an AOT method.
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
@@ -464,6 +499,12 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.InvalidCastException"))
             return true;
         if (StringMatches(typeName, "System.FormatException"))
+            return true;
+
+        // Delegate types
+        if (StringMatches(typeName, "System.Delegate"))
+            return true;
+        if (StringMatches(typeName, "System.MulticastDelegate"))
             return true;
 
         return false;
@@ -801,4 +842,47 @@ public static class ExceptionHelpers
     // FormatException
     public static FormatException Ctor_FormatException() => new FormatException();
     public static FormatException Ctor_FormatException_String(string? message) => new FormatException(message);
+}
+
+/// <summary>
+/// Wrapper methods for Delegate operations.
+/// These forward to the actual Delegate.Combine/Remove methods in korlib.
+/// </summary>
+public static class DelegateHelpers
+{
+    /// <summary>
+    /// Wrapper for Delegate.Combine(Delegate?, Delegate?).
+    /// Combines two delegates into a multicast delegate.
+    /// </summary>
+    public static Delegate? Combine(Delegate? a, Delegate? b)
+    {
+        return Delegate.Combine(a, b);
+    }
+
+    /// <summary>
+    /// Wrapper for Delegate.Remove(Delegate?, Delegate?).
+    /// Removes a delegate from a multicast delegate.
+    /// </summary>
+    public static Delegate? Remove(Delegate? source, Delegate? value)
+    {
+        return Delegate.Remove(source, value);
+    }
+
+    /// <summary>
+    /// Wrapper for MulticastDelegate.CombineImpl for vtable slot population.
+    /// This is called through the vtable when combining delegates.
+    /// </summary>
+    public static Delegate? CombineImplWrapper(MulticastDelegate self, Delegate? d)
+    {
+        return self.InvokeCombineImpl(d);
+    }
+
+    /// <summary>
+    /// Wrapper for MulticastDelegate.RemoveImpl for vtable slot population.
+    /// This is called through the vtable when removing delegates.
+    /// </summary>
+    public static Delegate? RemoveImplWrapper(MulticastDelegate self, Delegate d)
+    {
+        return self.InvokeRemoveImpl(d);
+    }
 }

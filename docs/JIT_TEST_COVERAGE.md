@@ -227,8 +227,10 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Delegate reassignment
 
 ### Multicast Delegates
-- ❌ Delegate.Combine
-- ❌ Delegate.Remove
+- ✅ Delegate.Combine (creates new multicast delegate without mutating original)
+- ✅ Delegate.Remove (removes delegate from invocation list)
+- ✅ += operator (compiles to Delegate.Combine)
+- ✅ -= operator (compiles to Delegate.Remove)
 
 ### Anonymous Methods / Lambdas
 - ❌ Closure capture
@@ -350,7 +352,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 235 passing
+- Current test count: 244 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -359,6 +361,30 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Multicast Delegate Support (2025-12)
+Implemented `Delegate.Combine()` and `Delegate.Remove()` for event-like patterns:
+- **Delegate.Combine**: Creates a NEW multicast delegate (doesn't mutate original - important for delegate caching)
+- **Delegate.Remove**: Removes delegate from invocation list, returns remaining delegate(s)
+- **Key implementation challenges**:
+  1. ABI mismatch: AOT-compiled korlib uses NativeAOT's internal field layout, but JIT delegates use korlib's declared layout
+     - Fixed by using explicit pointer offsets (40 for _invocationList, 48 for _invocationCount)
+  2. Delegate caching: C# compiler caches delegates for static methods in `<>O` static fields
+     - Original mutation approach corrupted cached delegates across tests
+     - Fixed by allocating NEW delegate object using `PalAllocObject`
+  3. Delegate size: JIT was allocating 40-byte delegates (Delegate fields only)
+     - MulticastDelegate needs 56 bytes to include _invocationList and _invocationCount fields
+     - Fixed by updating `ComputeInstanceSize()` to use 56 bytes for delegate types
+- **AotMethodRegistry additions**:
+  - `DelegateHelpers.Combine()` wrapper forwarding to `Delegate.Combine()`
+  - `DelegateHelpers.Remove()` wrapper forwarding to `Delegate.Remove()`
+  - `CombineImplWrapper` and `RemoveImplWrapper` for vtable slot population
+- 9 new tests:
+  - TestCombineTwo, TestCombineThree - basic combining
+  - TestCombineNullFirst, TestCombineNullSecond - null handling
+  - TestRemoveFromTwo, TestRemoveNonExistent, TestRemoveAll - removal
+  - TestPlusEqualsOperator, TestMinusEqualsOperator - operator sugar
+- Test count increased from 235 to 244
 
 ### Calli Instruction Support (2025-12)
 Implemented proper `calli` IL opcode for indirect calls through function pointers:

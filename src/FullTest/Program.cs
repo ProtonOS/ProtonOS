@@ -98,6 +98,9 @@ public static class TestRunner
         // Calli tests - tests indirect calls through function pointers
         RunCalliTests();
 
+        // Multicast delegate tests - tests Delegate.Combine and Delegate.Remove
+        RunMulticastDelegateTests();
+
         // Sizeof tests - tests sizeof IL opcode
         RunSizeofTests();
 
@@ -321,6 +324,20 @@ public static class TestRunner
         RecordResult("CalliTests.TestCalliVoidReturn", CalliTests.TestCalliVoidReturn() == 42);
         RecordResult("CalliTests.TestCalliLong", CalliTests.TestCalliLong() == 42);
         RecordResult("CalliTests.TestCalliReassign", CalliTests.TestCalliReassign() == 42);
+    }
+
+    private static void RunMulticastDelegateTests()
+    {
+        Debug.WriteLine("[PHASE] Starting multicast delegate tests...");
+        RecordResult("MulticastDelegateTests.TestCombineTwo", MulticastDelegateTests.TestCombineTwo() == 42);
+        RecordResult("MulticastDelegateTests.TestCombineThree", MulticastDelegateTests.TestCombineThree() == 42);
+        RecordResult("MulticastDelegateTests.TestCombineNullFirst", MulticastDelegateTests.TestCombineNullFirst() == 42);
+        RecordResult("MulticastDelegateTests.TestCombineNullSecond", MulticastDelegateTests.TestCombineNullSecond() == 42);
+        RecordResult("MulticastDelegateTests.TestRemoveFromTwo", MulticastDelegateTests.TestRemoveFromTwo() == 42);
+        RecordResult("MulticastDelegateTests.TestRemoveNonExistent", MulticastDelegateTests.TestRemoveNonExistent() == 42);
+        RecordResult("MulticastDelegateTests.TestRemoveAll", MulticastDelegateTests.TestRemoveAll() == 42);
+        RecordResult("MulticastDelegateTests.TestPlusEqualsOperator", MulticastDelegateTests.TestPlusEqualsOperator() == 42);
+        RecordResult("MulticastDelegateTests.TestMinusEqualsOperator", MulticastDelegateTests.TestMinusEqualsOperator() == 42);
     }
 
     private static void RunSizeofTests()
@@ -3811,6 +3828,144 @@ public class VirtualDelegateBase
 public class VirtualDelegateDerived : VirtualDelegateBase
 {
     public override int GetValue(int x) => x * 2;  // Derived: multiply by 2
+}
+
+// =============================================================================
+// Multicast Delegate Tests - test Delegate.Combine and Delegate.Remove
+// =============================================================================
+
+// Delegate type for multicast testing with side effects
+public delegate void VoidIntAction(int x);
+
+public class MulticastDelegateTests
+{
+    // Side effect counter for testing multicast invocation
+    private static int _counter;
+    private static int _lastValue;
+
+    public static void Add10(int x) { _counter += 10; _lastValue = x; }
+    public static void Add20(int x) { _counter += 20; _lastValue = x; }
+    public static void Add5(int x) { _counter += 5; _lastValue = x; }
+
+    // For IntFunc (returning int)
+    public static int Return10(int x) => 10;
+    public static int Return20(int x) => 20;
+    public static int Return30(int x) => 30;
+
+    /// <summary>
+    /// Test Delegate.Combine with two delegates.
+    /// Combine should return a multicast delegate.
+    /// Invoke returns the last delegate's result.
+    /// </summary>
+    public static int TestCombineTwo()
+    {
+        Debug.WriteLine("[MC] TestCombineTwo entered");
+        IntFunc f1 = Return10;
+        Debug.WriteLine("[MC] f1 created");
+        IntFunc f2 = Return20;
+        Debug.WriteLine("[MC] f2 created, calling Combine...");
+        IntFunc combined = (IntFunc)Delegate.Combine(f1, f2)!;
+        Debug.WriteLine("[MC] Combine returned");
+        // For value-returning delegates, only the last result is returned
+        int result = combined(0);
+        return result == 20 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test Delegate.Combine with three delegates.
+    /// </summary>
+    public static int TestCombineThree()
+    {
+        IntFunc f1 = Return10;
+        IntFunc f2 = Return20;
+        IntFunc f3 = Return30;
+        IntFunc combined = (IntFunc)Delegate.Combine(f1, f2)!;
+        combined = (IntFunc)Delegate.Combine(combined, f3)!;
+        int result = combined(0);
+        return result == 30 ? 42 : 0;  // Last delegate returns 30
+    }
+
+    /// <summary>
+    /// Test Delegate.Combine with null first argument.
+    /// </summary>
+    public static int TestCombineNullFirst()
+    {
+        IntFunc f2 = Return20;
+        IntFunc? result = (IntFunc?)Delegate.Combine(null, f2);
+        return result != null && result(0) == 20 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test Delegate.Combine with null second argument.
+    /// </summary>
+    public static int TestCombineNullSecond()
+    {
+        IntFunc f1 = Return10;
+        IntFunc? result = (IntFunc?)Delegate.Combine(f1, null);
+        return result != null && result(0) == 10 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test Delegate.Remove removes a delegate from multicast.
+    /// </summary>
+    public static int TestRemoveFromTwo()
+    {
+        IntFunc f1 = Return10;
+        IntFunc f2 = Return20;
+        IntFunc combined = (IntFunc)Delegate.Combine(f1, f2)!;
+        IntFunc? result = (IntFunc?)Delegate.Remove(combined, f2);
+        // After removing f2, should only have f1 which returns 10
+        return result != null && result(0) == 10 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test Delegate.Remove with non-existent delegate.
+    /// </summary>
+    public static int TestRemoveNonExistent()
+    {
+        IntFunc f1 = Return10;
+        IntFunc f2 = Return20;
+        IntFunc f3 = Return30;
+        IntFunc combined = (IntFunc)Delegate.Combine(f1, f2)!;
+        // Try to remove f3 which is not in the list
+        IntFunc? result = (IntFunc?)Delegate.Remove(combined, f3);
+        // Should return unchanged - last delegate is still f2
+        return result != null && result(0) == 20 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test removing all delegates results in null.
+    /// </summary>
+    public static int TestRemoveAll()
+    {
+        IntFunc f1 = Return10;
+        IntFunc? result = (IntFunc?)Delegate.Remove(f1, f1);
+        return result == null ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test += operator (sugar for Combine).
+    /// </summary>
+    public static int TestPlusEqualsOperator()
+    {
+        IntFunc? combined = null;
+        combined += Return10;
+        combined += Return20;
+        return combined != null && combined(0) == 20 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test -= operator (sugar for Remove).
+    /// </summary>
+    public static int TestMinusEqualsOperator()
+    {
+        IntFunc f1 = Return10;
+        IntFunc f2 = Return20;
+        IntFunc? combined = f1;
+        combined += f2;
+        combined -= f2;
+        return combined != null && combined(0) == 10 ? 42 : 0;
+    }
 }
 
 // =============================================================================

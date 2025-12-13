@@ -64,6 +64,12 @@ public static unsafe class JitStubs
     /// <param name="assemblyId">The assembly ID containing the method.</param>
     public static void EnsureCompiled(uint methodToken, uint assemblyId)
     {
+        DebugConsole.Write("[JitStubs] Ensure 0x");
+        DebugConsole.WriteHex(methodToken);
+        DebugConsole.Write(" asm ");
+        DebugConsole.WriteDecimal(assemblyId);
+        DebugConsole.WriteLine();
+
         // Fast path: Check if already compiled
         CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(methodToken, assemblyId);
         if (info != null && info->IsCompiled)
@@ -73,11 +79,11 @@ public static unsafe class JitStubs
         }
 
         // Slow path: Need to compile the method
-        // DebugConsole.Write("[JitStubs] Lazy compile 0x");
-        // DebugConsole.WriteHex(methodToken);
-        // DebugConsole.Write(" asm ");
-        // DebugConsole.WriteDecimal(assemblyId);
-        // DebugConsole.WriteLine();
+        DebugConsole.Write("[JitStubs] Lazy compile 0x");
+        DebugConsole.WriteHex(methodToken);
+        DebugConsole.Write(" asm ");
+        DebugConsole.WriteDecimal(assemblyId);
+        DebugConsole.WriteLine();
 
         var result = Tier0JIT.CompileMethod(assemblyId, methodToken);
         if (!result.Success)

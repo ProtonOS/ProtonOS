@@ -85,5 +85,12 @@ namespace System
                 return false;
             return objA.Equals(objB);
         }
+
+        /// <summary>
+        /// Creates a shallow copy of the current Object.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.InternalCall)]
+        [System.Runtime.RuntimeImport("*", "RhpMemberwiseClone")]
+        protected extern object MemberwiseClone();
     }
 }

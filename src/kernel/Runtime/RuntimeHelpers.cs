@@ -319,6 +319,18 @@ public static unsafe class RuntimeHelpers
             return null;
         }
 
+        // Debug: trace delegate allocations (they have 4+ vtable slots typically)
+        if (pMT->NumVtableSlots >= 4)
+        {
+            DebugConsole.Write("[RhpNewFast] Delegate? MT=0x");
+            DebugConsole.WriteHex((ulong)pMT);
+            DebugConsole.Write(" slots=");
+            DebugConsole.WriteDecimal(pMT->NumVtableSlots);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(pMT->BaseSize);
+            DebugConsole.WriteLine();
+        }
+
         // Debug: Check if this is a value type being boxed and verify vtable
         if (pMT->IsValueType && pMT->NumVtableSlots > 0)
         {

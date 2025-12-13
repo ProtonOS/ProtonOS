@@ -416,6 +416,35 @@ namespace Internal.Runtime.CompilerHelpers
             return result;
         }
 
+        /// <summary>
+        /// Creates a shallow copy of an object.
+        /// </summary>
+        [RuntimeExport("RhpMemberwiseClone")]
+        static unsafe object RhpMemberwiseClone(object src)
+        {
+            if (src == null) return null!;
+
+            // Get the MethodTable from source object
+            System.Runtime.MethodTable* pMT = *(System.Runtime.MethodTable**)Unsafe.AsPointer(ref src);
+            uint size = pMT->_uBaseSize;
+
+            // Allocate new object with same MethodTable
+            System.Runtime.MethodTable** result = AllocObject(size);
+            *result = pMT;
+
+            // Copy the data (skip the MethodTable pointer which we already set)
+            byte* srcPtr = (byte*)Unsafe.AsPointer(ref src) + sizeof(void*);
+            byte* dstPtr = (byte*)result + sizeof(void*);
+            uint copySize = size - (uint)sizeof(void*);
+
+            for (uint i = 0; i < copySize; i++)
+                dstPtr[i] = srcPtr[i];
+
+            // Convert pointer to object reference
+            // result is the address of the object header, same as an object reference
+            return Unsafe.AsRef<object>(result);
+        }
+
         [RuntimeExport("RhpNewArray")]
         static unsafe void* RhpNewArray(System.Runtime.MethodTable* pMT, int numElements)
         {

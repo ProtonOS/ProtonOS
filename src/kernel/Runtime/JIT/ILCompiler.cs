@@ -4566,19 +4566,59 @@ public unsafe struct ILCompiler
         else if (method.RegistryEntry != null)
         {
             // Indirect call through registry entry (for recursive/pending methods)
-            // The NativeCode will be filled in by the time the call actually executes
+            // IMPORTANT: We must ensure the method is compiled before loading NativeCode!
+            // Otherwise NativeCode might still be null.
+
+            // First, call EnsureCompiled to trigger lazy compilation if needed
+            // EnsureCompiled(uint methodToken, uint assemblyId) - uses RCX, RDX
+            // We need to save any args that might be in those registers
+
+            // Save the args we just set up in R10/R11 (caller-saved but not used for args)
+            // Only need to save RCX and RDX if we have args in them
+            bool savedRcx = totalArgs >= 1;
+            bool savedRdx = totalArgs >= 2;
+            bool savedR8 = totalArgs >= 3;
+            bool savedR9 = totalArgs >= 4;
+
+            if (savedRcx)
+                X64Emitter.MovRR(ref _code, VReg.R10, VReg.R1);  // R10 = RCX
+            if (savedRdx)
+                X64Emitter.MovRR(ref _code, VReg.R11, VReg.R2);  // R11 = RDX
+            // R8 and R9 need to be saved to stack if used
+            if (savedR8)
+                X64Emitter.Push(ref _code, VReg.R3);
+            if (savedR9)
+                X64Emitter.Push(ref _code, VReg.R4);
+
+            // Get assembly ID from registry entry
+            // CompiledMethodInfo layout: Token(4) + NativeCode(8) + ArgCount(1) + ReturnKind(1) + ... + AssemblyId at offset 32
+            CompiledMethodInfo* info = (CompiledMethodInfo*)method.RegistryEntry;
+            uint methodToken = info->Token;
+            uint assemblyId = info->AssemblyId;
+
+            // Set up args for EnsureCompiled(methodToken, assemblyId)
+            X64Emitter.MovRI32(ref _code, VReg.R1, (int)methodToken);    // RCX = methodToken
+            X64Emitter.MovRI32(ref _code, VReg.R2, (int)assemblyId);     // RDX = assemblyId
+
+            // Allocate shadow space and call EnsureCompiled
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)JitStubs.EnsureCompiledAddress);
+            X64Emitter.CallR(ref _code, VReg.R0);
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Restore saved args
+            if (savedR9)
+                X64Emitter.Pop(ref _code, VReg.R4);
+            if (savedR8)
+                X64Emitter.Pop(ref _code, VReg.R3);
+            if (savedRdx)
+                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R11);  // RDX = R11
+            if (savedRcx)
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R10);  // RCX = R10
+
+            // Now load NativeCode from registry entry
             // Layout: CompiledMethodInfo { uint Token; void* NativeCode; ... }
             // NativeCode is at offset 8 (after 4-byte Token + 4 bytes padding for alignment)
-            // if (_debugAssemblyId == 3)
-            // {
-            //     DebugConsole.Write("[JIT call] indirect tok=0x");
-            //     DebugConsole.WriteHex(token);
-            //     DebugConsole.Write(" entry=0x");
-            //     DebugConsole.WriteHex((ulong)method.RegistryEntry);
-            //     DebugConsole.Write(" NativeCode@entry=0x");
-            //     DebugConsole.WriteHex((ulong)((CompiledMethodInfo*)method.RegistryEntry)->NativeCode);
-            //     DebugConsole.WriteLine();
-            // }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.RegistryEntry);
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 8);  // Load [RAX+8] = NativeCode
         }

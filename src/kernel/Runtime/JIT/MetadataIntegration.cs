@@ -317,6 +317,10 @@ public static unsafe class MetadataIntegration
         public const uint UIntPtr = 0xF000000F;
         public const uint SByte = 0xF0000010;
 
+        // Delegate types - for multicast delegate support
+        public const uint Delegate = 0xF0000018;
+        public const uint MulticastDelegate = 0xF0000019;
+
         // Exception types - for JIT assemblies to reference AOT exception classes
         public const uint Exception = 0xF0000020;
         public const uint ArgumentException = 0xF0000021;
@@ -368,6 +372,9 @@ public static unsafe class MetadataIntegration
         // Exception types: extract MethodTables from instances
         // This allows JIT code to reference exception types from korlib
         count += RegisterExceptionTypes();
+
+        // Delegate types: extract from concrete delegate inheritance chain
+        count += RegisterDelegateTypes();
 
         DebugConsole.Write("[MetaInt] Registered ");
         DebugConsole.WriteDecimal((uint)count);
@@ -718,6 +725,45 @@ public static unsafe class MetadataIntegration
         MethodTable* formatExMT = (MethodTable*)formatEx.m_pMethodTable;
         if (formatExMT != null && RegisterType(WellKnownTypes.FormatException, formatExMT))
             count++;
+
+        return count;
+    }
+
+    // Dummy static method for delegate type registration
+    private static void DummyDelegateTarget() { }
+
+    /// <summary>
+    /// Register Delegate and MulticastDelegate types.
+    /// Since these are abstract, we get them by walking up from a concrete delegate type.
+    /// Concrete delegates (like Action, Func, etc.) inherit: ConcreteDelegate -> MulticastDelegate -> Delegate -> Object
+    /// </summary>
+    private static int RegisterDelegateTypes()
+    {
+        int count = 0;
+
+        // Create a concrete delegate to get the inheritance chain
+        // Use a static method reference instead of a lambda (lambdas create closures)
+        Action testDelegate = DummyDelegateTarget;
+        MethodTable* concreteMT = (MethodTable*)testDelegate.m_pMethodTable;
+
+        if (concreteMT != null)
+        {
+            // Walk up the inheritance chain
+            // ConcreteDelegate -> MulticastDelegate -> Delegate -> Object
+            MethodTable* multicastDelegateMT = concreteMT->GetParentType();
+            if (multicastDelegateMT != null)
+            {
+                if (RegisterType(WellKnownTypes.MulticastDelegate, multicastDelegateMT))
+                    count++;
+
+                MethodTable* delegateMT = multicastDelegateMT->GetParentType();
+                if (delegateMT != null)
+                {
+                    if (RegisterType(WellKnownTypes.Delegate, delegateMT))
+                        count++;
+                }
+            }
+        }
 
         return count;
     }
@@ -1588,15 +1634,23 @@ public static unsafe class MetadataIntegration
             paramCount = (byte)(((b & 0x3F) << 8) | sig[sigPos++]);
 
         // Try to look up in the AOT registry (pass paramCount, not including 'this')
+        DebugConsole.Write("[AotMemberRef] Looking up: ");
+        WriteByteString(typeName);
+        DebugConsole.Write(".");
+        WriteByteString(memberName);
+        DebugConsole.Write(" args=");
+        DebugConsole.WriteDecimal(paramCount);
+        DebugConsole.WriteLine();
+
         if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry))
         {
-            // DebugConsole.Write("[AotMemberRef] Found AOT method: ");
-            // WriteByteString(typeName);
-            // DebugConsole.Write(".");
-            // WriteByteString(memberName);
-            // DebugConsole.Write(" -> 0x");
-            // DebugConsole.WriteHex((ulong)entry.NativeCode);
-            // DebugConsole.WriteLine();
+            DebugConsole.Write("[AotMemberRef] Found AOT method: ");
+            WriteByteString(typeName);
+            DebugConsole.Write(".");
+            WriteByteString(memberName);
+            DebugConsole.Write(" -> 0x");
+            DebugConsole.WriteHex((ulong)entry.NativeCode);
+            DebugConsole.WriteLine();
 
             result.NativeCode = (void*)entry.NativeCode;
             result.ArgCount = entry.ArgCount;
@@ -1811,6 +1865,77 @@ public static unsafe class MetadataIntegration
             if (hasGenericContext)
             {
                 // Restore type arg context on failure
+                _typeTypeArgMTs[0] = savedTypeArg;
+                _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+            }
+            return false;
+        }
+
+        // Check for synthetic AOT method token (0xFA prefix)
+        // These are well-known korlib methods looked up via AotMethodRegistry
+        if ((methodToken & 0xFF000000) == 0xFA000000)
+        {
+            // The lower 24 bits don't contain the address - we need to look up again
+            // to get the full AotMethodEntry with all info
+            // Actually we can get the info directly from the MemberRef name
+            LoadedAssembly* srcAsm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+            if (srcAsm != null)
+            {
+                uint rowId = token & 0x00FFFFFF;
+                uint nameIdx = MetadataReader.GetMemberRefName(ref srcAsm->Tables, ref srcAsm->Sizes, rowId);
+                uint sigIdx = MetadataReader.GetMemberRefSignature(ref srcAsm->Tables, ref srcAsm->Sizes, rowId);
+                byte* memberName = MetadataReader.GetString(ref srcAsm->Metadata, nameIdx);
+                byte* sig = MetadataReader.GetBlob(ref srcAsm->Metadata, sigIdx, out uint sigLen);
+
+                // Get type name from the class reference
+                CodedIndex classRef = MetadataReader.GetMemberRefClass(ref srcAsm->Tables, ref srcAsm->Sizes, rowId);
+                if (classRef.Table == MetadataTableId.TypeRef)
+                {
+                    uint typeRefNameIdx = MetadataReader.GetTypeRefName(ref srcAsm->Tables, ref srcAsm->Sizes, classRef.RowId);
+                    uint typeRefNsIdx = MetadataReader.GetTypeRefNamespace(ref srcAsm->Tables, ref srcAsm->Sizes, classRef.RowId);
+                    byte* typeName = MetadataReader.GetString(ref srcAsm->Metadata, typeRefNameIdx);
+                    byte* typeNs = MetadataReader.GetString(ref srcAsm->Metadata, typeRefNsIdx);
+
+                    // Build full type name
+                    byte* fullTypeName = stackalloc byte[64];
+                    int pos = 0;
+                    for (int i = 0; typeNs != null && typeNs[i] != 0 && pos < 48; i++)
+                        fullTypeName[pos++] = typeNs[i];
+                    fullTypeName[pos++] = (byte)'.';
+                    for (int i = 0; typeName != null && typeName[i] != 0 && pos < 62; i++)
+                        fullTypeName[pos++] = typeName[i];
+                    fullTypeName[pos] = 0;
+
+                    byte argCount = (sig != null && sigLen > 1) ? sig[1] : (byte)0;
+
+                    if (AotMethodRegistry.TryLookup(fullTypeName, memberName, argCount, out AotMethodEntry entry))
+                    {
+                        result.NativeCode = (void*)entry.NativeCode;
+                        result.ArgCount = entry.ArgCount;
+                        result.ReturnKind = entry.ReturnKind;
+                        result.ReturnStructSize = 0;
+                        result.HasThis = entry.HasThis;
+                        result.IsValid = true;
+                        result.IsVirtual = entry.IsVirtual;
+                        result.VtableSlot = -1;
+                        result.MethodTable = null;
+                        result.IsInterfaceMethod = false;
+                        result.InterfaceMT = null;
+                        result.InterfaceMethodSlot = -1;
+                        result.RegistryEntry = null;
+
+                        if (hasGenericContext)
+                        {
+                            _typeTypeArgMTs[0] = savedTypeArg;
+                            _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+                        }
+                        return true;
+                    }
+                }
+            }
+            // AOT lookup failed
+            if (hasGenericContext)
+            {
                 _typeTypeArgMTs[0] = savedTypeArg;
                 _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
             }

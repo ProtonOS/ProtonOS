@@ -1546,6 +1546,13 @@ public static unsafe class AssemblyLoader
             }
         }
 
+        // Delegates: AOT MulticastDelegate only has 3 slots but korlib expects 5
+        // (3 Object slots + CombineImpl + RemoveImpl)
+        if (isDelegate && baseVtableSlots < 5)
+        {
+            baseVtableSlots = 5;  // Force 5 base slots for delegates
+        }
+
         // Count new virtual slots introduced by this type
         ushort newVirtualSlots = CountNewVirtualSlots(asm, rowId);
 
@@ -1602,7 +1609,9 @@ public static unsafe class AssemblyLoader
         {
             nint* srcVtable = baseMT->GetVtablePtr();
             nint* dstVtable = mt->GetVtablePtr();
-            for (int i = 0; i < baseVtableSlots; i++)
+            // Only copy up to actual source slots (not forced delegate slots)
+            int copySlots = baseMT->_usNumVtableSlots;
+            for (int i = 0; i < copySlots; i++)
             {
                 // Only copy if this slot is NOT overridden by this type
                 if (i < 3 && ((overriddenSlots >> i) & 1) != 0)
@@ -1613,7 +1622,7 @@ public static unsafe class AssemblyLoader
                 dstVtable[i] = srcVtable[i];
             }
         }
-        else if (baseVtableSlots == 3)
+        else if (baseVtableSlots == 3 || (isDelegate && baseMT == null))
         {
             // Direct Object base - get AOT vtable entries for Object's methods
             // But skip slots that are overridden
@@ -1624,6 +1633,17 @@ public static unsafe class AssemblyLoader
                 vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
             if ((overriddenSlots & 0x04) == 0)  // GetHashCode not overridden
                 vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+        }
+
+        // Delegates: populate slots 3 and 4 with CombineImpl and RemoveImpl from korlib
+        // These are virtual methods in korlib's MulticastDelegate that JIT delegates inherit
+        if (isDelegate)
+        {
+            nint* vtable = mt->GetVtablePtr();
+            // Slot 3: CombineImpl - from MulticastDelegate
+            vtable[3] = AotMethodRegistry.LookupByName("System.MulticastDelegate", "CombineImpl");
+            // Slot 4: RemoveImpl - from MulticastDelegate
+            vtable[4] = AotMethodRegistry.LookupByName("System.MulticastDelegate", "RemoveImpl");
         }
 
         DebugConsole.Write("[CreateMT] token=0x");
@@ -2326,6 +2346,23 @@ public static unsafe class AssemblyLoader
             uint typeDefToken;
             if (ResolveTypeRefToTypeDef(asm, extendsIdx.RowId, out targetAsm, out typeDefToken))
             {
+                // Well-known types (0xF0xxxxxx) have targetAsm = null
+                // Use MetadataIntegration.LookupType directly for them
+                if ((typeDefToken >> 24) == 0xF0)
+                {
+                    MethodTable* wkMt = JIT.MetadataIntegration.LookupType(typeDefToken);
+                    DebugConsole.Write("[GetBaseMT] WK token=0x");
+                    DebugConsole.WriteHex(typeDefToken);
+                    DebugConsole.Write(" MT=0x");
+                    DebugConsole.WriteHex((ulong)wkMt);
+                    if (wkMt != null)
+                    {
+                        DebugConsole.Write(" slots=");
+                        DebugConsole.WriteDecimal(wkMt->_usNumVtableSlots);
+                    }
+                    DebugConsole.WriteLine();
+                    return wkMt;
+                }
                 if (targetAsm != null && typeDefToken != 0)
                 {
                     return ResolveType(targetAsm->AssemblyId, typeDefToken);
@@ -2444,10 +2481,12 @@ public static unsafe class AssemblyLoader
                 // - offset 16: _helperObject (object, 8 bytes)
                 // - offset 24: _extraFunctionPointerOrData (nint, 8 bytes)
                 // - offset 32: _functionPointer (IntPtr, 8 bytes)
-                // Total: 40 bytes
+                // - offset 40: _invocationList (object[], 8 bytes) - MulticastDelegate
+                // - offset 48: _invocationCount (int, 8 bytes with padding) - MulticastDelegate
+                // Total: 56 bytes
                 if (IsDelegateBase(asm, extendsIdx))
                 {
-                    size = 40;  // Fixed delegate base size
+                    size = 56;  // Fixed delegate base size including MulticastDelegate fields
                 }
                 else
                 {
@@ -2955,6 +2994,25 @@ public static unsafe class AssemblyLoader
             if (targetName == null)
                 return false;
 
+            // PRIORITY: Check well-known types FIRST, before searching the target assembly
+            // This ensures korlib types like System.Delegate are always resolved to our
+            // MethodTables even when System.Runtime has its own TypeDef for them
+            if (IsSystemNamespace(targetNs))
+            {
+                uint wellKnownToken = GetWellKnownTypeToken(targetName);
+                if (wellKnownToken != 0)
+                {
+                    DebugConsole.Write("[AsmLoader] WellKnown type resolve: ");
+                    for (int i = 0; targetName[i] != 0 && i < 32; i++)
+                        DebugConsole.WriteChar((char)targetName[i]);
+                    DebugConsole.Write(" -> 0x");
+                    DebugConsole.WriteHex(wellKnownToken);
+                    DebugConsole.WriteLine();
+                    typeDefToken = wellKnownToken;
+                    return true;
+                }
+            }
+
             // Find the matching TypeDef in the target assembly by name
             uint typeDefCount = targetAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
 
@@ -3335,10 +3393,14 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.Char;
                 break;
 
-            case (byte)'D':  // Double
+            case (byte)'D':  // Double, Delegate
                 if (name[1] == 'o' && name[2] == 'u' && name[3] == 'b' && name[4] == 'l' &&
                     name[5] == 'e' && name[6] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.Double;
+                // Delegate
+                if (name[1] == 'e' && name[2] == 'l' && name[3] == 'e' && name[4] == 'g' &&
+                    name[5] == 'a' && name[6] == 't' && name[7] == 'e' && name[8] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Delegate;
                 break;
 
             case (byte)'O':  // Object
@@ -3412,6 +3474,15 @@ public static unsafe class AssemblyLoader
                     name[9] == 'e' && name[10] == 'p' && name[11] == 't' && name[12] == 'i' &&
                     name[13] == 'o' && name[14] == 'n' && name[15] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.FormatException;
+                break;
+
+            case (byte)'M':  // MulticastDelegate
+                // MulticastDelegate
+                if (name[1] == 'u' && name[2] == 'l' && name[3] == 't' && name[4] == 'i' &&
+                    name[5] == 'c' && name[6] == 'a' && name[7] == 's' && name[8] == 't' &&
+                    name[9] == 'D' && name[10] == 'e' && name[11] == 'l' && name[12] == 'e' &&
+                    name[13] == 'g' && name[14] == 'a' && name[15] == 't' && name[16] == 'e' && name[17] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.MulticastDelegate;
                 break;
         }
 
@@ -3770,6 +3841,12 @@ public static unsafe class AssemblyLoader
             // MemberRef on a TypeSpec (e.g., value type struct like DefaultInterpolatedStringHandler)
             // Parse the TypeSpec signature to get the underlying TypeDef/TypeRef
             uint typeSpecRow = classRef.RowId;
+            DebugConsole.Write("[AsmLoader] TypeSpec row ");
+            DebugConsole.WriteDecimal(typeSpecRow);
+            DebugConsole.Write(" for method ");
+            for (int i = 0; memberName != null && memberName[i] != 0 && i < 32; i++)
+                DebugConsole.WriteChar((char)memberName[i]);
+            DebugConsole.WriteLine();
             if (typeSpecRow == 0 || typeSpecRow > sourceAsm->Tables.RowCounts[(int)MetadataTableId.TypeSpec])
                 return false;
 
@@ -3808,12 +3885,20 @@ public static unsafe class AssemblyLoader
                     // TypeDef - same assembly
                     targetAsm = sourceAsm;
                     typeDefToken = underlyingToken;
+                    DebugConsole.Write("[AsmLoader] TypeSpec -> TypeDef 0x");
+                    DebugConsole.WriteHex(typeDefToken);
+                    DebugConsole.WriteLine();
                 }
                 else if (underlyingTable == 0x01)
                 {
                     // TypeRef - resolve to target assembly
                     if (!ResolveTypeRefToTypeDef(sourceAsm, underlyingRow, out targetAsm, out typeDefToken))
                         return false;
+                    DebugConsole.Write("[AsmLoader] TypeSpec -> TypeRef row ");
+                    DebugConsole.WriteDecimal(underlyingRow);
+                    DebugConsole.Write(" resolved to token 0x");
+                    DebugConsole.WriteHex(typeDefToken);
+                    DebugConsole.WriteLine();
                 }
                 else
                 {
@@ -3833,23 +3918,118 @@ public static unsafe class AssemblyLoader
             return false;
         }
 
+        // Check if this is a well-known type (0xF0xxxxxx) - use AOT registry for method lookup
+        // Well-known types don't have a target assembly, so handle them before the null check
+        if ((typeDefToken & 0xFF000000) == 0xF0000000)
+        {
+            DebugConsole.Write("[AsmLoader] WellKnown type 0x");
+            DebugConsole.WriteHex(typeDefToken);
+            DebugConsole.Write(" method ");
+            for (int i = 0; memberName != null && memberName[i] != 0 && i < 32; i++)
+                DebugConsole.WriteChar((char)memberName[i]);
+            DebugConsole.WriteLine();
+
+            // Well-known types don't have metadata, use AOT method registry
+            // Get the original type name - need to handle both TypeRef and TypeSpec
+            uint typeRefRow = 0;
+            if (classRef.Table == MetadataTableId.TypeRef)
+            {
+                typeRefRow = classRef.RowId;
+            }
+            else if (classRef.Table == MetadataTableId.TypeSpec)
+            {
+                // For TypeSpec, we need to find the underlying TypeRef
+                // Parse the TypeSpec signature to get the TypeRef row
+                uint typeSpecRow = classRef.RowId;
+                uint tsSigIdx = MetadataReader.GetTypeSpecSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeSpecRow);
+                byte* tsSig = MetadataReader.GetBlob(ref sourceAsm->Metadata, tsSigIdx, out uint tsSigLen);
+                if (tsSig != null && tsSigLen > 0)
+                {
+                    int tsPos = 0;
+                    byte elementType = tsSig[tsPos++];
+                    // Skip GENERICINST header if present
+                    if (elementType == 0x15 && tsPos < (int)tsSigLen)
+                    {
+                        tsPos++;  // Skip CLASS/VALUETYPE
+                        elementType = 0x12;
+                    }
+                    if ((elementType == 0x11 || elementType == 0x12) && tsPos < (int)tsSigLen)
+                    {
+                        uint underlyingToken = DecodeTypeDefOrRefOrSpec(tsSig, ref tsPos, tsSigLen);
+                        if ((underlyingToken >> 24) == 0x01)  // TypeRef
+                        {
+                            typeRefRow = underlyingToken & 0x00FFFFFF;
+                        }
+                    }
+                }
+            }
+
+            if (typeRefRow != 0)
+            {
+                uint typeRefNameIdx = MetadataReader.GetTypeRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeRefRow);
+                uint typeRefNsIdx = MetadataReader.GetTypeRefNamespace(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeRefRow);
+                byte* typeName = MetadataReader.GetString(ref sourceAsm->Metadata, typeRefNameIdx);
+                byte* typeNs = MetadataReader.GetString(ref sourceAsm->Metadata, typeRefNsIdx);
+
+                // Build full type name "System.Delegate"
+                // For simplicity, try AOT lookup with just the type name if it's in System namespace
+                if (typeName != null && IsSystemNamespace(typeNs))
+                {
+                    // Count arg count from signature for overload resolution
+                    byte argCount = 0;
+                    if (sig != null && sigLen > 1)
+                    {
+                        // sig[0] = calling convention, sig[1] = param count
+                        argCount = sig[1];
+                    }
+
+                    // Build "System.TypeName" for AOT lookup
+                    byte* fullTypeName = stackalloc byte[64];
+                    int pos = 0;
+                    // Copy namespace
+                    for (int i = 0; typeNs != null && typeNs[i] != 0 && pos < 48; i++)
+                        fullTypeName[pos++] = typeNs[i];
+                    fullTypeName[pos++] = (byte)'.';
+                    // Copy type name
+                    for (int i = 0; typeName[i] != 0 && pos < 62; i++)
+                        fullTypeName[pos++] = typeName[i];
+                    fullTypeName[pos] = 0;
+
+                    if (AotMethodRegistry.TryLookup(fullTypeName, memberName, argCount, out AotMethodEntry entry))
+                    {
+                        // Return a synthetic AOT method token
+                        // We'll use 0xFA (AOT marker) + unique identifier based on native code address
+                        methodToken = 0xFA000000 | (uint)(entry.NativeCode & 0x00FFFFFF);
+                        DebugConsole.Write("[AsmLoader] AOT found: code=0x");
+                        DebugConsole.WriteHex((ulong)entry.NativeCode);
+                        DebugConsole.WriteLine();
+                        return true;
+                    }
+                    else
+                    {
+                        DebugConsole.Write("[AsmLoader] AOT lookup FAILED for ");
+                        for (int i = 0; fullTypeName[i] != 0 && i < 64; i++)
+                            DebugConsole.WriteChar((char)fullTypeName[i]);
+                        DebugConsole.Write(".");
+                        for (int i = 0; memberName[i] != 0 && i < 32; i++)
+                            DebugConsole.WriteChar((char)memberName[i]);
+                        DebugConsole.Write(" args=");
+                        DebugConsole.WriteDecimal(argCount);
+                        DebugConsole.WriteLine();
+                    }
+                }
+            }
+            // If AOT lookup failed for well-known types, we can't fall through because
+            // there's no target assembly to search in
+            DebugConsole.WriteLine("[AsmLoader] Well-known type method not found in AOT registry");
+            return false;
+        }
+
+        // Normal lookup requires a target assembly - check for null now
         if (targetAsm == null || typeDefToken == 0)
             return false;
 
         targetAsmId = targetAsm->AssemblyId;
-
-        // Debug: Print resolved target
-        // DebugConsole.Write("[AsmLoader] -> resolved to asm ");
-        // DebugConsole.WriteDecimal(targetAsmId);
-        // DebugConsole.Write(" (");
-        // if (targetAsm->Name != null)
-        // {
-        //     for (int i = 0; targetAsm->Name[i] != 0 && i < 32; i++)
-        //         DebugConsole.WriteChar((char)targetAsm->Name[i]);
-        // }
-        // DebugConsole.Write("), TypeDef 0x");
-        // DebugConsole.WriteHex(typeDefToken);
-        // DebugConsole.WriteLine();
 
         // Find the matching MethodDef in the target type
         methodToken = FindMethodDefByName(sourceAsm, targetAsm, typeDefToken, memberName, sig, sigLen);
