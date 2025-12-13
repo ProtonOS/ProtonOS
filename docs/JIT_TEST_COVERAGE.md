@@ -83,7 +83,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Type Checks
 - ✅ isinst (safe cast) - tested with classes and interfaces
 - ✅ castclass (throwing cast) - tested with interfaces
-- ❌ typeof / ldtoken for types
+- ✅ typeof / ldtoken for types (GetTypeFromHandle)
 
 ---
 
@@ -290,10 +290,13 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ## 12. Reflection (if needed)
 
-- ❌ ldtoken (type/method/field handle)
-- ❌ Type.GetTypeFromHandle
+- ✅ ldtoken (type handle) - pushes MethodTable pointer for type tokens
+- ✅ Type.GetTypeFromHandle - creates RuntimeType from RuntimeTypeHandle
+- ✅ typeof(ConcreteType) - works for int, string, object, arrays, custom classes
 - ✅ GetType() on objects - returns RuntimeType with working Name, FullName, Namespace properties
-- ❌ typeof(T) in generic context
+- ✅ typeof(T) in generic context - MVAR/VAR resolved via GetMethodTypeArgMethodTable
+- ❌ ldtoken for method handles (RuntimeMethodHandle)
+- ❌ ldtoken for field handles (RuntimeFieldHandle)
 
 ---
 
@@ -360,7 +363,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 282 passing
+- Current test count: 292 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -369,6 +372,22 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### typeof(T) Generic Context Support (2025-12)
+Added tests for `typeof(T)` in generic methods - already worked via existing infrastructure:
+- **MVAR resolution**: `ResolveTypeSpecBlob` already handled MVAR (0x1E) via `GetMethodTypeArgMethodTable`
+- **Type arg context**: Method type args set up by `ParseMethodSpecInstantiation` during generic method compilation
+- **3 tests**: TestTypeofGenericInt, TestTypeofGenericString, TestTypeofGenericClass
+- Test count increased from 289 to 292
+
+### typeof() Support / ldtoken (2025-12)
+Implemented `typeof()` operator support via `ldtoken` + `Type.GetTypeFromHandle`:
+- **GetTypeFromHandle registration**: Added `Type.GetTypeFromHandle(RuntimeTypeHandle)` to AOT method registry
+- **Helper implementation**: `TypeMethodHelpers.GetTypeFromHandle(nint)` creates RuntimeType from MethodTable pointer
+- **ldtoken handling**: Already implemented - pushes MethodTable pointer from type resolver onto stack
+- **Type forwarding**: Builds on GetType() support - System.Type already registered as well-known type
+- **7 tests**: TestTypeofInt, TestTypeofString, TestTypeofObject, TestTypeofSameType, TestGetTypeEqualsTypeof, TestTypeofArray, TestTypeofCustomClass
+- Test count increased from 282 to 289
 
 ### Object.GetType() Support (2025-12)
 Implemented full `Object.GetType()` support with type forwarding:

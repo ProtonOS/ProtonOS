@@ -260,6 +260,13 @@ public static unsafe class AotMethodRegistry
             "System.Type", "get_Namespace",
             (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetNamespace,
             0, ReturnKind.IntPtr, true, true);  // Virtual
+
+        // Type.GetTypeFromHandle(RuntimeTypeHandle) - static method for typeof() support
+        // RuntimeTypeHandle is a struct with just nint _value, passed as native int
+        Register(
+            "System.Type", "GetTypeFromHandle",
+            (nint)(delegate*<nint, Type?>)&TypeMethodHelpers.GetTypeFromHandle,
+            1, ReturnKind.IntPtr, false, false);  // Static, non-virtual
     }
 
     /// <summary>
@@ -1015,6 +1022,20 @@ public static unsafe class TypeMethodHelpers
             chars[i] = (char)ptr[i];
 
         return new string(chars, 0, len);
+    }
+
+    /// <summary>
+    /// Create a Type from a RuntimeTypeHandle (MethodTable pointer).
+    /// This is the implementation for typeof() operator support.
+    /// The handle parameter is the MethodTable pointer from ldtoken.
+    /// </summary>
+    public static Type? GetTypeFromHandle(nint handle)
+    {
+        if (handle == 0)
+            return null;
+        // Create RuntimeType directly from MethodTable pointer
+        // Cast to System.Runtime.MethodTable* which RuntimeType expects
+        return new RuntimeType((System.Runtime.MethodTable*)handle);
     }
 }
 
