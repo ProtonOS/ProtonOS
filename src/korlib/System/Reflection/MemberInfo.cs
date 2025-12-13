@@ -144,6 +144,24 @@ namespace System.Reflection
     /// </summary>
     public abstract class MethodBase : MemberInfo
     {
+        /// <summary>
+        /// Gets a MethodBase from a RuntimeMethodHandle.
+        /// The handle contains (assemblyId &lt;&lt; 32) | methodToken.
+        /// </summary>
+        public static MethodBase? GetMethodFromHandle(RuntimeMethodHandle handle)
+        {
+            if (handle.Value == IntPtr.Zero)
+                return null;
+            // Decode: high 32 bits = assemblyId, low 32 bits = token
+            ulong value = (ulong)handle.Value;
+            uint assemblyId = (uint)(value >> 32);
+            uint token = (uint)(value & 0xFFFFFFFF);
+            if (assemblyId == 0 || token == 0)
+                return null;
+            // Create RuntimeMethodInfo - declaringType will be resolved later if needed
+            return new RuntimeMethodInfo(assemblyId, token, null!);
+        }
+
         public abstract RuntimeMethodHandle MethodHandle { get; }
         public abstract MethodAttributes Attributes { get; }
         public abstract ParameterInfo[] GetParameters();
@@ -196,6 +214,24 @@ namespace System.Reflection
     /// </summary>
     public abstract class FieldInfo : MemberInfo
     {
+        /// <summary>
+        /// Gets a FieldInfo from a RuntimeFieldHandle.
+        /// The handle contains (assemblyId &lt;&lt; 32) | fieldToken.
+        /// </summary>
+        public static FieldInfo? GetFieldFromHandle(RuntimeFieldHandle handle)
+        {
+            if (handle.Value == IntPtr.Zero)
+                return null;
+            // Decode: high 32 bits = assemblyId, low 32 bits = token
+            ulong value = (ulong)handle.Value;
+            uint assemblyId = (uint)(value >> 32);
+            uint token = (uint)(value & 0xFFFFFFFF);
+            if (assemblyId == 0 || token == 0)
+                return null;
+            // Create RuntimeFieldInfo - field details will be resolved via reflection exports
+            return new RuntimeFieldInfo(assemblyId, token, null!, 0, 0, false);
+        }
+
         public override MemberTypes MemberType => MemberTypes.Field;
         public abstract RuntimeFieldHandle FieldHandle { get; }
         public abstract Type FieldType { get; }

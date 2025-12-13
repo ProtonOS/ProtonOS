@@ -10,6 +10,18 @@ namespace System.Reflection
     /// </summary>
     public abstract class MethodBase : MemberInfo
     {
+        /// <summary>
+        /// Gets a MethodBase object for the constructor or method represented by the specified handle.
+        /// </summary>
+        /// <param name="handle">A RuntimeMethodHandle structure that contains the handle to the internal metadata representation of a constructor or method.</param>
+        /// <returns>A MethodBase object representing the method or constructor identified by handle.</returns>
+        /// <remarks>This is intercepted by the AOT registry at runtime.</remarks>
+        public static MethodBase? GetMethodFromHandle(RuntimeMethodHandle handle)
+        {
+            // AOT registry intercepts this call
+            throw new NotSupportedException("GetMethodFromHandle requires AOT runtime support");
+        }
+
         /// <summary>Gets the attributes associated with this method.</summary>
         public abstract MethodAttributes Attributes { get; }
 

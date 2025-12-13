@@ -267,6 +267,20 @@ public static unsafe class AotMethodRegistry
             "System.Type", "GetTypeFromHandle",
             (nint)(delegate*<nint, Type?>)&TypeMethodHelpers.GetTypeFromHandle,
             1, ReturnKind.IntPtr, false, false);  // Static, non-virtual
+
+        // MethodBase.GetMethodFromHandle(RuntimeMethodHandle) - static method for method handle support
+        // RuntimeMethodHandle is a struct with just nint _value, passed as native int
+        Register(
+            "System.Reflection.MethodBase", "GetMethodFromHandle",
+            (nint)(delegate*<nint, System.Reflection.MethodBase?>)&TypeMethodHelpers.GetMethodFromHandle,
+            1, ReturnKind.IntPtr, false, false);  // Static, non-virtual
+
+        // FieldInfo.GetFieldFromHandle(RuntimeFieldHandle) - static method for field handle support
+        // RuntimeFieldHandle is a struct with just nint _value, passed as native int
+        Register(
+            "System.Reflection.FieldInfo", "GetFieldFromHandle",
+            (nint)(delegate*<nint, System.Reflection.FieldInfo?>)&TypeMethodHelpers.GetFieldFromHandle,
+            1, ReturnKind.IntPtr, false, false);  // Static, non-virtual
     }
 
     /// <summary>
@@ -574,6 +588,10 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.RuntimeType"))
             return true;
         if (StringMatches(typeName, "System.Reflection.MemberInfo"))
+            return true;
+        if (StringMatches(typeName, "System.Reflection.MethodBase"))
+            return true;
+        if (StringMatches(typeName, "System.Reflection.FieldInfo"))
             return true;
 
         return false;
@@ -1036,6 +1054,42 @@ public static unsafe class TypeMethodHelpers
         // Create RuntimeType directly from MethodTable pointer
         // Cast to System.Runtime.MethodTable* which RuntimeType expects
         return new RuntimeType((System.Runtime.MethodTable*)handle);
+    }
+
+    /// <summary>
+    /// Create a MethodBase from a RuntimeMethodHandle.
+    /// The handle contains (assemblyId &lt;&lt; 32) | methodToken.
+    /// </summary>
+    public static System.Reflection.MethodBase? GetMethodFromHandle(nint handle)
+    {
+        if (handle == 0)
+            return null;
+        // Decode: high 32 bits = assemblyId, low 32 bits = token
+        ulong value = (ulong)handle;
+        uint assemblyId = (uint)(value >> 32);
+        uint token = (uint)(value & 0xFFFFFFFF);
+        if (assemblyId == 0 || token == 0)
+            return null;
+        // Create RuntimeMethodInfo - declaringType will be resolved later if needed
+        return new System.Reflection.RuntimeMethodInfo(assemblyId, token, null!);
+    }
+
+    /// <summary>
+    /// Create a FieldInfo from a RuntimeFieldHandle.
+    /// The handle contains (assemblyId &lt;&lt; 32) | fieldToken.
+    /// </summary>
+    public static System.Reflection.FieldInfo? GetFieldFromHandle(nint handle)
+    {
+        if (handle == 0)
+            return null;
+        // Decode: high 32 bits = assemblyId, low 32 bits = token
+        ulong value = (ulong)handle;
+        uint assemblyId = (uint)(value >> 32);
+        uint token = (uint)(value & 0xFFFFFFFF);
+        if (assemblyId == 0 || token == 0)
+            return null;
+        // Create RuntimeFieldInfo - field details will be resolved via reflection exports
+        return new System.Reflection.RuntimeFieldInfo(assemblyId, token, null!, 0, 0, false);
     }
 }
 

@@ -295,8 +295,10 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ typeof(ConcreteType) - works for int, string, object, arrays, custom classes
 - ✅ GetType() on objects - returns RuntimeType with working Name, FullName, Namespace properties
 - ✅ typeof(T) in generic context - MVAR/VAR resolved via GetMethodTypeArgMethodTable
-- ❌ ldtoken for method handles (RuntimeMethodHandle)
-- ❌ ldtoken for field handles (RuntimeFieldHandle)
+- ✅ ldtoken for method handles - encodes (assemblyId << 32) | methodToken
+- ✅ ldtoken for field handles - encodes (assemblyId << 32) | fieldToken
+- ✅ MethodBase.GetMethodFromHandle - creates RuntimeMethodInfo from handle
+- ✅ FieldInfo.GetFieldFromHandle - creates RuntimeFieldInfo from handle
 
 ---
 
@@ -363,7 +365,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 292 passing
+- Current test count: 296 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -372,6 +374,19 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### ldtoken Method/Field Handle Support (2025-12)
+Implemented `ldtoken` for method and field handles:
+- **CompileLdtoken enhanced**: Now detects token type (TypeDef, TypeRef, TypeSpec, MethodDef, MethodSpec, FieldDef, MemberRef)
+- **Handle encoding**: Method/field tokens encoded as `(assemblyId << 32) | token` for later resolution
+- **GetMethodFromHandle**: Added to MethodBase in korlib/SystemRuntime and registered in AOT registry
+- **GetFieldFromHandle**: Added to FieldInfo in korlib/SystemRuntime and registered in AOT registry
+- **Type routing**: Added MethodBase and FieldInfo to IsWellKnownAotType for AOT dispatch
+- **RuntimeHandles**: Added RuntimeTypeHandle, RuntimeMethodHandle, RuntimeFieldHandle to SystemRuntime
+- **Extern alias**: Used `global,korlib` alias on SystemRuntime reference to disambiguate types
+- **conv.i fix**: Fixed CompileConv case 8 to not sign-extend 64-bit sources (was truncating high 32 bits)
+- **4 tests**: TestGetMethodFromHandleNull, TestGetFieldFromHandleNull, TestGetMethodFromHandleConstructed, TestGetFieldFromHandleConstructed
+- Test count increased from 292 to 296
 
 ### typeof(T) Generic Context Support (2025-12)
 Added tests for `typeof(T)` in generic methods - already worked via existing infrastructure:

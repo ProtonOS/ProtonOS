@@ -12,7 +12,10 @@
 
   <ItemGroup>
     <!-- Reference System.Runtime for cross-assembly testing -->
-    <ProjectReference Include="../SystemRuntime/System.Runtime.csproj" />
+    <!-- Use extern alias to disambiguate from .NET's System.Runtime, but also keep global -->
+    <ProjectReference Include="../SystemRuntime/System.Runtime.csproj">
+      <Aliases>global,korlib</Aliases>
+    </ProjectReference>
     <!-- Reference DDK for debug output -->
     <ProjectReference Include="../ddk/DDK.csproj" />
   </ItemGroup>

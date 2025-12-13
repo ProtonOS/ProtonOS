@@ -142,6 +142,18 @@ namespace System.Reflection
     /// </summary>
     public abstract class FieldInfo : MemberInfo
     {
+        /// <summary>
+        /// Gets a FieldInfo object for the field represented by the specified handle.
+        /// </summary>
+        /// <param name="handle">A RuntimeFieldHandle structure that contains the handle to the internal metadata representation of a field.</param>
+        /// <returns>A FieldInfo object representing the field identified by handle.</returns>
+        /// <remarks>This is intercepted by the AOT registry at runtime.</remarks>
+        public static FieldInfo? GetFieldFromHandle(RuntimeFieldHandle handle)
+        {
+            // AOT registry intercepts this call
+            throw new NotSupportedException("GetFieldFromHandle requires AOT runtime support");
+        }
+
         /// <summary>Gets a MemberTypes value indicating that this member is a field.</summary>
         public override MemberTypes MemberType => MemberTypes.Field;
 

@@ -2,7 +2,9 @@
 // This assembly exercises all Tier 0 JIT functionality with real executable code paths.
 // Each test method returns a result that can be validated by the kernel.
 
+extern alias korlib;
 using ProtonOS.DDK.Kernel;
+using KorlibReflection = korlib::System.Reflection;
 
 namespace FullTest;
 
@@ -557,6 +559,11 @@ public static class TestRunner
         RecordResult("ObjectTests.TestTypeofGenericInt", ObjectTests.TestTypeofGenericInt() == 1);
         RecordResult("ObjectTests.TestTypeofGenericString", ObjectTests.TestTypeofGenericString() == 1);
         RecordResult("ObjectTests.TestTypeofGenericClass", ObjectTests.TestTypeofGenericClass() == 1);
+        // RuntimeMethodHandle / RuntimeFieldHandle tests (using extern alias)
+        RecordResult("ObjectTests.TestGetMethodFromHandleNull", ObjectTests.TestGetMethodFromHandleNull() == 1);
+        RecordResult("ObjectTests.TestGetFieldFromHandleNull", ObjectTests.TestGetFieldFromHandleNull() == 1);
+        RecordResult("ObjectTests.TestGetMethodFromHandleConstructed", ObjectTests.TestGetMethodFromHandleConstructed() == 1);
+        RecordResult("ObjectTests.TestGetFieldFromHandleConstructed", ObjectTests.TestGetFieldFromHandleConstructed() == 1);
     }
 
     private static void RunArrayTests()
@@ -1438,6 +1445,69 @@ public static class ObjectTests
     {
         Type t = GetTypeOf<GetTypeTestClass>();
         if ((object)t == null) return 0;
+        return 1;
+    }
+
+    // =========================================================================
+    // RuntimeMethodHandle / RuntimeFieldHandle tests
+    // =========================================================================
+    // Using extern alias 'korlib' to disambiguate from .NET's System.Runtime
+
+    /// <summary>
+    /// Test GetMethodFromHandle with null handle returns null
+    /// </summary>
+    public static unsafe int TestGetMethodFromHandleNull()
+    {
+        // Create a zero handle by casting from nint
+        nint zero = 0;
+        var handle = *(korlib::System.RuntimeMethodHandle*)&zero;
+        // Use korlib's MethodBase which gets routed to our AOT helper
+        var method = KorlibReflection.MethodBase.GetMethodFromHandle(handle);
+        return method == null ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test GetFieldFromHandle with null handle returns null
+    /// </summary>
+    public static unsafe int TestGetFieldFromHandleNull()
+    {
+        // Create a zero handle by casting from nint
+        nint zero = 0;
+        var handle = *(korlib::System.RuntimeFieldHandle*)&zero;
+        // Use korlib's FieldInfo which gets routed to our AOT helper
+        var field = KorlibReflection.FieldInfo.GetFieldFromHandle(handle);
+        return field == null ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test GetMethodFromHandle with constructed handle (assemblyId|token)
+    /// </summary>
+    public static unsafe int TestGetMethodFromHandleConstructed()
+    {
+        // Construct a handle: (assemblyId << 32) | methodToken
+        // Assembly ID 3 is typically FullTest.dll, token 0x06000001 is first method
+        nint handleValue = unchecked((nint)(((ulong)3 << 32) | 0x06000001));
+        var handle = *(korlib::System.RuntimeMethodHandle*)&handleValue;
+        object? method = KorlibReflection.MethodBase.GetMethodFromHandle(handle);
+        // Should return a MethodBase (not null) - use object reference check
+        if (method == null)
+            return 0;
+        return 1;
+    }
+
+    /// <summary>
+    /// Test GetFieldFromHandle with constructed handle (assemblyId|token)
+    /// </summary>
+    public static unsafe int TestGetFieldFromHandleConstructed()
+    {
+        // Construct a handle: (assemblyId << 32) | fieldToken
+        // Assembly ID 3 is typically FullTest.dll
+        nint handleValue = unchecked((nint)(((ulong)3 << 32) | 0x04000001));
+        var handle = *(korlib::System.RuntimeFieldHandle*)&handleValue;
+        object? field = KorlibReflection.FieldInfo.GetFieldFromHandle(handle);
+        // Should return a FieldInfo (not null) - use object reference check
+        if (field == null)
+            return 0;
         return 1;
     }
 }

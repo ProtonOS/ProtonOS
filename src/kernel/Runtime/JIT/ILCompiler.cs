@@ -3222,23 +3222,26 @@ public unsafe struct ILCompiler
                 break;
 
             case 8:
-                // conv.i8 (signed): sign-extend from 32-bit to 64-bit
-                // conv.u8 (unsigned): zero-extend from 32-bit to 64-bit
-                if (signed)
+                // conv.i8/conv.i (signed): sign-extend from 32-bit to 64-bit if needed
+                // conv.u8/conv.u (unsigned): zero-extend from 32-bit to 64-bit if needed
+                if (srcIs32Bit)
                 {
-                    // MOVSXD RAX, EAX - sign-extend dword to qword
-                    _code.EmitByte(0x48);  // REX.W
-                    _code.EmitByte(0x63);
-                    _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                    if (signed)
+                    {
+                        // MOVSXD RAX, EAX - sign-extend dword to qword
+                        _code.EmitByte(0x48);  // REX.W
+                        _code.EmitByte(0x63);
+                        _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                    }
+                    else
+                    {
+                        // conv.u8 from Int32: zero-extend by clearing upper 32 bits
+                        // MOV EAX, EAX - writing to 32-bit reg zeros upper 32 bits
+                        _code.EmitByte(0x89);
+                        _code.EmitByte(0xC0);  // ModRM: EAX, EAX
+                    }
                 }
-                else if (srcIs32Bit)
-                {
-                    // conv.u8 from Int32: zero-extend by clearing upper 32 bits
-                    // MOV EAX, EAX - writing to 32-bit reg zeros upper 32 bits
-                    _code.EmitByte(0x89);
-                    _code.EmitByte(0xC0);  // ModRM: EAX, EAX
-                }
-                // For conv.u8 from 64-bit source: no-op, preserve full value
+                // For 64-bit source: no-op, preserve full value
                 break;
         }
 
@@ -8918,27 +8921,65 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileLdtoken(uint token)
     {
-        // For testing purposes, treat the token as a direct pointer value
-        // In production, this would resolve to:
-        // - For types: the MethodTable pointer (RuntimeTypeHandle)
-        // - For methods: the method descriptor (RuntimeMethodHandle)
-        // - For fields: the field descriptor (RuntimeFieldHandle)
+        // ldtoken can reference types, methods, or fields
+        // - For types: return MethodTable pointer (RuntimeTypeHandle)
+        // - For methods: return (assemblyId << 32) | token (RuntimeMethodHandle)
+        // - For fields: return (assemblyId << 32) | token (RuntimeFieldHandle)
         //
         // The loaded value can then be used with:
         // - Type.GetTypeFromHandle() for types
         // - MethodBase.GetMethodFromHandle() for methods
         // - FieldInfo.GetFieldFromHandle() for fields
 
+        byte tableId = (byte)(token >> 24);
         ulong handleValue = token;
 
-        // If we have a type resolver, try to resolve the token
-        if (_typeResolver != null)
+        switch (tableId)
         {
-            void* mtPtr;
-            if (_typeResolver(token, out mtPtr) && mtPtr != null)
-            {
-                handleValue = (ulong)mtPtr;
-            }
+            case 0x01:  // TypeRef
+            case 0x02:  // TypeDef
+            case 0x1B:  // TypeSpec
+                // Type token - resolve to MethodTable pointer
+                if (_typeResolver != null)
+                {
+                    void* mtPtr;
+                    if (_typeResolver(token, out mtPtr) && mtPtr != null)
+                    {
+                        handleValue = (ulong)mtPtr;
+                    }
+                }
+                break;
+
+            case 0x04:  // FieldDef
+                // Field token - encode as (assemblyId << 32) | token
+                handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                break;
+
+            case 0x06:  // MethodDef
+            case 0x2B:  // MethodSpec
+                // Method token - encode as (assemblyId << 32) | token
+                handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                break;
+
+            case 0x0A:  // MemberRef - could be method or field
+                // Try field resolver first, then assume method
+                if (_fieldResolver != null)
+                {
+                    ResolvedField field;
+                    if (_fieldResolver(token, out field) && field.IsValid)
+                    {
+                        // It's a field
+                        handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                        break;
+                    }
+                }
+                // Assume it's a method reference
+                handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                break;
+
+            default:
+                // Unknown token type - just use the raw token
+                break;
         }
 
         // Push the handle onto the stack
