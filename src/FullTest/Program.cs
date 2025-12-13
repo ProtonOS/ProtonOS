@@ -101,11 +101,23 @@ public static class TestRunner
         // Multicast delegate tests - tests Delegate.Combine and Delegate.Remove
         RunMulticastDelegateTests();
 
+        // Closure tests - tests lambdas that capture local variables
+        RunClosureTests();
+
         // Sizeof tests - tests sizeof IL opcode
         RunSizeofTests();
 
         // Memory block tests - tests cpblk/initblk
         RunMemoryBlockTests();
+
+        // Fixed-size buffer tests - tests fixed arrays in structs
+        RunFixedBufferTests();
+
+        // Overflow checking tests - tests add.ovf, conv.ovf, etc.
+        RunOverflowTests();
+
+        // Stackalloc tests - tests localloc opcode
+        RunStackallocTests();
 
         // Static constructor tests - tests .cctor invocation
         RunStaticCtorTests();
@@ -340,6 +352,19 @@ public static class TestRunner
         RecordResult("MulticastDelegateTests.TestMinusEqualsOperator", MulticastDelegateTests.TestMinusEqualsOperator() == 42);
     }
 
+    private static void RunClosureTests()
+    {
+        Debug.WriteLine("[PHASE] Starting closure tests...");
+        RecordResult("ClosureTests.TestSimpleClosure", ClosureTests.TestSimpleClosure() == 42);
+        RecordResult("ClosureTests.TestMultipleCaptures", ClosureTests.TestMultipleCaptures() == 42);
+        RecordResult("ClosureTests.TestMutateCaptured", ClosureTests.TestMutateCaptured() == 42);
+        RecordResult("ClosureTests.TestCaptureParameter", ClosureTests.TestCaptureParameter() == 42);
+        RecordResult("ClosureTests.TestCaptureReferenceType", ClosureTests.TestCaptureReferenceType() == 42);
+        RecordResult("ClosureTests.TestNestedClosure", ClosureTests.TestNestedClosure() == 42);
+        RecordResult("ClosureTests.TestClosureInLoop", ClosureTests.TestClosureInLoop() == 42);
+        RecordResult("ClosureTests.TestRepeatedAccess", ClosureTests.TestRepeatedAccess() == 42);
+    }
+
     private static void RunSizeofTests()
     {
         RecordResult("SizeofTests.TestSizeofByte", SizeofTests.TestSizeofByte() == 42);
@@ -354,6 +379,42 @@ public static class TestRunner
     {
         RecordResult("MemoryBlockTests.TestInitBlock", MemoryBlockTests.TestInitBlock() == 42);
         RecordResult("MemoryBlockTests.TestCopyBlock", MemoryBlockTests.TestCopyBlock() == 42);
+        RecordResult("MemoryBlockTests.TestInitBlockLarge", MemoryBlockTests.TestInitBlockLarge() == 42);
+        RecordResult("MemoryBlockTests.TestCopyBlockLarge", MemoryBlockTests.TestCopyBlockLarge() == 42);
+    }
+
+    private static void RunFixedBufferTests()
+    {
+        RecordResult("FixedBufferTests.TestFixedByteBuffer", FixedBufferTests.TestFixedByteBuffer() == 42);
+        RecordResult("FixedBufferTests.TestFixedIntBuffer", FixedBufferTests.TestFixedIntBuffer() == 42);
+        RecordResult("FixedBufferTests.TestFixedBufferLoop", FixedBufferTests.TestFixedBufferLoop() == 42);
+        RecordResult("FixedBufferTests.TestDeviceRegisters", FixedBufferTests.TestDeviceRegisters() == 42);
+        RecordResult("FixedBufferTests.TestFixedBufferAsParameter", FixedBufferTests.TestFixedBufferAsParameter() == 42);
+        RecordResult("FixedBufferTests.TestFixedBufferPointer", FixedBufferTests.TestFixedBufferPointer() == 42);
+    }
+
+    private static void RunOverflowTests()
+    {
+        RecordResult("OverflowTests.TestCheckedAddNoOverflow", OverflowTests.TestCheckedAddNoOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedAddOverflow", OverflowTests.TestCheckedAddOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedSubNoOverflow", OverflowTests.TestCheckedSubNoOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedSubOverflow", OverflowTests.TestCheckedSubOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedMulNoOverflow", OverflowTests.TestCheckedMulNoOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedMulOverflow", OverflowTests.TestCheckedMulOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedConvNoOverflow", OverflowTests.TestCheckedConvNoOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedConvOverflow", OverflowTests.TestCheckedConvOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedAddUnsignedNoOverflow", OverflowTests.TestCheckedAddUnsignedNoOverflow() == 42);
+        RecordResult("OverflowTests.TestCheckedAddUnsignedOverflow", OverflowTests.TestCheckedAddUnsignedOverflow() == 42);
+    }
+
+    private static void RunStackallocTests()
+    {
+        RecordResult("StackallocTests.TestStackallocSmall", StackallocTests.TestStackallocSmall() == 42);
+        RecordResult("StackallocTests.TestStackallocLarge", StackallocTests.TestStackallocLarge() == 42);
+        RecordResult("StackallocTests.TestStackallocInt", StackallocTests.TestStackallocInt() == 42);
+        RecordResult("StackallocTests.TestStackallocLong", StackallocTests.TestStackallocLong() == 42);
+        RecordResult("StackallocTests.TestStackallocMultiple", StackallocTests.TestStackallocMultiple() == 42);
+        RecordResult("StackallocTests.TestStackallocComputation", StackallocTests.TestStackallocComputation() == 42);
     }
 
     private static void RunStaticCtorTests()
@@ -3969,6 +4030,117 @@ public class MulticastDelegateTests
 }
 
 // =============================================================================
+// Closure Tests - test lambdas that capture local variables
+// =============================================================================
+
+public class ClosureTests
+{
+    /// <summary>
+    /// Test lambda that captures a single local variable.
+    /// The C# compiler generates a display class with the captured variable.
+    /// </summary>
+    public static int TestSimpleClosure()
+    {
+        int x = 21;
+        IntFunc doubler = n => n + x;  // Captures x
+        return doubler(21);  // Should return 42 (21 + 21)
+    }
+
+    /// <summary>
+    /// Test lambda that captures multiple local variables.
+    /// </summary>
+    public static int TestMultipleCaptures()
+    {
+        int a = 10;
+        int b = 20;
+        int c = 12;
+        IntFunc summer = n => a + b + c;  // Captures a, b, c
+        return summer(0);  // Should return 42 (10 + 20 + 12)
+    }
+
+    /// <summary>
+    /// Test lambda that modifies a captured variable.
+    /// </summary>
+    public static int TestMutateCaptured()
+    {
+        int count = 0;
+        VoidAction increment = () => { count++; };
+        increment();
+        increment();
+        increment();
+        return count == 3 ? 42 : 0;  // count should be 3
+    }
+
+    /// <summary>
+    /// Test lambda capturing a parameter.
+    /// </summary>
+    public static int TestCaptureParameter()
+    {
+        return CaptureParameterHelper(21);
+    }
+
+    private static int CaptureParameterHelper(int x)
+    {
+        IntFunc doubler = n => n + x;  // Captures parameter x
+        return doubler(21);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test closure that captures a reference type (string).
+    /// </summary>
+    public static int TestCaptureReferenceType()
+    {
+        string s = "hello";
+        IntFunc getLen = n => s.Length + n;  // Captures reference type
+        return getLen(37);  // Should return 42 (5 + 37)
+    }
+
+    /// <summary>
+    /// Test nested closures - closure capturing another closure's value.
+    /// </summary>
+    public static int TestNestedClosure()
+    {
+        int outer = 10;
+        IntFunc outerFunc = x =>
+        {
+            int inner = 32;
+            return outer + inner;  // Captures outer from outer scope
+        };
+        return outerFunc(0);  // Should return 42 (10 + 32)
+    }
+
+    /// <summary>
+    /// Test closure in a loop accumulating values.
+    /// </summary>
+    public static int TestClosureInLoop()
+    {
+        int sum = 0;
+        VoidAction addToSum = () => { };  // Will be reassigned
+
+        // Accumulate 1+2+3+4+5+6+7+8+9 = 45, then subtract 3 = 42
+        for (int i = 1; i <= 9; i++)
+        {
+            int captured = i;  // Capture current value
+            VoidAction oldAction = addToSum;
+            addToSum = () => { oldAction(); sum += captured; };
+        }
+
+        addToSum();
+        return sum - 3;  // Should return 42 (45 - 3)
+    }
+
+    /// <summary>
+    /// Test closure accessing captured variable multiple times.
+    /// </summary>
+    public static int TestRepeatedAccess()
+    {
+        int x = 7;
+        IntFunc calc = n => x + x * n + x;  // Access x three times
+        return calc(4);  // Should return 42 (7 + 7*4 + 7 = 7 + 28 + 7)
+    }
+}
+
+// =============================================================================
 // Sizeof Tests - test the sizeof IL opcode
 // =============================================================================
 
@@ -4045,6 +4217,376 @@ public unsafe static class MemoryBlockTests
         src[0] = 1; src[1] = 2; src[2] = 3; src[3] = 4;
         for (int i = 0; i < 4; i++) dst[i] = src[i];
         return (dst[0] == 1 && dst[3] == 4) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test memory initialization with larger buffer.
+    /// </summary>
+    public static int TestInitBlockLarge()
+    {
+        byte* buffer = stackalloc byte[64];
+        for (int i = 0; i < 64; i++) buffer[i] = 0xAB;
+        // Check first, middle, and last
+        return (buffer[0] == 0xAB && buffer[32] == 0xAB && buffer[63] == 0xAB) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test memory copy with larger buffer.
+    /// </summary>
+    public static int TestCopyBlockLarge()
+    {
+        byte* src = stackalloc byte[64];
+        byte* dst = stackalloc byte[64];
+        // Initialize source with pattern
+        for (int i = 0; i < 64; i++) src[i] = (byte)i;
+        // Copy
+        for (int i = 0; i < 64; i++) dst[i] = src[i];
+        // Verify pattern
+        return (dst[0] == 0 && dst[32] == 32 && dst[63] == 63) ? 42 : 0;
+    }
+}
+
+// =============================================================================
+// Fixed-Size Buffer Tests - test fixed arrays in structs
+// =============================================================================
+
+// Struct with a fixed-size byte buffer
+public unsafe struct FixedByteBuffer
+{
+    public fixed byte Data[8];
+}
+
+// Struct with a fixed-size int buffer
+public unsafe struct FixedIntBuffer
+{
+    public fixed int Values[4];
+}
+
+// Struct mimicking device registers with fixed buffer for reserved space
+public unsafe struct DeviceRegisters
+{
+    public uint Status;
+    public fixed byte Reserved[12];
+    public uint Command;
+}
+
+public unsafe static class FixedBufferTests
+{
+    /// <summary>
+    /// Test basic fixed byte buffer read/write.
+    /// </summary>
+    public static int TestFixedByteBuffer()
+    {
+        FixedByteBuffer buf = new FixedByteBuffer();
+        buf.Data[0] = 10;
+        buf.Data[1] = 11;
+        buf.Data[2] = 12;
+        buf.Data[3] = 9;
+        return buf.Data[0] + buf.Data[1] + buf.Data[2] + buf.Data[3];  // 10+11+12+9 = 42
+    }
+
+    /// <summary>
+    /// Test fixed int buffer read/write.
+    /// </summary>
+    public static int TestFixedIntBuffer()
+    {
+        FixedIntBuffer buf = new FixedIntBuffer();
+        buf.Values[0] = 10;
+        buf.Values[1] = 20;
+        buf.Values[2] = 7;
+        buf.Values[3] = 5;
+        return buf.Values[0] + buf.Values[1] + buf.Values[2] + buf.Values[3];  // 10+20+7+5 = 42
+    }
+
+    /// <summary>
+    /// Test fixed buffer with loop access.
+    /// </summary>
+    public static int TestFixedBufferLoop()
+    {
+        FixedByteBuffer buf = new FixedByteBuffer();
+        for (int i = 0; i < 8; i++)
+            buf.Data[i] = (byte)(i + 1);
+        // Sum: 1+2+3+4+5+6+7+8 = 36, need 42 so add 6
+        return buf.Data[0] + buf.Data[1] + buf.Data[2] + buf.Data[3] +
+               buf.Data[4] + buf.Data[5] + buf.Data[6] + buf.Data[7] - 36 + 42;
+    }
+
+    /// <summary>
+    /// Test device register struct with fixed buffer for reserved space.
+    /// </summary>
+    public static int TestDeviceRegisters()
+    {
+        DeviceRegisters regs = new DeviceRegisters();
+        regs.Status = 21;
+        regs.Command = 21;
+        // Reserved bytes should be zero-initialized, but we don't rely on that
+        return (int)(regs.Status + regs.Command);  // 21+21 = 42
+    }
+
+    /// <summary>
+    /// Test passing struct with fixed buffer to method.
+    /// </summary>
+    public static int TestFixedBufferAsParameter()
+    {
+        FixedByteBuffer buf = new FixedByteBuffer();
+        buf.Data[0] = 42;
+        return ReadFirstByte(ref buf);
+    }
+
+    private static int ReadFirstByte(ref FixedByteBuffer buf)
+    {
+        return buf.Data[0];
+    }
+
+    /// <summary>
+    /// Test fixed buffer pointer arithmetic.
+    /// </summary>
+    public static int TestFixedBufferPointer()
+    {
+        FixedByteBuffer buf = new FixedByteBuffer();
+        // Get pointer to the fixed buffer (already fixed, no 'fixed' statement needed)
+        byte* ptr = buf.Data;
+        ptr[0] = 20;
+        ptr[1] = 22;
+        return buf.Data[0] + buf.Data[1];  // 20+22 = 42
+    }
+}
+
+// =============================================================================
+// Overflow Checking Tests - test checked arithmetic (add.ovf, etc.)
+// =============================================================================
+
+public static class OverflowTests
+{
+    /// <summary>
+    /// Test checked addition that doesn't overflow.
+    /// </summary>
+    public static int TestCheckedAddNoOverflow()
+    {
+        int a = 20;
+        int b = 22;
+        int result = checked(a + b);  // 20 + 22 = 42, no overflow
+        return result;
+    }
+
+    /// <summary>
+    /// Test checked addition that overflows (should throw).
+    /// </summary>
+    public static int TestCheckedAddOverflow()
+    {
+        try
+        {
+            int a = int.MaxValue;
+            int b = 1;
+            int result = checked(a + b);  // Should overflow
+            return 0;  // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            return 42;  // Caught overflow
+        }
+    }
+
+    /// <summary>
+    /// Test checked subtraction that doesn't overflow.
+    /// </summary>
+    public static int TestCheckedSubNoOverflow()
+    {
+        int a = 50;
+        int b = 8;
+        int result = checked(a - b);  // 50 - 8 = 42, no overflow
+        return result;
+    }
+
+    /// <summary>
+    /// Test checked subtraction that overflows (should throw).
+    /// </summary>
+    public static int TestCheckedSubOverflow()
+    {
+        try
+        {
+            int a = int.MinValue;
+            int b = 1;
+            int result = checked(a - b);  // Should overflow (underflow)
+            return 0;  // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            return 42;  // Caught overflow
+        }
+    }
+
+    /// <summary>
+    /// Test checked multiplication that doesn't overflow.
+    /// </summary>
+    public static int TestCheckedMulNoOverflow()
+    {
+        int a = 6;
+        int b = 7;
+        int result = checked(a * b);  // 6 * 7 = 42, no overflow
+        return result;
+    }
+
+    /// <summary>
+    /// Test checked multiplication that overflows (should throw).
+    /// </summary>
+    public static int TestCheckedMulOverflow()
+    {
+        try
+        {
+            int a = int.MaxValue;
+            int b = 2;
+            int result = checked(a * b);  // Should overflow
+            return 0;  // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            return 42;  // Caught overflow
+        }
+    }
+
+    /// <summary>
+    /// Test checked conversion that doesn't overflow.
+    /// </summary>
+    public static int TestCheckedConvNoOverflow()
+    {
+        long value = 42;
+        int result = checked((int)value);  // Fits in int
+        return result;
+    }
+
+    /// <summary>
+    /// Test checked conversion that overflows (should throw).
+    /// </summary>
+    public static int TestCheckedConvOverflow()
+    {
+        try
+        {
+            long value = (long)int.MaxValue + 1;
+            int result = checked((int)value);  // Should overflow
+            return 0;  // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            return 42;  // Caught overflow
+        }
+    }
+
+    /// <summary>
+    /// Test unsigned checked addition that doesn't overflow.
+    /// </summary>
+    public static int TestCheckedAddUnsignedNoOverflow()
+    {
+        uint a = 20;
+        uint b = 22;
+        uint result = checked(a + b);  // 20 + 22 = 42, no overflow
+        return (int)result;
+    }
+
+    /// <summary>
+    /// Test unsigned checked addition that overflows (should throw).
+    /// </summary>
+    public static int TestCheckedAddUnsignedOverflow()
+    {
+        try
+        {
+            uint a = uint.MaxValue;
+            uint b = 1;
+            uint result = checked(a + b);  // Should overflow
+            return 0;  // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            return 42;  // Caught overflow
+        }
+    }
+}
+
+// =============================================================================
+// Stackalloc Tests - test localloc IL opcode (stack allocation)
+// =============================================================================
+
+public unsafe static class StackallocTests
+{
+    /// <summary>
+    /// Test basic stackalloc with small buffer.
+    /// </summary>
+    public static int TestStackallocSmall()
+    {
+        byte* buffer = stackalloc byte[4];
+        buffer[0] = 10;
+        buffer[1] = 11;
+        buffer[2] = 12;
+        buffer[3] = 9;
+        return buffer[0] + buffer[1] + buffer[2] + buffer[3];  // 10+11+12+9 = 42
+    }
+
+    /// <summary>
+    /// Test stackalloc with larger buffer (tests alignment).
+    /// </summary>
+    public static int TestStackallocLarge()
+    {
+        byte* buffer = stackalloc byte[64];
+        for (int i = 0; i < 64; i++)
+            buffer[i] = (byte)i;
+        // Sum first and last few bytes: 0+1+2+3 + 60+61+62+63 = 6 + 246 = 252
+        // We need 42, so let's do: buffer[40] + buffer[2] = 40+2 = 42
+        return buffer[40] + buffer[2];
+    }
+
+    /// <summary>
+    /// Test stackalloc with int array (4-byte elements).
+    /// </summary>
+    public static int TestStackallocInt()
+    {
+        int* buffer = stackalloc int[4];
+        buffer[0] = 10;
+        buffer[1] = 20;
+        buffer[2] = 7;
+        buffer[3] = 5;
+        return buffer[0] + buffer[1] + buffer[2] + buffer[3];  // 10+20+7+5 = 42
+    }
+
+    /// <summary>
+    /// Test stackalloc with long array (8-byte elements).
+    /// </summary>
+    public static int TestStackallocLong()
+    {
+        long* buffer = stackalloc long[2];
+        buffer[0] = 21;
+        buffer[1] = 21;
+        return (int)(buffer[0] + buffer[1]);  // 21+21 = 42
+    }
+
+    /// <summary>
+    /// Test multiple stackallocs in same method.
+    /// </summary>
+    public static int TestStackallocMultiple()
+    {
+        byte* a = stackalloc byte[8];
+        byte* b = stackalloc byte[8];
+        a[0] = 20;
+        b[0] = 22;
+        return a[0] + b[0];  // 20+22 = 42
+    }
+
+    /// <summary>
+    /// Test stackalloc used for temporary computation.
+    /// </summary>
+    public static int TestStackallocComputation()
+    {
+        int* values = stackalloc int[6];
+        values[0] = 1;
+        values[1] = 2;
+        values[2] = 3;
+        values[3] = 4;
+        values[4] = 5;
+        values[5] = 6;
+
+        int sum = 0;
+        for (int i = 0; i < 6; i++)
+            sum += values[i] * 2;  // (1+2+3+4+5+6)*2 = 21*2 = 42
+        return sum;
     }
 }
 

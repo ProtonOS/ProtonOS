@@ -1241,6 +1241,24 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// 32-bit add register to register: dst = dst + src (uses EAX/EDX, sets OF correctly for 32-bit)
+    /// </summary>
+    public static void Add32RR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        // No REX.W prefix - use 32-bit operand size
+        // Still need REX if using R8-R15 registers
+        byte rex = REX;
+        if ((byte)s >= 8) rex |= REX_R;
+        if ((byte)d >= 8) rex |= REX_B;
+        if (rex != REX)
+            code.EmitByte(rex);
+        code.EmitByte(0x01);  // ADD r/m32, r32
+        code.EmitByte(ModRM(0b11, (byte)((int)s & 7), (byte)((int)d & 7)));
+    }
+
+    /// <summary>
     /// Add immediate to register: dst = dst + imm
     /// </summary>
     public static void AddRI(ref CodeBuffer code, VReg dst, int imm)
@@ -1257,6 +1275,23 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// 32-bit subtract register from register: dst = dst - src (uses EAX/EDX, sets OF correctly for 32-bit)
+    /// </summary>
+    public static void Sub32RR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        // No REX.W prefix - use 32-bit operand size
+        byte rex = REX;
+        if ((byte)s >= 8) rex |= REX_R;
+        if ((byte)d >= 8) rex |= REX_B;
+        if (rex != REX)
+            code.EmitByte(rex);
+        code.EmitByte(0x29);  // SUB r/m32, r32
+        code.EmitByte(ModRM(0b11, (byte)((int)s & 7), (byte)((int)d & 7)));
+    }
+
+    /// <summary>
     /// Subtract immediate from register: dst = dst - imm
     /// </summary>
     public static void SubRI(ref CodeBuffer code, VReg dst, int imm)
@@ -1270,6 +1305,24 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     public static void ImulRR(ref CodeBuffer code, VReg dst, VReg src)
     {
         Mul(ref code, dst, src);
+    }
+
+    /// <summary>
+    /// 32-bit signed multiply: dst = dst * src (uses EAX/EDX, sets OF correctly for 32-bit)
+    /// </summary>
+    public static void Imul32RR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        var d = Map(dst);
+        var s = Map(src);
+        // No REX.W prefix - use 32-bit operand size
+        byte rex = REX;
+        if ((byte)d >= 8) rex |= REX_R;
+        if ((byte)s >= 8) rex |= REX_B;
+        if (rex != REX)
+            code.EmitByte(rex);
+        code.EmitByte(0x0F);
+        code.EmitByte(0xAF);  // IMUL r32, r/m32
+        code.EmitByte(ModRM(0b11, (byte)((int)d & 7), (byte)((int)s & 7)));
     }
 
     /// <summary>

@@ -214,10 +214,16 @@ public unsafe struct JITMethodInfo
         {
             // UNWIND_INFO header (4 bytes)
             // Byte 0: Version (3 bits) | Flags (5 bits)
+            // NOTE: We do NOT set UNW_FLAG_EHANDLER for JIT code!
+            // JIT code uses NativeAOT-style EH tables, not SEH personality routines.
+            // Setting UNW_FLAG_EHANDLER would cause the SEH dispatch path to call
+            // a non-existent handler at RVA 0, which re-enters the function.
             byte flags = 0;
             if (hasEHClauses)
             {
-                flags = (byte)((UnwindFlags.UNW_FLAG_EHANDLER | UnwindFlags.UNW_FLAG_UHANDLER) << 3);
+                // Use UNW_FLAG_UHANDLER to indicate unwind info, but NOT UNW_FLAG_EHANDLER
+                // The NativeAOT EH info is stored in the unwind block extension instead.
+                flags = (byte)(UnwindFlags.UNW_FLAG_UHANDLER << 3);
             }
             p[0] = (byte)(1 | flags);  // Version 1
 
@@ -230,14 +236,14 @@ public unsafe struct JITMethodInfo
             // Byte 3: Frame register (4 bits) | Frame offset (4 bits)
             p[3] = (byte)(FrameRegister | (FrameOffset << 4));
 
-            // After unwind codes, if we have handlers, add exception handler RVA
+            // After unwind codes, add handler info if we have handlers
             int offset = 4 + ((UnwindCodeCount + 1) & ~1) * 2;  // DWORD align
 
             if (hasEHClauses)
             {
-                // Exception handler RVA - we'll use a generic personality routine
-                // For now, just set to 0 - the lookup will use our custom method
-                *(uint*)(p + offset) = 0;  // Will be filled in during registration
+                // For UNW_FLAG_UHANDLER, we still need the handler RVA slot
+                // (Windows requires it), but it won't be called for EH dispatch
+                *(uint*)(p + offset) = 0;
                 offset += 4;
 
                 // NativeAOT unwind block extension
@@ -811,7 +817,7 @@ public unsafe struct JITMethodInfo
 /// </summary>
 public static unsafe class JITMethodRegistry
 {
-    private const int MaxMethods = 256;
+    private const int MaxMethods = 1024;
 
     // Storage for method info structures
     private static JITMethodInfo* _methods;

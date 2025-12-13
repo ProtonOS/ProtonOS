@@ -2798,58 +2798,124 @@ public unsafe struct ILCompiler
     // For signed: check OF (overflow flag) with JO (0x70)
     // For unsigned: check CF (carry flag) with JC (0x72)
 
+    /// <summary>
+    /// Check if an eval stack entry represents a 32-bit integer (Int32 or a small ValueType).
+    /// </summary>
+    private bool IsInt32Like(EvalStackEntry entry)
+    {
+        // Explicit Int32
+        if (entry.Kind == EvalStackKind.Int32)
+            return true;
+        // ValueType with 4-byte size (primitives like int loaded from locals)
+        if (entry.Kind == EvalStackKind.ValueType && entry.RawSize == 4)
+            return true;
+        return false;
+    }
+
     private bool CompileAddOvf(bool unsigned)
     {
+        // Check operand types before popping - use 32-bit ops for Int32-like operands
+        var entry1 = PeekEntryAt(1);  // First operand (deeper in stack)
+        var entry2 = PeekEntry();     // Second operand (top of stack)
+        bool use32Bit = IsInt32Like(entry1) && IsInt32Like(entry2);
+
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         PopEntry(); PopEntry();
-        X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+
+        if (use32Bit)
+        {
+            // 32-bit add sets OF correctly for 32-bit overflow
+            X64Emitter.Add32RR(ref _code, VReg.R0, VReg.R2);
+        }
+        else
+        {
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+        }
+
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushEntry(EvalStackEntry.NativeInt);
+        PushEntry(use32Bit ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileSubOvf(bool unsigned)
     {
+        // Check operand types before popping - use 32-bit ops for Int32-like operands
+        var entry1 = PeekEntryAt(1);  // First operand (deeper in stack)
+        var entry2 = PeekEntry();     // Second operand (top of stack)
+        bool use32Bit = IsInt32Like(entry1) && IsInt32Like(entry2);
+
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand (subtrahend)
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand (minuend)
         PopEntry(); PopEntry();
-        X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
+
+        if (use32Bit)
+        {
+            // 32-bit sub sets OF correctly for 32-bit overflow
+            X64Emitter.Sub32RR(ref _code, VReg.R0, VReg.R2);
+        }
+        else
+        {
+            X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
+        }
+
         // Check for overflow: JO for signed (OF=1), JC for unsigned (CF=1 = borrow)
         EmitJccToInt3(unsigned ? (byte)0x72 : (byte)0x70);
         X64Emitter.Push(ref _code, VReg.R0);
-        PushEntry(EvalStackEntry.NativeInt);
+        PushEntry(use32Bit ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileMulOvf(bool unsigned)
     {
+        // Check operand types before popping - use 32-bit ops for Int32-like operands
+        var entry1 = PeekEntryAt(1);  // First operand (deeper in stack)
+        var entry2 = PeekEntry();     // Second operand (top of stack)
+        bool use32Bit = IsInt32Like(entry1) && IsInt32Like(entry2);
+
         X64Emitter.Pop(ref _code, VReg.R2);  // Second operand
         X64Emitter.Pop(ref _code, VReg.R0);  // First operand
         PopEntry(); PopEntry();
 
         if (unsigned)
         {
-            // mul rdx: unsigned RAX * RDX -> RDX:RAX
-            // If RDX != 0 after, overflow occurred
-            // Encoding: REX.W + F7 /4 (mul r/m64)
-            _code.EmitByte(0x48);  // REX.W
-            _code.EmitByte(0xF7);  // MUL
-            _code.EmitByte(0xE2);  // ModRM: /4 rdx
+            if (use32Bit)
+            {
+                // 32-bit unsigned mul: eax * edx -> edx:eax
+                // Encoding: F7 /4 (mul r/m32, no REX.W)
+                _code.EmitByte(0xF7);  // MUL
+                _code.EmitByte(0xE2);  // ModRM: /4 edx
+            }
+            else
+            {
+                // 64-bit unsigned mul: rax * rdx -> rdx:rax
+                // Encoding: REX.W + F7 /4 (mul r/m64)
+                _code.EmitByte(0x48);  // REX.W
+                _code.EmitByte(0xF7);  // MUL
+                _code.EmitByte(0xE2);  // ModRM: /4 rdx
+            }
             // mul sets CF=OF=1 if high half is non-zero
             EmitJccToInt3(0x72);  // JC overflow
         }
         else
         {
-            // imul rax, rdx: signed, result in RAX, sets OF if overflow
-            X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
+            if (use32Bit)
+            {
+                // 32-bit signed mul sets OF correctly for 32-bit overflow
+                X64Emitter.Imul32RR(ref _code, VReg.R0, VReg.R2);
+            }
+            else
+            {
+                // 64-bit imul rax, rdx: signed, result in RAX, sets OF if overflow
+                X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
+            }
             EmitJccToInt3(0x70);  // JO overflow
         }
 
         X64Emitter.Push(ref _code, VReg.R0);
-        PushEntry(EvalStackEntry.NativeInt);
+        PushEntry(use32Bit ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3412,9 +3478,10 @@ public unsafe struct ILCompiler
         // The pattern: toggle the low bit of the opcode
 
         byte invertedJcc = (byte)(jccOpcode ^ 1);
-        _code.EmitByte(invertedJcc);  // Jcc_not (skip INT3)
-        _code.EmitByte(1);            // rel8 = +1 (skip 1 byte)
-        _code.EmitByte(0xCC);         // INT3
+        _code.EmitByte(invertedJcc);  // Jcc_not (skip INT 4)
+        _code.EmitByte(2);            // rel8 = +2 (skip 2 bytes for INT 4)
+        _code.EmitByte(0xCD);         // INT imm8
+        _code.EmitByte(0x04);         // 4 = overflow interrupt (throws OverflowException)
     }
 
     private bool CompileLdcI8(long value)
@@ -6008,8 +6075,14 @@ public unsafe struct ILCompiler
             // The exception dispatch code sets up the return address to be
             // the leave target address.
             // Funclet prolog did: push rbp; mov rbp, rdx
-            // So we need: pop rbp; ret
-            _code.EmitByte(0x5D);  // pop rbp
+            // We must NOT pop rbp because the leave target expects RBP to be
+            // the parent frame pointer (which was set from RDX). Instead, we
+            // skip over the saved rbp on the stack.
+            // Emit: add rsp, 8; ret
+            _code.EmitByte(0x48);  // REX.W
+            _code.EmitByte(0x83);  // add r/m64, imm8
+            _code.EmitByte(0xC4);  // ModRM: reg=0 (add), r/m=4 (RSP)
+            _code.EmitByte(0x08);  // imm8 = 8
             _code.EmitByte(0xC3);  // ret
         }
         else
@@ -9640,8 +9713,23 @@ public unsafe struct ILCompiler
                 PatchBranches();
 
                 // Emit funclet epilog (safety - endfinally/leave should have already emitted appropriate code)
-                _code.EmitByte(0x5D);  // pop rbp
-                _code.EmitByte(0xC3);  // ret
+                // For catch handlers, we use 'add rsp, 8; ret' to preserve RBP (parent frame pointer)
+                // For finally handlers, we use 'pop rbp; ret' to restore caller's RBP
+                if (isCatchHandler)
+                {
+                    // add rsp, 8; ret - skip saved rbp, keep RBP = parent frame pointer
+                    _code.EmitByte(0x48);  // REX.W
+                    _code.EmitByte(0x83);  // add r/m64, imm8
+                    _code.EmitByte(0xC4);  // ModRM: reg=0 (add), r/m=4 (RSP)
+                    _code.EmitByte(0x08);  // imm8 = 8
+                    _code.EmitByte(0xC3);  // ret
+                }
+                else
+                {
+                    // pop rbp; ret - restore caller's RBP for finally handlers
+                    _code.EmitByte(0x5D);  // pop rbp
+                    _code.EmitByte(0xC3);  // ret
+                }
 
                 int funcletCodeEnd = _code.Position;
                 int funcletCodeSize = funcletCodeEnd - funcletCodeStart;

@@ -53,6 +53,22 @@ namespace System.Runtime.CompilerServices
         public InlineArrayAttribute(int size) { }
     }
 
+    /// <summary>
+    /// Used by the C# compiler to mark fixed-size buffer fields.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field, Inherited = false)]
+    public sealed class FixedBufferAttribute : Attribute
+    {
+        public FixedBufferAttribute(Type elementType, int length)
+        {
+            ElementType = elementType;
+            Length = length;
+        }
+
+        public Type ElementType { get; }
+        public int Length { get; }
+    }
+
     public sealed class ExtensionAttribute : Attribute { }
 
     /// <summary>

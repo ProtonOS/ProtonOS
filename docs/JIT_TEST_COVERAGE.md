@@ -18,7 +18,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ and, or, xor
 - ✅ shl, shr, shr.un
 - ✅ Integer overflow (unchecked)
-- ⚠️ Overflow checking (add.ovf, etc.) - opcodes exist, untested
+- ✅ Overflow checking (add.ovf, sub.ovf, mul.ovf, conv.ovf.*) - INT 4 handler triggers OverflowException
 
 ### Comparisons & Branches
 - ✅ ceq, cgt, clt (signed/unsigned)
@@ -31,7 +31,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ conv.i1, conv.i2, conv.i4, conv.i8
 - ✅ conv.u1, conv.u2, conv.u4, conv.u8
 - ✅ conv.r4, conv.r8
-- ⚠️ conv.ovf.* (overflow checking) - untested
+- ✅ conv.ovf.* (overflow checking) - tested and working
 
 ---
 
@@ -127,7 +127,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Struct arrays
 - ✅ Struct with reference type fields (tested with StructWithRef containing string)
 - ✅ Explicit layout structs ([StructLayout(LayoutKind.Explicit)] with [FieldOffset])
-- ❌ Fixed-size buffers
+- ✅ Fixed-size buffers (6 tests: byte/int buffers, device registers, pointer access)
 
 ---
 
@@ -233,8 +233,11 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ -= operator (compiles to Delegate.Remove)
 
 ### Anonymous Methods / Lambdas
-- ❌ Closure capture
-- ❌ Display classes
+- ✅ Closure capture (capturing local variables and parameters)
+- ✅ Display classes (compiler-generated `<>c__DisplayClass` types)
+- ✅ Nested closures (inner lambda capturing outer scope)
+- ✅ Reference type capture (capturing strings, objects)
+- ✅ Mutation of captured variables
 
 ---
 
@@ -299,9 +302,9 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Pointer Operations
 - ✅ ldind.* (load indirect) - used in passing tests
 - ✅ stind.* (store indirect) - used in passing tests
-- ✅ localloc (stack allocation) - used in MemoryBlockTests
-- ⚠️ cpblk (memory copy) - implemented but untested (needs Unsafe.CopyBlock)
-- ⚠️ initblk (memory init) - implemented but untested (needs Unsafe.InitBlock)
+- ✅ localloc (stack allocation) - 6 dedicated tests (small/large buffers, int/long types, multiple allocations)
+- ✅ cpblk (memory copy) - tested via MemoryBlockTests (small and large buffers)
+- ✅ initblk (memory init) - tested via MemoryBlockTests (small and large buffers)
 
 ### Prefix Opcodes
 - ✅ constrained. (for value type virtcalls)
@@ -332,7 +335,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### P2 - Nice to Have
 7. Multi-dimensional arrays
 8. Reflection basics
-9. Overflow checking
+9. ✅ Overflow checking - implemented via INT 4 interrupt handler
 
 ---
 
@@ -344,6 +347,11 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 - `InterfaceTests` - Interface dispatch
 - `DelegateTests` - Delegates and function pointers
 - `CalliTests` - Indirect calls through function pointers (calli)
+- `MulticastDelegateTests` - Delegate.Combine and Delegate.Remove
+- `ClosureTests` - Lambdas with captured variables
+- `StackallocTests` - Stack allocation (localloc opcode)
+- `FixedBufferTests` - Fixed-size buffers in structs
+- `OverflowTests` - Overflow checking (checked arithmetic) operations
 - `NullableTests` - Nullable<T> operations
 - `StaticCtorTests` - Static constructor behavior
 - `AdvancedGenericTests` - Complex generic scenarios
@@ -352,7 +360,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 244 passing
+- Current test count: 276 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -361,6 +369,80 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Overflow Exception Support (2025-12)
+Implemented full overflow exception handling for checked arithmetic operations:
+- **INT 4 (Overflow Interrupt) handler**: x86 overflow operations (`jo`, `into`, `add.ovf`, etc.) trigger INT 4
+  - IDT handler converts vector 4 → OverflowException using NativeAOT exception dispatch
+  - Exception is caught by normal try/catch handlers
+- **Two critical fixes**:
+  1. **Funclet epilog**: Changed from `pop rbp; ret` to `add rsp, 8; ret` to preserve parent frame pointer
+     - Funclet prolog does `push rbp; mov rbp, rdx` (RDX = parent frame pointer)
+     - Old epilog restored wrong RBP; new epilog skips saved RBP and keeps RBP correct for leave target
+  2. **RSP calculation**: Changed from `searchContext.Rsp - 16` to `catchSearchContext.Rbp - 0x100`
+     - RSP calculation was overlapping with interrupt frame's SS field
+     - SS was being set to leave target address instead of 0x10 (kernel data segment)
+     - New calculation uses RBP-based offset safely within function's stack frame
+- **10 new tests** in OverflowTests:
+  - TestCheckedAddNoOverflow, TestCheckedAddOverflow
+  - TestCheckedSubNoOverflow, TestCheckedSubOverflow
+  - TestCheckedMulNoOverflow, TestCheckedMulOverflow
+  - TestCheckedConvNoOverflow, TestCheckedConvOverflow
+  - TestCheckedAddUnsignedNoOverflow, TestCheckedAddUnsignedOverflow
+- Test count increased from 266 to 276
+
+### Fixed-Size Buffer Support (2025-12)
+Added support and tests for fixed-size buffers (`fixed` arrays in structs):
+- Added `FixedBufferAttribute` to korlib's CompilerAttributes.cs
+- Fixed buffers work out-of-the-box (no JIT changes needed)
+- 6 new tests:
+  - TestFixedByteBuffer - basic byte array access
+  - TestFixedIntBuffer - int array access
+  - TestFixedBufferLoop - loop access pattern
+  - TestDeviceRegisters - device register struct pattern
+  - TestFixedBufferAsParameter - passing struct by ref
+  - TestFixedBufferPointer - pointer arithmetic
+- Test count increased from 260 to 266
+
+### Memory Block Tests (2025-12)
+Added tests for memory operations:
+- **MemoryBlockTests** expanded with large buffer tests:
+  - TestInitBlockLarge - 64-byte initialization
+  - TestCopyBlockLarge - 64-byte copy
+- cpblk/initblk now marked as ✅ (previously ⚠️)
+- Test count increased from 258 to 260
+
+### Stackalloc (localloc) Tests (2025-12)
+Added dedicated tests for stack allocation (`stackalloc` / `localloc` IL opcode):
+- Already implemented, but only indirectly tested via MemoryBlockTests
+- 6 new dedicated tests:
+  - TestStackallocSmall - 4-byte buffer
+  - TestStackallocLarge - 64-byte buffer (tests alignment)
+  - TestStackallocInt - int* buffer (4-byte elements)
+  - TestStackallocLong - long* buffer (8-byte elements)
+  - TestStackallocMultiple - multiple stackallocs in same method
+  - TestStackallocComputation - using stackalloc for temp computation
+- Test count increased from 252 to 258
+
+### Closure/Lambda Support (2025-12)
+Added full support for closures and lambdas that capture local variables:
+- **Display classes**: Compiler-generated `<>c__DisplayClass*` types work as regular reference types
+- **Variable capture**: Captured variables stored as fields on display class instances
+- **Instance delegates**: Lambda methods on display classes use instance delegate dispatch (target = display class instance)
+- **No JIT changes required**: Closures work out-of-the-box because:
+  1. Display classes are regular reference types (`newobj` creates them)
+  2. Field access (`ldfld`/`stfld`) works on display class fields
+  3. Instance delegates already supported (target object passed as first argument)
+- 8 new tests:
+  - TestSimpleClosure - capture single local variable
+  - TestMultipleCaptures - capture multiple local variables
+  - TestMutateCaptured - modify captured variable (count++)
+  - TestCaptureParameter - capture method parameter
+  - TestCaptureReferenceType - capture string (reference type)
+  - TestNestedClosure - inner closure captures outer scope
+  - TestClosureInLoop - closure chain in loop
+  - TestRepeatedAccess - multiple accesses to captured variable
+- Test count increased from 244 to 252
 
 ### Multicast Delegate Support (2025-12)
 Implemented `Delegate.Combine()` and `Delegate.Remove()` for event-like patterns:

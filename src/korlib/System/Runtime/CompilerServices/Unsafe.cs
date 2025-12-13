@@ -35,5 +35,23 @@ namespace System.Runtime.CompilerServices
         [Intrinsic]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static extern IntPtr ByteOffset<T>(ref readonly T origin, ref readonly T target);
+
+        // Memory block operations - these emit cpblk/initblk IL opcodes
+        [Intrinsic]
+        public static extern void CopyBlock(void* destination, void* source, uint byteCount);
+        [Intrinsic]
+        public static extern void CopyBlock(ref byte destination, ref byte source, uint byteCount);
+        [Intrinsic]
+        public static extern void CopyBlockUnaligned(void* destination, void* source, uint byteCount);
+        [Intrinsic]
+        public static extern void CopyBlockUnaligned(ref byte destination, ref byte source, uint byteCount);
+        [Intrinsic]
+        public static extern void InitBlock(void* startAddress, byte value, uint byteCount);
+        [Intrinsic]
+        public static extern void InitBlock(ref byte startAddress, byte value, uint byteCount);
+        [Intrinsic]
+        public static extern void InitBlockUnaligned(void* startAddress, byte value, uint byteCount);
+        [Intrinsic]
+        public static extern void InitBlockUnaligned(ref byte startAddress, byte value, uint byteCount);
     }
 }
