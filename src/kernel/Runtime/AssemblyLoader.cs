@@ -1464,6 +1464,40 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Get variance flags for an interface's generic type parameters.
+    /// Returns a packed uint where bits 0-1 are variance for param 0, bits 2-3 for param 1, etc.
+    /// Returns 0 if no variance (all invariant).
+    /// </summary>
+    private static uint GetInterfaceVariance(LoadedAssembly* asm, uint typeDefRowId)
+    {
+        uint varianceFlags = 0;
+        int genericParamCount = (int)asm->Tables.RowCounts[(int)MetadataTableId.GenericParam];
+
+        // Build the TypeOrMethodDef coded index for this TypeDef (tag=0 for TypeDef)
+        uint ownerCodedIndex = (typeDefRowId << 1) | 0;  // TypeDef uses tag 0
+
+        // Scan GenericParam rows looking for those owned by this TypeDef
+        for (int i = 1; i <= genericParamCount; i++)
+        {
+            uint owner = MetadataReader.GetGenericParamOwner(ref asm->Tables, ref asm->Sizes, (uint)i, ref asm->Tables);
+            if (owner == ownerCodedIndex)
+            {
+                // This generic param belongs to our type
+                ushort paramNumber = MetadataReader.GetGenericParamNumber(ref asm->Tables, ref asm->Sizes, (uint)i);
+                ushort paramFlags = MetadataReader.GetGenericParamFlags(ref asm->Tables, ref asm->Sizes, (uint)i);
+                ushort variance = (ushort)(paramFlags & MetadataReader.GenericParamVarianceMask);
+
+                if (variance != 0 && paramNumber < 16)  // Max 16 type params
+                {
+                    varianceFlags |= (uint)(variance << (paramNumber * 2));
+                }
+            }
+        }
+
+        return varianceFlags;
+    }
+
+    /// <summary>
     /// Create a MethodTable on-demand for a TypeDef in a JIT-compiled assembly.
     /// This handles types that weren't pre-registered during assembly loading.
     /// Allocates vtable slots and copies base class vtable entries.
@@ -1540,12 +1574,25 @@ public static unsafe class AssemblyLoader
             flags |= (ushort)(MTFlags.IsValueType >> 16);
         if (isDelegate)
             flags |= (ushort)(MTFlags.IsDelegate >> 16);
+
+        // For interfaces, check for variance and store in _uHashCode
+        uint hashOrVariance = token;  // Default to token
+        if (isInterface)
+        {
+            uint variance = GetInterfaceVariance(asm, rowId);
+            if (variance != 0)
+            {
+                flags |= (ushort)(MTFlags.HasVariance >> 16);
+                hashOrVariance = variance;  // Store variance flags instead of token
+            }
+        }
+
         mt->_usFlags = flags;
         mt->_uBaseSize = instanceSize;
         mt->_relatedType = baseMT;  // Point to base class MT
         mt->_usNumVtableSlots = totalVtableSlots;
         mt->_usNumInterfaces = numInterfaces;
-        mt->_uHashCode = token;  // Use token as hash for now
+        mt->_uHashCode = hashOrVariance;  // Variance for interfaces with variance, else token
 
         // Get bitmask of slots that this type overrides - leave those as 0 for lazy JIT
         byte overriddenSlots = GetOverriddenObjectSlots(asm, rowId);

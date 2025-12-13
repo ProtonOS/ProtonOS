@@ -295,9 +295,9 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ## 13. Miscellaneous IL
 
 ### Pointer Operations
-- ⚠️ ldind.* (load indirect)
-- ⚠️ stind.* (store indirect)
-- ⚠️ localloc (stack allocation)
+- ✅ ldind.* (load indirect) - used in passing tests
+- ✅ stind.* (store indirect) - used in passing tests
+- ✅ localloc (stack allocation) - used in MemoryBlockTests
 - ⚠️ cpblk (memory copy) - implemented but untested (needs Unsafe.CopyBlock)
 - ⚠️ initblk (memory init) - implemented but untested (needs Unsafe.InitBlock)
 

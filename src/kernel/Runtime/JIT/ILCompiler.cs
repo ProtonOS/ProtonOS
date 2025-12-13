@@ -366,6 +366,12 @@ public unsafe struct ResolvedMethod
 
     /// <summary>True if this is a delegate constructor (runtime-provided).</summary>
     public bool IsDelegateCtor;
+
+    /// <summary>True if this is Activator.CreateInstance&lt;T&gt;() (JIT intrinsic).</summary>
+    public bool IsActivatorCreateInstance;
+
+    /// <summary>MethodTable pointer for the type argument T in Activator.CreateInstance&lt;T&gt;().</summary>
+    public void* ActivatorTypeArgMT;
 }
 
 /// <summary>
@@ -4184,6 +4190,24 @@ public unsafe struct ILCompiler
             DebugConsole.Write(" after resolving 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
+        }
+
+        // DEBUG: Check if Activator detection worked
+        if ((token >> 24) == 0x2B)  // MethodSpec token
+        {
+            DebugConsole.Write("[JIT] MethodSpec 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" IsActivator=");
+            DebugConsole.Write(method.IsActivatorCreateInstance ? "true" : "false");
+            DebugConsole.Write(" NativeCode=0x");
+            DebugConsole.WriteHex((ulong)method.NativeCode);
+            DebugConsole.WriteLine();
+        }
+
+        // Handle Activator.CreateInstance<T>() as JIT intrinsic
+        if (method.IsActivatorCreateInstance)
+        {
+            return CompileActivatorCreateInstance((MethodTable*)method.ActivatorTypeArgMT);
         }
 
         int totalArgs = method.ArgCount;
@@ -9767,5 +9791,121 @@ public unsafe struct ILCompiler
     {
         _rhpNewFast = rhpNewFast;
         _rhpNewArray = rhpNewArray;
+    }
+
+    /// <summary>
+    /// Compile Activator.CreateInstance&lt;T&gt;() as a JIT intrinsic.
+    /// Allocates a new instance of T and calls the default constructor.
+    /// </summary>
+    private bool CompileActivatorCreateInstance(MethodTable* typeMT)
+    {
+        if (typeMT == null)
+        {
+            DebugConsole.WriteLine("[JIT] CompileActivatorCreateInstance: null typeMT");
+            return false;
+        }
+
+        DebugConsole.Write("[JIT] CompileActivatorCreateInstance MT=0x");
+        DebugConsole.WriteHex((ulong)typeMT);
+        DebugConsole.Write(" RhpNewFast=0x");
+        DebugConsole.WriteHex((ulong)_rhpNewFast);
+        DebugConsole.WriteLine();
+
+        bool isValueType = (typeMT->CombinedFlags & MTFlags.IsValueType) != 0;
+
+        if (isValueType)
+        {
+            // Reserve shadow space for calls (value type path)
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+            // Value types: allocate on stack and zero-initialize
+            // For simplicity, push a zeroed value onto the eval stack
+            uint vtSize = typeMT->BaseSize;
+            int alignedVtSize = (int)((vtSize + 7) & ~7UL);
+
+            // Push zeroed slots for the struct
+            X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);  // RAX = 0
+            int slots = (alignedVtSize + 7) / 8;
+            for (int i = 0; i < slots; i++)
+            {
+                X64Emitter.Push(ref _code, VReg.R0);
+            }
+
+            // Find and call default constructor if exists
+            void* ctorNativeCode = MetadataIntegration.FindDefaultConstructor(typeMT);
+            if (ctorNativeCode != null)
+            {
+                // LEA RCX, [RSP] - 'this' points to the stack-allocated struct
+                // But we just pushed, so the struct is at RSP now
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 0);
+
+                // Call constructor
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctorNativeCode);
+                X64Emitter.CallR(ref _code, VReg.R0);
+                RecordSafePoint();
+            }
+
+            // Restore shadow space
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Struct is already on the eval stack from the push above
+            if (alignedVtSize <= 8)
+            {
+                PushEntry(EvalStackEntry.NativeInt);
+            }
+            else
+            {
+                PushEntry(EvalStackEntry.Struct(alignedVtSize));
+            }
+        }
+        else
+        {
+            // Reference type: allocate on heap via RhpNewFast
+            // Use R12 (callee-saved) to preserve object pointer across ctor call
+            X64Emitter.Push(ref _code, VReg.R8);  // Save R12
+
+            // Reserve shadow space for calls
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+            X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)typeMT);  // RCX = MethodTable*
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
+            X64Emitter.CallR(ref _code, VReg.R0);
+            RecordSafePoint();
+
+            // RAX = new object pointer, save to R12 (survives ctor call)
+            X64Emitter.MovRR(ref _code, VReg.R8, VReg.R0);
+
+            // Find and call default constructor if exists
+            void* ctorNativeCode = MetadataIntegration.FindDefaultConstructor(typeMT);
+            DebugConsole.Write("[JIT] CompileActivatorCreateInstance ctor=0x");
+            DebugConsole.WriteHex((ulong)ctorNativeCode);
+            DebugConsole.WriteLine();
+
+            if (ctorNativeCode != null)
+            {
+                // RCX = object pointer ('this')
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);
+
+                // Call constructor
+                X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctorNativeCode);
+                X64Emitter.CallR(ref _code, VReg.R0);
+                RecordSafePoint();
+            }
+
+            // Restore shadow space - now [RSP] points to saved R12
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+            // Swap R12 and saved R12 slot: store object to stack, restore R12
+            // Currently [RSP] = old R12, R12 = object
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.SP, 0);   // RAX = old R12
+            X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R8);   // [RSP] = object
+            X64Emitter.MovRR(ref _code, VReg.R8, VReg.R0);      // R12 = old R12
+
+            // Object pointer is on the stack, track it
+            PushEntry(EvalStackEntry.NativeInt);
+        }
+
+        DebugConsole.WriteLine("[JIT] CompileActivatorCreateInstance done");
+        return true;
     }
 }

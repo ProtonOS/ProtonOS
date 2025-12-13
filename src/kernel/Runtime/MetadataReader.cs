@@ -2239,6 +2239,14 @@ public static unsafe class MetadataReader
         return *(ushort*)(row + 2);
     }
 
+    // GenericParam Flags constants (ECMA-335 II.23.1.7)
+    /// <summary>Mask for variance bits (bits 0-1)</summary>
+    public const ushort GenericParamVarianceMask = 0x0003;
+    /// <summary>Covariant type parameter (out T)</summary>
+    public const ushort GenericParamCovariant = 0x0001;
+    /// <summary>Contravariant type parameter (in T)</summary>
+    public const ushort GenericParamContravariant = 0x0002;
+
     /// <summary>
     /// Get the Owner (TypeOrMethodDef coded index) for a GenericParam row
     /// </summary>

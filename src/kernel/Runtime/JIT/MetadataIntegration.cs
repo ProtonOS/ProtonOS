@@ -1969,6 +1969,18 @@ public static unsafe class MetadataIntegration
     /// <returns>True if parsing succeeded</returns>
     private static bool ParseMethodSpecInstantiation(byte* instantiationBlob, uint blobLen)
     {
+        // Save old context before clearing - MVAR in the blob may refer to outer method's type args
+        int savedCount = _methodTypeArgCount;
+        MethodTable** savedMTs = stackalloc MethodTable*[MaxMethodTypeArgs];
+        byte* savedTypes = stackalloc byte[MaxMethodTypeArgs];
+        ushort* savedSizes = stackalloc ushort[MaxMethodTypeArgs];
+        for (int i = 0; i < MaxMethodTypeArgs; i++)
+        {
+            savedMTs[i] = _methodTypeArgMTs[i];
+            savedTypes[i] = _methodTypeArgs[i];
+            savedSizes[i] = _methodTypeArgSizes[i];
+        }
+
         _methodTypeArgCount = 0;
 
         // Clear MT array
@@ -2070,14 +2082,33 @@ public static unsafe class MetadataIntegration
                     _methodTypeArgs[i] = elemType;
                     _methodTypeArgSizes[i] = 8; // Reference types are pointer-sized
                     ptr++;
-                    // Skip the TypeDefOrRef token
-                    MetadataReader.ReadCompressedUInt(ref ptr);
+                    {
+                        // Read TypeDefOrRef and get the MethodTable
+                        uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                        uint tag = typeDefOrRef & 0x03;
+                        uint typeRid = typeDefOrRef >> 2;
+                        uint fullToken = 0;
+                        if (tag == 0)
+                            fullToken = 0x02000000 | typeRid; // TypeDef
+                        else if (tag == 1)
+                            fullToken = 0x01000000 | typeRid; // TypeRef
+                        else if (tag == 2)
+                            fullToken = 0x1B000000 | typeRid; // TypeSpec
+                        _methodTypeArgMTs[i] = GetOrCreateMethodTableForToken(fullToken);
+                        DebugConsole.Write("[MetaInt] MethodSpec Class arg ");
+                        DebugConsole.WriteDecimal(i);
+                        DebugConsole.Write(" token=0x");
+                        DebugConsole.WriteHex(fullToken);
+                        DebugConsole.Write(" MT=0x");
+                        DebugConsole.WriteHex((ulong)_methodTypeArgMTs[i]);
+                        DebugConsole.WriteLine();
+                    }
                     break;
                 case 0x11: // ValueType
                     _methodTypeArgs[i] = elemType;
                     ptr++;
                     {
-                        // Read TypeDefOrRef and compute size
+                        // Read TypeDefOrRef and compute size and MT
                         uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
                         uint tag = typeDefOrRef & 0x03;
                         uint typeRid = typeDefOrRef >> 2;
@@ -2089,6 +2120,7 @@ public static unsafe class MetadataIntegration
                         else if (tag == 2)
                             fullToken = 0x1B000000 | typeRid; // TypeSpec
                         _methodTypeArgSizes[i] = (ushort)GetTypeSize(fullToken);
+                        _methodTypeArgMTs[i] = GetOrCreateMethodTableForToken(fullToken);
                     }
                     break;
                 case 0x15: // GenericInst
@@ -2133,6 +2165,39 @@ public static unsafe class MetadataIntegration
                     _methodTypeArgSizes[i] = 8; // Pointers/refs are pointer-sized
                     ptr++;
                     SkipTypeSig(ref ptr, end);
+                    break;
+                case 0x1E: // MVAR - method type parameter, resolve from saved outer context
+                    ptr++;
+                    {
+                        uint mvarIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                        DebugConsole.Write("[MetaInt] MVAR(");
+                        DebugConsole.WriteDecimal(mvarIndex);
+                        DebugConsole.Write(") savedCount=");
+                        DebugConsole.WriteDecimal((uint)savedCount);
+                        if (savedCount > 0)
+                        {
+                            DebugConsole.Write(" savedMT[0]=0x");
+                            DebugConsole.WriteHex((ulong)savedMTs[0]);
+                        }
+                        DebugConsole.WriteLine();
+                        if (mvarIndex < savedCount && savedMTs[mvarIndex] != null)
+                        {
+                            // Substitute with the actual type from outer method's context
+                            _methodTypeArgs[i] = savedTypes[mvarIndex];
+                            _methodTypeArgSizes[i] = savedSizes[mvarIndex];
+                            _methodTypeArgMTs[i] = savedMTs[mvarIndex];
+                            DebugConsole.Write("[MetaInt] MVAR resolved to MT=0x");
+                            DebugConsole.WriteHex((ulong)_methodTypeArgMTs[i]);
+                            DebugConsole.WriteLine();
+                        }
+                        else
+                        {
+                            // No context or out of range - treat as pointer-sized
+                            DebugConsole.WriteLine("[MetaInt] MVAR fallback - treating as ptr");
+                            _methodTypeArgs[i] = elemType;
+                            _methodTypeArgSizes[i] = 8;
+                        }
+                    }
                     break;
                 default:
                     // Unknown type - treat as pointer-sized
@@ -2583,6 +2648,23 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Get or create a MethodTable for a TypeDefOrRef or TypeSpec token.
+    /// </summary>
+    private static MethodTable* GetOrCreateMethodTableForToken(uint typeToken)
+    {
+        if (typeToken == 0)
+            return null;
+
+        // Get the current assembly ID for context
+        uint asmId = _currentAssemblyId;
+        if (asmId == 0)
+            return null;
+
+        // Use AssemblyLoader to resolve the type
+        return AssemblyLoader.ResolveType(asmId, typeToken);
+    }
+
+    /// <summary>
     /// Resolve a MethodSpec token (0x2B) to method call information.
     /// This handles generic method instantiations like Foo<int>().
     /// </summary>
@@ -2632,14 +2714,328 @@ public static unsafe class MetadataIntegration
             underlyingToken = 0x0A000000 | underlyingRowId;
         }
 
+        // Check for Activator.CreateInstance<T>() BEFORE resolving the underlying method
+        // This is a JIT intrinsic that we handle specially - we don't actually call the method
+        if (tag == 1 && _methodTypeArgCount == 1)  // MemberRef with 1 type arg
+        {
+            if (IsActivatorCreateInstanceMemberRef(underlyingRowId))
+            {
+                DebugConsole.WriteLine("[MetaInt] Detected Activator.CreateInstance<T>!");
+                result.IsActivatorCreateInstance = true;
+                result.ActivatorTypeArgMT = _methodTypeArgMTs[0];
+                result.IsValid = true;
+                result.NativeCode = null;  // No native code - JIT intrinsic
+                result.ArgCount = 0;
+                result.HasThis = false;
+                result.RegistryEntry = null;
+                // Return kind is based on the type argument
+                MethodTable* typeArgMT = _methodTypeArgMTs[0];
+                if (typeArgMT != null)
+                {
+                    if ((typeArgMT->CombinedFlags & MTFlags.IsValueType) != 0)
+                    {
+                        result.ReturnKind = ReturnKind.Struct;
+                        result.ReturnStructSize = (ushort)(typeArgMT->_uBaseSize);
+                    }
+                    else
+                    {
+                        result.ReturnKind = ReturnKind.IntPtr;
+                    }
+                }
+                else
+                {
+                    result.ReturnKind = ReturnKind.IntPtr;
+                }
+                // Clear context and return success - don't resolve the actual method
+                ClearMethodTypeArgContext();
+                return true;
+            }
+        }
+
         // Now resolve the underlying method with type args in context
         // The signature parsing functions will use GetMethodTypeArgSize() for MVAR types
         bool success = ResolveMethod(underlyingToken, out result);
+
+        // Check if this is Activator.CreateInstance<T>() - handle as JIT intrinsic (backup check after resolution)
+        if (success && tag == 1 && _methodTypeArgCount == 1)  // MemberRef with 1 type arg
+        {
+            DebugConsole.Write("[MetaInt] Checking Activator: rowId=");
+            DebugConsole.WriteDecimal(underlyingRowId);
+            DebugConsole.Write(" typeArgCount=");
+            DebugConsole.WriteDecimal((uint)_methodTypeArgCount);
+            DebugConsole.Write(" MT[0]=0x");
+            DebugConsole.WriteHex((ulong)_methodTypeArgMTs[0]);
+            DebugConsole.WriteLine();
+            if (IsActivatorCreateInstanceMemberRef(underlyingRowId))
+            {
+                DebugConsole.WriteLine("[MetaInt] Detected Activator.CreateInstance<T>!");
+                result.IsActivatorCreateInstance = true;
+                result.ActivatorTypeArgMT = _methodTypeArgMTs[0];
+                // Override the signature - CreateInstance<T> returns T and takes no args
+                result.ArgCount = 0;
+                result.HasThis = false;
+                // Return kind is based on the type argument
+                // For reference types: ReturnKind.Ref
+                // For value types: ReturnKind.Struct with appropriate size
+                MethodTable* typeArgMT = _methodTypeArgMTs[0];
+                if (typeArgMT != null)
+                {
+                    if ((typeArgMT->CombinedFlags & MTFlags.IsValueType) != 0)
+                    {
+                        result.ReturnKind = ReturnKind.Struct;
+                        result.ReturnStructSize = (ushort)(typeArgMT->_uBaseSize);
+                    }
+                    else
+                    {
+                        result.ReturnKind = ReturnKind.IntPtr;
+                    }
+                }
+                else
+                {
+                    result.ReturnKind = ReturnKind.IntPtr;  // Default to reference type
+                }
+            }
+        }
 
         // Clear the context after resolution to avoid affecting other methods
         ClearMethodTypeArgContext();
 
         return success;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef row refers to System.Activator.CreateInstance.
+    /// </summary>
+    private static bool IsActivatorCreateInstanceMemberRef(uint memberRefRowId)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the member name
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        if (name == null)
+            return false;
+
+        // Debug: show the name
+        DebugConsole.Write("[MetaInt] MemberRef ");
+        DebugConsole.WriteDecimal(memberRefRowId);
+        DebugConsole.Write(" name='");
+        for (int i = 0; i < 20 && name[i] != 0; i++)
+            DebugConsole.WriteChar((char)name[i]);
+        DebugConsole.WriteLine("'");
+
+        // Check if name is "CreateInstance"
+        if (!IsCreateInstanceName(name))
+            return false;
+
+        // Get the class (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+
+        // Must be a TypeRef to System.Activator
+        if (classRef.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+        byte* typeName = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+
+        // Check if type is "Activator" in namespace "System"
+        return IsActivatorName(typeName) && IsSystemNamespace(typeNs);
+    }
+
+    /// <summary>Check if name equals "CreateInstance".</summary>
+    private static bool IsCreateInstanceName(byte* name)
+    {
+        if (name == null) return false;
+        // "CreateInstance" = 14 chars
+        return name[0] == 'C' && name[1] == 'r' && name[2] == 'e' && name[3] == 'a' &&
+               name[4] == 't' && name[5] == 'e' && name[6] == 'I' && name[7] == 'n' &&
+               name[8] == 's' && name[9] == 't' && name[10] == 'a' && name[11] == 'n' &&
+               name[12] == 'c' && name[13] == 'e' && name[14] == 0;
+    }
+
+    /// <summary>Check if name equals "Activator".</summary>
+    private static bool IsActivatorName(byte* name)
+    {
+        if (name == null) return false;
+        // "Activator" = 9 chars
+        return name[0] == 'A' && name[1] == 'c' && name[2] == 't' && name[3] == 'i' &&
+               name[4] == 'v' && name[5] == 'a' && name[6] == 't' && name[7] == 'o' &&
+               name[8] == 'r' && name[9] == 0;
+    }
+
+    /// <summary>Check if namespace equals "System".</summary>
+    private static bool IsSystemNamespace(byte* ns)
+    {
+        if (ns == null) return false;
+        // "System" = 6 chars
+        return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
+               ns[4] == 'e' && ns[5] == 'm' && ns[6] == 0;
+    }
+
+    /// <summary>
+    /// Find and compile the default constructor (.ctor with no parameters) for a type.
+    /// Returns the native code pointer or null if no default constructor exists.
+    /// </summary>
+    public static void* FindDefaultConstructor(MethodTable* mt)
+    {
+        if (mt == null)
+        {
+            DebugConsole.WriteLine("[FindDefCtor] mt is null");
+            return null;
+        }
+
+        DebugConsole.Write("[FindDefCtor] Searching for MT 0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.WriteLine();
+
+        // Search all loaded assemblies for this MethodTable
+        for (uint asmId = 0; asmId < 16; asmId++)  // Max assemblies
+        {
+            LoadedAssembly* asm = AssemblyLoader.GetAssembly(asmId);
+            if (asm == null || !asm->IsLoaded)
+                continue;
+
+            // Search this assembly's type registry
+            for (int i = 0; i < asm->Types.Count; i++)
+            {
+                if (asm->Types.Entries[i].MT == mt)
+                {
+                    uint typeDefToken = asm->Types.Entries[i].Token;
+                    uint typeDefRow = typeDefToken & 0x00FFFFFF;
+                    DebugConsole.Write("[FindDefCtor] Found in asm ");
+                    DebugConsole.WriteDecimal(asmId);
+                    DebugConsole.Write(" token 0x");
+                    DebugConsole.WriteHex(typeDefToken);
+                    DebugConsole.WriteLine();
+                    return FindAndCompileDefaultCtor(asm, typeDefRow);
+                }
+            }
+        }
+
+        // If not in registry, try generic instantiation cache
+        MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(mt);
+        if (genDefMT != null && genDefMT != mt)
+        {
+            // For generic instantiations, we need to find the ctor on the generic definition
+            // and then the JIT-compiled version for this instantiation
+            // For now, look up the definition's ctor
+            DebugConsole.WriteLine("[FindDefCtor] Trying generic def MT");
+            return FindDefaultConstructor(genDefMT);
+        }
+
+        DebugConsole.WriteLine("[FindDefCtor] MT not found in any registry!");
+        return null;
+    }
+
+    /// <summary>
+    /// Find the .ctor method with no parameters on a type and compile it if needed.
+    /// </summary>
+    private static void* FindAndCompileDefaultCtor(LoadedAssembly* asm, uint typeDefRow)
+    {
+        if (asm == null)
+            return null;
+
+        // Get the method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(
+            ref asm->Tables, ref asm->Sizes, typeDefRow);
+
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(
+                ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+        DebugConsole.Write("[FindAndCompileCtor] methods ");
+        DebugConsole.WriteDecimal(methodStart);
+        DebugConsole.Write("-");
+        DebugConsole.WriteDecimal(methodEnd);
+        DebugConsole.WriteLine();
+
+        // Search for .ctor with no parameters
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            // Get method name
+            uint nameIdx = MetadataReader.GetMethodDefName(
+                ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            // Check if it's a constructor
+            if (name == null || !IsCtorName(name))
+                continue;
+
+            // Check if it has no parameters (signature: 20 00 01 = hasthis, 0 params, void)
+            uint sigIdx = MetadataReader.GetMethodDefSignature(
+                ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+            if (sig == null || sigLen < 2)
+                continue;
+
+            // hasthis(20) + paramCount(00) = default constructor
+            // The signature format is: CallingConv ParamCount RetType [ParamType...]
+            // For a default ctor: 0x20 (hasthis) 0x00 (param count) 0x01 (void return)
+            byte callingConv = sig[0];
+            byte paramCount = sig[1];
+
+            DebugConsole.Write("[FindAndCompileCtor] found .ctor, params=");
+            DebugConsole.WriteDecimal(paramCount);
+            DebugConsole.WriteLine();
+
+            if ((callingConv & 0x20) != 0 && paramCount == 0)  // HasThis and 0 params
+            {
+                // Found default constructor - compile it if not already compiled
+                uint ctorToken = 0x06000000 | methodRow;
+
+                // Check if already compiled in registry
+                void* existingCode = CompiledMethodRegistry.GetNativeCode(ctorToken);
+                if (existingCode != null)
+                {
+                    DebugConsole.Write("[FindAndCompileCtor] Already compiled at 0x");
+                    DebugConsole.WriteHex((ulong)existingCode);
+                    DebugConsole.WriteLine();
+                    return existingCode;
+                }
+
+                // Set the assembly context and resolve the method
+                uint savedAsmId = _currentAssemblyId;
+                SetCurrentAssembly(asm->AssemblyId);
+
+                ResolvedMethod resolved;
+                bool success = ResolveMethod(ctorToken, out resolved);
+
+                SetCurrentAssembly(savedAsmId);
+
+                if (success && resolved.NativeCode != null)
+                {
+                    DebugConsole.Write("[FindAndCompileCtor] Compiled to 0x");
+                    DebugConsole.WriteHex((ulong)resolved.NativeCode);
+                    DebugConsole.WriteLine();
+                    return resolved.NativeCode;
+                }
+
+                DebugConsole.WriteLine("[FindAndCompileCtor] Failed to compile!");
+                return null;
+            }
+        }
+
+        DebugConsole.WriteLine("[FindAndCompileCtor] No default ctor found!");
+        return null;  // No default constructor found
+    }
+
+    /// <summary>Check if name equals ".ctor".</summary>
+    private static bool IsCtorName(byte* name)
+    {
+        if (name == null) return false;
+        // ".ctor" = 5 chars
+        return name[0] == '.' && name[1] == 'c' && name[2] == 't' &&
+               name[3] == 'o' && name[4] == 'r' && name[5] == 0;
     }
 
     /// <summary>

@@ -64,6 +64,9 @@ public static class MTFlags
 
     /// <summary>Type is a delegate (inherits from MulticastDelegate).</summary>
     public const uint IsDelegate = 0x00800000;  // In upper 16 bits (flags region)
+
+    /// <summary>Generic interface has variant type parameters (covariant or contravariant).</summary>
+    public const uint HasVariance = 0x00400000;
 }
 
 /// <summary>
@@ -261,6 +264,9 @@ public unsafe struct MethodTable
     /// <summary>Whether this is an interface type.</summary>
     public bool IsInterface => (CombinedFlags & MTFlags.IsInterface) != 0;
 
+    /// <summary>Whether this interface definition has variant type parameters.</summary>
+    public bool HasVariance => (CombinedFlags & MTFlags.HasVariance) != 0;
+
     /// <summary>
     /// Get a pointer to the interface map (immediately follows vtable).
     /// </summary>
@@ -301,6 +307,29 @@ public unsafe struct MethodTable
     }
 
     /// <summary>
+    /// Find an interface that is variant-compatible with the target interface.
+    /// This handles covariance/contravariance for generic interfaces.
+    /// </summary>
+    public InterfaceMapEntry* FindVariantCompatibleInterface(MethodTable* targetInterfaceMT)
+    {
+        if (_usNumInterfaces == 0 || targetInterfaceMT == null)
+            return null;
+
+        InterfaceMapEntry* map = GetInterfaceMapPtr();
+        for (int i = 0; i < _usNumInterfaces; i++)
+        {
+            MethodTable* implInterface = map[i].InterfaceMT;
+            if (implInterface == targetInterfaceMT)
+                return &map[i];  // Exact match
+
+            // Check variance compatibility
+            if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
+                return &map[i];  // Variant-compatible
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Check if this type implements the given interface.
     /// </summary>
     public bool ImplementsInterface(MethodTable* interfaceMT)
@@ -310,13 +339,15 @@ public unsafe struct MethodTable
 
     /// <summary>
     /// Get the vtable slot for an interface method.
+    /// Handles variance - if exact interface not found, checks for variant-compatible interfaces.
     /// </summary>
     /// <param name="interfaceMT">The interface MethodTable.</param>
     /// <param name="methodIndex">The method index within the interface (0-based).</param>
     /// <returns>The vtable slot index, or -1 if interface not found.</returns>
     public int GetInterfaceMethodSlot(MethodTable* interfaceMT, int methodIndex)
     {
-        InterfaceMapEntry* entry = FindInterface(interfaceMT);
+        // Try exact match first, then fall back to variant-compatible match
+        InterfaceMapEntry* entry = FindVariantCompatibleInterface(interfaceMT);
         if (entry == null)
             return -1;
         return entry->StartSlot + methodIndex;
@@ -354,6 +385,33 @@ public unsafe struct MethodTable
                         return true;
                     parent = parent->GetParentType();
                 }
+
+                // Check variance compatibility for generic interfaces
+                // Iterate all implemented interfaces and see if any are variant-compatible
+                int numInterfaces = _usNumInterfaces;
+                InterfaceMapEntry* map = GetInterfaceMapPtr();
+                for (int i = 0; i < numInterfaces; i++)
+                {
+                    MethodTable* implInterface = map[i].InterfaceMT;
+                    if (implInterface != null && implInterface->IsVariantCompatibleWith(targetType))
+                        return true;
+                }
+
+                // Also check parent's implemented interfaces for variance
+                parent = GetParentType();
+                while (parent != null)
+                {
+                    int parentNumInterfaces = parent->_usNumInterfaces;
+                    InterfaceMapEntry* parentMap = parent->GetInterfaceMapPtr();
+                    for (int i = 0; i < parentNumInterfaces; i++)
+                    {
+                        MethodTable* implInterface = parentMap[i].InterfaceMT;
+                        if (implInterface != null && implInterface->IsVariantCompatibleWith(targetType))
+                            return true;
+                    }
+                    parent = parent->GetParentType();
+                }
+
                 return false;
             }
 
@@ -383,6 +441,55 @@ public unsafe struct MethodTable
                 }
             }
 
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Check if this generic interface instantiation is variant-compatible with the target.
+    /// For covariant (out T): source T must be assignable to target T
+    /// For contravariant (in T): target T must be assignable to source T
+    /// </summary>
+    public bool IsVariantCompatibleWith(MethodTable* targetMT)
+    {
+        fixed (MethodTable* self = &this)
+        {
+            // Both must be interfaces
+            if (!IsInterface || !targetMT->IsInterface)
+                return false;
+
+            // Get generic definitions
+            MethodTable* sourceDefMT = AssemblyLoader.GetGenericDefinitionMT(self);
+            MethodTable* targetDefMT = AssemblyLoader.GetGenericDefinitionMT(targetMT);
+
+            // Must be same generic definition (both non-null)
+            if (sourceDefMT == null || targetDefMT == null || sourceDefMT != targetDefMT)
+                return false;
+
+            // Definition must have variance
+            if (!sourceDefMT->HasVariance)
+                return false;
+
+            // Get variance flags from definition's _uHashCode (bits 0-1 for first param)
+            uint variance = sourceDefMT->_uHashCode & 0x3;
+
+            // Get type arguments from _relatedType (first type arg)
+            MethodTable* sourceArg = _relatedType;
+            MethodTable* targetArg = targetMT->_relatedType;
+
+            if (sourceArg == null || targetArg == null)
+                return false;
+
+            // Same type args - always compatible
+            if (sourceArg == targetArg)
+                return true;
+
+            if (variance == 1)  // Covariant (out T): ICovariant<Derived> -> ICovariant<Base>
+                return sourceArg->IsAssignableTo(targetArg);
+            else if (variance == 2)  // Contravariant (in T): IContravariant<Base> -> IContravariant<Derived>
+                return targetArg->IsAssignableTo(sourceArg);
+
+            // Invariant - must be exact match (already checked above)
             return false;
         }
     }

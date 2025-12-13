@@ -210,12 +210,11 @@ public static class TestRunner
         RecordResult("GenericTests.TestConstraintClass", GenericTests.TestConstraintClass() == 42);
         RecordResult("GenericTests.TestConstraintClassNotNull", GenericTests.TestConstraintClassNotNull() == 42);
         RecordResult("GenericTests.TestConstraintStruct", GenericTests.TestConstraintStruct() == 42);
-        // RecordResult("GenericTests.TestConstraintNew", GenericTests.TestConstraintNew() == 42);  // Requires Activator.CreateInstance<T>
+        RecordResult("GenericTests.TestConstraintNew", GenericTests.TestConstraintNew() == 42);  // Activator.CreateInstance<T>
         RecordResult("GenericTests.TestConstraintInterface", GenericTests.TestConstraintInterface() == 42);
         RecordResult("GenericTests.TestConstraintBase", GenericTests.TestConstraintBase() == 99);
-        // Variance requires runtime interface compatibility checking - not implemented
-        // RecordResult("GenericTests.TestCovariance", GenericTests.TestCovariance() == 99);
-        // RecordResult("GenericTests.TestContravariance", GenericTests.TestContravariance() == 42);
+        RecordResult("GenericTests.TestCovariance", GenericTests.TestCovariance() == 99);
+        RecordResult("GenericTests.TestContravariance", GenericTests.TestContravariance() == 42);
     }
 
     private static void RunStringInterpolationTests()
