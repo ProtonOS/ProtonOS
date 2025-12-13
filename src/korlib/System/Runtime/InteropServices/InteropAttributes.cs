@@ -76,4 +76,10 @@ namespace System.Runtime.InteropServices
     {
         public SuppressGCTransitionAttribute() { }
     }
+
+    [AttributeUsage(AttributeTargets.Field, Inherited = false)]
+    public sealed class FieldOffsetAttribute : Attribute
+    {
+        public FieldOffsetAttribute(int offset) { }
+    }
 }

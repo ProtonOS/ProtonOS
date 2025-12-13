@@ -9812,6 +9812,11 @@ public unsafe struct ILCompiler
         DebugConsole.WriteLine();
 
         bool isValueType = (typeMT->CombinedFlags & MTFlags.IsValueType) != 0;
+        DebugConsole.Write("[JIT] CompileActivatorCreateInstance isValueType=");
+        DebugConsole.Write(isValueType ? "true" : "false");
+        DebugConsole.Write(" flags=0x");
+        DebugConsole.WriteHex((ulong)typeMT->CombinedFlags);
+        DebugConsole.WriteLine();
 
         if (isValueType)
         {
@@ -9861,12 +9866,23 @@ public unsafe struct ILCompiler
         else
         {
             // Reference type: allocate on heap via RhpNewFast
+
+            // IMPORTANT: Find and compile the constructor FIRST, before emitting any code.
+            // This ensures that nested JIT compilation happens before we emit addresses,
+            // avoiding any potential corruption of already-emitted code.
+            void* ctorNativeCode = MetadataIntegration.FindDefaultConstructor(typeMT);
+            DebugConsole.Write("[JIT] CompileActivatorCreateInstance ctor=0x");
+            DebugConsole.WriteHex((ulong)ctorNativeCode);
+            DebugConsole.WriteLine();
+
+            // Now emit all the code with the resolved addresses
             // Use R12 (callee-saved) to preserve object pointer across ctor call
             X64Emitter.Push(ref _code, VReg.R8);  // Save R12
 
             // Reserve shadow space for calls
             X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
+            // Load MethodTable* into RCX and call RhpNewFast
             X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)typeMT);  // RCX = MethodTable*
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_rhpNewFast);
             X64Emitter.CallR(ref _code, VReg.R0);
@@ -9874,12 +9890,6 @@ public unsafe struct ILCompiler
 
             // RAX = new object pointer, save to R12 (survives ctor call)
             X64Emitter.MovRR(ref _code, VReg.R8, VReg.R0);
-
-            // Find and call default constructor if exists
-            void* ctorNativeCode = MetadataIntegration.FindDefaultConstructor(typeMT);
-            DebugConsole.Write("[JIT] CompileActivatorCreateInstance ctor=0x");
-            DebugConsole.WriteHex((ulong)ctorNativeCode);
-            DebugConsole.WriteLine();
 
             if (ctorNativeCode != null)
             {

@@ -126,7 +126,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Nested structs
 - ✅ Struct arrays
 - ✅ Struct with reference type fields (tested with StructWithRef containing string)
-- ❌ Explicit layout structs ([StructLayout])
+- ✅ Explicit layout structs ([StructLayout(LayoutKind.Explicit)] with [FieldOffset])
 - ❌ Fixed-size buffers
 
 ---
@@ -146,13 +146,13 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Generic Constraints
 - ✅ where T : class (reference type constraint)
 - ✅ where T : struct (value type constraint)
-- ❌ where T : new() (requires Activator.CreateInstance<T>)
+- ✅ where T : new() (Activator.CreateInstance<T> JIT intrinsic)
 - ✅ where T : SomeBase (base class constraint)
 - ✅ where T : ISomeInterface (interface constraint)
 
 ### Variance
-- ❌ Covariance (out T) - requires runtime interface compatibility checking
-- ❌ Contravariance (in T) - requires runtime interface compatibility checking
+- ✅ Covariance (out T) - ICovariant<Derived> assignable to ICovariant<Base>
+- ✅ Contravariance (in T) - IContravariant<Base> assignable to IContravariant<Derived>
 
 ### Complex Scenarios
 - ✅ Generic arrays (T[])
@@ -349,7 +349,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 218 passing
+- Current test count: 228 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
@@ -358,6 +358,32 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 *No known critical limitations remaining.*
 
 ## Recent Updates
+
+### Explicit Layout Structs Support (2025-12)
+Added support for `[StructLayout(LayoutKind.Explicit)]` with `[FieldOffset]` attributes:
+- **FieldOffsetAttribute**: Added to korlib (`System.Runtime.InteropServices`)
+- **Size calculation fix**: Both `MetadataIntegration.CalculateTypeDefSize()` and `AssemblyLoader.ComputeInstanceSize()` now:
+  1. Check ClassLayout table for explicit type size
+  2. Check FieldLayout table for explicit field offsets and calculate size as max(offset + fieldSize)
+  3. Fall back to sequential layout for auto-layout types
+- **Field offset resolution**: Was already working via `HasExplicitFieldOffset()` querying FieldLayout table
+- 7 new tests:
+  - TestUnionWriteIntReadBytes, TestUnionWriteBytesReadInt - int/byte union
+  - TestExplicitGap - struct with gap between fields (offset 0 and 8)
+  - TestExplicitOutOfOrder - fields defined out of memory order
+  - TestLongIntUnionWriteLong, TestLongIntUnionWriteInts - long/int union
+  - TestUnionOverwrite - verify field overlap works correctly
+- Test count increased from 221 to 227
+
+### Activator.CreateInstance<T>() Fix (2025-12)
+Fixed `Activator.CreateInstance<T>()` intrinsic not calling the correct constructor:
+- **Bug**: `TestConstraintNew` returned 0 instead of 42 (field initializer not running)
+- **Root cause**: Token collision in CompiledMethodRegistry lookup
+  - `FindAndCompileDefaultCtor()` used `GetNativeCode(ctorToken)` without assembly ID
+  - Token 0x06000101 from FullTest.dll collided with same token from another assembly
+  - The wrong ctor was returned (from System.Runtime or another assembly)
+- **Fix**: Use assembly-aware lookup `Lookup(ctorToken, asm->AssemblyId)`
+- Test count increased from 227 to 228 (TestConstraintNew now passes)
 
 ### Generic Constraints Fix (2025-12)
 - Fixed `box T` for reference types - was allocating a new object instead of no-op

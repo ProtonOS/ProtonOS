@@ -2406,9 +2406,28 @@ public static unsafe class AssemblyLoader
 
     /// <summary>
     /// Compute instance size for a type from its fields, including base class.
+    /// Handles explicit layout structs by checking ClassLayout and FieldLayout tables.
     /// </summary>
     private static uint ComputeInstanceSize(LoadedAssembly* asm, uint typeDefRow, bool isValueType)
     {
+        // First, check ClassLayout table for an explicit size
+        uint classLayoutCount = asm->Tables.RowCounts[(int)MetadataTableId.ClassLayout];
+        for (uint i = 1; i <= classLayoutCount; i++)
+        {
+            uint parent = MetadataReader.GetClassLayoutParent(ref asm->Tables, ref asm->Sizes, i);
+            if (parent == typeDefRow)
+            {
+                uint explicitSize = MetadataReader.GetClassLayoutClassSize(ref asm->Tables, ref asm->Sizes, i);
+                if (explicitSize > 0)
+                {
+                    // For reference types, add object header (8 bytes)
+                    return isValueType ? explicitSize : (explicitSize + 8);
+                }
+                // If ClassSize is 0, fall through to calculate from fields
+                break;
+            }
+        }
+
         // For reference types, start with pointer size (for MethodTable*)
         uint size = isValueType ? 0u : 8u;
 
@@ -2434,11 +2453,6 @@ public static unsafe class AssemblyLoader
                 {
                     // Get the base class's method table to get its size
                     uint baseSize = GetBaseClassSize(asm, extendsIdx);
-                    // Instance size base class debug (verbose - commented out)
-                    // DebugConsole.Write("[AsmLoader] ComputeInstanceSize row=");
-                    // DebugConsole.WriteDecimal(typeDefRow);
-                    // DebugConsole.Write(" baseSize=");
-                    // DebugConsole.WriteDecimal(baseSize);
                     if (baseSize > 8)
                     {
                         // Base class size already includes the object header
@@ -2463,8 +2477,54 @@ public static unsafe class AssemblyLoader
             fieldEnd = fieldDefCount + 1;
         }
 
-        // Sum up instance field sizes for THIS class only
-        // Must properly align each field to its natural alignment
+        // Check if any field has explicit offset (indicates explicit layout)
+        uint maxExplicitEnd = 0;
+        bool hasExplicitLayout = false;
+        uint fieldLayoutCount = asm->Tables.RowCounts[(int)MetadataTableId.FieldLayout];
+
+        for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
+        {
+            ushort fieldFlags = MetadataReader.GetFieldFlags(ref asm->Tables, ref asm->Sizes, fieldRow);
+            if ((fieldFlags & 0x0010) != 0)  // Skip static fields
+                continue;
+
+            // Check FieldLayout table for explicit offset
+            for (uint fl = 1; fl <= fieldLayoutCount; fl++)
+            {
+                uint layoutFieldRow = MetadataReader.GetFieldLayoutField(ref asm->Tables, ref asm->Sizes, fl);
+                if (layoutFieldRow == fieldRow)
+                {
+                    hasExplicitLayout = true;
+                    uint explicitOffset = MetadataReader.GetFieldLayoutOffset(ref asm->Tables, ref asm->Sizes, fl);
+
+                    // Get field size
+                    uint sigIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, fieldRow);
+                    byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+                    uint fieldSize = 4;  // Default
+
+                    if (sig != null && sigLen >= 2 && sig[0] == 0x06)
+                    {
+                        fieldSize = GetFieldTypeSize(asm, sig + 1, sigLen - 1);
+                    }
+
+                    uint fieldEnd2 = explicitOffset + fieldSize;
+                    if (fieldEnd2 > maxExplicitEnd)
+                        maxExplicitEnd = fieldEnd2;
+                    break;
+                }
+            }
+        }
+
+        // If explicit layout, return calculated size
+        if (hasExplicitLayout && maxExplicitEnd > 0)
+        {
+            // For value types, size is just the explicit layout size
+            // For reference types, add object header (8 bytes)
+            uint explicitSize = (maxExplicitEnd + 7) & ~7u;  // Align to 8
+            return isValueType ? explicitSize : (explicitSize + 8);
+        }
+
+        // Fall back to sequential layout calculation
         for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
         {
             // Get field flags
@@ -2507,11 +2567,6 @@ public static unsafe class AssemblyLoader
 
         // Align to 8 bytes
         size = (size + 7) & ~7u;
-
-        // Instance size debug (verbose - commented out)
-        // DebugConsole.Write(" finalSize=");
-        // DebugConsole.WriteDecimal(size);
-        // DebugConsole.WriteLine();
 
         return size;
     }

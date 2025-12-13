@@ -313,6 +313,16 @@ public static unsafe class Tier0JIT
             // DebugConsole.WriteLine();
         }
 
+        // Debug: Track TestConstraintNew compilation
+        if (NameEquals(dbgMethodName, "TestConstraintNew"))
+        {
+            DebugConsole.Write("[Tier0JIT] TestConstraintNew token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.WriteLine();
+        }
+
         // Targeted debug: inspect VirtioDevice.Initialize (asm 3, token 0x06000015)
         if (assemblyId == 3 && methodToken == 0x06000015)
         {
@@ -570,6 +580,14 @@ public static unsafe class Tier0JIT
 
         // Complete the compilation (sets native code and clears IsBeingCompiled)
         CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId);
+
+        // Debug: Track TestConstraintNew completion
+        if (NameEquals(dbgMethodName, "TestConstraintNew"))
+        {
+            DebugConsole.Write("[Tier0JIT] TestConstraintNew DONE native=0x");
+            DebugConsole.WriteHex((ulong)code);
+            DebugConsole.WriteLine();
+        }
 
         // Register method with exception handling system
         // Methods with EH clauses get full registration (unwind + EH info)

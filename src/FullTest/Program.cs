@@ -210,7 +210,12 @@ public static class TestRunner
         RecordResult("GenericTests.TestConstraintClass", GenericTests.TestConstraintClass() == 42);
         RecordResult("GenericTests.TestConstraintClassNotNull", GenericTests.TestConstraintClassNotNull() == 42);
         RecordResult("GenericTests.TestConstraintStruct", GenericTests.TestConstraintStruct() == 42);
-        RecordResult("GenericTests.TestConstraintNew", GenericTests.TestConstraintNew() == 42);  // Activator.CreateInstance<T>
+        Debug.WriteLine("[RUNNER] About to call TestConstraintNew...");
+        int constraintNewResult = GenericTests.TestConstraintNew();
+        Debug.Write("[RUNNER] TestConstraintNew returned: ");
+        Debug.WriteDecimal((uint)constraintNewResult);
+        Debug.WriteLine();
+        RecordResult("GenericTests.TestConstraintNew", constraintNewResult == 42);  // Activator.CreateInstance<T>
         RecordResult("GenericTests.TestConstraintInterface", GenericTests.TestConstraintInterface() == 42);
         RecordResult("GenericTests.TestConstraintBase", GenericTests.TestConstraintBase() == 99);
         RecordResult("GenericTests.TestCovariance", GenericTests.TestCovariance() == 99);
@@ -499,6 +504,15 @@ public static class TestRunner
         // Nested field out/ref tests (class.struct.field pattern)
         RecordResult("StructTests.TestNestedFieldOut", StructTests.TestNestedFieldOut() == 99);
         RecordResult("StructTests.TestNestedFieldRef", StructTests.TestNestedFieldRef() == 110);
+
+        // Explicit layout struct tests (unions, [StructLayout(LayoutKind.Explicit)])
+        RecordResult("ExplicitLayoutTests.TestUnionWriteIntReadBytes", ExplicitLayoutTests.TestUnionWriteIntReadBytes() == 10);
+        RecordResult("ExplicitLayoutTests.TestUnionWriteBytesReadInt", ExplicitLayoutTests.TestUnionWriteBytesReadInt() == 22136);
+        RecordResult("ExplicitLayoutTests.TestExplicitGap", ExplicitLayoutTests.TestExplicitGap() == 300);
+        RecordResult("ExplicitLayoutTests.TestExplicitOutOfOrder", ExplicitLayoutTests.TestExplicitOutOfOrder() == 42);
+        RecordResult("ExplicitLayoutTests.TestLongIntUnionWriteLong", ExplicitLayoutTests.TestLongIntUnionWriteLong() == 3);
+        RecordResult("ExplicitLayoutTests.TestLongIntUnionWriteInts", ExplicitLayoutTests.TestLongIntUnionWriteInts() == 30);
+        RecordResult("ExplicitLayoutTests.TestUnionOverwrite", ExplicitLayoutTests.TestUnionOverwrite() == 0);
 
         // CRITICAL: Virtqueue exact pattern test - THREE consecutive large struct returns
         RecordResult("VirtqueueExactTests.TestThreeAllocationsAndReadBack", VirtqueueExactTests.TestThreeAllocationsAndReadBack() == 42);
@@ -1250,6 +1264,66 @@ public struct InnerStruct
     public int Value;
 }
 
+// =============================================================================
+// Explicit Layout Structs - for testing [StructLayout(LayoutKind.Explicit)]
+// =============================================================================
+
+// Simple union - int and bytes at same location
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+public struct IntBytesUnion
+{
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public int Value;
+
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public byte Byte0;
+
+    [System.Runtime.InteropServices.FieldOffset(1)]
+    public byte Byte1;
+
+    [System.Runtime.InteropServices.FieldOffset(2)]
+    public byte Byte2;
+
+    [System.Runtime.InteropServices.FieldOffset(3)]
+    public byte Byte3;
+}
+
+// Explicit layout with gap between fields
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+public struct ExplicitWithGap
+{
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public int First;      // bytes 0-3
+
+    [System.Runtime.InteropServices.FieldOffset(8)]
+    public int Second;     // bytes 8-11 (gap at 4-7)
+}
+
+// Explicit layout with out-of-order fields
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+public struct ExplicitOutOfOrder
+{
+    [System.Runtime.InteropServices.FieldOffset(4)]
+    public int FieldA;     // bytes 4-7
+
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public int FieldB;     // bytes 0-3
+}
+
+// Long/int union for testing overlapping different sizes
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+public struct LongIntUnion
+{
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public long LongValue;
+
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    public int LowInt;
+
+    [System.Runtime.InteropServices.FieldOffset(4)]
+    public int HighInt;
+}
+
 // Container class for nested field out tests (class.struct.field pattern)
 public class Container
 {
@@ -1624,6 +1698,94 @@ public static class StructTests
     private static void AddToInnerValue(ref int value)
     {
         value += 100;
+    }
+}
+
+// =============================================================================
+// Explicit Layout Tests - [StructLayout(LayoutKind.Explicit)]
+// =============================================================================
+
+public static class ExplicitLayoutTests
+{
+    // Test basic union - write as int, read as bytes
+    public static int TestUnionWriteIntReadBytes()
+    {
+        IntBytesUnion u;
+        u.Byte0 = 0;
+        u.Byte1 = 0;
+        u.Byte2 = 0;
+        u.Byte3 = 0;
+        u.Value = 0x04030201;  // Little endian: 01, 02, 03, 04
+        // Byte0 should be 0x01, Byte1 should be 0x02, etc.
+        return u.Byte0 + u.Byte1 + u.Byte2 + u.Byte3;  // 1+2+3+4 = 10
+    }
+
+    // Test basic union - write as bytes, read as int
+    public static int TestUnionWriteBytesReadInt()
+    {
+        IntBytesUnion u;
+        u.Value = 0;
+        u.Byte0 = 0x78;  // Low byte
+        u.Byte1 = 0x56;
+        u.Byte2 = 0x34;
+        u.Byte3 = 0x12;  // High byte
+        // Little endian: 0x12345678
+        // Return low 16 bits to fit in test range
+        return u.Value & 0xFFFF;  // 0x5678 = 22136
+    }
+
+    // Test explicit layout with gap
+    public static int TestExplicitGap()
+    {
+        ExplicitWithGap g;
+        g.First = 100;
+        g.Second = 200;
+        return g.First + g.Second;  // 300
+    }
+
+    // Test explicit layout with out-of-order fields
+    public static int TestExplicitOutOfOrder()
+    {
+        ExplicitOutOfOrder o;
+        o.FieldA = 40;   // at offset 4
+        o.FieldB = 2;    // at offset 0
+        return o.FieldA + o.FieldB;  // 42
+    }
+
+    // Test long/int union - write long, read ints
+    public static int TestLongIntUnionWriteLong()
+    {
+        LongIntUnion u;
+        u.LowInt = 0;
+        u.HighInt = 0;
+        u.LongValue = 0x0000000200000001;  // Low=1, High=2
+        return u.LowInt + u.HighInt;  // 1 + 2 = 3
+    }
+
+    // Test long/int union - write ints, read long
+    public static int TestLongIntUnionWriteInts()
+    {
+        LongIntUnion u;
+        u.LongValue = 0;
+        u.LowInt = 10;
+        u.HighInt = 20;
+        // Long value: 0x0000001400000A (20 << 32 | 10)
+        // Return sum of parts as sanity check
+        return (int)(u.LongValue & 0xFF) + (int)((u.LongValue >> 32) & 0xFF);  // 10 + 20 = 30
+    }
+
+    // Test union field overwrite
+    public static int TestUnionOverwrite()
+    {
+        IntBytesUnion u;
+        u.Byte0 = 0;
+        u.Byte1 = 0;
+        u.Byte2 = 0;
+        u.Byte3 = 0;
+        u.Value = unchecked((int)0xFFFFFFFF);  // All 1s (-1)
+        u.Byte1 = 0;           // Clear second byte
+        // Value should now be 0xFFFF00FF
+        return (u.Value >> 8) & 0xFF;  // Byte1 should be 0
     }
 }
 
@@ -2493,8 +2655,19 @@ public static class GenericTests
     public static int TestConstraintNew()
     {
         // where T : new() - create new Creatable
+        Debug.WriteLine("[TestConstraintNew] Calling CreateNew...");
         Creatable obj = ConstrainedMethods.CreateNew<Creatable>();
-        return obj.Value;  // Expected: 42
+        Debug.WriteLine("[TestConstraintNew] CreateNew returned");
+        if (obj == null)
+        {
+            Debug.WriteLine("[TestConstraintNew] obj is NULL!");
+            return 0;
+        }
+        int value = obj.Value;
+        Debug.Write("[TestConstraintNew] Value=");
+        Debug.WriteDecimal((uint)value);
+        Debug.WriteLine();
+        return value;  // Expected: 42
     }
 
     public static int TestConstraintInterface()
@@ -2662,7 +2835,10 @@ public static class ConstrainedMethods
     // where T : new() constraint
     public static T CreateNew<T>() where T : new()
     {
-        return new T();
+        Debug.WriteLine("[CreateNew<T>] Entering...");
+        T result = new T();
+        Debug.WriteLine("[CreateNew<T>] Created instance, returning...");
+        return result;
     }
 
     // where T : IValue constraint (interface constraint)

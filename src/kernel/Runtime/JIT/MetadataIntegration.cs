@@ -2993,14 +2993,17 @@ public static unsafe class MetadataIntegration
                 // Found default constructor - compile it if not already compiled
                 uint ctorToken = 0x06000000 | methodRow;
 
-                // Check if already compiled in registry
-                void* existingCode = CompiledMethodRegistry.GetNativeCode(ctorToken);
-                if (existingCode != null)
+                // Check if already compiled in registry - use assembly-aware lookup!
+                // Without assembly ID, token collisions with other assemblies can occur.
+                CompiledMethodInfo* existing = CompiledMethodRegistry.Lookup(ctorToken, asm->AssemblyId);
+                if (existing != null && existing->IsCompiled && existing->NativeCode != null)
                 {
                     DebugConsole.Write("[FindAndCompileCtor] Already compiled at 0x");
-                    DebugConsole.WriteHex((ulong)existingCode);
-                    DebugConsole.WriteLine();
-                    return existingCode;
+                    DebugConsole.WriteHex((ulong)existing->NativeCode);
+                    DebugConsole.Write(" (asm ");
+                    DebugConsole.WriteDecimal(asm->AssemblyId);
+                    DebugConsole.WriteLine(")");
+                    return existing->NativeCode;
                 }
 
                 // Set the assembly context and resolve the method
@@ -3137,11 +3140,27 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Calculate the size of a value type (struct) by summing field sizes.
+    /// Handles explicit layout structs by checking ClassLayout and FieldLayout tables.
     /// </summary>
     private static uint CalculateTypeDefSize(uint typeRow)
     {
         if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
             return 8;  // Default fallback
+
+        // First, check ClassLayout table for an explicit size
+        uint classLayoutCount = _tablesHeader->RowCounts[(int)MetadataTableId.ClassLayout];
+        for (uint i = 1; i <= classLayoutCount; i++)
+        {
+            uint parent = MetadataReader.GetClassLayoutParent(ref *_tablesHeader, ref *_tableSizes, i);
+            if (parent == typeRow)
+            {
+                uint explicitSize = MetadataReader.GetClassLayoutClassSize(ref *_tablesHeader, ref *_tableSizes, i);
+                if (explicitSize > 0)
+                    return explicitSize;
+                // If ClassSize is 0, fall through to calculate from fields
+                break;
+            }
+        }
 
         // Get the type's field list range
         uint firstField = MetadataReader.GetTypeDefFieldList(ref *_tablesHeader, ref *_tableSizes, typeRow);
@@ -3152,6 +3171,58 @@ public static unsafe class MetadataIntegration
         else
             nextFieldList = _tablesHeader->RowCounts[(int)MetadataTableId.Field] + 1;
 
+        // Check if any field has an explicit offset (indicates explicit layout)
+        // If so, calculate size as max(offset + fieldSize)
+        uint maxExplicitEnd = 0;
+        bool hasExplicitLayout = false;
+
+        for (uint f = firstField; f < nextFieldList; f++)
+        {
+            // Skip static fields
+            ushort flags = MetadataReader.GetFieldFlags(ref *_tablesHeader, ref *_tableSizes, f);
+            if ((flags & 0x0010) != 0)  // fdStatic
+                continue;
+
+            // Check for explicit offset
+            uint explicitOffset;
+            if (HasExplicitFieldOffset(f, out explicitOffset))
+            {
+                hasExplicitLayout = true;
+
+                // Get field size
+                uint sigIdx = MetadataReader.GetFieldSignature(ref *_tablesHeader, ref *_tableSizes, f);
+                byte* sig = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
+                uint fieldSize = 4;  // Default
+
+                if (sig != null && sigLen >= 2 && sig[0] == 0x06)
+                {
+                    byte elementType = sig[1];
+                    if (elementType == ElementType.ValueType || elementType == ElementType.GenericInst)
+                    {
+                        fieldSize = AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);
+                    }
+                    else
+                    {
+                        GetFieldSizeFromElementType(elementType, out byte primSize, out _, out _);
+                        fieldSize = primSize > 0 ? primSize : (uint)8;
+                    }
+                }
+
+                uint fieldEnd = explicitOffset + fieldSize;
+                if (fieldEnd > maxExplicitEnd)
+                    maxExplicitEnd = fieldEnd;
+            }
+        }
+
+        // If explicit layout, return the calculated size (aligned to 8 bytes for safety)
+        if (hasExplicitLayout && maxExplicitEnd > 0)
+        {
+            // Align to natural alignment (max 8)
+            uint alignedSize = (maxExplicitEnd + 7) & ~7u;
+            return alignedSize;
+        }
+
+        // Fall back to sequential layout calculation
         uint totalSize = 0;
         uint maxAlignment = 1;
 
