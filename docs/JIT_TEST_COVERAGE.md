@@ -296,8 +296,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Static field access triggers cctor before first use
 - ✅ Cctor runs only once (subsequent accesses skip)
 - ✅ Cctor with dependencies (type A's cctor accesses type B's static field)
-- ⚠️ beforefieldinit semantics (types without beforefieldinit work correctly)
-- ⚠️ Circular static initialization (basic case works, complex cycles untested)
+- ✅ beforefieldinit semantics (field initializers create synthetic cctor)
+- ✅ Circular static initialization (two-way and three-way cycles tested)
 
 ---
 
@@ -383,7 +383,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ### P2 - Nice to Have
 7. ✅ Multi-dimensional arrays - 2D/3D allocation, Get/Set, System.Array properties
-8. Reflection basics (limited - Type.GetTypeFromHandle, typeof works)
+8. ✅ Reflection - typeof, GetType, GetMethods/Fields/Constructors, MethodInfo.Invoke
 9. ✅ Overflow checking - implemented via INT 4 interrupt handler
 
 ---
@@ -409,11 +409,19 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 358 passing
+- Current test count: 368 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Static Constructor Edge Cases (2025-12)
+Added comprehensive tests for static constructor edge cases:
+- **beforefieldinit semantics**: Field initializers create synthetic cctor, tested with/without explicit cctor
+- **Circular initialization**: Two-way (A↔B) and three-way (A→B→C→A) cycles work correctly
+- 10 new tests: TestBeforeFieldInitValue, TestBeforeFieldInitComputed, TestBeforeFieldInitMultipleAccess,
+  TestNoBeforeFieldInit, TestNoBeforeFieldInitRunsOnce, TestCircularTwoWayA/B/Cross, TestCircularThreeWay/AllSums
+- Test count increased from 358 to 368
 
 ### Reflection Invoke and Member Enumeration (2025-12)
 Implemented full reflection method/field/constructor enumeration and invocation:

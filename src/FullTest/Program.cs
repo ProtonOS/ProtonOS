@@ -434,6 +434,20 @@ public static class TestRunner
         RecordResult("StaticCtorTests.TestStaticCtorRunsOnce", StaticCtorTests.TestStaticCtorRunsOnce() == 42);
         RecordResult("StaticCtorTests.TestStaticCtorOnWrite", StaticCtorTests.TestStaticCtorOnWrite() == 100);
         RecordResult("StaticCtorTests.TestStaticCtorWithDependency", StaticCtorTests.TestStaticCtorWithDependency() == 50);
+
+        // beforefieldinit semantics tests
+        RecordResult("StaticCtorTests.TestBeforeFieldInitValue", StaticCtorTests.TestBeforeFieldInitValue() == 42);
+        RecordResult("StaticCtorTests.TestBeforeFieldInitComputed", StaticCtorTests.TestBeforeFieldInitComputed() == 42);
+        RecordResult("StaticCtorTests.TestBeforeFieldInitMultipleAccess", StaticCtorTests.TestBeforeFieldInitMultipleAccess() == 42);
+        RecordResult("StaticCtorTests.TestNoBeforeFieldInit", StaticCtorTests.TestNoBeforeFieldInit() == 42);
+        RecordResult("StaticCtorTests.TestNoBeforeFieldInitRunsOnce", StaticCtorTests.TestNoBeforeFieldInitRunsOnce() == 42);
+
+        // Circular static initialization tests
+        RecordResult("StaticCtorTests.TestCircularTwoWayA", StaticCtorTests.TestCircularTwoWayA() == 10);
+        RecordResult("StaticCtorTests.TestCircularTwoWayB", StaticCtorTests.TestCircularTwoWayB() == 42);
+        RecordResult("StaticCtorTests.TestCircularTwoWayCross", StaticCtorTests.TestCircularTwoWayCross() == 42);
+        RecordResult("StaticCtorTests.TestCircularThreeWay", StaticCtorTests.TestCircularThreeWay() == 42);
+        RecordResult("StaticCtorTests.TestCircularThreeWayAllSums", StaticCtorTests.TestCircularThreeWayAllSums() == 42);
     }
 
     private static void RecordResult(string testName, bool passed)
@@ -5860,6 +5874,93 @@ public static class StaticCtorHelper3
     }
 }
 
+// Helper class with field initializer only (has beforefieldinit attribute)
+// No explicit static constructor - CLR can initialize lazily
+public static class BeforeFieldInitHelper
+{
+    // Field initializer - type has beforefieldinit flag
+    public static int Value = 42;
+    public static int Computed = 10 + 32;  // Also computed at init time
+}
+
+// Helper class WITHOUT beforefieldinit (has explicit static constructor)
+// CLR must initialize precisely before first access
+public static class NoBeforeFieldInitHelper
+{
+    public static int Value;
+    public static int AccessCount;
+
+    static NoBeforeFieldInitHelper()
+    {
+        Value = 42;
+        AccessCount = 1;
+    }
+}
+
+// Circular initialization: CircularA references CircularB, CircularB references CircularA
+// The CLR handles this by marking types as "initializing" to prevent infinite recursion
+public static class CircularA
+{
+    public static int ValueA;
+    public static int FromB;
+
+    static CircularA()
+    {
+        ValueA = 10;
+        // Access CircularB - if B is already initializing, we get its current (possibly 0) value
+        FromB = CircularB.ValueB;
+    }
+}
+
+public static class CircularB
+{
+    public static int ValueB;
+    public static int FromA;
+
+    static CircularB()
+    {
+        ValueB = 20;
+        // Access CircularA - if A is already initializing, we get its current value
+        FromA = CircularA.ValueA;
+    }
+}
+
+// Three-way circular: A -> B -> C -> A
+public static class Circular3A
+{
+    public static int Value = 1;
+    public static int Sum;
+
+    static Circular3A()
+    {
+        // Access B, which accesses C, which accesses A
+        Sum = Value + Circular3B.Value;
+    }
+}
+
+public static class Circular3B
+{
+    public static int Value = 2;
+    public static int Sum;
+
+    static Circular3B()
+    {
+        Sum = Value + Circular3C.Value;
+    }
+}
+
+public static class Circular3C
+{
+    public static int Value = 3;
+    public static int Sum;
+
+    static Circular3C()
+    {
+        // This creates the cycle back to A
+        Sum = Value + Circular3A.Value;
+    }
+}
+
 public static class StaticCtorTests
 {
     /// <summary>
@@ -5911,6 +6012,130 @@ public static class StaticCtorTests
         // Helper1's cctor sets InitializedValue to 42
         // Helper3's cctor then computes Value = 42 + 8 = 50
         return StaticCtorHelper3.Value;
+    }
+
+    // =========================================================================
+    // beforefieldinit semantics tests
+    // =========================================================================
+
+    /// <summary>
+    /// Test type with field initializer (has beforefieldinit flag).
+    /// Field initializers create a synthetic cctor that runs before first field access.
+    /// </summary>
+    public static int TestBeforeFieldInitValue()
+    {
+        // BeforeFieldInitHelper has no explicit cctor, just field initializers
+        // The type should still be initialized before first access
+        return BeforeFieldInitHelper.Value;  // Should be 42
+    }
+
+    /// <summary>
+    /// Test computed field initializer with beforefieldinit.
+    /// </summary>
+    public static int TestBeforeFieldInitComputed()
+    {
+        // Computed = 10 + 32 = 42
+        return BeforeFieldInitHelper.Computed;
+    }
+
+    /// <summary>
+    /// Test multiple field accesses on beforefieldinit type.
+    /// </summary>
+    public static int TestBeforeFieldInitMultipleAccess()
+    {
+        int a = BeforeFieldInitHelper.Value;     // 42
+        int b = BeforeFieldInitHelper.Computed;  // 42
+        return (a == 42 && b == 42) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test type without beforefieldinit (explicit cctor).
+    /// </summary>
+    public static int TestNoBeforeFieldInit()
+    {
+        // NoBeforeFieldInitHelper has explicit cctor
+        return NoBeforeFieldInitHelper.Value;  // Should be 42
+    }
+
+    /// <summary>
+    /// Test that explicit cctor runs exactly once.
+    /// </summary>
+    public static int TestNoBeforeFieldInitRunsOnce()
+    {
+        int a = NoBeforeFieldInitHelper.AccessCount;  // Should be 1
+        int b = NoBeforeFieldInitHelper.AccessCount;  // Still 1
+        return (a == 1 && b == 1) ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Circular static initialization tests
+    // =========================================================================
+
+    /// <summary>
+    /// Test simple two-way circular initialization (A -> B -> A).
+    /// When we access A, A's cctor runs and accesses B.
+    /// B's cctor runs and tries to access A, but A is "initializing" so we get A's current state.
+    /// </summary>
+    public static int TestCircularTwoWayA()
+    {
+        // Access CircularA first
+        // A's cctor: sets ValueA=10, then accesses CircularB.ValueB
+        // B's cctor: sets ValueB=20, then accesses CircularA.ValueA (which is already 10)
+        // So B.FromA = 10, A.FromB = 20
+        int valueA = CircularA.ValueA;
+        return valueA;  // Should be 10
+    }
+
+    /// <summary>
+    /// Test circular initialization - verify B's value.
+    /// </summary>
+    public static int TestCircularTwoWayB()
+    {
+        // Force initialization via A first
+        int _ = CircularA.ValueA;
+        // Now check B's value
+        return CircularB.ValueB == 20 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test circular initialization - verify cross-references.
+    /// </summary>
+    public static int TestCircularTwoWayCross()
+    {
+        // Initialize via A
+        int _ = CircularA.ValueA;
+        // A.FromB should be 20 (B was fully initialized when A read it)
+        // B.FromA should be 10 (A was already initialized when B read it)
+        return (CircularA.FromB == 20 && CircularB.FromA == 10) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test three-way circular initialization (A -> B -> C -> A).
+    /// </summary>
+    public static int TestCircularThreeWay()
+    {
+        // Access Circular3A
+        // A's cctor: Value=1, Sum = 1 + B.Value
+        // B's cctor: Value=2, Sum = 2 + C.Value
+        // C's cctor: Value=3, Sum = 3 + A.Value (A.Value is already 1)
+        // So C.Sum = 4, B.Sum = 2 + 3 = 5, A.Sum = 1 + 2 = 3
+        int aSum = Circular3A.Sum;
+        return aSum == 3 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test three-way circular - verify all sums.
+    /// </summary>
+    public static int TestCircularThreeWayAllSums()
+    {
+        int _ = Circular3A.Sum;  // Force initialization
+        // A.Sum = 1 + 2 = 3
+        // B.Sum = 2 + 3 = 5
+        // C.Sum = 3 + 1 = 4
+        bool aOk = Circular3A.Sum == 3;
+        bool bOk = Circular3B.Sum == 5;
+        bool cOk = Circular3C.Sum == 4;
+        return (aOk && bOk && cOk) ? 42 : 0;
     }
 }
 
