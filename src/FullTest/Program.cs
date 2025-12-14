@@ -56,6 +56,12 @@ public static class TestRunner
         // Foreach on arrays tests
         RunForeachTests();
 
+        // Params array tests
+        RunParamsTests();
+
+        // Memory tests (unsafe pointer patterns - similar to Span<T> operations)
+        RunMemoryTests();
+
         // Multi-dimensional array tests
         RunMDArrayTests();
 
@@ -731,6 +737,30 @@ public static class TestRunner
         RecordResult("ForeachTests.TestForeachLongArray", ForeachTests.TestForeachLongArray() == 42);
         RecordResult("ForeachTests.TestForeachObjectArray", ForeachTests.TestForeachObjectArray() == 42);
         RecordResult("ForeachTests.TestForeachIterationCount", ForeachTests.TestForeachIterationCount() == 10);
+    }
+
+    private static void RunParamsTests()
+    {
+        RecordResult("ParamsTests.TestParamsExplicitArray", ParamsTests.TestParamsExplicitArray() == 15);
+        RecordResult("ParamsTests.TestParamsSingleElement", ParamsTests.TestParamsSingleElement() == 42);
+        RecordResult("ParamsTests.TestParamsEmptyArray", ParamsTests.TestParamsEmptyArray() == 42);
+        RecordResult("ParamsTests.TestParamsMixedArgs", ParamsTests.TestParamsMixedArgs() == 110);
+        RecordResult("ParamsTests.TestParamsObjectArray", ParamsTests.TestParamsObjectArray() == 3);
+        RecordResult("ParamsTests.TestParamsComputedValues", ParamsTests.TestParamsComputedValues() == 10);
+        RecordResult("ParamsTests.TestParamsLength", ParamsTests.TestParamsLength() == 7);
+    }
+
+    private static void RunMemoryTests()
+    {
+        RecordResult("MemoryTests.TestPointerArrayAccess", MemoryTests.TestPointerArrayAccess() == 3);
+        RecordResult("MemoryTests.TestPointerWrite", MemoryTests.TestPointerWrite() == 42);
+        RecordResult("MemoryTests.TestMemoryFill", MemoryTests.TestMemoryFill() == 28);
+        RecordResult("MemoryTests.TestMemoryClear", MemoryTests.TestMemoryClear() == 42);
+        RecordResult("MemoryTests.TestPointerWithOffset", MemoryTests.TestPointerWithOffset() == 32);
+        RecordResult("MemoryTests.TestBytePointerAccess", MemoryTests.TestBytePointerAccess() == 10);
+        RecordResult("MemoryTests.TestPointerSum", MemoryTests.TestPointerSum() == 150);
+        RecordResult("MemoryTests.TestStackAlloc", MemoryTests.TestStackAlloc() == 10);
+        RecordResult("MemoryTests.TestPointerComparison", MemoryTests.TestPointerComparison() == 5);
     }
 
     private static void RunMDArrayTests()
@@ -2216,6 +2246,269 @@ public static class ForeachTests
             count++;
         }
         return count;  // 10
+    }
+}
+
+// =============================================================================
+// Params Array Tests - variable argument methods
+// =============================================================================
+
+public static class ParamsTests
+{
+    // NOTE: Inline params like SumParams(1,2,3) use RuntimeHelpers.InitializeArray
+    // which isn't available. All tests use explicit array construction instead.
+
+    /// <summary>
+    /// Test params method with explicit array.
+    /// </summary>
+    public static int TestParamsExplicitArray()
+    {
+        int[] arr = new int[5];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+        return SumParams(arr);  // 15
+    }
+
+    /// <summary>
+    /// Test params method with single element array.
+    /// </summary>
+    public static int TestParamsSingleElement()
+    {
+        int[] arr = new int[1];
+        arr[0] = 42;
+        return SumParams(arr);  // 42
+    }
+
+    /// <summary>
+    /// Test params method with empty array.
+    /// </summary>
+    public static int TestParamsEmptyArray()
+    {
+        int[] arr = new int[0];
+        return SumParams(arr) + 42;  // 0 + 42 = 42
+    }
+
+    /// <summary>
+    /// Test params with mixed fixed and variable args.
+    /// </summary>
+    public static int TestParamsMixedArgs()
+    {
+        int[] arr = new int[4];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;
+        return SumWithPrefix(100, arr);  // 100 + 10 = 110
+    }
+
+    /// <summary>
+    /// Test params with object array (boxing).
+    /// </summary>
+    public static int TestParamsObjectArray()
+    {
+        object[] arr = new object[3];
+        arr[0] = (object)1;
+        arr[1] = (object)"hello";
+        arr[2] = (object)3;
+        return CountParams(arr);  // 3
+    }
+
+    /// <summary>
+    /// Test params passing computed values.
+    /// </summary>
+    public static int TestParamsComputedValues()
+    {
+        int[] arr1 = new int[2];
+        arr1[0] = 1; arr1[1] = 2;
+        int sum1 = SumParams(arr1);  // 3
+
+        int[] arr2 = new int[2];
+        arr2[0] = 3; arr2[1] = 4;
+        int sum2 = SumParams(arr2);  // 7
+
+        int[] result = new int[2];
+        result[0] = sum1;
+        result[1] = sum2;
+        return SumParams(result);  // 10
+    }
+
+    /// <summary>
+    /// Test params array length access.
+    /// </summary>
+    public static int TestParamsLength()
+    {
+        int[] arr = new int[7];
+        for (int i = 0; i < 7; i++)
+            arr[i] = i;
+        return GetParamsLength(arr);  // 7
+    }
+
+    // Helper: Sum variable number of ints
+    private static int SumParams(params int[] values)
+    {
+        int sum = 0;
+        for (int i = 0; i < values.Length; i++)
+            sum += values[i];
+        return sum;
+    }
+
+    // Helper: First arg is prefix, rest are summed
+    private static int SumWithPrefix(int prefix, params int[] values)
+    {
+        int sum = prefix;
+        for (int i = 0; i < values.Length; i++)
+            sum += values[i];
+        return sum;
+    }
+
+    // Helper: Count params in object array
+    private static int CountParams(params object[] values)
+    {
+        return values.Length;
+    }
+
+    // Helper: Get length of params array
+    private static int GetParamsLength(params int[] values)
+    {
+        return values.Length;
+    }
+}
+
+// =============================================================================
+// Span<T> Tests - ref struct and memory access
+// =============================================================================
+// NOTE: Span<T> tests require AOT registry support for generic korlib types.
+// This is tracked as a future enhancement. For now, we test span-like memory
+// operations using unsafe pointer patterns which exercise the same JIT opcodes.
+
+public static unsafe class MemoryTests
+{
+    /// <summary>
+    /// Test pointer arithmetic on array - similar to Span indexer.
+    /// </summary>
+    public static int TestPointerArrayAccess()
+    {
+        int[] arr = new int[5];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+        fixed (int* ptr = arr)
+        {
+            return ptr[2];  // 3
+        }
+    }
+
+    /// <summary>
+    /// Test pointer write through fixed array.
+    /// </summary>
+    public static int TestPointerWrite()
+    {
+        int[] arr = new int[3];
+        arr[0] = 10; arr[1] = 20; arr[2] = 30;
+        fixed (int* ptr = arr)
+        {
+            ptr[1] = 42;
+        }
+        return arr[1];  // 42
+    }
+
+    /// <summary>
+    /// Test memory fill pattern using pointers.
+    /// </summary>
+    public static int TestMemoryFill()
+    {
+        int[] arr = new int[4];
+        fixed (int* ptr = arr)
+        {
+            for (int i = 0; i < 4; i++)
+                ptr[i] = 7;
+        }
+        return arr[0] + arr[1] + arr[2] + arr[3];  // 28
+    }
+
+    /// <summary>
+    /// Test memory clear pattern using pointers.
+    /// </summary>
+    public static int TestMemoryClear()
+    {
+        int[] arr = new int[3];
+        arr[0] = 10; arr[1] = 20; arr[2] = 30;
+        fixed (int* ptr = arr)
+        {
+            for (int i = 0; i < 3; i++)
+                ptr[i] = 0;
+        }
+        return (arr[0] == 0 && arr[1] == 0 && arr[2] == 0) ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test pointer with offset - similar to Span slice.
+    /// </summary>
+    public static int TestPointerWithOffset()
+    {
+        int[] arr = new int[5];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+        fixed (int* ptr = arr)
+        {
+            int* offsetPtr = ptr + 1;  // Start at element 1
+            int length = 3;
+            return length * 10 + offsetPtr[0];  // 32
+        }
+    }
+
+    /// <summary>
+    /// Test byte pointer access.
+    /// </summary>
+    public static int TestBytePointerAccess()
+    {
+        byte[] arr = new byte[4];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;
+        fixed (byte* ptr = arr)
+        {
+            int sum = 0;
+            for (int i = 0; i < 4; i++)
+                sum += ptr[i];
+            return sum;  // 10
+        }
+    }
+
+    /// <summary>
+    /// Test pointer sum over array.
+    /// </summary>
+    public static int TestPointerSum()
+    {
+        int[] arr = new int[5];
+        arr[0] = 10; arr[1] = 20; arr[2] = 30; arr[3] = 40; arr[4] = 50;
+        int sum = 0;
+        fixed (int* ptr = arr)
+        {
+            for (int i = 0; i < 5; i++)
+                sum += ptr[i];
+        }
+        return sum;  // 150
+    }
+
+    /// <summary>
+    /// Test stackalloc - similar to Span from stack.
+    /// </summary>
+    public static int TestStackAlloc()
+    {
+        int* ptr = stackalloc int[4];
+        ptr[0] = 1;
+        ptr[1] = 2;
+        ptr[2] = 3;
+        ptr[3] = 4;
+        return ptr[0] + ptr[1] + ptr[2] + ptr[3];  // 10
+    }
+
+    /// <summary>
+    /// Test pointer comparison.
+    /// </summary>
+    public static int TestPointerComparison()
+    {
+        int[] arr = new int[5];
+        fixed (int* start = arr)
+        {
+            int* end = start + 5;
+            int count = 0;
+            for (int* p = start; p < end; p++)
+                count++;
+            return count;  // 5
+        }
     }
 }
 

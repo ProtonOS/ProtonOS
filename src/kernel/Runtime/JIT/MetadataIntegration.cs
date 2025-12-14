@@ -372,6 +372,10 @@ public static unsafe class MetadataIntegration
 
         // Interface types - for using statement / IDisposable support
         public const uint IDisposable = 0xF0000050;
+
+        // Span types - ref struct memory access
+        public const uint Span = 0xF0000060;           // Span`1
+        public const uint ReadOnlySpan = 0xF0000061;   // ReadOnlySpan`1
     }
 
     /// <summary>

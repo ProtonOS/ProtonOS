@@ -2091,6 +2091,25 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Find a TypeDef token by type name and namespace.
+    /// Returns 0x02xxxxxx TypeDef token, or 0 if not found.
+    /// </summary>
+    private static uint FindTypeDefByName(LoadedAssembly* asm, byte* typeName, byte* typeNs)
+    {
+        uint count = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        for (uint row = 1; row <= count; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, row);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+            if (NameEquals(name, typeName) && NameEquals(ns, typeNs))
+                return 0x02000000 | row;
+        }
+        return 0;
+    }
+
+    /// <summary>
     /// Get a loaded assembly by name.
     /// </summary>
     private static LoadedAssembly* GetLoadedAssemblyByName(byte* name)
@@ -3590,7 +3609,7 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.Boolean;
                 break;
 
-            case (byte)'S':  // SByte, Single, String
+            case (byte)'S':  // SByte, Single, String, Span`1
                 if (name[1] == 'B' && name[2] == 'y' && name[3] == 't' && name[4] == 'e' && name[5] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.SByte;
                 if (name[1] == 'i' && name[2] == 'n' && name[3] == 'g' && name[4] == 'l' &&
@@ -3599,6 +3618,10 @@ public static unsafe class AssemblyLoader
                 if (name[1] == 't' && name[2] == 'r' && name[3] == 'i' && name[4] == 'n' &&
                     name[5] == 'g' && name[6] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.String;
+                // Span`1
+                if (name[1] == 'p' && name[2] == 'a' && name[3] == 'n' && name[4] == '`' &&
+                    name[5] == '1' && name[6] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Span;
                 break;
 
             case (byte)'C':  // Char
@@ -3718,7 +3741,7 @@ public static unsafe class AssemblyLoader
                 }
                 break;
 
-            case (byte)'R':  // RuntimeType, RuntimeArgumentHandle
+            case (byte)'R':  // RuntimeType, RuntimeArgumentHandle, ReadOnlySpan`1
                 if (name[1] == 'u' && name[2] == 'n' && name[3] == 't' && name[4] == 'i' &&
                     name[5] == 'm' && name[6] == 'e')
                 {
@@ -3732,6 +3755,12 @@ public static unsafe class AssemblyLoader
                         name[19] == 'l' && name[20] == 'e' && name[21] == 0)
                         return JIT.MetadataIntegration.WellKnownTypes.RuntimeArgumentHandle;
                 }
+                // ReadOnlySpan`1
+                if (name[1] == 'e' && name[2] == 'a' && name[3] == 'd' && name[4] == 'O' &&
+                    name[5] == 'n' && name[6] == 'l' && name[7] == 'y' && name[8] == 'S' &&
+                    name[9] == 'p' && name[10] == 'a' && name[11] == 'n' && name[12] == '`' &&
+                    name[13] == '1' && name[14] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan;
                 break;
         }
 
@@ -4267,6 +4296,28 @@ public static unsafe class AssemblyLoader
                         DebugConsole.Write(" args=");
                         DebugConsole.WriteDecimal(argCount);
                         DebugConsole.WriteLine();
+
+                        // For certain well-known types (Span`1, ReadOnlySpan`1), fall back to
+                        // kernel assembly metadata lookup since they are JIT-compiled, not AOT
+                        if (typeDefToken == JIT.MetadataIntegration.WellKnownTypes.Span ||
+                            typeDefToken == JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan)
+                        {
+                            DebugConsole.WriteLine("[AsmLoader] Falling back to kernel metadata for JIT type");
+                            targetAsm = GetAssembly(KernelAssemblyId);
+                            if (targetAsm != null)
+                            {
+                                // Find the actual TypeDef for Span`1 or ReadOnlySpan`1 in kernel
+                                typeDefToken = FindTypeDefByName(targetAsm, typeName, typeNs);
+                                if (typeDefToken != 0)
+                                {
+                                    DebugConsole.Write("[AsmLoader] Found kernel TypeDef 0x");
+                                    DebugConsole.WriteHex(typeDefToken);
+                                    DebugConsole.WriteLine();
+                                    // Fall through to normal method lookup below
+                                    goto doNormalLookup;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -4275,6 +4326,8 @@ public static unsafe class AssemblyLoader
             DebugConsole.WriteLine("[AsmLoader] Well-known type method not found in AOT registry");
             return false;
         }
+
+        doNormalLookup:
 
         // Normal lookup requires a target assembly - check for null now
         if (targetAsm == null || typeDefToken == 0)
