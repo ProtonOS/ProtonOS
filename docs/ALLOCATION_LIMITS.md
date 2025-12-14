@@ -71,6 +71,12 @@ These registries now use the BlockAllocator with small block sizes (32 entries) 
 - **Was**: Fixed 512 entries
 - **Now**: Grows dynamically, no hard limit
 
+### ✅ AotMethodRegistry
+- **File**: `src/kernel/Runtime/AotMethodRegistry.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 128 entries
+- **Now**: Grows dynamically, no hard limit
+
 ---
 
 ## Medium Priority (Caching/optimization limits)
@@ -87,13 +93,6 @@ These registries now use the BlockAllocator with small block sizes (32 entries) 
 - **Warning**: Silent (stops caching)
 - **Growth rate**: Every unique generic instantiation
 - **Impact**: Performance (cache misses cause MT recreation)
-- **Recommendation**: Increase to 256
-
-### 🟢 AotMethodRegistry.MaxEntries = 128
-- **File**: `src/kernel/Runtime/AotMethodRegistry.cs:47`
-- **Warning**: On overflow (prevents registration)
-- **Growth rate**: BCL method registrations
-- **Impact**: AOT method lookup fails
 - **Recommendation**: Increase to 256
 
 ### 🟢 StringPool.MaxTokenCacheSize = 1024
@@ -151,7 +150,7 @@ Created `BlockAllocator.cs` providing growable block-based storage:
 - Chains blocks together as needed
 - No hard limit (grows until memory exhausted)
 - Common implementation reusable across registries
-- Applied to 9 critical registries (all high-priority conversions complete)
+- Applied to 10 critical registries (all high-priority conversions complete)
 
 ### Future: Convert Medium-Priority Caches
 Could apply block allocator to caching structures for consistency:
@@ -163,6 +162,10 @@ These are lower priority since cache exhaustion only affects performance, not co
 ---
 
 ## Change Log
+
+### 2025-12 AotMethodRegistry Conversion
+- Converted AotMethodRegistry to block allocator (was fixed 128 entries)
+- All 300 tests pass with 10 registries using block allocator
 
 ### 2025-12 MetadataIntegration/ReflectionRuntime Conversion
 - Converted MetadataIntegration.TypeRegistry (global AOT types) to block allocator

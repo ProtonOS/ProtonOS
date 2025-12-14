@@ -41,13 +41,13 @@ public unsafe struct AotMethodEntry
 /// Registry for AOT-compiled korlib methods that JIT code can call.
 /// This allows JIT-compiled assemblies to call methods like String.get_Length
 /// which are AOT-compiled into the kernel without JIT metadata.
+/// Now uses BlockChain for unlimited growth.
 /// </summary>
 public static unsafe class AotMethodRegistry
 {
-    private const int MaxEntries = 128;
+    private const int EntryBlockSize = 32;
 
-    private static AotMethodEntry* _entries;
-    private static int _count;
+    private static BlockChain _entryChain;
     private static bool _initialized;
 
     /// <summary>
@@ -61,15 +61,15 @@ public static unsafe class AotMethodRegistry
 
         DebugConsole.WriteLine("[AotRegistry] Initializing...");
 
-        _entries = (AotMethodEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxEntries * sizeof(AotMethodEntry)));
-        if (_entries == null)
+        // Initialize block chain for entries
+        fixed (BlockChain* chain = &_entryChain)
         {
-            DebugConsole.WriteLine("[AotRegistry] Failed to allocate storage");
-            return;
+            if (!BlockAllocator.Init(chain, sizeof(AotMethodEntry), EntryBlockSize))
+            {
+                DebugConsole.WriteLine("[AotRegistry] Failed to init entry chain");
+                return;
+            }
         }
-
-        _count = 0;
 
         // Register well-known String methods
         RegisterStringMethods();
@@ -90,7 +90,11 @@ public static unsafe class AotMethodRegistry
         RegisterDelegateMethods();
 
         _initialized = true;
-        DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", _count));
+
+        int count;
+        fixed (BlockChain* chain = &_entryChain)
+            count = chain->TotalCount;
+        DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", count));
     }
 
     /// <summary>
@@ -459,20 +463,25 @@ public static unsafe class AotMethodRegistry
     private static void Register(string typeName, string methodName, nint nativeCode,
                                   byte argCount, ReturnKind returnKind, bool hasThis, bool isVirtual)
     {
-        if (_entries == null || _count >= MaxEntries)
-            return;
-
         uint typeHash = HashString(typeName);
         uint methodHash = HashString(methodName);
 
-        _entries[_count].TypeNameHash = typeHash;
-        _entries[_count].MethodNameHash = methodHash;
-        _entries[_count].NativeCode = nativeCode;
-        _entries[_count].ArgCount = argCount;
-        _entries[_count].ReturnKind = returnKind;
-        _entries[_count].HasThis = hasThis;
-        _entries[_count].IsVirtual = isVirtual;
-        _count++;
+        AotMethodEntry entry;
+        entry.TypeNameHash = typeHash;
+        entry.MethodNameHash = methodHash;
+        entry.NativeCode = nativeCode;
+        entry.ArgCount = argCount;
+        entry.ReturnKind = returnKind;
+        entry.HasThis = hasThis;
+        entry.IsVirtual = isVirtual;
+
+        fixed (BlockChain* chain = &_entryChain)
+        {
+            if (BlockAllocator.Add(chain, &entry) == null)
+            {
+                DebugConsole.WriteLine("[AotRegistry] Failed to add entry");
+            }
+        }
     }
 
     /// <summary>
@@ -483,25 +492,33 @@ public static unsafe class AotMethodRegistry
     {
         entry = default;
 
-        if (_entries == null || typeName == null || methodName == null)
+        if (typeName == null || methodName == null)
             return false;
 
         uint typeHash = HashBytes(typeName);
         uint methodHash = HashBytes(methodName);
 
-        for (int i = 0; i < _count; i++)
+        fixed (BlockChain* chain = &_entryChain)
         {
-            if (_entries[i].TypeNameHash == typeHash &&
-                _entries[i].MethodNameHash == methodHash)
+            var block = chain->First;
+            while (block != null)
             {
-                // For overloaded methods, match by arg count
-                // Note: argCount includes 'this' for instance methods
-                if (_entries[i].ArgCount == argCount ||
-                    (argCount == 0 && !_entries[i].HasThis))  // Don't enforce count if not provided
+                for (int i = 0; i < block->Used; i++)
                 {
-                    entry = _entries[i];
-                    return true;
+                    var e = (AotMethodEntry*)block->GetEntry(i);
+                    if (e->TypeNameHash == typeHash && e->MethodNameHash == methodHash)
+                    {
+                        // For overloaded methods, match by arg count
+                        // Note: argCount includes 'this' for instance methods
+                        if (e->ArgCount == argCount ||
+                            (argCount == 0 && !e->HasThis))  // Don't enforce count if not provided
+                        {
+                            entry = *e;
+                            return true;
+                        }
+                    }
                 }
+                block = block->Next;
             }
         }
 
@@ -514,18 +531,26 @@ public static unsafe class AotMethodRegistry
     /// </summary>
     public static nint LookupByName(string typeName, string methodName)
     {
-        if (_entries == null || typeName == null || methodName == null)
+        if (typeName == null || methodName == null)
             return 0;
 
         uint typeHash = HashString(typeName);
         uint methodHash = HashString(methodName);
 
-        for (int i = 0; i < _count; i++)
+        fixed (BlockChain* chain = &_entryChain)
         {
-            if (_entries[i].TypeNameHash == typeHash &&
-                _entries[i].MethodNameHash == methodHash)
+            var block = chain->First;
+            while (block != null)
             {
-                return _entries[i].NativeCode;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var e = (AotMethodEntry*)block->GetEntry(i);
+                    if (e->TypeNameHash == typeHash && e->MethodNameHash == methodHash)
+                    {
+                        return e->NativeCode;
+                    }
+                }
+                block = block->Next;
             }
         }
 
