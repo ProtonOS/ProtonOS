@@ -97,9 +97,11 @@ These registries now use the BlockAllocator with small block sizes (32 entries) 
 
 ### 🟢 StringPool.MaxTokenCacheSize = 1024
 - **File**: `src/kernel/Runtime/StringPool.cs:29`
-- **Growth rate**: Unique string literals
-- **Impact**: Cache misses
-- **Recommendation**: Likely sufficient
+- **Warning**: Silent (cache eviction, not failure)
+- **Growth rate**: Unique ldstr tokens accessed
+- **Impact**: Cache collision → eviction → re-resolve on next access
+- **Note**: Strings are NEVER lost - they're stored in the intern table which grows dynamically via `GrowTable()`. The token cache is just a fast O(1) lookup optimization.
+- **Recommendation**: Likely sufficient (intern table is the real storage)
 
 ---
 
