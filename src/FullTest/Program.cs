@@ -136,7 +136,18 @@ public static class TestRunner
         // Static constructor tests - tests .cctor invocation
         RunStaticCtorTests();
 
+        // Recursion tests - verifies recursive calls work after tail call infrastructure
+        RunRecursionTests();
+
         return (_passCount << 16) | _failCount;
+    }
+
+    private static void RunRecursionTests()
+    {
+        RecordResult("RecursionTests.TestFactorialBasic", RecursionTests.TestFactorialBasic() == 120);
+        RecordResult("RecursionTests.TestFactorialAccumulator", RecursionTests.TestFactorialAccumulator() == 1);
+        RecordResult("RecursionTests.TestRecursiveSum", RecursionTests.TestRecursiveSum() == 1);
+        RecordResult("RecursionTests.TestRecursiveFib", RecursionTests.TestRecursiveFib() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -6659,6 +6670,78 @@ public unsafe class CalliTests
         // but we can test by calling twice with different arg
         int second = fptr(11);  // 22
         return first + second;  // 20 + 22 = 42
+    }
+}
+
+// =============================================================================
+// Recursion Tests (verifies recursive calls work after tail call infrastructure)
+// =============================================================================
+
+/// <summary>
+/// Tests for recursive method calls.
+/// Note: C# compiler does not emit tail. prefix, so these test regular recursion.
+/// The tail call optimization is available for IL that explicitly uses the tail. prefix.
+/// </summary>
+public static class RecursionTests
+{
+    /// <summary>
+    /// Test basic recursive factorial.
+    /// </summary>
+    public static int TestFactorialBasic()
+    {
+        return Factorial(5);  // 5! = 120, but we return 1 for pass
+    }
+
+    private static int Factorial(int n)
+    {
+        if (n <= 1) return 1;
+        return n * Factorial(n - 1);
+    }
+
+    /// <summary>
+    /// Test tail-recursive style factorial (accumulator pattern).
+    /// Note: C# doesn't emit tail. prefix, so this is still regular recursion.
+    /// </summary>
+    public static int TestFactorialAccumulator()
+    {
+        int result = FactorialAcc(5, 1);
+        return result == 120 ? 1 : 0;
+    }
+
+    private static int FactorialAcc(int n, int acc)
+    {
+        if (n <= 1) return acc;
+        return FactorialAcc(n - 1, acc * n);
+    }
+
+    /// <summary>
+    /// Test recursive sum of numbers.
+    /// </summary>
+    public static int TestRecursiveSum()
+    {
+        int result = Sum(10);  // 1+2+...+10 = 55
+        return result == 55 ? 1 : 0;
+    }
+
+    private static int Sum(int n)
+    {
+        if (n <= 0) return 0;
+        return n + Sum(n - 1);
+    }
+
+    /// <summary>
+    /// Test recursive fibonacci (non-tail recursive).
+    /// </summary>
+    public static int TestRecursiveFib()
+    {
+        int result = Fib(10);  // Fib(10) = 55
+        return result == 55 ? 1 : 0;
+    }
+
+    private static int Fib(int n)
+    {
+        if (n <= 1) return n;
+        return Fib(n - 1) + Fib(n - 2);
     }
 }
 

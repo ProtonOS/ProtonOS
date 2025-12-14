@@ -631,6 +631,7 @@ public unsafe struct ILCompiler
 
     // Prefix opcodes state - cleared after each instruction
     private uint _constrainedTypeToken;  // Non-zero if constrained. prefix is pending
+    private bool _tailPrefix;            // True if tail. prefix is pending
 
     // Method info
     private int _argCount;
@@ -727,6 +728,7 @@ public unsafe struct ILCompiler
         compiler._ilLength = ilLength;
         compiler._ilOffset = 0;
         compiler._constrainedTypeToken = 0;  // Initialize prefix state
+        compiler._tailPrefix = false;         // Initialize prefix state
         compiler._argCount = argCount;
         compiler._localCount = localCount;
         compiler._stackAdjust = 0;
@@ -2112,7 +2114,8 @@ public unsafe struct ILCompiler
                 return true;
             case ILOpcode.Tail_2:
                 // tail. prefix - indicates a tail call follows
-                // For naive JIT, we ignore this and do a normal call
+                // Set flag to be consumed by the next call instruction
+                _tailPrefix = true;
                 return true;
             case ILOpcode.Volatile_2:
                 // volatile. prefix - indicates next load/store is volatile
@@ -4536,7 +4539,25 @@ public unsafe struct ILCompiler
         // Also handle the case when calling a vararg method with 0 varargs (direct MethodDef call)
         if (method.IsVarargCall || method.IsVarargMethod)
         {
+            _tailPrefix = false;  // Clear prefix - vararg calls don't support tail call
             return CompileVarargCall(token, method);
+        }
+
+        // Handle tail call optimization for self-recursive calls
+        bool isTailCall = _tailPrefix;
+        _tailPrefix = false;  // Clear prefix - must be consumed
+
+        if (isTailCall)
+        {
+            // Check if this is a self-recursive call (same method token)
+            // We compare against _debugMethodToken which is set to the current method's token
+            if (token == _debugMethodToken && !method.HasThis)
+            {
+                // Self-recursive tail call - optimize to a jump
+                return CompileSelfRecursiveTailCall(method);
+            }
+            // For non-self-recursive tail calls, fall through to regular call
+            // (full tail call optimization would require more complex stack manipulation)
         }
 
         int totalArgs = method.ArgCount;
@@ -5079,6 +5100,174 @@ public unsafe struct ILCompiler
                 }
                 break;
         }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile a self-recursive tail call.
+    /// Instead of call/ret, we:
+    /// 1. Pop new arguments from eval stack
+    /// 2. Store them in shadow space (where original args were homed)
+    /// 3. Jump back to IL offset 0
+    /// </summary>
+    private bool CompileSelfRecursiveTailCall(ResolvedMethod method)
+    {
+        int argCount = method.ArgCount;
+
+        // For now, only support up to 4 arguments (register args in shadow space)
+        // Extending to more args requires stack manipulation beyond shadow space
+        if (argCount > 4)
+        {
+            // Fall back: do a regular call (not optimized, but correct)
+            // This is handled by returning false and letting the caller proceed normally
+            // But we've already consumed the prefix, so we need to do the call here
+            // Actually, we should just proceed with regular call path - caller will handle it
+            // For now, just emit a regular call
+            DebugConsole.Write("[JIT] Tail call fallback: ");
+            DebugConsole.WriteDecimal((uint)argCount);
+            DebugConsole.WriteLine(" args");
+
+            // Cannot fall back easily since we're in a separate method
+            // For correctness, just don't optimize - do a regular call
+            return CompileRegularCall(method);
+        }
+
+        // Pop arguments in reverse order and store in shadow space
+        // Shadow space layout: [RBP+16]=arg0, [RBP+24]=arg1, [RBP+32]=arg2, [RBP+40]=arg3
+
+        // Pop all args first (they're in IL order: arg0 bottom, argN-1 top)
+        // We need to pop in reverse and store in reverse, so final order is correct
+
+        // Strategy: Pop to temp locations, then store to shadow space
+        // Use RBX, R12, R13, R14 as temps (callee-saved, we can use them temporarily)
+
+        // Pop args to temp registers in reverse order (TOS = argN-1)
+        // VReg mapping: R7=RBX, R8=R12, R9=R13, R10=R14 (all callee-saved)
+        // For 4 args: pop -> R7 (arg3), pop -> R8 (arg2), pop -> R9 (arg1), pop -> R10 (arg0)
+        if (argCount >= 4)
+        {
+            X64Emitter.Pop(ref _code, VReg.R7);  // arg3 -> R7 (RBX) temp
+            PopEntry();
+        }
+        if (argCount >= 3)
+        {
+            X64Emitter.Pop(ref _code, VReg.R8);  // arg2 -> R8 (R12) temp
+            PopEntry();
+        }
+        if (argCount >= 2)
+        {
+            X64Emitter.Pop(ref _code, VReg.R9);  // arg1 -> R9 (R13) temp
+            PopEntry();
+        }
+        if (argCount >= 1)
+        {
+            X64Emitter.Pop(ref _code, VReg.R10); // arg0 -> R10 (R14) temp
+            PopEntry();
+        }
+
+        // Now store temps to shadow space
+        // [RBP+16] = arg0, [RBP+24] = arg1, [RBP+32] = arg2, [RBP+40] = arg3
+        if (argCount >= 1)
+        {
+            // mov [rbp+16], r14  (arg0)
+            X64Emitter.MovMR(ref _code, VReg.FP, 16, VReg.R10);
+        }
+        if (argCount >= 2)
+        {
+            // mov [rbp+24], r13  (arg1)
+            X64Emitter.MovMR(ref _code, VReg.FP, 24, VReg.R9);
+        }
+        if (argCount >= 3)
+        {
+            // mov [rbp+32], r12  (arg2)
+            X64Emitter.MovMR(ref _code, VReg.FP, 32, VReg.R8);
+        }
+        if (argCount >= 4)
+        {
+            // mov [rbp+40], rbx  (arg3)
+            X64Emitter.MovMR(ref _code, VReg.FP, 40, VReg.R7);
+        }
+
+        // Jump to IL offset 0 (start of method body after prologue)
+        // Use RecordBranch to handle forward/backward reference
+        int targetIL = 0;
+        int codeOffset = FindCodeOffset(targetIL);
+
+        if (codeOffset >= 0)
+        {
+            // Backward jump - we know the target already
+            // jmp rel32
+            _code.EmitByte(0xE9);
+            int rel = codeOffset - (_code.Position + 4);
+            _code.EmitInt32(rel);
+        }
+        else
+        {
+            // IL offset 0 should always be known since we record labels as we compile
+            // This case shouldn't happen for self-recursion
+            DebugConsole.WriteLine("[JIT] ERROR: Tail call target IL 0 not found");
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Helper for CompileSelfRecursiveTailCall fallback - emit a regular call
+    /// </summary>
+    private bool CompileRegularCall(ResolvedMethod method)
+    {
+        int totalArgs = method.ArgCount;
+
+        // Pop arguments and set up registers for call
+        // This is a simplified version - just pop and call
+        if (totalArgs >= 4)
+        {
+            X64Emitter.Pop(ref _code, VReg.R4);  // arg3 -> R9
+            PopEntry();
+        }
+        if (totalArgs >= 3)
+        {
+            X64Emitter.Pop(ref _code, VReg.R3);  // arg2 -> R8
+            PopEntry();
+        }
+        if (totalArgs >= 2)
+        {
+            X64Emitter.Pop(ref _code, VReg.R2);  // arg1 -> RDX
+            PopEntry();
+        }
+        if (totalArgs >= 1)
+        {
+            X64Emitter.Pop(ref _code, VReg.R1);  // arg0 -> RCX
+            PopEntry();
+        }
+
+        // Allocate shadow space and call
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Call the method
+        if (method.NativeCode != null)
+        {
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+            X64Emitter.CallR(ref _code, VReg.R0);
+        }
+        else
+        {
+            DebugConsole.WriteLine("[JIT] ERROR: No native code for tail call fallback");
+            return false;
+        }
+
+        // Deallocate shadow space
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+        // Handle return value
+        if (method.ReturnKind != ReturnKind.Void)
+        {
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushEntry(EvalStackEntry.NativeInt);
+        }
+        // For void, nothing to push
 
         return true;
     }

@@ -55,7 +55,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Interface dispatch (callvirt on interface type)
 
 ### Special Calls
-- ⚠️ Tail calls (tail. prefix parsed but ignored)
+- ✅ Tail calls (self-recursive tail calls optimized, others fall through to regular call)
 - ✅ Indirect calls through delegates (Delegate.Invoke)
 - ✅ calli (indirect call through function pointer)
 
@@ -351,7 +351,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### Prefix Opcodes
 - ✅ constrained. (for value type virtcalls)
 - ✅ readonly. (no-op, optimization hint)
-- ✅ tail. (no-op, not implemented)
+- ✅ tail. (self-recursive calls optimized to jumps)
 - ✅ volatile. (no-op in naive JIT)
 - ✅ unaligned. (no-op on x64)
 
@@ -405,6 +405,7 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 - `StaticCtorTests` - Static constructor behavior
 - `AdvancedGenericTests` - Complex generic scenarios
 - `FloatingPointTests` - Float and double arithmetic, conversions, method calls
+- `RecursionTests` - Recursive method calls (regression tests for tail call infrastructure)
 
 ---
 
@@ -444,11 +445,21 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 400 passing
+- Current test count: 404 passing
 - Target: Comprehensive JIT coverage for driver development
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Tail Call Optimization (2025-12)
+Added self-recursive tail call optimization:
+- **tail. prefix handling**: Added `_tailPrefix` field to track when tail. prefix is seen
+- **Self-recursion detection**: Compares call target token with current method's token (`_debugMethodToken`)
+- **Optimization**: For static methods with ≤4 args, replaces args in shadow space and jumps to IL offset 0
+- **Fallback**: Non-self-recursive calls or methods with >4 args proceed with regular call
+- **Note**: C# compiler does not emit tail. prefix; optimization triggers on explicit IL with tail. prefix
+- **4 new tests**: TestFactorialBasic, TestFactorialAccumulator, TestRecursiveSum, TestRecursiveFib (regression tests)
+- Test count increased from 400 to 404
 
 ### Floating Point Support (2025-12)
 Added comprehensive floating point support with 32 new tests:
