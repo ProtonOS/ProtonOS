@@ -3064,20 +3064,17 @@ public static unsafe class MetadataIntegration
             if (asm == null || !asm->IsLoaded)
                 continue;
 
-            // Search this assembly's type registry
-            for (int i = 0; i < asm->Types.Count; i++)
+            // Search this assembly's type registry using reverse lookup
+            uint typeDefToken = asm->Types.FindTokenByMT(mt);
+            if (typeDefToken != 0)
             {
-                if (asm->Types.Entries[i].MT == mt)
-                {
-                    uint typeDefToken = asm->Types.Entries[i].Token;
-                    uint typeDefRow = typeDefToken & 0x00FFFFFF;
-                    DebugConsole.Write("[FindDefCtor] Found in asm ");
-                    DebugConsole.WriteDecimal(asmId);
-                    DebugConsole.Write(" token 0x");
-                    DebugConsole.WriteHex(typeDefToken);
-                    DebugConsole.WriteLine();
-                    return FindAndCompileDefaultCtor(asm, typeDefRow);
-                }
+                uint typeDefRow = typeDefToken & 0x00FFFFFF;
+                DebugConsole.Write("[FindDefCtor] Found in asm ");
+                DebugConsole.WriteDecimal(asmId);
+                DebugConsole.Write(" token 0x");
+                DebugConsole.WriteHex(typeDefToken);
+                DebugConsole.WriteLine();
+                return FindAndCompileDefaultCtor(asm, typeDefRow);
             }
         }
 

@@ -374,13 +374,26 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Recent Updates
 
+### Block Allocator for Kernel Registries (2025-12)
+Implemented dynamic block-based allocator to eliminate fixed-size limits:
+- **Created**: `BlockAllocator.cs` - generic block chain implementation
+- **Block size**: 32 entries per block (small to exercise growth during 300+ tests)
+- **Converted registries**:
+  - `FunctionTableStorage` - exception handling function tables
+  - `JITMethodRegistry` - JIT method metadata
+  - `TypeRegistry` - per-assembly type registries
+  - `StaticFieldStorage` - per-assembly static field entries
+- **Benefits**: No fixed limits, grows until memory exhausted
+- **Testing**: All 300 tests pass, block allocation growth is exercised
+- **Documentation**: See `docs/ALLOCATION_LIMITS.md` for full details
+
 ### Function Table Capacity Fix (2025-12)
 Fixed exception handler registration failures due to function table exhaustion:
 - **Root cause**: `MaxFunctionTables` was set to 512, exhausted after JIT'ing many test methods
 - **Symptom**: Methods with exception handlers failed to register, causing `funcEntry=NULL` during exception dispatch
 - **Debug discovery**: Method 0x060001CF (TestCheckedConvOverflow) had 1 EH clause but registration failed with "used=512/512"
-- **Fix**: Increased `MaxFunctionTables` from 512 to 2048 in ExceptionHandling.cs
-- **Storage**: Updated fixed buffer from `512 * 40` to `2048 * 40` bytes (~80KB total)
+- **Initial fix**: Increased `MaxFunctionTables` from 512 to 2048
+- **Final fix**: Converted to block allocator with 32 entries per block (see above)
 - All 300 tests now pass regardless of test order
 
 ### Array Bounds Checking (2025-12)

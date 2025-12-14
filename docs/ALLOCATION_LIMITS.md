@@ -3,6 +3,7 @@
 This document tracks all fixed-size allocations in the kernel that could be exhausted as the system grows with more types, methods, drivers, and tests.
 
 ## Status Legend
+- ✅ CONVERTED: Now uses block allocator (no fixed limit)
 - 🔴 HIGH RISK: Likely to exhaust with moderate growth
 - 🟡 MEDIUM RISK: Could exhaust with significant growth
 - 🟢 LOW RISK: Unlikely to exhaust in normal use
@@ -10,31 +11,38 @@ This document tracks all fixed-size allocations in the kernel that could be exha
 
 ---
 
-## High Priority (Growing with JIT'd code)
+## Converted to Block Allocator (No Fixed Limit)
 
-### 🔴 JITMethodRegistry.MaxMethods = 1024
-- **File**: `src/kernel/Runtime/JIT/JITMethodInfo.cs:820`
-- **Warning**: "Method limit reached"
-- **Current usage**: ~300+ methods (300 tests + framework methods)
-- **Growth rate**: Every JIT'd method with exception handlers
-- **Impact**: Registration fails, EH stops working for new methods
-- **Recommendation**: Increase to 4096 or make dynamic
+These registries now use the BlockAllocator with small block sizes (32 entries) to enable unlimited growth and exercise block allocation during tests.
 
-### 🔴 ExceptionHandling.MaxFunctionTables = 2048
-- **File**: `src/kernel/x64/ExceptionHandling.cs:686`
-- **Fixed storage**: `fixed byte Data[2048 * 40]` (~80KB)
-- **Warning**: "[Tier0JIT] WARNING: Failed to register method"
-- **Current usage**: Was hitting 512/512, now 2048
-- **Growth rate**: Every JIT'd method needs an entry
-- **Impact**: Exception handlers stop working
-- **Recommendation**: Already increased; consider dynamic allocation
+### ✅ ExceptionHandling.FunctionTableStorage
+- **File**: `src/kernel/x64/ExceptionHandling.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 2048 entries (previously 512)
+- **Now**: Grows dynamically, no hard limit
 
-### 🔴 TypeRegistry.MaxTypes = 256 (per assembly)
-- **File**: `src/kernel/Runtime/AssemblyLoader.cs:39`
-- **Warning**: Silent (returns false)
-- **Growth rate**: Every unique type in an assembly
-- **Impact**: Type resolution fails, objects can't be created
-- **Recommendation**: Increase to 1024 or make dynamic
+### ✅ JITMethodRegistry
+- **File**: `src/kernel/Runtime/JIT/JITMethodInfo.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 1024 entries
+- **Now**: Grows dynamically, no hard limit
+
+### ✅ TypeRegistry (per assembly)
+- **File**: `src/kernel/Runtime/AssemblyLoader.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 256 entries per assembly
+- **Now**: Grows dynamically, no hard limit
+
+### ✅ StaticFieldStorage (per assembly)
+- **File**: `src/kernel/Runtime/AssemblyLoader.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 256 field entries per assembly
+- **Now**: Grows dynamically, no hard limit
+- **Note**: Storage block (64KB) is still fixed
+
+---
+
+## Remaining High Priority (Still Fixed)
 
 ### 🔴 MetadataIntegration.MaxTypeEntries = 512
 - **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs:130`
@@ -145,33 +153,35 @@ These are tied to hardware limits and don't grow with software:
 
 ## Recommendations
 
-### Short-term: Increase Limits
-Double or quadruple the high-priority limits:
-- MaxMethods: 1024 → 4096
-- MaxTypes (per assembly): 256 → 1024
-- MaxTypeEntries: 512 → 2048
-- MaxFieldLayoutEntries: 512 → 2048
-- MaxCctorEntries: 256 → 1024
-- MaxStaticFields: 256 → 1024
-
-### Medium-term: Block Allocator
-Create a shared growable block allocator for registries:
-- Allocates fixed-size blocks (e.g., 64 entries)
+### Completed: Block Allocator
+Created `BlockAllocator.cs` providing growable block-based storage:
+- Allocates fixed-size blocks (32 entries by default for testing)
 - Chains blocks together as needed
 - No hard limit (grows until memory exhausted)
 - Common implementation reusable across registries
+- Already applied to 4 critical registries
 
-### Long-term: Dynamic Resizing
-Implement true dynamic arrays with reallocation:
-- Start small (e.g., 64 entries)
-- Double capacity when needed
-- Copy existing data to new allocation
-- More complex but most flexible
+### Remaining: Convert More Registries
+Apply block allocator to remaining high-priority registries:
+- MetadataIntegration.MaxTypeEntries → BlockAllocator
+- MetadataIntegration.MaxFieldLayoutEntries → BlockAllocator
+- MetadataIntegration.MaxCctorEntries → BlockAllocator
+- MetadataIntegration.MaxStaticFields → BlockAllocator
+- ReflectionRuntime.MaxTypeInfoEntries → BlockAllocator
 
 ---
 
 ## Change Log
 
-### 2025-12 Function Table Fix
+### 2025-12 Block Allocator Implementation
+- Created `BlockAllocator.cs` with generic block chain implementation
+- Converted FunctionTableStorage to block allocator (was hitting 512 limit)
+- Converted JITMethodRegistry to block allocator
+- Converted TypeRegistry (per-assembly) to block allocator
+- Converted StaticFieldStorage field entries to block allocator
+- All registries use 32-entry blocks to exercise growth during tests
+- All 300 tests pass with the new allocations
+
+### 2025-12 Function Table Fix (Initial)
 - Increased MaxFunctionTables from 512 to 2048
 - Root cause of exception handler failures with 300+ tests

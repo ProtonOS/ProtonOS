@@ -9,6 +9,7 @@ using ProtonOS.Platform;
 using ProtonOS.Memory;
 using ProtonOS.X64;
 using ProtonOS.Threading;
+using ProtonOS.Runtime;
 
 namespace ProtonOS.Runtime.JIT;
 
@@ -814,14 +815,13 @@ public unsafe struct JITMethodInfo
 /// <summary>
 /// Registry for JIT-compiled method metadata.
 /// Manages registration with the exception handling system.
+/// Uses block allocator for dynamic growth - no fixed limit.
 /// </summary>
 public static unsafe class JITMethodRegistry
 {
-    private const int MaxMethods = 1024;
-
-    // Storage for method info structures
-    private static JITMethodInfo* _methods;
-    private static int _methodCount;
+    // Block allocator for method info - small block size to exercise growth during tests
+    private const int MethodBlockSize = 32;
+    private static BlockChain _methodChain;
     private static SpinLock _lock;
     private static bool _initialized;
 
@@ -836,20 +836,19 @@ public static unsafe class JITMethodRegistry
         if (_initialized)
             return true;
 
-        // Allocate method info array
-        int size = MaxMethods * sizeof(JITMethodInfo);
-        _methods = (JITMethodInfo*)VirtualMemory.AllocateVirtualRange(0, (ulong)size, true,
-            PageFlags.Present | PageFlags.Writable);
-        if (_methods == null)
+        // Initialize block allocator for method info structures
+        fixed (BlockChain* chainPtr = &_methodChain)
         {
-            DebugConsole.WriteLine("[JITRegistry] Failed to allocate method storage");
-            return false;
+            if (!BlockAllocator.Init(chainPtr, sizeof(JITMethodInfo), MethodBlockSize))
+            {
+                DebugConsole.WriteLine("[JITRegistry] Failed to initialize method allocator");
+                return false;
+            }
         }
 
-        _methodCount = 0;
         _initialized = true;
 
-        DebugConsole.WriteLine("[JITRegistry] Initialized");
+        DebugConsole.WriteLine("[JITRegistry] Initialized with block allocator");
         return true;
     }
 
@@ -857,6 +856,7 @@ public static unsafe class JITMethodRegistry
     /// Register a JIT-compiled method with exception handling support.
     /// UNWIND_INFO and EH info are allocated from CodeHeap so that all RVAs
     /// in RUNTIME_FUNCTION are relative to the same ImageBase (CodeBase).
+    /// Uses block allocator - no fixed limit on number of methods.
     /// </summary>
     /// <param name="info">Method info structure to register</param>
     /// <param name="nativeClauses">EH clauses with native offsets</param>
@@ -867,13 +867,6 @@ public static unsafe class JITMethodRegistry
             return false;
 
         _lock.Acquire();
-
-        if (_methodCount >= MaxMethods)
-        {
-            _lock.Release();
-            DebugConsole.WriteLine("[JITRegistry] Method limit reached");
-            return false;
-        }
 
         // Add EH clauses to method info
         for (int i = 0; i < nativeClauses.Count; i++)
@@ -888,9 +881,20 @@ public static unsafe class JITMethodRegistry
         // Finalize unwind info first (to set up the structure in the local info)
         info.FinalizeUnwindInfo(info.EHClauseCount > 0);
 
-        // Store method info
-        int index = _methodCount++;
-        _methods[index] = info;
+        // Store method info in block allocator
+        JITMethodInfo* storedInfo;
+        fixed (JITMethodInfo* infoPtr = &info)
+        fixed (BlockChain* chainPtr = &_methodChain)
+        {
+            storedInfo = (JITMethodInfo*)BlockAllocator.Add(chainPtr, infoPtr);
+        }
+
+        if (storedInfo == null)
+        {
+            _lock.Release();
+            DebugConsole.WriteLine("[JITRegistry] Failed to allocate method info");
+            return false;
+        }
 
         // Allocate UNWIND_INFO from CodeHeap so it can be addressed via RVA from CodeBase
         // UNWIND_INFO is 64 bytes in JITMethodInfo._unwindData
@@ -898,14 +902,13 @@ public static unsafe class JITMethodRegistry
         byte* unwindInfoInCodeHeap = CodeHeap.Alloc(unwindInfoSize);
         if (unwindInfoInCodeHeap == null)
         {
-            _methodCount--;
             _lock.Release();
             DebugConsole.WriteLine("[JITRegistry] Failed to allocate unwind info from CodeHeap");
             return false;
         }
 
         // Copy unwind info to CodeHeap allocation
-        byte* srcUnwind = _methods[index].GetUnwindInfoPtr();
+        byte* srcUnwind = storedInfo->GetUnwindInfoPtr();
         for (int i = 0; i < unwindInfoSize; i++)
         {
             unwindInfoInCodeHeap[i] = srcUnwind[i];
@@ -913,7 +916,7 @@ public static unsafe class JITMethodRegistry
 
         // Calculate UNWIND_INFO RVA relative to CodeBase
         uint unwindRva = (uint)((ulong)unwindInfoInCodeHeap - info.CodeBase);
-        _methods[index].Function.UnwindInfoAddress = unwindRva;
+        storedInfo->Function.UnwindInfoAddress = unwindRva;
 
         // Allocate and build EH info in CodeHeap if needed
         if (info.EHClauseCount > 0)
@@ -923,7 +926,6 @@ public static unsafe class JITMethodRegistry
             byte* ehInfoInCodeHeap = CodeHeap.Alloc((ulong)ehInfoMaxSize);
             if (ehInfoInCodeHeap == null)
             {
-                _methodCount--;
                 _lock.Release();
                 DebugConsole.WriteLine("[JITRegistry] Failed to allocate EH info from CodeHeap");
                 return false;
@@ -931,7 +933,7 @@ public static unsafe class JITMethodRegistry
 
             // Build EH info directly into CodeHeap allocation
             int ehInfoSize;
-            _methods[index].BuildEHInfo(ehInfoInCodeHeap, out ehInfoSize);
+            storedInfo->BuildEHInfo(ehInfoInCodeHeap, out ehInfoSize);
 
             // Calculate EH info RVA relative to CodeBase
             uint ehInfoRva = (uint)((ulong)ehInfoInCodeHeap - info.CodeBase);
@@ -955,14 +957,13 @@ public static unsafe class JITMethodRegistry
         RuntimeFunction* functions = (RuntimeFunction*)CodeHeap.Alloc(functionArraySize);
         if (functions == null)
         {
-            _methodCount--;
             _lock.Release();
             DebugConsole.WriteLine("[JITRegistry] Failed to allocate function table from CodeHeap");
             return false;
         }
 
         // First entry is the main method
-        functions[0] = _methods[index].Function;
+        functions[0] = storedInfo->Function;
 
         // Finalize and add funclet RUNTIME_FUNCTIONs
         // Note: FuncletData is already allocated from CodeHeap, so UNWIND_INFO has valid RVAs
@@ -970,10 +971,10 @@ public static unsafe class JITMethodRegistry
         {
             // Finalize funclet unwind info - this sets up the UNWIND_INFO in FuncletData
             // and patches the UnwindInfoAddress RVA in the RUNTIME_FUNCTION
-            _methods[index].FinalizeFuncletUnwindInfo(i, 4); // 4-byte prolog: push rbp; mov rbp, rdx
+            storedInfo->FinalizeFuncletUnwindInfo(i, 4); // 4-byte prolog: push rbp; mov rbp, rdx
 
             // Get funclet RUNTIME_FUNCTION (already has correct UnwindInfoAddress from finalize)
-            RuntimeFunction* funcletFunc = _methods[index].GetFuncletRuntimeFunction(i);
+            RuntimeFunction* funcletFunc = storedInfo->GetFuncletRuntimeFunction(i);
 
             // Add to function array
             functions[1 + i] = *funcletFunc;
@@ -1019,6 +1020,7 @@ public static unsafe class JITMethodRegistry
     /// Register a JIT-compiled method for stack unwinding only (no EH clauses).
     /// This is needed so the exception handler can properly unwind through JIT methods
     /// even if they don't have try/catch/finally blocks.
+    /// Uses block allocator - no fixed limit on number of methods.
     /// </summary>
     /// <param name="info">Method info structure to register</param>
     /// <returns>True if registered successfully</returns>
@@ -1029,31 +1031,34 @@ public static unsafe class JITMethodRegistry
 
         _lock.Acquire();
 
-        if (_methodCount >= MaxMethods)
+        // Finalize unwind info (no EH clauses)
+        info.FinalizeUnwindInfo(false);
+
+        // Store method info in block allocator
+        JITMethodInfo* storedInfo;
+        fixed (JITMethodInfo* infoPtr = &info)
+        fixed (BlockChain* chainPtr = &_methodChain)
+        {
+            storedInfo = (JITMethodInfo*)BlockAllocator.Add(chainPtr, infoPtr);
+        }
+
+        if (storedInfo == null)
         {
             _lock.Release();
             return false;
         }
-
-        // Finalize unwind info (no EH clauses)
-        info.FinalizeUnwindInfo(false);
-
-        // Store method info
-        int index = _methodCount++;
-        _methods[index] = info;
 
         // Allocate UNWIND_INFO from CodeHeap so it can be addressed via RVA from CodeBase
         const int unwindInfoSize = 64;
         byte* unwindInfoInCodeHeap = CodeHeap.Alloc(unwindInfoSize);
         if (unwindInfoInCodeHeap == null)
         {
-            _methodCount--;
             _lock.Release();
             return false;
         }
 
         // Copy unwind info to CodeHeap
-        byte* localUnwind = info.GetUnwindInfoPtr();
+        byte* localUnwind = storedInfo->GetUnwindInfoPtr();
         for (int i = 0; i < unwindInfoSize; i++)
             unwindInfoInCodeHeap[i] = localUnwind[i];
 
@@ -1061,18 +1066,17 @@ public static unsafe class JITMethodRegistry
         uint unwindRva = (uint)((ulong)unwindInfoInCodeHeap - info.CodeBase);
 
         // Update the stored info's RUNTIME_FUNCTION with correct unwind RVA
-        _methods[index].Function.UnwindInfoAddress = unwindRva;
+        storedInfo->Function.UnwindInfoAddress = unwindRva;
 
         // Build single-entry RUNTIME_FUNCTION array
         RuntimeFunction* functions = (RuntimeFunction*)CodeHeap.Alloc((ulong)sizeof(RuntimeFunction));
         if (functions == null)
         {
-            _methodCount--;
             _lock.Release();
             return false;
         }
 
-        functions[0] = _methods[index].Function;
+        functions[0] = storedInfo->Function;
 
         // Register with ExceptionHandling
         bool success = ExceptionHandling.AddFunctionTable(functions, 1, info.CodeBase);
@@ -1084,7 +1088,16 @@ public static unsafe class JITMethodRegistry
     /// <summary>
     /// Get the number of registered methods.
     /// </summary>
-    public static int MethodCount => _methodCount;
+    public static int MethodCount
+    {
+        get
+        {
+            fixed (BlockChain* chainPtr = &_methodChain)
+            {
+                return chainPtr->TotalCount;
+            }
+        }
+    }
 
     /// <summary>
     /// Find the GCInfo for a given instruction pointer.
@@ -1101,31 +1114,42 @@ public static unsafe class JITMethodRegistry
         gcInfoSize = 0;
         codeOffset = 0;
 
-        if (!_initialized || _methodCount == 0)
+        if (!_initialized)
             return false;
 
-        // Linear search through registered methods
-        // TODO: Could optimize with binary search if we keep methods sorted by address
-        for (int i = 0; i < _methodCount; i++)
+        fixed (BlockChain* chainPtr = &_methodChain)
         {
-            ref JITMethodInfo info = ref _methods[i];
-
-            // Calculate absolute address range
-            ulong beginAddr = info.CodeBase + info.Function.BeginAddress;
-            ulong endAddr = info.CodeBase + info.Function.EndAddress;
-
-            if (ip >= beginAddr && ip < endAddr)
-            {
-                // Found the method containing this IP
-                if (info.HasGCInfo)
-                {
-                    gcInfoPtr = info.GetGCInfoPtr();
-                    gcInfoSize = info.GCInfoSize;
-                    codeOffset = (uint)(ip - beginAddr);
-                    return true;
-                }
-                // Method found but no GCInfo (no GC refs in this method)
+            if (chainPtr->TotalCount == 0)
                 return false;
+
+            // Linear search through all blocks
+            var block = chainPtr->First;
+            while (block != null)
+            {
+                var methods = (JITMethodInfo*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    ref JITMethodInfo info = ref methods[i];
+
+                    // Calculate absolute address range
+                    ulong beginAddr = info.CodeBase + info.Function.BeginAddress;
+                    ulong endAddr = info.CodeBase + info.Function.EndAddress;
+
+                    if (ip >= beginAddr && ip < endAddr)
+                    {
+                        // Found the method containing this IP
+                        if (info.HasGCInfo)
+                        {
+                            gcInfoPtr = info.GetGCInfoPtr();
+                            gcInfoSize = info.GCInfoSize;
+                            codeOffset = (uint)(ip - beginAddr);
+                            return true;
+                        }
+                        // Method found but no GCInfo (no GC refs in this method)
+                        return false;
+                    }
+                }
+                block = block->Next;
             }
         }
 
@@ -1137,8 +1161,15 @@ public static unsafe class JITMethodRegistry
     /// </summary>
     public static JITMethodInfo* GetMethodInfo(int index)
     {
-        if (!_initialized || index < 0 || index >= _methodCount)
+        if (!_initialized)
             return null;
-        return &_methods[index];
+
+        fixed (BlockChain* chainPtr = &_methodChain)
+        {
+            if (index < 0 || index >= chainPtr->TotalCount)
+                return null;
+
+            return (JITMethodInfo*)BlockAllocator.GetAt(chainPtr, index);
+        }
     }
 }

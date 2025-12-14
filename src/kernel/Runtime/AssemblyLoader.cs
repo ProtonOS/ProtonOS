@@ -33,30 +33,47 @@ public enum AssemblyFlags : uint
 /// <summary>
 /// Per-assembly type registry mapping TypeDef tokens to MethodTable pointers.
 /// Each LoadedAssembly has its own TypeRegistry to avoid token collisions.
+/// Uses block allocator for dynamic growth - no fixed limit.
 /// </summary>
 public unsafe struct TypeRegistry
 {
-    public const int MaxTypes = 256;
+    // Block size for type registry - small to exercise growth during tests
+    public const int TypeBlockSize = 32;
 
-    /// <summary>Array of type entries.</summary>
-    public TypeRegistryEntry* Entries;
-
-    /// <summary>Number of registered types.</summary>
-    public int Count;
+    /// <summary>Block chain for type entries.</summary>
+    public BlockChain Chain;
 
     /// <summary>Owner assembly ID.</summary>
     public uint AssemblyId;
 
+    /// <summary>True if initialized.</summary>
+    public bool Initialized;
+
+    /// <summary>Number of registered types.</summary>
+    public int Count
+    {
+        get
+        {
+            fixed (BlockChain* chainPtr = &Chain)
+            {
+                return chainPtr->TotalCount;
+            }
+        }
+    }
+
     /// <summary>
-    /// Initialize the type registry (allocates storage).
+    /// Initialize the type registry (allocates first block).
     /// </summary>
     public bool Initialize(uint assemblyId)
     {
         AssemblyId = assemblyId;
-        Count = 0;
-        Entries = (TypeRegistryEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxTypes * sizeof(TypeRegistryEntry)));
-        return Entries != null;
+        fixed (BlockChain* chainPtr = &Chain)
+        {
+            if (!BlockAllocator.Init(chainPtr, sizeof(TypeRegistryEntry), TypeBlockSize))
+                return false;
+        }
+        Initialized = true;
+        return true;
     }
 
     /// <summary>
@@ -65,33 +82,41 @@ public unsafe struct TypeRegistry
     /// </summary>
     public bool Register(uint token, MethodTable* mt)
     {
-        if (Entries == null || mt == null)
+        if (!Initialized || mt == null)
             return false;
 
-        // Check if already registered
-        for (int i = 0; i < Count; i++)
+        fixed (BlockChain* chainPtr = &Chain)
         {
-            if (Entries[i].Token == token)
+            // Check if already registered - iterate through all blocks
+            var block = chainPtr->First;
+            while (block != null)
             {
-                Entries[i].MT = mt;  // Update existing
-                // Also update reflection registry
-                ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
-                return true;
+                var entries = (TypeRegistryEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    if (entries[i].Token == token)
+                    {
+                        entries[i].MT = mt;  // Update existing
+                        ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
+                        return true;
+                    }
+                }
+                block = block->Next;
             }
+
+            // Add new entry
+            TypeRegistryEntry newEntry;
+            newEntry.Token = token;
+            newEntry.MT = mt;
+
+            byte* result = BlockAllocator.Add(chainPtr, &newEntry);
+            if (result == null)
+                return false;
+
+            // Register with ReflectionRuntime for reverse lookup (MT* -> assembly/token)
+            ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
+            return true;
         }
-
-        // Add new entry
-        if (Count >= MaxTypes)
-            return false;
-
-        Entries[Count].Token = token;
-        Entries[Count].MT = mt;
-        Count++;
-
-        // Register with ReflectionRuntime for reverse lookup (MT* -> assembly/token)
-        ReflectionRuntime.RegisterTypeInfo(AssemblyId, token, mt);
-
-        return true;
     }
 
     /// <summary>
@@ -99,39 +124,72 @@ public unsafe struct TypeRegistry
     /// </summary>
     public MethodTable* Lookup(uint token)
     {
-        if (Entries == null)
+        if (!Initialized)
             return null;
 
-        for (int i = 0; i < Count; i++)
+        fixed (BlockChain* chainPtr = &Chain)
         {
-            if (Entries[i].Token == token)
-                return Entries[i].MT;
+            var block = chainPtr->First;
+            while (block != null)
+            {
+                var entries = (TypeRegistryEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    if (entries[i].Token == token)
+                        return entries[i].MT;
+                }
+                block = block->Next;
+            }
         }
         return null;
     }
 
     /// <summary>
+    /// Reverse lookup - find a token by MethodTable pointer.
+    /// </summary>
+    public uint FindTokenByMT(MethodTable* mt)
+    {
+        if (!Initialized || mt == null)
+            return 0;
+
+        fixed (BlockChain* chainPtr = &Chain)
+        {
+            var block = chainPtr->First;
+            while (block != null)
+            {
+                var entries = (TypeRegistryEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    if (entries[i].MT == mt)
+                        return entries[i].Token;
+                }
+                block = block->Next;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
     /// Free the registry storage.
+    /// Note: Block allocator memory is not freed (no deallocation support yet).
     /// </summary>
     public void Free()
     {
-        if (Entries != null)
-        {
-            HeapAllocator.Free(Entries);
-            Entries = null;
-        }
-        Count = 0;
+        // Block allocator doesn't support deallocation currently
+        // Just mark as uninitialized
+        Initialized = false;
     }
 }
 
 /// <summary>
 /// Per-assembly static field storage.
 /// Each LoadedAssembly has its own storage block for clean unloading.
+/// Uses block allocator for field registry - no fixed limit.
 /// </summary>
 public unsafe struct StaticFieldStorage
 {
     public const int StorageBlockSize = 64 * 1024;  // 64KB per assembly
-    public const int MaxFields = 256;
+    public const int FieldBlockSize = 32;  // Small block size to exercise growth
 
     /// <summary>Allocated storage block.</summary>
     public byte* Storage;
@@ -142,11 +200,23 @@ public unsafe struct StaticFieldStorage
     /// <summary>Owner assembly ID.</summary>
     public uint AssemblyId;
 
-    /// <summary>Array of field tracking entries.</summary>
-    public StaticFieldEntry* Fields;
+    /// <summary>Block chain for field tracking entries.</summary>
+    public BlockChain FieldChain;
+
+    /// <summary>True if initialized.</summary>
+    public bool Initialized;
 
     /// <summary>Number of registered static fields.</summary>
-    public int FieldCount;
+    public int FieldCount
+    {
+        get
+        {
+            fixed (BlockChain* chainPtr = &FieldChain)
+            {
+                return chainPtr->TotalCount;
+            }
+        }
+    }
 
     /// <summary>
     /// Initialize the static field storage (allocates on first use).
@@ -155,12 +225,15 @@ public unsafe struct StaticFieldStorage
     {
         AssemblyId = assemblyId;
         Used = 0;
-        FieldCount = 0;
         Storage = null;  // Allocated on demand
 
-        Fields = (StaticFieldEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxFields * sizeof(StaticFieldEntry)));
-        return Fields != null;
+        fixed (BlockChain* chainPtr = &FieldChain)
+        {
+            if (!BlockAllocator.Init(chainPtr, sizeof(StaticFieldEntry), FieldBlockSize))
+                return false;
+        }
+        Initialized = true;
+        return true;
     }
 
     /// <summary>
@@ -194,33 +267,43 @@ public unsafe struct StaticFieldStorage
     /// </summary>
     public void* Register(uint token, uint typeToken, int size, bool isGCRef)
     {
-        if (Fields == null)
+        if (!Initialized)
             return null;
 
-        // Check if already registered
-        for (int i = 0; i < FieldCount; i++)
+        fixed (BlockChain* chainPtr = &FieldChain)
         {
-            if (Fields[i].Token == token)
-                return Fields[i].Address;
+            // Check if already registered - iterate through all blocks
+            var block = chainPtr->First;
+            while (block != null)
+            {
+                var fields = (StaticFieldEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    if (fields[i].Token == token)
+                        return fields[i].Address;
+                }
+                block = block->Next;
+            }
+
+            // Allocate storage
+            void* addr = Allocate(size);
+            if (addr == null)
+                return null;
+
+            // Register new field entry
+            StaticFieldEntry newEntry;
+            newEntry.Token = token;
+            newEntry.TypeToken = typeToken;
+            newEntry.Address = addr;
+            newEntry.Size = size;
+            newEntry.IsGCRef = isGCRef;
+
+            byte* result = BlockAllocator.Add(chainPtr, &newEntry);
+            if (result == null)
+                return null;
+
+            return addr;
         }
-
-        // Allocate storage
-        void* addr = Allocate(size);
-        if (addr == null)
-            return null;
-
-        // Register
-        if (FieldCount >= MaxFields)
-            return null;
-
-        Fields[FieldCount].Token = token;
-        Fields[FieldCount].TypeToken = typeToken;
-        Fields[FieldCount].Address = addr;
-        Fields[FieldCount].Size = size;
-        Fields[FieldCount].IsGCRef = isGCRef;
-        FieldCount++;
-
-        return addr;
     }
 
     /// <summary>
@@ -228,13 +311,22 @@ public unsafe struct StaticFieldStorage
     /// </summary>
     public void* Lookup(uint token)
     {
-        if (Fields == null)
+        if (!Initialized)
             return null;
 
-        for (int i = 0; i < FieldCount; i++)
+        fixed (BlockChain* chainPtr = &FieldChain)
         {
-            if (Fields[i].Token == token)
-                return Fields[i].Address;
+            var block = chainPtr->First;
+            while (block != null)
+            {
+                var fields = (StaticFieldEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    if (fields[i].Token == token)
+                        return fields[i].Address;
+                }
+                block = block->Next;
+            }
         }
         return null;
     }
@@ -249,13 +341,9 @@ public unsafe struct StaticFieldStorage
             HeapAllocator.Free(Storage);
             Storage = null;
         }
-        if (Fields != null)
-        {
-            HeapAllocator.Free(Fields);
-            Fields = null;
-        }
+        // Block allocator doesn't support deallocation currently
+        Initialized = false;
         Used = 0;
-        FieldCount = 0;
     }
 }
 
@@ -3586,18 +3674,14 @@ public static unsafe class AssemblyLoader
                     if (!_assemblies[i].IsLoaded)
                         continue;
 
-                    // Check if this assembly owns the MethodTable
-                    for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                    // Check if this assembly owns the MethodTable using reverse lookup
+                    uint token = _assemblies[i].Types.FindTokenByMT(mt);
+                    if (token != 0)
                     {
-                        if (_assemblies[i].Types.Entries[j].MT == mt)
-                        {
-                            targetAsm = &_assemblies[i];
-                            typeDefToken = _assemblies[i].Types.Entries[j].Token;
-                            break;
-                        }
-                    }
-                    if (targetAsm != null)
+                        targetAsm = &_assemblies[i];
+                        typeDefToken = token;
                         break;
+                    }
                 }
             }
         }
@@ -3806,22 +3890,18 @@ public static unsafe class AssemblyLoader
                     if (!_assemblies[i].IsLoaded)
                         continue;
 
-                    // Check if this assembly owns the MethodTable
-                    for (int j = 0; j < _assemblies[i].Types.Count; j++)
+                    // Check if this assembly owns the MethodTable using reverse lookup
+                    uint token = _assemblies[i].Types.FindTokenByMT(mt);
+                    if (token != 0)
                     {
-                        if (_assemblies[i].Types.Entries[j].MT == mt)
-                        {
-                            targetAsm = &_assemblies[i];
-                            typeDefToken = _assemblies[i].Types.Entries[j].Token;
-                            break;
-                        }
-                    }
-                    if (targetAsm != null)
+                        targetAsm = &_assemblies[i];
+                        typeDefToken = token;
                         break;
+                    }
                 }
 
                 // Fallback for AOT korlib types (System.Object, System.String, etc.)
-                // These types have MethodTables but aren't registered in Types.Entries
+                // These types have MethodTables but aren't registered in type registry
                 if (targetAsm == null && mt != null)
                 {
                     // Get the type name from the TypeRef

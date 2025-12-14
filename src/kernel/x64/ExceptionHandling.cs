@@ -332,15 +332,7 @@ public unsafe delegate ExceptionDisposition ExceptionHandler(
 /// </summary>
 public unsafe delegate int UnhandledExceptionFilter(ExceptionRecord* exceptionRecord, ExceptionContext* context);
 
-/// <summary>
-/// Static storage for function table entries
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-internal unsafe struct FunctionTableStorage
-{
-    // Up to 2048 registered code regions (increased to support large numbers of JIT'd methods)
-    public fixed byte Data[2048 * 40]; // 2048 entries × sizeof(FunctionTableEntry)
-}
+// FunctionTableStorage removed - now uses BlockAllocator for dynamic growth
 
 /// <summary>
 /// Exception handling infrastructure for x64.
@@ -683,9 +675,10 @@ public static unsafe class ExceptionHandling
         }
     }
 
-    private const int MaxFunctionTables = 2048;
-
-    private static FunctionTableStorage _tableStorage;
+    // Block allocator for function table entries (grows dynamically)
+    // Small initial block size to exercise growth during tests
+    private const int FunctionTableBlockSize = 32;
+    private static BlockChain _functionTableChain;
     private static SpinLock _lock;
     private static bool _initialized;
 
@@ -699,11 +692,14 @@ public static unsafe class ExceptionHandling
     {
         if (_initialized) return;
 
-        // Clear function table storage
-        fixed (byte* ptr = _tableStorage.Data)
+        // Initialize block allocator for function tables
+        fixed (BlockChain* chainPtr = &_functionTableChain)
         {
-            for (int i = 0; i < MaxFunctionTables * sizeof(FunctionTableEntry); i++)
-                ptr[i] = 0;
+            if (!BlockAllocator.Init(chainPtr, sizeof(FunctionTableEntry), FunctionTableBlockSize))
+            {
+                DebugConsole.WriteLine("[EH] Failed to initialize function table allocator");
+                return;
+            }
         }
 
         _lock = default;
@@ -761,6 +757,7 @@ public static unsafe class ExceptionHandling
 
     /// <summary>
     /// Register a function table for a code region (like RtlAddFunctionTable).
+    /// Uses block allocator for dynamic growth - no fixed limit.
     /// </summary>
     /// <param name="functionTable">Pointer to RUNTIME_FUNCTION array</param>
     /// <param name="entryCount">Number of entries in the array</param>
@@ -772,28 +769,40 @@ public static unsafe class ExceptionHandling
 
         _lock.Acquire();
 
-        fixed (byte* ptr = _tableStorage.Data)
+        // First, try to find a free slot (InUse == false) in existing blocks
+        fixed (BlockChain* chainPtr = &_functionTableChain)
         {
-            var tables = (FunctionTableEntry*)ptr;
-
-            // Find free slot
-            for (int i = 0; i < MaxFunctionTables; i++)
+            var block = chainPtr->First;
+            while (block != null)
             {
-                if (!tables[i].InUse)
+                var entries = (FunctionTableEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
                 {
-                    tables[i].BaseAddress = baseAddress;
-                    tables[i].Functions = functionTable;
-                    tables[i].FunctionCount = entryCount;
-                    tables[i].InUse = true;
-
-                    _lock.Release();
-                    return true;
+                    if (!entries[i].InUse)
+                    {
+                        // Reuse this slot
+                        entries[i].BaseAddress = baseAddress;
+                        entries[i].Functions = functionTable;
+                        entries[i].FunctionCount = entryCount;
+                        entries[i].InUse = true;
+                        _lock.Release();
+                        return true;
+                    }
                 }
+                block = block->Next;
             }
-        }
 
-        _lock.Release();
-        return false; // No free slots
+            // No free slot found, add new entry (may allocate new block)
+            FunctionTableEntry newEntry;
+            newEntry.BaseAddress = baseAddress;
+            newEntry.Functions = functionTable;
+            newEntry.FunctionCount = entryCount;
+            newEntry.InUse = true;
+
+            byte* result = BlockAllocator.Add(chainPtr, &newEntry);
+            _lock.Release();
+            return result != null;
+        }
     }
 
     /// <summary>
@@ -805,18 +814,22 @@ public static unsafe class ExceptionHandling
 
         _lock.Acquire();
 
-        fixed (byte* ptr = _tableStorage.Data)
+        fixed (BlockChain* chainPtr = &_functionTableChain)
         {
-            var tables = (FunctionTableEntry*)ptr;
-
-            for (int i = 0; i < MaxFunctionTables; i++)
+            var block = chainPtr->First;
+            while (block != null)
             {
-                if (tables[i].InUse && tables[i].Functions == functionTable)
+                var entries = (FunctionTableEntry*)block->Data;
+                for (int i = 0; i < block->Used; i++)
                 {
-                    tables[i].InUse = false;
-                    _lock.Release();
-                    return true;
+                    if (entries[i].InUse && entries[i].Functions == functionTable)
+                    {
+                        entries[i].InUse = false;
+                        _lock.Release();
+                        return true;
+                    }
                 }
+                block = block->Next;
             }
         }
 
@@ -841,69 +854,60 @@ public static unsafe class ExceptionHandling
 
         _lock.Acquire();
 
-        fixed (byte* ptr = _tableStorage.Data)
+        fixed (BlockChain* chainPtr = &_functionTableChain)
         {
-            var tables = (FunctionTableEntry*)ptr;
-
-            // Debug: show what we're searching for
-            // DebugConsole.Write("[LookupFunc] Searching for RIP=0x");
-            // DebugConsole.WriteHex(controlPc);
-            // DebugConsole.WriteLine();
-
-            for (int i = 0; i < MaxFunctionTables; i++)
+            var block = chainPtr->First;
+            while (block != null)
             {
-                if (!tables[i].InUse)
-                    continue;
+                var tables = (FunctionTableEntry*)block->Data;
 
-                ulong baseAddr = tables[i].BaseAddress;
-                var functions = tables[i].Functions;
-                uint count = tables[i].FunctionCount;
-
-                // Debug: show each table being checked
-                // DebugConsole.Write("[LookupFunc]   table ");
-                // DebugConsole.WriteDecimal((uint)i);
-                // DebugConsole.Write(": base=0x");
-                // DebugConsole.WriteHex(baseAddr);
-                // DebugConsole.Write(" count=");
-                // DebugConsole.WriteDecimal(count);
-                // DebugConsole.WriteLine();
-
-                // Skip if controlPc is before this code region (would overflow when cast to uint)
-                if (controlPc < baseAddr)
-                    continue;
-
-                // Calculate RVA (offset within the code region)
-                uint rva = (uint)(controlPc - baseAddr);
-
-                // Quick upper bound check - if RVA is huge, skip this table
-                // (avoids searching when controlPc is way past this code region)
-                if (rva > 0x100000)  // 1MB max method size is very generous
-                    continue;
-
-                int left = 0;
-                int right = (int)count - 1;
-
-                while (left <= right)
+                for (int i = 0; i < block->Used; i++)
                 {
-                    int mid = (left + right) / 2;
-                    var func = &functions[mid];
+                    if (!tables[i].InUse)
+                        continue;
 
-                    if (rva < func->BeginAddress)
+                    ulong baseAddr = tables[i].BaseAddress;
+                    var functions = tables[i].Functions;
+                    uint count = tables[i].FunctionCount;
+
+                    // Skip if controlPc is before this code region (would overflow when cast to uint)
+                    if (controlPc < baseAddr)
+                        continue;
+
+                    // Calculate RVA (offset within the code region)
+                    uint rva = (uint)(controlPc - baseAddr);
+
+                    // Quick upper bound check - if RVA is huge, skip this table
+                    // (avoids searching when controlPc is way past this code region)
+                    if (rva > 0x100000)  // 1MB max method size is very generous
+                        continue;
+
+                    int left = 0;
+                    int right = (int)count - 1;
+
+                    while (left <= right)
                     {
-                        right = mid - 1;
-                    }
-                    else if (rva >= func->EndAddress)
-                    {
-                        left = mid + 1;
-                    }
-                    else
-                    {
-                        // Found it
-                        imageBase = baseAddr;
-                        _lock.Release();
-                        return func;
+                        int mid = (left + right) / 2;
+                        var func = &functions[mid];
+
+                        if (rva < func->BeginAddress)
+                        {
+                            right = mid - 1;
+                        }
+                        else if (rva >= func->EndAddress)
+                        {
+                            left = mid + 1;
+                        }
+                        else
+                        {
+                            // Found it
+                            imageBase = baseAddr;
+                            _lock.Release();
+                            return func;
+                        }
                     }
                 }
+                block = block->Next;
             }
         }
 
@@ -924,38 +928,43 @@ public static unsafe class ExceptionHandling
 
         _lock.Acquire();
 
-        fixed (byte* ptr = _tableStorage.Data)
+        fixed (BlockChain* chainPtr = &_functionTableChain)
         {
-            var tables = (FunctionTableEntry*)ptr;
-
-            for (int i = 0; i < MaxFunctionTables; i++)
+            var block = chainPtr->First;
+            while (block != null)
             {
-                if (!tables[i].InUse)
-                    continue;
+                var tables = (FunctionTableEntry*)block->Data;
 
-                ulong baseAddr = tables[i].BaseAddress;
-                if (baseAddr != targetBase)
-                    continue;
-
-                var functions = tables[i].Functions;
-                uint count = tables[i].FunctionCount;
-
-                // The main function should be at index 0 (RVA 0) for JIT methods
-                if (count > 0 && functions[0].BeginAddress == 0)
+                for (int i = 0; i < block->Used; i++)
                 {
-                    _lock.Release();
-                    return &functions[0];
-                }
+                    if (!tables[i].InUse)
+                        continue;
 
-                // If not at index 0, search for it
-                for (uint j = 0; j < count; j++)
-                {
-                    if (functions[j].BeginAddress == 0)
+                    ulong baseAddr = tables[i].BaseAddress;
+                    if (baseAddr != targetBase)
+                        continue;
+
+                    var functions = tables[i].Functions;
+                    uint count = tables[i].FunctionCount;
+
+                    // The main function should be at index 0 (RVA 0) for JIT methods
+                    if (count > 0 && functions[0].BeginAddress == 0)
                     {
                         _lock.Release();
-                        return &functions[j];
+                        return &functions[0];
+                    }
+
+                    // If not at index 0, search for it
+                    for (uint j = 0; j < count; j++)
+                    {
+                        if (functions[j].BeginAddress == 0)
+                        {
+                            _lock.Release();
+                            return &functions[j];
+                        }
                     }
                 }
+                block = block->Next;
             }
         }
 

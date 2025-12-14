@@ -1,5 +1,7 @@
 # Growable Block Allocator Design
 
+**Status: IMPLEMENTED** - See `src/kernel/Runtime/BlockAllocator.cs`
+
 A reusable block allocator for kernel registries that grow without hard limits.
 
 ## Problem Statement
