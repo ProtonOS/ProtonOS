@@ -403,17 +403,20 @@ public static unsafe class Tier0JIT
             const int MaxArgTypesOnStack = 32;
             bool* argTypes = stackalloc bool[MaxArgTypesOnStack];
             ushort* argSizes = stackalloc ushort[MaxArgTypesOnStack];
+            byte* floatKinds = stackalloc byte[MaxArgTypesOnStack];
             for (int i = 0; i < MaxArgTypesOnStack; i++)
             {
                 argTypes[i] = false;
                 argSizes[i] = 0;
+                floatKinds[i] = 0;
             }
 
-            int parsedArgCount = ParseMethodSigArgTypes(sigBlob, sigLen, hasThis, paramCount, argTypes, argSizes, MaxArgTypesOnStack);
+            int parsedArgCount = ParseMethodSigArgTypes(sigBlob, sigLen, hasThis, paramCount, argTypes, argSizes, floatKinds, MaxArgTypesOnStack);
             if (parsedArgCount > 0)
             {
                 compiler.SetArgTypes(argTypes, parsedArgCount);
                 compiler.SetArgTypeSizes(argSizes, parsedArgCount);
+                compiler.SetArgFloatKinds(floatKinds, parsedArgCount);
             }
         }
 
@@ -980,7 +983,7 @@ public static unsafe class Tier0JIT
     /// <param name="maxArgs">Maximum number of args to process</param>
     /// <returns>Number of args parsed (including 'this' if hasThis)</returns>
     private static int ParseMethodSigArgTypes(byte* sigBlob, uint sigLen, bool hasThis, int paramCount,
-                                               bool* isValueType, ushort* typeSizes, int maxArgs)
+                                               bool* isValueType, ushort* typeSizes, byte* floatKinds, int maxArgs)
     {
         if (sigBlob == null || sigLen < 2 || isValueType == null)
             return 0;
@@ -992,6 +995,7 @@ public static unsafe class Tier0JIT
         {
             isValueType[argIndex] = false;
             if (typeSizes != null) typeSizes[argIndex] = 0;
+            if (floatKinds != null) floatKinds[argIndex] = 0;
             argIndex++;
         }
 
@@ -1011,11 +1015,33 @@ public static unsafe class Tier0JIT
         // Parse each parameter type
         for (int i = 0; i < paramCount && argIndex < maxArgs && ptr < end; i++)
         {
+            // Peek at element type to detect float before parsing (handles BYREF)
+            byte* peekPtr = ptr;
+            byte elemType = *peekPtr;
+            if (elemType == 0x10) // BYREF
+            {
+                peekPtr++;
+                if (peekPtr < end)
+                    elemType = *peekPtr;
+            }
+
             bool isVT;
             ushort size;
             GetValueTypeSigWithSize(ref ptr, end, out isVT, out size);
             isValueType[argIndex] = isVT;
             if (typeSizes != null) typeSizes[argIndex] = size;
+
+            // Track float type: 0x0C = R4 (float), 0x0D = R8 (double)
+            if (floatKinds != null)
+            {
+                if (elemType == 0x0C) // ELEMENT_TYPE_R4
+                    floatKinds[argIndex] = 4;
+                else if (elemType == 0x0D) // ELEMENT_TYPE_R8
+                    floatKinds[argIndex] = 8;
+                else
+                    floatKinds[argIndex] = 0;
+            }
+
             argIndex++;
         }
 

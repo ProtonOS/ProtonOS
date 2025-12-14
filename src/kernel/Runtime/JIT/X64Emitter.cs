@@ -1941,6 +1941,43 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// COMISS - Compare scalar single (sets EFLAGS).
+    /// </summary>
+    public static void ComissXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // 0F 2F /r
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2F);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// COMISD - Compare scalar double (sets EFLAGS).
+    /// </summary>
+    public static void ComisdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // 66 0F 2F /r
+        code.EmitByte(0x66);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2F);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
     /// MOVSS from memory: xmm = [baseReg + disp]
     /// </summary>
     public static void MovssRM(ref CodeBuffer code, RegXMM dst, VReg baseReg, int disp)
@@ -2071,6 +2108,34 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         // F3 REX.W 0F 2C /r
         code.EmitByte(0xF3);
         EmitRex(ref code, true, d, (Reg64)src);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2C);
+        EmitModRMReg(ref code, d, (Reg64)src);
+    }
+
+    /// <summary>
+    /// CVTTSD2SI - Convert double to signed integer (truncate): r32/r64 = (int32/int64)xmm
+    /// </summary>
+    public static void Cvttsd2si(ref CodeBuffer code, VReg dst, RegXMM src, bool is64Bit)
+    {
+        var d = Map(dst);
+        // F2 [REX.W] 0F 2C /r
+        code.EmitByte(0xF2);
+        EmitRex(ref code, is64Bit, d, (Reg64)src);
+        code.EmitByte(0x0F);
+        code.EmitByte(0x2C);
+        EmitModRMReg(ref code, d, (Reg64)src);
+    }
+
+    /// <summary>
+    /// CVTTSS2SI - Convert float to signed integer (truncate): r32/r64 = (int32/int64)xmm
+    /// </summary>
+    public static void Cvttss2si(ref CodeBuffer code, VReg dst, RegXMM src, bool is64Bit)
+    {
+        var d = Map(dst);
+        // F3 [REX.W] 0F 2C /r
+        code.EmitByte(0xF3);
+        EmitRex(ref code, is64Bit, d, (Reg64)src);
         code.EmitByte(0x0F);
         code.EmitByte(0x2C);
         EmitModRMReg(ref code, d, (Reg64)src);

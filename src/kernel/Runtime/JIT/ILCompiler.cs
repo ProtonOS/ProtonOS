@@ -677,6 +677,7 @@ public unsafe struct ILCompiler
     private bool* _argIsValueType;    // heap-allocated [MaxArgs] - true if arg is a value type
     private ushort* _localTypeSize;   // heap-allocated [MaxLocals] - size of local's type (for value types)
     private ushort* _argTypeSize;     // heap-allocated [MaxArgs] - size of arg's type (for value types)
+    private byte* _argFloatKind;      // heap-allocated [MaxArgs] - 0=not float, 4=float32, 8=float64
 
     // Return type tracking for struct return handling
     private bool _returnIsValueType;  // true if return type is a value type
@@ -708,11 +709,12 @@ public unsafe struct ILCompiler
     // Layout: evalStack[256] + branchSources[256] + branchTargetIL[256] + branchPatchOffset[256]
     //       + branchTargetStackDepth[64] + labelILOffset[2048] + labelCodeOffset[2048] + ehClauseData[384] + funcletInfo[512]
     //       + localIsValueType[64] + argIsValueType[32] + localTypeSize[128] + argTypeSize[64] + finallyCallPatches[128]
+    //       + argFloatKind[32]
     // Note: evalStack = MaxStackDepth(32) * 8 bytes = 256 bytes for rich type tracking
     // funcletInfo = 32 funclets * 4 ints * 4 bytes = 512 bytes (doubled for filter clause support)
     // Finally call tracking: each entry is 2 ints (patchOffset, ehClauseIndex)
     private const int MaxFinallyCalls = 16;
-    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8); // 6496 bytes
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8) + 32; // 6528 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -778,6 +780,7 @@ public unsafe struct ILCompiler
         compiler._argIsValueType = null;
         compiler._localTypeSize = null;
         compiler._argTypeSize = null;
+        compiler._argFloatKind = null;
         compiler._finallyCallPatches = null;
         compiler._finallyCallCount = 0;
 
@@ -802,6 +805,7 @@ public unsafe struct ILCompiler
             compiler._localTypeSize = (ushort*)(p + 6176);     // offset 6176, 128 bytes
             compiler._argTypeSize = (ushort*)(p + 6304);       // offset 6304, 64 bytes (MaxArgs * 2)
             compiler._finallyCallPatches = (int*)(p + 6368);   // offset 6368, 128 bytes (MaxFinallyCalls * 8)
+            compiler._argFloatKind = (byte*)(p + 6496);        // offset 6496, 32 bytes (MaxArgs * 1)
         }
 
         // Create code buffer sized based on IL length
@@ -956,6 +960,26 @@ public unsafe struct ILCompiler
             for (int i = 0; i < copyCount; i++)
             {
                 _argTypeSize[i] = argSizes[i];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Set float kind for each argument (0=not float, 4=float32, 8=float64).
+    /// </summary>
+    /// <param name="floatKinds">Array of float kinds for each arg</param>
+    /// <param name="count">Number of args</param>
+    public void SetArgFloatKinds(byte* floatKinds, int count)
+    {
+        int copyCount = count < _argCount ? count : _argCount;
+        if (copyCount > MaxArgs)
+            copyCount = MaxArgs;
+
+        if (_argFloatKind != null && floatKinds != null)
+        {
+            for (int i = 0; i < copyCount; i++)
+            {
+                _argFloatKind[i] = floatKinds[i];
             }
         }
     }
@@ -2167,8 +2191,18 @@ public unsafe struct ILCompiler
         EvalStackEntry entry = EvalStackEntry.NativeInt;
         bool isArgVT = _argIsValueType != null && index >= 0 && index < _argCount && _argIsValueType[index];
         ushort argSize = (_argTypeSize != null && index >= 0 && index < _argCount) ? _argTypeSize[index] : (ushort)0;
+        byte floatKind = (_argFloatKind != null && index >= 0 && index < _argCount) ? _argFloatKind[index] : (byte)0;
 
-        if (isArgVT && argSize > 0 && argSize <= 8)
+        // Check for float argument type first
+        if (floatKind == 4)
+        {
+            entry = EvalStackEntry.Float32;
+        }
+        else if (floatKind == 8)
+        {
+            entry = EvalStackEntry.Float64;
+        }
+        else if (isArgVT && argSize > 0 && argSize <= 8)
         {
             // Small value type passed by value - the VALUE is in R0, not a pointer
             // Mark as Struct so ldfld uses bit extraction instead of memory dereference
@@ -3006,9 +3040,33 @@ public unsafe struct ILCompiler
     private bool CompileNeg()
     {
         // Unary op: pop one, negate, push result
-        PopR0();
-        X64Emitter.Neg(ref _code, VReg.R0);
-        PushR0(EvalStackEntry.NativeInt);
+        EvalStackEntry entry = PeekEntry();
+
+        if (IsFloatEntry(entry))
+        {
+            PopR0();
+            if (entry.Kind == EvalStackKind.Float64)
+            {
+                // Double negation: XOR sign bit (bit 63)
+                X64Emitter.MovRI64(ref _code, VReg.R2, 0x8000000000000000UL);
+                X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.Float64);
+            }
+            else
+            {
+                // Float negation: XOR sign bit (bit 31)
+                X64Emitter.MovRI64(ref _code, VReg.R2, 0x80000000UL);
+                X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.Float32);
+            }
+        }
+        else
+        {
+            // Integer negation
+            PopR0();
+            X64Emitter.Neg(ref _code, VReg.R0);
+            PushR0(EvalStackEntry.NativeInt);
+        }
         return true;
     }
 
@@ -3196,9 +3254,75 @@ public unsafe struct ILCompiler
         // Check source type to determine proper extension
         EvalStackEntry srcEntry = PeekEntryAt(0);
         bool srcIs32Bit = (srcEntry.Kind == EvalStackKind.Int32);
+        bool srcIsFloat = IsFloatEntry(srcEntry);
 
         X64Emitter.Pop(ref _code, VReg.R0);
         PopEntry();
+
+        // Handle float-to-integer conversion
+        if (srcIsFloat && targetBytes <= 8)
+        {
+            bool srcIsDouble = (srcEntry.Kind == EvalStackKind.Float64);
+            bool targetIs64 = (targetBytes == 8);
+
+            if (srcIsDouble)
+            {
+                // CVTTSD2SI - Convert double to integer with truncation
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.Cvttsd2si(ref _code, VReg.R0, RegXMM.XMM0, targetIs64);
+            }
+            else
+            {
+                // CVTTSS2SI - Convert float to integer with truncation
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.Cvttss2si(ref _code, VReg.R0, RegXMM.XMM0, targetIs64);
+            }
+
+            // Sign/zero extend to proper size if needed
+            if (targetBytes < 4)
+            {
+                if (signed)
+                {
+                    if (targetBytes == 1)
+                    {
+                        // MOVSX RAX, AL
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0xBE);
+                        _code.EmitByte(0xC0);
+                    }
+                    else // targetBytes == 2
+                    {
+                        // MOVSX RAX, AX
+                        _code.EmitByte(0x48);
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0xBF);
+                        _code.EmitByte(0xC0);
+                    }
+                }
+                else
+                {
+                    if (targetBytes == 1)
+                    {
+                        // MOVZX EAX, AL
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0xB6);
+                        _code.EmitByte(0xC0);
+                    }
+                    else // targetBytes == 2
+                    {
+                        // MOVZX EAX, AX
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0xB7);
+                        _code.EmitByte(0xC0);
+                    }
+                }
+            }
+
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushEntry(targetBytes <= 4 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
+            return true;
+        }
 
         switch (targetBytes)
         {
@@ -3550,15 +3674,30 @@ public unsafe struct ILCompiler
 
     private bool CompileConvR4()
     {
-        // Convert integer to float (single precision)
-        // Pop value, convert to float, push back as 32-bit pattern (zero-extended)
+        // Convert to float (single precision)
+        EvalStackEntry srcEntry = PeekEntry();
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopEntry();  // Pop whatever type was there
-        // Use 32-bit source for proper signed int32 semantics
-        // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
-        X64Emitter.Cvtsi2ssXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
-        // MOVD eax, xmm0 - move float bits to integer reg
-        X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        PopEntry();
+
+        if (srcEntry.Kind == EvalStackKind.Float64)
+        {
+            // Double to float: CVTSD2SS
+            X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+            X64Emitter.Cvtsd2ssXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM0);
+            X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        }
+        else if (srcEntry.Kind == EvalStackKind.Float32)
+        {
+            // Float to float: no conversion needed
+        }
+        else
+        {
+            // Integer to float: CVTSI2SS
+            // Use 32-bit source for proper signed int32 semantics
+            X64Emitter.Cvtsi2ssXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+            X64Emitter.MovdR32Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        }
+
         X64Emitter.Push(ref _code, VReg.R0);
         PushEntry(EvalStackEntry.Float32);
         return true;
@@ -3566,15 +3705,30 @@ public unsafe struct ILCompiler
 
     private bool CompileConvR8()
     {
-        // Convert integer to double precision
-        // Pop value, convert to double, push back as 64-bit pattern
+        // Convert to double precision
+        EvalStackEntry srcEntry = PeekEntry();
         X64Emitter.Pop(ref _code, VReg.R0);
-        PopEntry();  // Pop whatever type was there
-        // Use 32-bit source for proper signed int32 semantics
-        // This ensures -10 is treated as signed -10, not as unsigned 0xFFFFFFF6
-        X64Emitter.Cvtsi2sdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
-        // MOVQ rax, xmm0 - move double bits to integer reg
-        X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        PopEntry();
+
+        if (srcEntry.Kind == EvalStackKind.Float32)
+        {
+            // Float to double: CVTSS2SD
+            X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+            X64Emitter.Cvtss2sdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM0);
+            X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        }
+        else if (srcEntry.Kind == EvalStackKind.Float64)
+        {
+            // Double to double: no conversion needed
+        }
+        else
+        {
+            // Integer to double: CVTSI2SD
+            // Use 32-bit source for proper signed int32 semantics
+            X64Emitter.Cvtsi2sdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+            X64Emitter.MovqR64Xmm(ref _code, VReg.R0, RegXMM.XMM0);
+        }
+
         X64Emitter.Push(ref _code, VReg.R0);
         PushEntry(EvalStackEntry.Float64);
         return true;
@@ -3866,15 +4020,73 @@ public unsafe struct ILCompiler
 
     private bool CompileBranchCmp(byte cc, int targetIL)
     {
-        // Pop two values, compare, branch based on condition
-        PopReg(VReg.R2);  // Second operand
-        PopR0();  // First operand
-        // Use 32-bit comparison for proper signed int32 semantics
-        // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
-        X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+        // Peek at types to determine float vs int
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top
+
+        if (IsFloatEntry(entry1) || IsFloatEntry(entry2))
+        {
+            // Float comparison
+            PopReg(VReg.R2);  // Second operand
+            PopR0();          // First operand
+
+            bool isDouble = (entry1.Kind == EvalStackKind.Float64 || entry2.Kind == EvalStackKind.Float64);
+
+            if (isDouble)
+            {
+                // COMISD xmm0, xmm1
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovqXmmR64(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.ComisdXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+            }
+            else
+            {
+                // COMISS xmm0, xmm1
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM0, VReg.R0);
+                X64Emitter.MovdXmmR32(ref _code, RegXMM.XMM1, VReg.R2);
+                X64Emitter.ComissXmmXmm(ref _code, RegXMM.XMM0, RegXMM.XMM1);
+            }
+
+            // COMISS/COMISD set CF and ZF (not SF/OF), so we need to translate
+            // signed condition codes to unsigned equivalents for floats
+            cc = TranslateConditionCodeForFloat(cc);
+        }
+        else
+        {
+            // Pop two values, compare, branch based on condition
+            PopReg(VReg.R2);  // Second operand
+            PopR0();  // First operand
+            // Use 32-bit comparison for proper signed int32 semantics
+            // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
+            X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+        }
+
         int patchOffset = X64Emitter.JccRel32(ref _code, cc);
         RecordBranch(_ilOffset, targetIL, patchOffset);
         return true;
+    }
+
+    /// <summary>
+    /// Translate signed integer condition codes to float comparison codes.
+    /// COMISS/COMISD set CF/ZF (like unsigned compare), not SF/OF.
+    /// </summary>
+    private static byte TranslateConditionCodeForFloat(byte cc)
+    {
+        // Signed integer uses SF/OF, float uses CF/ZF
+        // CC_L (less, SF!=OF)     -> CC_B (below, CF=1)
+        // CC_LE (less/equal)      -> CC_BE (below/equal, CF=1 or ZF=1)
+        // CC_G (greater, SF=OF)   -> CC_A (above, CF=0 and ZF=0)
+        // CC_GE (greater/equal)   -> CC_AE (above/equal, CF=0)
+        // CC_E, CC_NE - same (use ZF)
+        // CC_B, CC_BE, CC_A, CC_AE - already correct
+        return cc switch
+        {
+            X64Emitter.CC_L => X64Emitter.CC_B,
+            X64Emitter.CC_LE => X64Emitter.CC_BE,
+            X64Emitter.CC_G => X64Emitter.CC_A,
+            X64Emitter.CC_GE => X64Emitter.CC_AE,
+            _ => cc  // E, NE, B, BE, A, AE already correct
+        };
     }
 
     private bool CompileCeq()

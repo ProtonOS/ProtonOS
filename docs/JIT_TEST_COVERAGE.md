@@ -404,16 +404,64 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 - `NullableTests` - Nullable<T> operations
 - `StaticCtorTests` - Static constructor behavior
 - `AdvancedGenericTests` - Complex generic scenarios
+- `FloatingPointTests` - Float and double arithmetic, conversions, method calls
+
+---
+
+## 14. Floating Point
+
+### Arithmetic Operations
+- ✅ Float add, sub, mul, div (SSE addss, subss, mulss, divss)
+- ✅ Double add, sub, mul, div (SSE addsd, subsd, mulsd, divsd)
+- ✅ Float/double negation (XOR with sign bit)
+- ✅ Float/double comparisons in branches (COMISS/COMISD with proper condition code translation)
+- ✅ ceq/clt/cgt for floats (uses COMISS/COMISD)
+
+### Conversions
+- ✅ Integer to float (conv.r4 - CVTSI2SS)
+- ✅ Integer to double (conv.r8 - CVTSI2SD)
+- ✅ Float to integer (conv.i4/i8 - CVTTSS2SI truncation)
+- ✅ Double to integer (conv.i4/i8 - CVTTSD2SI truncation)
+- ✅ Float to double (CVTSS2SD)
+- ✅ Double to float (CVTSD2SS)
+- ✅ Long to double and back
+- ✅ Negative float to int
+
+### Method Calls with Float/Double
+- ✅ Float parameters (proper EvalStackEntry.Float32 tracking via _argFloatKind)
+- ✅ Double parameters (proper EvalStackEntry.Float64 tracking)
+- ✅ Float return values
+- ✅ Double return values
+- ✅ Mixed float/double operations (widening to double)
+
+### Arrays and Structs
+- ✅ Float arrays (ldelem.r4/stelem.r4)
+- ✅ Double arrays (ldelem.r8/stelem.r8)
+- ✅ Structs with float fields
+- ✅ Structs with double fields
 
 ---
 
 ## Notes
 
-- Current test count: 368 passing
-- Target: Add ~50-100 more targeted tests before driver work
+- Current test count: 400 passing
+- Target: Comprehensive JIT coverage for driver development
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Floating Point Support (2025-12)
+Added comprehensive floating point support with 32 new tests:
+- **Arithmetic**: Float/double add, sub, mul, div, neg (SSE instructions: addss/addsd, subss/subsd, mulss/mulsd, divss/divsd)
+- **Negation fix**: Changed from integer NEG to XOR with sign bit (0x80000000 for float, 0x8000000000000000 for double)
+- **Branch comparisons**: Added COMISS/COMISD instructions for float comparisons, with condition code translation (CC_L→CC_B, CC_LE→CC_BE, CC_G→CC_A, CC_GE→CC_AE) since COMISS/COMISD set CF/ZF (unsigned-like) not SF/OF
+- **Float-to-float conversions**: Fixed CompileConvR4/CompileConvR8 to handle float↔double conversions (CVTSS2SD, CVTSD2SS)
+- **Float-to-int conversions**: Added Cvttss2si/Cvttsd2si to X64Emitter with 32/64-bit target support
+- **Float argument tracking**: Added `_argFloatKind` array to track float (4) and double (8) argument types
+- **Tier0JIT integration**: Extended ParseMethodSigArgTypes to extract ELEMENT_TYPE_R4 (0x0C) and ELEMENT_TYPE_R8 (0x0D)
+- **CompileLdarg fix**: Now pushes EvalStackEntry.Float32/Float64 for float arguments, enabling proper arithmetic type tracking
+- **32 new tests**: Float arithmetic, double arithmetic, all conversions, method calls with float/double params, arrays, structs
+- Test count increased from 368 to 400
 
 ### Static Constructor Edge Cases (2025-12)
 Added comprehensive tests for static constructor edge cases:

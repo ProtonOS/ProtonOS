@@ -127,6 +127,9 @@ public static class TestRunner
         // Overflow checking tests - tests add.ovf, conv.ovf, etc.
         RunOverflowTests();
 
+        // Floating point tests - tests float/double arithmetic, conversions
+        RunFloatingPointTests();
+
         // Stackalloc tests - tests localloc opcode
         RunStackallocTests();
 
@@ -416,6 +419,53 @@ public static class TestRunner
         RecordResult("OverflowTests.TestCheckedConvOverflow", OverflowTests.TestCheckedConvOverflow() == 42);
         RecordResult("OverflowTests.TestCheckedAddUnsignedNoOverflow", OverflowTests.TestCheckedAddUnsignedNoOverflow() == 42);
         RecordResult("OverflowTests.TestCheckedAddUnsignedOverflow", OverflowTests.TestCheckedAddUnsignedOverflow() == 42);
+    }
+
+    private static void RunFloatingPointTests()
+    {
+        // Float arithmetic
+        RecordResult("FloatingPointTests.TestFloatAdd", FloatingPointTests.TestFloatAdd() == 42);
+        RecordResult("FloatingPointTests.TestFloatSub", FloatingPointTests.TestFloatSub() == 42);
+        RecordResult("FloatingPointTests.TestFloatMul", FloatingPointTests.TestFloatMul() == 42);
+        RecordResult("FloatingPointTests.TestFloatDiv", FloatingPointTests.TestFloatDiv() == 42);
+        RecordResult("FloatingPointTests.TestFloatNeg", FloatingPointTests.TestFloatNeg() == 42);
+        RecordResult("FloatingPointTests.TestFloatCompareEq", FloatingPointTests.TestFloatCompareEq() == 42);
+        RecordResult("FloatingPointTests.TestFloatCompareLt", FloatingPointTests.TestFloatCompareLt() == 42);
+        RecordResult("FloatingPointTests.TestFloatCompareGt", FloatingPointTests.TestFloatCompareGt() == 42);
+
+        // Double arithmetic
+        RecordResult("FloatingPointTests.TestDoubleAdd", FloatingPointTests.TestDoubleAdd() == 42);
+        RecordResult("FloatingPointTests.TestDoubleSub", FloatingPointTests.TestDoubleSub() == 42);
+        RecordResult("FloatingPointTests.TestDoubleMul", FloatingPointTests.TestDoubleMul() == 42);
+        RecordResult("FloatingPointTests.TestDoubleDiv", FloatingPointTests.TestDoubleDiv() == 42);
+        RecordResult("FloatingPointTests.TestDoubleNeg", FloatingPointTests.TestDoubleNeg() == 42);
+        RecordResult("FloatingPointTests.TestDoubleCompareEq", FloatingPointTests.TestDoubleCompareEq() == 42);
+        RecordResult("FloatingPointTests.TestDoubleCompareLt", FloatingPointTests.TestDoubleCompareLt() == 42);
+        RecordResult("FloatingPointTests.TestDoubleCompareGt", FloatingPointTests.TestDoubleCompareGt() == 42);
+
+        // Conversions
+        RecordResult("FloatingPointTests.TestIntToFloat", FloatingPointTests.TestIntToFloat() == 42);
+        RecordResult("FloatingPointTests.TestIntToDouble", FloatingPointTests.TestIntToDouble() == 42);
+        RecordResult("FloatingPointTests.TestFloatToInt", FloatingPointTests.TestFloatToInt() == 42);
+        RecordResult("FloatingPointTests.TestDoubleToInt", FloatingPointTests.TestDoubleToInt() == 42);
+        RecordResult("FloatingPointTests.TestFloatToDouble", FloatingPointTests.TestFloatToDouble() == 42);
+        RecordResult("FloatingPointTests.TestDoubleToFloat", FloatingPointTests.TestDoubleToFloat() == 42);
+        RecordResult("FloatingPointTests.TestNegativeFloatToInt", FloatingPointTests.TestNegativeFloatToInt() == 42);
+        RecordResult("FloatingPointTests.TestLongToDouble", FloatingPointTests.TestLongToDouble() == 42);
+        RecordResult("FloatingPointTests.TestDoubleToLong", FloatingPointTests.TestDoubleToLong() == 42);
+
+        // Method calls with float/double
+        RecordResult("FloatingPointTests.TestFloatMethodCall", FloatingPointTests.TestFloatMethodCall() == 42);
+        RecordResult("FloatingPointTests.TestDoubleMethodCall", FloatingPointTests.TestDoubleMethodCall() == 42);
+        RecordResult("FloatingPointTests.TestMixedFloatDouble", FloatingPointTests.TestMixedFloatDouble() == 42);
+
+        // Arrays
+        RecordResult("FloatingPointTests.TestFloatArray", FloatingPointTests.TestFloatArray() == 42);
+        RecordResult("FloatingPointTests.TestDoubleArray", FloatingPointTests.TestDoubleArray() == 42);
+
+        // Structs
+        RecordResult("FloatingPointTests.TestFloatInStruct", FloatingPointTests.TestFloatInStruct() == 42);
+        RecordResult("FloatingPointTests.TestDoubleInStruct", FloatingPointTests.TestDoubleInStruct() == 42);
     }
 
     private static void RunStackallocTests()
@@ -5744,6 +5794,390 @@ public static class OverflowTests
             return 42;  // Caught overflow
         }
     }
+}
+
+// =============================================================================
+// Floating Point Tests - test float and double arithmetic operations
+// =============================================================================
+
+public static class FloatingPointTests
+{
+    // =========================================================================
+    // Float (single precision) arithmetic
+    // =========================================================================
+
+    /// <summary>
+    /// Test float addition.
+    /// </summary>
+    public static int TestFloatAdd()
+    {
+        float a = 20.5f;
+        float b = 21.5f;
+        float result = a + b;
+        return result == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float subtraction.
+    /// </summary>
+    public static int TestFloatSub()
+    {
+        float a = 50.0f;
+        float b = 8.0f;
+        float result = a - b;
+        return result == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float multiplication.
+    /// </summary>
+    public static int TestFloatMul()
+    {
+        float a = 6.0f;
+        float b = 7.0f;
+        float result = a * b;
+        return result == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float division.
+    /// </summary>
+    public static int TestFloatDiv()
+    {
+        float a = 84.0f;
+        float b = 2.0f;
+        float result = a / b;
+        return result == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float negation.
+    /// </summary>
+    public static int TestFloatNeg()
+    {
+        float a = -42.0f;
+        float result = -a;
+        return result == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float comparison (equality).
+    /// </summary>
+    public static int TestFloatCompareEq()
+    {
+        float a = 42.0f;
+        float b = 42.0f;
+        return a == b ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float comparison (less than).
+    /// </summary>
+    public static int TestFloatCompareLt()
+    {
+        float a = 10.0f;
+        float b = 42.0f;
+        return a < b ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float comparison (greater than).
+    /// </summary>
+    public static int TestFloatCompareGt()
+    {
+        float a = 100.0f;
+        float b = 42.0f;
+        return a > b ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Double (double precision) arithmetic
+    // =========================================================================
+
+    /// <summary>
+    /// Test double addition.
+    /// </summary>
+    public static int TestDoubleAdd()
+    {
+        double a = 20.5;
+        double b = 21.5;
+        double result = a + b;
+        return result == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double subtraction.
+    /// </summary>
+    public static int TestDoubleSub()
+    {
+        double a = 50.0;
+        double b = 8.0;
+        double result = a - b;
+        return result == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double multiplication.
+    /// </summary>
+    public static int TestDoubleMul()
+    {
+        double a = 6.0;
+        double b = 7.0;
+        double result = a * b;
+        return result == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double division.
+    /// </summary>
+    public static int TestDoubleDiv()
+    {
+        double a = 84.0;
+        double b = 2.0;
+        double result = a / b;
+        return result == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double negation.
+    /// </summary>
+    public static int TestDoubleNeg()
+    {
+        double a = -42.0;
+        double result = -a;
+        return result == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double comparison (equality).
+    /// </summary>
+    public static int TestDoubleCompareEq()
+    {
+        double a = 42.0;
+        double b = 42.0;
+        return a == b ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double comparison (less than).
+    /// </summary>
+    public static int TestDoubleCompareLt()
+    {
+        double a = 10.0;
+        double b = 42.0;
+        return a < b ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double comparison (greater than).
+    /// </summary>
+    public static int TestDoubleCompareGt()
+    {
+        double a = 100.0;
+        double b = 42.0;
+        return a > b ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Conversions between int, float, and double
+    // =========================================================================
+
+    /// <summary>
+    /// Test int to float conversion.
+    /// </summary>
+    public static int TestIntToFloat()
+    {
+        int i = 42;
+        float f = i;
+        return f == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test int to double conversion.
+    /// </summary>
+    public static int TestIntToDouble()
+    {
+        int i = 42;
+        double d = i;
+        return d == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test float to int conversion (truncation).
+    /// </summary>
+    public static int TestFloatToInt()
+    {
+        float f = 42.9f;
+        int i = (int)f;
+        return i == 42 ? 42 : 0;  // Truncates toward zero
+    }
+
+    /// <summary>
+    /// Test double to int conversion (truncation).
+    /// </summary>
+    public static int TestDoubleToInt()
+    {
+        double d = 42.9;
+        int i = (int)d;
+        return i == 42 ? 42 : 0;  // Truncates toward zero
+    }
+
+    /// <summary>
+    /// Test float to double conversion (widening).
+    /// </summary>
+    public static int TestFloatToDouble()
+    {
+        float f = 42.0f;
+        double d = f;
+        return d == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double to float conversion (narrowing).
+    /// </summary>
+    public static int TestDoubleToFloat()
+    {
+        double d = 42.0;
+        float f = (float)d;
+        return f == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test negative float to int conversion.
+    /// </summary>
+    public static int TestNegativeFloatToInt()
+    {
+        float f = -42.9f;
+        int i = (int)f;
+        return i == -42 ? 42 : 0;  // Truncates toward zero
+    }
+
+    /// <summary>
+    /// Test long to double conversion.
+    /// </summary>
+    public static int TestLongToDouble()
+    {
+        long l = 42L;
+        double d = l;
+        return d == 42.0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double to long conversion.
+    /// </summary>
+    public static int TestDoubleToLong()
+    {
+        double d = 42.9;
+        long l = (long)d;
+        return l == 42L ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Float/double as method parameters and return values
+    // =========================================================================
+
+    /// <summary>
+    /// Test float as method parameter and return value.
+    /// </summary>
+    public static int TestFloatMethodCall()
+    {
+        float result = AddFloats(20.5f, 21.5f);
+        return result == 42.0f ? 42 : 0;
+    }
+
+    private static float AddFloats(float a, float b)
+    {
+        return a + b;
+    }
+
+    /// <summary>
+    /// Test double as method parameter and return value.
+    /// </summary>
+    public static int TestDoubleMethodCall()
+    {
+        double result = AddDoubles(20.5, 21.5);
+        return result == 42.0 ? 42 : 0;
+    }
+
+    private static double AddDoubles(double a, double b)
+    {
+        return a + b;
+    }
+
+    /// <summary>
+    /// Test mixed float and double parameters.
+    /// </summary>
+    public static int TestMixedFloatDouble()
+    {
+        float f = 21.0f;
+        double d = 21.0;
+        double result = f + d;  // Float promoted to double
+        return result == 42.0 ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Float/double in arrays
+    // =========================================================================
+
+    /// <summary>
+    /// Test float array.
+    /// </summary>
+    public static int TestFloatArray()
+    {
+        float[] arr = new float[3];
+        arr[0] = 10.0f;
+        arr[1] = 20.0f;
+        arr[2] = 12.0f;
+        float sum = arr[0] + arr[1] + arr[2];
+        return sum == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double array.
+    /// </summary>
+    public static int TestDoubleArray()
+    {
+        double[] arr = new double[3];
+        arr[0] = 10.0;
+        arr[1] = 20.0;
+        arr[2] = 12.0;
+        double sum = arr[0] + arr[1] + arr[2];
+        return sum == 42.0 ? 42 : 0;
+    }
+
+    // =========================================================================
+    // Float/double in structs
+    // =========================================================================
+
+    /// <summary>
+    /// Test float field in struct.
+    /// </summary>
+    public static int TestFloatInStruct()
+    {
+        FloatStruct s;
+        s.Value = 42.0f;
+        return s.Value == 42.0f ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test double field in struct.
+    /// </summary>
+    public static int TestDoubleInStruct()
+    {
+        DoubleStruct s;
+        s.Value = 42.0;
+        return s.Value == 42.0 ? 42 : 0;
+    }
+}
+
+public struct FloatStruct
+{
+    public float Value;
+}
+
+public struct DoubleStruct
+{
+    public double Value;
 }
 
 // =============================================================================
