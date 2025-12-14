@@ -111,7 +111,7 @@ This document tracks test coverage for JIT compiler features. Each area should h
   - Tests: Test2DIntSetGet, Test2DIntZeroed, Test2DIntCorners, Test2DIntSum, Test2DByteSetGet, Test2DLongSetGet, Test2DDiagonal, Test2DShortSetGet, TestMultiple2DArrays
   - Tests: Test3DIntSetGet, Test3DIntCorners, Test3DByteSetGet, Test3DIntSum
 - ✅ System.Array properties on MD arrays (get_Length, get_LongLength, get_Rank via AotMethodRegistry)
-- ⚠️ ldelem/stelem for multi-dim (use Get/Set methods instead)
+- N/A ldelem/stelem for multi-dim (C# emits Get/Set method calls, not ldelem/stelem; only hand-written IL would use these)
 
 ### Bounds Checking
 - ✅ Array bounds checks (ldelem, stelem, ldelema, ldelem.r4/r8, stelem.r4/r8, ldelem/stelem with token)
