@@ -181,6 +181,10 @@ public static unsafe class MetadataIntegration
     private static byte* _argIteratorMTBuffer;
     private static MethodTable* _argIteratorMT;
 
+    // IDisposable interface MethodTable - captured when first type implementing IDisposable is created
+    // Used for interface dispatch on callvirt IDisposable.Dispose()
+    private static MethodTable* _iDisposableMT;
+
     private static bool _initialized;
 
     /// <summary>
@@ -365,6 +369,33 @@ public static unsafe class MetadataIntegration
         public const uint TypedReference = 0xF0000040;
         public const uint RuntimeArgumentHandle = 0xF0000041;
         public const uint ArgIterator = 0xF0000042;
+
+        // Interface types - for using statement / IDisposable support
+        public const uint IDisposable = 0xF0000050;
+    }
+
+    /// <summary>
+    /// Register the IDisposable interface MethodTable.
+    /// Called by AssemblyLoader when creating the first type that implements IDisposable.
+    /// </summary>
+    public static void RegisterIDisposableMT(MethodTable* mt)
+    {
+        if (mt == null || _iDisposableMT != null)
+            return;  // Already registered or invalid
+
+        _iDisposableMT = mt;
+        DebugConsole.Write("[MetaInt] Registered IDisposable MT: 0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Get the IDisposable interface MethodTable.
+    /// Returns null if no type implementing IDisposable has been created yet.
+    /// </summary>
+    public static MethodTable* GetIDisposableMT()
+    {
+        return _iDisposableMT;
     }
 
     /// <summary>

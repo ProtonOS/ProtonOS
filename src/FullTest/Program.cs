@@ -53,6 +53,9 @@ public static class TestRunner
         // Array tests
         RunArrayTests();
 
+        // Foreach on arrays tests
+        RunForeachTests();
+
         // Multi-dimensional array tests
         RunMDArrayTests();
 
@@ -132,6 +135,9 @@ public static class TestRunner
 
         // Stackalloc tests - tests localloc opcode
         RunStackallocTests();
+
+        // Disposable tests - tests IDisposable/using pattern
+        RunDisposableTests();
 
         // Static constructor tests - tests .cctor invocation
         RunStaticCtorTests();
@@ -220,6 +226,10 @@ public static class TestRunner
         RecordResult("ExceptionTests.TestFinallyInLoopWithBreak", ExceptionTests.TestFinallyInLoopWithBreak() == 42);
         Debug.WriteLine("[EXC] Running TestFinallyInLoopWithContinue...");
         RecordResult("ExceptionTests.TestFinallyInLoopWithContinue", ExceptionTests.TestFinallyInLoopWithContinue() == 42);
+        Debug.WriteLine("[EXC] Running TestDivideByZero...");
+        RecordResult("ExceptionTests.TestDivideByZero", ExceptionTests.TestDivideByZero() == 42);
+        Debug.WriteLine("[EXC] Running TestDivideByZeroModulo...");
+        RecordResult("ExceptionTests.TestDivideByZeroModulo", ExceptionTests.TestDivideByZeroModulo() == 42);
     }
 
     private static void RunGenericTests()
@@ -496,6 +506,13 @@ public static class TestRunner
         RecordResult("StackallocTests.TestStackallocComputation", StackallocTests.TestStackallocComputation() == 42);
     }
 
+    private static void RunDisposableTests()
+    {
+        RecordResult("DisposableTests.TestUsingStatement", DisposableTests.TestUsingStatement() == 42);
+        RecordResult("DisposableTests.TestUsingWithException", DisposableTests.TestUsingWithException() == 42);
+        RecordResult("DisposableTests.TestNestedUsing", DisposableTests.TestNestedUsing() == 42);
+    }
+
     private static void RunStaticCtorTests()
     {
         RecordResult("StaticCtorTests.TestStaticCtorInitializesField", StaticCtorTests.TestStaticCtorInitializesField() == 42);
@@ -703,6 +720,17 @@ public static class TestRunner
         RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
         RecordResult("ArrayTests.TestBoundsCheckValidLastIndex", ArrayTests.TestBoundsCheckValidLastIndex() == 42);
+    }
+
+    private static void RunForeachTests()
+    {
+        RecordResult("ForeachTests.TestForeachIntArray", ForeachTests.TestForeachIntArray() == 15);
+        RecordResult("ForeachTests.TestForeachByteArray", ForeachTests.TestForeachByteArray() == 60);
+        RecordResult("ForeachTests.TestForeachEmptyArray", ForeachTests.TestForeachEmptyArray() == 42);
+        RecordResult("ForeachTests.TestForeachSingleElement", ForeachTests.TestForeachSingleElement() == 42);
+        RecordResult("ForeachTests.TestForeachLongArray", ForeachTests.TestForeachLongArray() == 42);
+        RecordResult("ForeachTests.TestForeachObjectArray", ForeachTests.TestForeachObjectArray() == 42);
+        RecordResult("ForeachTests.TestForeachIterationCount", ForeachTests.TestForeachIterationCount() == 10);
     }
 
     private static void RunMDArrayTests()
@@ -2075,6 +2103,119 @@ public static class ArrayTests
         int[] arr = new int[5];
         arr[4] = 42;  // Last valid index
         return arr[4];  // Should return 42
+    }
+}
+
+// =============================================================================
+// Foreach Tests - Testing foreach iteration on arrays
+// =============================================================================
+
+public static class ForeachTests
+{
+    /// <summary>
+    /// Test foreach on int array - sum all elements.
+    /// </summary>
+    public static int TestForeachIntArray()
+    {
+        int[] arr = new int[5];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+        int sum = 0;
+        foreach (int x in arr)
+        {
+            sum += x;
+        }
+        return sum;  // 15
+    }
+
+    /// <summary>
+    /// Test foreach on byte array.
+    /// </summary>
+    public static int TestForeachByteArray()
+    {
+        byte[] arr = new byte[3];
+        arr[0] = 10; arr[1] = 20; arr[2] = 30;
+        int sum = 0;
+        foreach (byte b in arr)
+        {
+            sum += b;
+        }
+        return sum;  // 60
+    }
+
+    /// <summary>
+    /// Test foreach on empty array - should not iterate.
+    /// </summary>
+    public static int TestForeachEmptyArray()
+    {
+        int[] arr = new int[0];
+        int count = 0;
+        foreach (int x in arr)
+        {
+            count++;
+        }
+        return count == 0 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test foreach on single-element array.
+    /// </summary>
+    public static int TestForeachSingleElement()
+    {
+        int[] arr = new int[1];
+        arr[0] = 42;
+        int result = 0;
+        foreach (int x in arr)
+        {
+            result = x;
+        }
+        return result;  // 42
+    }
+
+    /// <summary>
+    /// Test foreach on long array.
+    /// </summary>
+    public static int TestForeachLongArray()
+    {
+        long[] arr = new long[3];
+        arr[0] = 10L; arr[1] = 20L; arr[2] = 12L;
+        long sum = 0;
+        foreach (long l in arr)
+        {
+            sum += l;
+        }
+        return (int)sum;  // 42
+    }
+
+    /// <summary>
+    /// Test foreach on object array (reference type array).
+    /// </summary>
+    public static int TestForeachObjectArray()
+    {
+        object[] arr = new object[3];
+        arr[0] = "a"; arr[1] = "b"; arr[2] = "c";
+        int count = 0;
+        foreach (object o in arr)
+        {
+            if (o != null)
+                count++;
+        }
+        return count == 3 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test foreach counting iterations.
+    /// </summary>
+    public static int TestForeachIterationCount()
+    {
+        int[] arr = new int[10];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+        arr[5] = 6; arr[6] = 7; arr[7] = 8; arr[8] = 9; arr[9] = 10;
+        int count = 0;
+        foreach (int x in arr)
+        {
+            count++;
+        }
+        return count;  // 10
     }
 }
 
@@ -3478,6 +3619,46 @@ public static class ExceptionTests
         catch (Exception)
         {
             result = 42;  // Should execute - fallback catch
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Test divide by zero exception - hardware INT 0 triggers DivideByZeroException.
+    /// </summary>
+    public static int TestDivideByZero()
+    {
+        int result = 0;
+        try
+        {
+            int x = 1;
+            int y = 0;
+            int z = x / y;  // Should trigger INT 0 -> DivideByZeroException
+            result = z;     // Should not reach here
+        }
+        catch (DivideByZeroException)
+        {
+            result = 42;  // Should execute
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Test divide by zero with modulo operation.
+    /// </summary>
+    public static int TestDivideByZeroModulo()
+    {
+        int result = 0;
+        try
+        {
+            int x = 10;
+            int y = 0;
+            int z = x % y;  // Modulo by zero also triggers DivideByZeroException
+            result = z;
+        }
+        catch (DivideByZeroException)
+        {
+            result = 42;
         }
         return result;
     }
@@ -6371,6 +6552,83 @@ public unsafe static class StackallocTests
         for (int i = 0; i < 6; i++)
             sum += values[i] * 2;  // (1+2+3+4+5+6)*2 = 21*2 = 42
         return sum;
+    }
+}
+
+// =============================================================================
+// Disposable Tests - IDisposable / using statement pattern
+// =============================================================================
+
+/// <summary>
+/// Helper class that implements IDisposable to track disposal.
+/// </summary>
+public class SimpleDisposable : IDisposable
+{
+    public static int DisposeCount;
+    public bool IsDisposed;
+
+    public void Dispose()
+    {
+        IsDisposed = true;
+        DisposeCount++;
+    }
+}
+
+public static class DisposableTests
+{
+    /// <summary>
+    /// Test basic using statement - Dispose() called at end of block.
+    /// </summary>
+    public static int TestUsingStatement()
+    {
+        SimpleDisposable.DisposeCount = 0;
+        using (var d = new SimpleDisposable())
+        {
+            // Inside using block, not disposed yet
+            if (d.IsDisposed) return 0;
+        }
+        // After using block, should be disposed
+        return SimpleDisposable.DisposeCount == 1 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test using statement with exception - Dispose() still called.
+    /// </summary>
+    public static int TestUsingWithException()
+    {
+        SimpleDisposable.DisposeCount = 0;
+        try
+        {
+            using (var d = new SimpleDisposable())
+            {
+                throw new Exception("Test exception");
+            }
+        }
+        catch (Exception)
+        {
+            // Exception caught, but Dispose should have been called
+        }
+        return SimpleDisposable.DisposeCount == 1 ? 42 : 0;
+    }
+
+    /// <summary>
+    /// Test nested using statements - both Dispose() called.
+    /// </summary>
+    public static int TestNestedUsing()
+    {
+        SimpleDisposable.DisposeCount = 0;
+        using (var outer = new SimpleDisposable())
+        {
+            using (var inner = new SimpleDisposable())
+            {
+                // Both not disposed yet
+                if (outer.IsDisposed || inner.IsDisposed) return 0;
+            }
+            // Inner should be disposed now
+            if (SimpleDisposable.DisposeCount != 1) return 0;
+        }
+        // Both should be disposed
+        return SimpleDisposable.DisposeCount == 2 ? 42 : 0;
     }
 }
 

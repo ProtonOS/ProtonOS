@@ -2385,6 +2385,7 @@ public static unsafe class AssemblyLoader
             uint rowId = rawInterface >> 2;
 
             MethodTable* interfaceMT = null;
+            uint resolvedToken = 0;  // Track resolved token for IDisposable registration
 
             if (tag == 0)  // TypeDef
             {
@@ -2400,9 +2401,30 @@ public static unsafe class AssemblyLoader
                 uint targetToken = 0;
                 if (ResolveTypeRefToTypeDef(asm, rowId, out targetAsm, out targetToken) && targetAsm != null)
                 {
-                    interfaceMT = targetAsm->Types.Lookup(targetToken);
-                    if (interfaceMT == null)
-                        interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                    resolvedToken = targetToken;  // Save for later IDisposable check
+
+                    // Check for well-known interface types (0xF0xxxxxx tokens)
+                    if ((targetToken & 0xFF000000) == 0xF0000000)
+                    {
+                        // Well-known type - try MetadataIntegration first
+                        interfaceMT = JIT.MetadataIntegration.LookupType(targetToken);
+                        // If not found, try assembly lookup (may work for some AOT types)
+                        if (interfaceMT == null)
+                        {
+                            interfaceMT = targetAsm->Types.Lookup(targetToken);
+                        }
+                        // Final fallback - try to create (works if there's metadata)
+                        if (interfaceMT == null)
+                        {
+                            interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                        }
+                    }
+                    else
+                    {
+                        interfaceMT = targetAsm->Types.Lookup(targetToken);
+                        if (interfaceMT == null)
+                            interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                    }
                 }
             }
             else if (tag == 2)  // TypeSpec - generic interface instantiation
@@ -2417,6 +2439,12 @@ public static unsafe class AssemblyLoader
             {
                 map[mapIndex].InterfaceMT = interfaceMT;
                 map[mapIndex].StartSlot = currentSlot;
+
+                // Check if this is IDisposable and register its MT for later use
+                if (resolvedToken == JIT.MetadataIntegration.WellKnownTypes.IDisposable)
+                {
+                    JIT.MetadataIntegration.RegisterIDisposableMT(interfaceMT);
+                }
 
                 // Advance slot by number of methods in the interface
                 ushort interfaceMethodCount = interfaceMT->_usNumVtableSlots;
@@ -3186,6 +3214,7 @@ public static unsafe class AssemblyLoader
                     DebugConsole.Write(" -> 0x");
                     DebugConsole.WriteHex(wellKnownToken);
                     DebugConsole.WriteLine();
+                    targetAsm = GetAssembly(KernelAssemblyId);  // Well-known types belong to kernel
                     typeDefToken = wellKnownToken;
                     return true;
                 }
@@ -3253,6 +3282,7 @@ public static unsafe class AssemblyLoader
                     // Return the well-known token directly - these are synthetic tokens
                     // registered by MetadataIntegration.RegisterWellKnownTypes() that map
                     // to MethodTables extracted from live AOT objects
+                    targetAsm = GetAssembly(KernelAssemblyId);  // Well-known types belong to kernel
                     typeDefToken = wellKnownToken;
                     return true;
                 }
@@ -3519,7 +3549,7 @@ public static unsafe class AssemblyLoader
         // Dispatch based on first character for efficiency
         switch (name[0])
         {
-            case (byte)'I':  // Int32, Int64, Int16, IntPtr
+            case (byte)'I':  // Int32, Int64, Int16, IntPtr, IDisposable
                 if (name[1] == 'n' && name[2] == 't')
                 {
                     if (name[3] == '3' && name[4] == '2' && name[5] == 0)
@@ -3531,6 +3561,11 @@ public static unsafe class AssemblyLoader
                     if (name[3] == 'P' && name[4] == 't' && name[5] == 'r' && name[6] == 0)
                         return JIT.MetadataIntegration.WellKnownTypes.IntPtr;
                 }
+                // IDisposable - for using statement support
+                if (name[1] == 'D' && name[2] == 'i' && name[3] == 's' && name[4] == 'p' &&
+                    name[5] == 'o' && name[6] == 's' && name[7] == 'a' && name[8] == 'b' &&
+                    name[9] == 'l' && name[10] == 'e' && name[11] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.IDisposable;
                 break;
 
             case (byte)'U':  // UInt32, UInt64, UInt16, UIntPtr
@@ -4309,6 +4344,21 @@ public static unsafe class AssemblyLoader
             // MemberRef in another assembly via TypeRef
             if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
                 return false;
+
+            // Special handling for well-known interfaces like IDisposable
+            // These have synthetic tokens (0xF0xxxxxx) and need hardcoded slot info
+            if (typeDefToken == JIT.MetadataIntegration.WellKnownTypes.IDisposable)
+            {
+                // IDisposable has one method: Dispose() at slot 0
+                // Get the registered IDisposable MT (captured when first type implementing it was created)
+                methodSlot = 0;
+                interfaceMT = JIT.MetadataIntegration.GetIDisposableMT();
+                if (interfaceMT == null)
+                {
+                    DebugConsole.WriteLine("[AsmLoader] IsInterfaceMethod: IDisposable MT not registered yet");
+                }
+                return true;
+            }
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
         {
