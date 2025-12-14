@@ -70,12 +70,21 @@ namespace System
 
             // Value type: need to box the value
             // Get the size from MethodTable.BaseSize
+            // For boxing, we need the raw value size = BaseSize - 8 (without MT pointer overhead)
             uint baseSize = *(uint*)(mt + 4);  // _uBaseSize at offset 4
+            int valueSize = (int)(baseSize >= 8 ? baseSize - 8 : baseSize);
 
-            // Allocate boxed object (TODO: this would need RhpNewFast)
-            // For now, return null for value types - full implementation requires allocator access
-            return null;
+            // Box the value using kernel helper
+            void* boxed = Reflection_BoxValue((void*)mt, (void*)value._value, valueSize);
+            if (boxed == null)
+                return null;
+
+            // Convert void* to object reference
+            return Unsafe.As<nint, object>(ref *(nint*)&boxed);
         }
+
+        [DllImport("*", EntryPoint = "Reflection_BoxValue", CallingConvention = CallingConvention.Cdecl)]
+        private static extern unsafe void* Reflection_BoxValue(void* methodTable, void* valueData, int valueSize);
 
         /// <summary>
         /// Returns true if this TypedReference is null/empty.

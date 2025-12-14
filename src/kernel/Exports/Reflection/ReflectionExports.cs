@@ -207,6 +207,56 @@ public static unsafe class ReflectionExports
         return ReflectionRuntime.GetFieldElementType(assemblyId, fieldToken);
     }
 
+    /// <summary>
+    /// Get the MethodTable pointer for a field's type.
+    /// Used for implementing FieldInfo.FieldType.
+    /// </summary>
+    [RuntimeExport("Reflection_GetFieldTypeMethodTable")]
+    public static void* GetFieldTypeMethodTable(uint assemblyId, uint fieldToken)
+    {
+        return ReflectionRuntime.GetFieldTypeMethodTable(assemblyId, fieldToken);
+    }
+
+    /// <summary>
+    /// Get the MethodTable pointer for a method's return type.
+    /// Used for implementing PropertyInfo.PropertyType (via getter return type).
+    /// </summary>
+    [RuntimeExport("Reflection_GetMethodReturnTypeMethodTable")]
+    public static void* GetMethodReturnTypeMethodTable(uint assemblyId, uint methodToken)
+    {
+        return ReflectionRuntime.GetMethodReturnTypeMethodTable(assemblyId, methodToken);
+    }
+
+    /// <summary>
+    /// Get the number of parameters for a method.
+    /// Used for implementing MethodInfo.GetParameters().
+    /// </summary>
+    [RuntimeExport("Reflection_GetMethodParameterCount")]
+    public static int GetMethodParameterCount(uint assemblyId, uint methodToken)
+    {
+        return ReflectionRuntime.GetMethodParameterCount(assemblyId, methodToken);
+    }
+
+    /// <summary>
+    /// Get the parameter type MethodTable at the given index (0-based).
+    /// Used for implementing MethodInfo.GetParameters().
+    /// </summary>
+    [RuntimeExport("Reflection_GetMethodParameterTypeMethodTable")]
+    public static void* GetMethodParameterTypeMethodTable(uint assemblyId, uint methodToken, int paramIndex)
+    {
+        return ReflectionRuntime.GetMethodParameterTypeMethodTable(assemblyId, methodToken, paramIndex);
+    }
+
+    /// <summary>
+    /// Get the parameter name at the given index (0-based).
+    /// Returns pointer to null-terminated UTF-8 string.
+    /// </summary>
+    [RuntimeExport("Reflection_GetMethodParameterName")]
+    public static byte* GetMethodParameterName(uint assemblyId, uint methodToken, int paramIndex)
+    {
+        return ReflectionRuntime.GetMethodParameterName(assemblyId, methodToken, paramIndex);
+    }
+
     // ========================================================================
     // Assembly Enumeration APIs
     // ========================================================================
@@ -293,5 +343,24 @@ public static unsafe class ReflectionExports
             message++;
         }
         ProtonOS.Platform.DebugConsole.WriteLine();
+    }
+
+    // ========================================================================
+    // Boxing/Allocation APIs
+    // ========================================================================
+
+    /// <summary>
+    /// Box a value type given its MethodTable pointer and value data.
+    /// This allocates a new object and copies the value data into it.
+    /// Used by TypedReference.ToObject for value type boxing.
+    /// </summary>
+    /// <param name="methodTable">The MethodTable* for the value type</param>
+    /// <param name="valueData">Pointer to the raw value data</param>
+    /// <param name="valueSize">Size of the value data in bytes</param>
+    /// <returns>Boxed object pointer, or null on failure</returns>
+    [RuntimeExport("Reflection_BoxValue")]
+    public static void* BoxValue(void* methodTable, void* valueData, int valueSize)
+    {
+        return ReflectionRuntime.BoxValue(methodTable, valueData, valueSize);
     }
 }

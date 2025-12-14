@@ -1618,6 +1618,38 @@ public static unsafe class MetadataReader
     }
 
     /// <summary>
+    /// Get the parameter range for a MethodDef row.
+    /// Returns the first param row ID and parameter count.
+    /// </summary>
+    public static void GetMethodDefParams(ref TablesHeader tables, ref TableSizes sizes, uint rowId,
+        out uint firstParam, out uint paramCount)
+    {
+        firstParam = GetMethodDefParamList(ref tables, ref sizes, rowId);
+        if (firstParam == 0)
+        {
+            paramCount = 0;
+            return;
+        }
+
+        uint methodDefCount = tables.RowCounts[(int)MetadataTableId.MethodDef];
+        uint paramTableCount = tables.RowCounts[(int)MetadataTableId.Param];
+
+        uint nextMethodParamList;
+        if (rowId < methodDefCount)
+        {
+            // Get next method's ParamList
+            nextMethodParamList = GetMethodDefParamList(ref tables, ref sizes, rowId + 1);
+        }
+        else
+        {
+            // Last method - params go to end of Param table
+            nextMethodParamList = paramTableCount + 1;
+        }
+
+        paramCount = nextMethodParamList > firstParam ? nextMethodParamList - firstParam : 0;
+    }
+
+    /// <summary>
     /// Check if a MethodDef is virtual (requires vtable dispatch).
     /// </summary>
     /// <param name="tables">The tables header.</param>

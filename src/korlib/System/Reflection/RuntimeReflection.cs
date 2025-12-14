@@ -9,6 +9,79 @@ using System.Globalization;
 namespace System.Reflection
 {
     /// <summary>
+    /// Concrete implementation of ParameterInfo for runtime method parameters.
+    /// </summary>
+    public sealed unsafe class RuntimeParameterInfo : ParameterInfo
+    {
+        private readonly uint _assemblyId;
+        private readonly uint _methodToken;
+        private readonly int _position;
+        private string? _name;
+        private Type? _parameterType;
+
+        internal RuntimeParameterInfo(uint assemblyId, uint methodToken, int position)
+        {
+            _assemblyId = assemblyId;
+            _methodToken = methodToken;
+            _position = position;
+        }
+
+        public override string? Name
+        {
+            get
+            {
+                if (_name == null)
+                {
+                    byte* namePtr = Reflection_GetMethodParameterName(_assemblyId, _methodToken, _position);
+                    if (namePtr != null)
+                        _name = BytePtrToString(namePtr);
+                }
+                return _name;
+            }
+        }
+
+        public override Type ParameterType
+        {
+            get
+            {
+                if (_parameterType == null)
+                {
+                    void* mt = Reflection_GetMethodParameterTypeMethodTable(_assemblyId, _methodToken, _position);
+                    if (mt != null)
+                        _parameterType = Type.GetTypeFromHandle(new RuntimeTypeHandle((nint)mt));
+                }
+                return _parameterType!;
+            }
+        }
+
+        public override int Position => _position;
+
+        [DllImport("*", EntryPoint = "Reflection_GetMethodParameterName", CallingConvention = CallingConvention.Cdecl)]
+        private static extern byte* Reflection_GetMethodParameterName(uint assemblyId, uint methodToken, int paramIndex);
+
+        [DllImport("*", EntryPoint = "Reflection_GetMethodParameterTypeMethodTable", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void* Reflection_GetMethodParameterTypeMethodTable(uint assemblyId, uint methodToken, int paramIndex);
+
+        private static string BytePtrToString(byte* ptr)
+        {
+            if (ptr == null)
+                return string.Empty;
+
+            int len = 0;
+            while (ptr[len] != 0)
+                len++;
+
+            if (len == 0)
+                return string.Empty;
+
+            char* chars = stackalloc char[len];
+            for (int i = 0; i < len; i++)
+                chars[i] = (char)ptr[i];
+
+            return new string(chars, 0, len);
+        }
+    }
+    /// <summary>
     /// Concrete implementation of MethodInfo for runtime methods.
     /// </summary>
     public sealed unsafe class RuntimeMethodInfo : MethodInfo
@@ -98,8 +171,16 @@ namespace System.Reflection
 
         public override ParameterInfo[] GetParameters()
         {
-            // Simplified - return empty for now
-            return new ParameterInfo[0];
+            int count = Reflection_GetMethodParameterCount(_assemblyId, _methodToken);
+            if (count <= 0)
+                return new ParameterInfo[0];
+
+            var parameters = new ParameterInfo[count];
+            for (int i = 0; i < count; i++)
+            {
+                parameters[i] = new RuntimeParameterInfo(_assemblyId, _methodToken, i);
+            }
+            return parameters;
         }
 
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
@@ -122,6 +203,9 @@ namespace System.Reflection
         internal uint AssemblyId => _assemblyId;
 
         // Import kernel reflection APIs
+        [DllImport("*", EntryPoint = "Reflection_GetMethodParameterCount", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern int Reflection_GetMethodParameterCount(uint assemblyId, uint methodToken);
+
         [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
         private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
 
@@ -185,6 +269,7 @@ namespace System.Reflection
         private readonly int _fieldSize;
         private readonly bool _isValueType;
         private string? _name;
+        private Type? _fieldType;
 
         internal RuntimeFieldInfo(uint assemblyId, uint fieldToken, Type declaringType,
             int fieldOffset, int fieldSize, bool isValueType)
@@ -220,7 +305,22 @@ namespace System.Reflection
         public override RuntimeFieldHandle FieldHandle =>
             new RuntimeFieldHandle((nint)_fieldToken);
 
-        public override Type FieldType => null!; // Simplified - no typeof() without reflection
+        public override Type FieldType
+        {
+            get
+            {
+                if (_fieldType == null)
+                {
+                    void* mt = Reflection_GetFieldTypeMethodTable(_assemblyId, _fieldToken);
+                    if (mt != null)
+                        _fieldType = Type.GetTypeFromHandle(new RuntimeTypeHandle((nint)mt));
+                }
+                return _fieldType!;
+            }
+        }
+
+        [DllImport("*", EntryPoint = "Reflection_GetFieldTypeMethodTable", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern void* Reflection_GetFieldTypeMethodTable(uint assemblyId, uint fieldToken);
 
         public override FieldAttributes Attributes => FieldAttributes.Public;
 
@@ -272,12 +372,13 @@ namespace System.Reflection
     /// <summary>
     /// Concrete implementation of PropertyInfo for runtime properties.
     /// </summary>
-    public sealed class RuntimePropertyInfo : PropertyInfo
+    public sealed unsafe class RuntimePropertyInfo : PropertyInfo
     {
         private readonly Type _declaringType;
         private readonly string _name;
         private readonly MethodInfo? _getter;
         private readonly MethodInfo? _setter;
+        private Type? _propertyType;
 
         internal RuntimePropertyInfo(Type declaringType, string name,
             MethodInfo? getter, MethodInfo? setter)
@@ -294,7 +395,22 @@ namespace System.Reflection
 
         public override MemberTypes MemberType => MemberTypes.Property;
 
-        public override Type PropertyType => null!; // Simplified - no typeof() without reflection
+        public override Type PropertyType
+        {
+            get
+            {
+                if (_propertyType == null && _getter is RuntimeMethodInfo rmi)
+                {
+                    void* mt = Reflection_GetMethodReturnTypeMethodTable(rmi.AssemblyId, (uint)rmi.MetadataToken);
+                    if (mt != null)
+                        _propertyType = Type.GetTypeFromHandle(new RuntimeTypeHandle((nint)mt));
+                }
+                return _propertyType!;
+            }
+        }
+
+        [DllImport("*", EntryPoint = "Reflection_GetMethodReturnTypeMethodTable", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern void* Reflection_GetMethodReturnTypeMethodTable(uint assemblyId, uint methodToken);
 
         public override PropertyAttributes Attributes => PropertyAttributes.None;
 
@@ -390,7 +506,19 @@ namespace System.Reflection
 
         public override MethodAttributes Attributes => MethodAttributes.Public;
 
-        public override ParameterInfo[] GetParameters() => new ParameterInfo[0];
+        public override ParameterInfo[] GetParameters()
+        {
+            int count = Reflection_GetMethodParameterCount(_assemblyId, _methodToken);
+            if (count <= 0)
+                return new ParameterInfo[0];
+
+            var parameters = new ParameterInfo[count];
+            for (int i = 0; i < count; i++)
+            {
+                parameters[i] = new RuntimeParameterInfo(_assemblyId, _methodToken, i);
+            }
+            return parameters;
+        }
 
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture)
@@ -413,6 +541,9 @@ namespace System.Reflection
         /// ProtonOS-specific extension for reflection invoke support.
         /// </summary>
         internal uint AssemblyId => _assemblyId;
+
+        [DllImport("*", EntryPoint = "Reflection_GetMethodParameterCount", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern int Reflection_GetMethodParameterCount(uint assemblyId, uint methodToken);
 
         [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
         private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);

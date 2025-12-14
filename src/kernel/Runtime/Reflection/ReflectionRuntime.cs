@@ -407,6 +407,138 @@ public static unsafe class ReflectionRuntime
     }
 
     /// <summary>
+    /// Get the MethodTable pointer for a field's type.
+    /// Parses the field signature and resolves the type.
+    /// </summary>
+    /// <param name="assemblyId">The assembly containing the field</param>
+    /// <param name="fieldToken">The field token (0x04xxxxxx)</param>
+    /// <returns>MethodTable pointer for the field's type, or null if not resolved</returns>
+    public static void* GetFieldTypeMethodTable(uint assemblyId, uint fieldToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        uint rowId = fieldToken & 0x00FFFFFF;
+        uint sigBlobIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, rowId);
+
+        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigBlobIdx, out uint blobLen);
+        if (blob == null || blobLen < 2)
+            return null;
+
+        // Field signature: FIELD (0x06) followed by Type
+        if (blob[0] != 0x06) // SignatureHeader.Field
+            return null;
+
+        // Set assembly context for type resolution
+        JIT.MetadataIntegration.SetCurrentAssembly(assemblyId);
+
+        // Skip FIELD header, parse type signature
+        byte* ptr = blob + 1;
+        byte* end = blob + blobLen;
+
+        // Use MetadataIntegration to resolve the type signature to MethodTable
+        return ResolveTypeSigToMethodTablePublic(ref ptr, end);
+    }
+
+    /// <summary>
+    /// Public wrapper to resolve type signature to MethodTable.
+    /// Handles all element types including primitives, classes, value types, and generics.
+    /// </summary>
+    private static void* ResolveTypeSigToMethodTablePublic(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return null;
+
+        byte elementType = *ptr++;
+
+        // Handle primitive types by looking up well-known types
+        switch (elementType)
+        {
+            case 0x01: return null; // ELEMENT_TYPE_VOID
+            case 0x02: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Boolean);
+            case 0x03: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Char);
+            case 0x04: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.SByte);
+            case 0x05: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Byte);
+            case 0x06: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Int16);
+            case 0x07: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.UInt16);
+            case 0x08: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Int32);
+            case 0x09: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.UInt32);
+            case 0x0A: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Int64);
+            case 0x0B: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.UInt64);
+            case 0x0C: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Single);
+            case 0x0D: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Double);
+            case 0x0E: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.String);
+            case 0x18: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.IntPtr);
+            case 0x19: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.UIntPtr);
+            case 0x1C: return JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Object);
+
+            case 0x11: // ELEMENT_TYPE_VALUETYPE
+            case 0x12: // ELEMENT_TYPE_CLASS
+            {
+                // Read TypeDefOrRefOrSpec coded index
+                uint codedIdx = DecodeCompressedUInt(ref ptr, end);
+                uint tableTag = codedIdx & 0x3;
+                uint rowId = codedIdx >> 2;
+
+                uint fullToken;
+                switch (tableTag)
+                {
+                    case 0: fullToken = 0x02000000 | rowId; break; // TypeDef
+                    case 1: fullToken = 0x01000000 | rowId; break; // TypeRef
+                    case 2: fullToken = 0x1B000000 | rowId; break; // TypeSpec
+                    default: return null;
+                }
+
+                void* mt;
+                if (JIT.MetadataIntegration.ResolveType(fullToken, out mt))
+                    return mt;
+                return null;
+            }
+
+            case 0x1D: // ELEMENT_TYPE_SZARRAY
+            {
+                void* elemMt = ResolveTypeSigToMethodTablePublic(ref ptr, end);
+                if (elemMt != null)
+                    return AssemblyLoader.GetOrCreateArrayMethodTable((MethodTable*)elemMt);
+                return null;
+            }
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Decode a compressed unsigned integer from metadata blob.
+    /// </summary>
+    private static uint DecodeCompressedUInt(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return 0;
+
+        byte b = *ptr++;
+        if ((b & 0x80) == 0)
+            return b;
+
+        if ((b & 0xC0) == 0x80)
+        {
+            if (ptr >= end) return 0;
+            return ((uint)(b & 0x3F) << 8) | *ptr++;
+        }
+
+        if ((b & 0xE0) == 0xC0)
+        {
+            if (ptr + 2 >= end) return 0;
+            uint result = ((uint)(b & 0x1F) << 24) | ((uint)*ptr++ << 16);
+            result |= ((uint)*ptr++ << 8) | *ptr++;
+            return result;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
     /// Get field information including type signature for proper boxing.
     /// Returns the ElementType for primitive fields, or 0 for unknown/complex types.
     /// </summary>
@@ -428,6 +560,255 @@ public static unsafe class ReflectionRuntime
             return 0;
 
         return blob[1]; // ElementType byte
+    }
+
+    /// <summary>
+    /// Get the number of parameters for a method.
+    /// </summary>
+    public static int GetMethodParameterCount(uint assemblyId, uint methodToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        uint rowId = methodToken & 0x00FFFFFF;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+
+        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint blobLen);
+        if (blob == null || blobLen < 2)
+            return 0;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLen;
+
+        // Skip calling convention
+        byte callConv = *ptr++;
+
+        // Skip generic param count if present
+        if ((callConv & 0x10) != 0) // HasGenericParams
+        {
+            DecodeCompressedUInt(ref ptr, end);
+        }
+
+        // Return param count
+        return (int)DecodeCompressedUInt(ref ptr, end);
+    }
+
+    /// <summary>
+    /// Get the parameter type MethodTable at the given index (0-based).
+    /// </summary>
+    public static void* GetMethodParameterTypeMethodTable(uint assemblyId, uint methodToken, int paramIndex)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        uint rowId = methodToken & 0x00FFFFFF;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+
+        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint blobLen);
+        if (blob == null || blobLen < 3)
+            return null;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLen;
+
+        // Skip calling convention
+        byte callConv = *ptr++;
+
+        // Skip generic param count if present
+        if ((callConv & 0x10) != 0)
+        {
+            DecodeCompressedUInt(ref ptr, end);
+        }
+
+        // Get param count
+        int paramCount = (int)DecodeCompressedUInt(ref ptr, end);
+        if (paramIndex < 0 || paramIndex >= paramCount)
+            return null;
+
+        // Skip return type
+        SkipTypeSig(ref ptr, end);
+
+        // Skip parameters until we reach the target
+        for (int i = 0; i < paramIndex && ptr < end; i++)
+        {
+            SkipTypeSig(ref ptr, end);
+        }
+
+        // Set assembly context for type resolution
+        JIT.MetadataIntegration.SetCurrentAssembly(assemblyId);
+
+        // Resolve the parameter type
+        return ResolveTypeSigToMethodTablePublic(ref ptr, end);
+    }
+
+    /// <summary>
+    /// Get the parameter name at the given index (0-based).
+    /// Returns pointer to null-terminated UTF-8 string.
+    /// </summary>
+    public static byte* GetMethodParameterName(uint assemblyId, uint methodToken, int paramIndex)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        uint rowId = methodToken & 0x00FFFFFF;
+
+        // Get method's parameter list from MethodDef
+        MetadataReader.GetMethodDefParams(ref asm->Tables, ref asm->Sizes, rowId,
+            out uint firstParam, out uint paramCount);
+
+        // Param rows use 1-based sequence numbers for parameters, 0 for return type
+        // So for parameter index N (0-based), we need sequence N+1
+        int targetSequence = paramIndex + 1;
+
+        // Search through parameters to find matching sequence
+        for (uint i = 0; i < paramCount; i++)
+        {
+            uint paramRow = firstParam + i;
+            ushort seq = MetadataReader.GetParamSequence(ref asm->Tables, ref asm->Sizes, paramRow);
+            if (seq == targetSequence)
+            {
+                uint nameIdx = MetadataReader.GetParamName(ref asm->Tables, ref asm->Sizes, paramRow);
+                return MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Skip over a type signature without resolving it.
+    /// Used when parsing method signatures to skip types.
+    /// </summary>
+    private static void SkipTypeSig(ref byte* ptr, byte* end)
+    {
+        if (ptr >= end)
+            return;
+
+        byte elementType = *ptr++;
+
+        switch (elementType)
+        {
+            // Simple types - no additional data
+            case 0x01: // VOID
+            case 0x02: // BOOLEAN
+            case 0x03: // CHAR
+            case 0x04: // I1
+            case 0x05: // U1
+            case 0x06: // I2
+            case 0x07: // U2
+            case 0x08: // I4
+            case 0x09: // U4
+            case 0x0A: // I8
+            case 0x0B: // U8
+            case 0x0C: // R4
+            case 0x0D: // R8
+            case 0x0E: // STRING
+            case 0x18: // I (IntPtr)
+            case 0x19: // U (UIntPtr)
+            case 0x1C: // OBJECT
+            case 0x16: // TYPEDBYREF
+                break;
+
+            case 0x11: // VALUETYPE
+            case 0x12: // CLASS
+                DecodeCompressedUInt(ref ptr, end); // Skip TypeDefOrRefOrSpec
+                break;
+
+            case 0x0F: // PTR
+            case 0x10: // BYREF
+            case 0x1D: // SZARRAY
+                SkipTypeSig(ref ptr, end); // Skip element type
+                break;
+
+            case 0x14: // ARRAY
+                SkipTypeSig(ref ptr, end); // Element type
+                DecodeCompressedUInt(ref ptr, end); // Rank
+                {
+                    uint numSizes = DecodeCompressedUInt(ref ptr, end);
+                    for (uint i = 0; i < numSizes; i++)
+                        DecodeCompressedUInt(ref ptr, end);
+                    uint numLoBounds = DecodeCompressedUInt(ref ptr, end);
+                    for (uint i = 0; i < numLoBounds; i++)
+                        DecodeCompressedUInt(ref ptr, end);
+                }
+                break;
+
+            case 0x15: // GENERICINST
+                ptr++; // Skip CLASS/VALUETYPE
+                DecodeCompressedUInt(ref ptr, end); // Skip generic type
+                {
+                    uint genArgCount = DecodeCompressedUInt(ref ptr, end);
+                    for (uint i = 0; i < genArgCount; i++)
+                        SkipTypeSig(ref ptr, end);
+                }
+                break;
+
+            case 0x13: // VAR
+            case 0x1E: // MVAR
+                DecodeCompressedUInt(ref ptr, end); // Skip index
+                break;
+
+            case 0x1B: // FNPTR
+                // Skip method signature
+                ptr++; // Calling convention
+                {
+                    uint paramCount = DecodeCompressedUInt(ref ptr, end);
+                    SkipTypeSig(ref ptr, end); // Return type
+                    for (uint i = 0; i < paramCount; i++)
+                        SkipTypeSig(ref ptr, end);
+                }
+                break;
+
+            default:
+                // Unknown - just hope for the best
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Get the MethodTable pointer for a method's return type.
+    /// Parses the method signature and resolves the return type.
+    /// </summary>
+    /// <param name="assemblyId">The assembly containing the method</param>
+    /// <param name="methodToken">The method token (0x06xxxxxx)</param>
+    /// <returns>MethodTable pointer for the return type, or null if void or not resolved</returns>
+    public static void* GetMethodReturnTypeMethodTable(uint assemblyId, uint methodToken)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        uint rowId = methodToken & 0x00FFFFFF;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+
+        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint blobLen);
+        if (blob == null || blobLen < 3)
+            return null;
+
+        byte* ptr = blob;
+        byte* end = blob + blobLen;
+
+        // Skip calling convention
+        ptr++;
+
+        // Skip generic param count if present (handled by calling convention flags)
+        byte callConv = blob[0];
+        if ((callConv & 0x10) != 0) // HasGenericParams
+        {
+            DecodeCompressedUInt(ref ptr, end); // Skip generic param count
+        }
+
+        // Read param count
+        DecodeCompressedUInt(ref ptr, end);
+
+        // Set assembly context for type resolution
+        JIT.MetadataIntegration.SetCurrentAssembly(assemblyId);
+
+        // Now ptr points to return type
+        return ResolveTypeSigToMethodTablePublic(ref ptr, end);
     }
 
     /// <summary>
@@ -1005,6 +1386,33 @@ public static unsafe class ReflectionRuntime
     // ========================================================================
     // Int32/Int64 return helpers with boxing support
     // ========================================================================
+
+    /// <summary>
+    /// Box any value type. Creates a new boxed object and copies the value.
+    /// Exported as Reflection_BoxValue for korlib's TypedReference.ToObject.
+    /// </summary>
+    /// <param name="methodTable">The MethodTable* for the value type</param>
+    /// <param name="valueData">Pointer to the raw value data</param>
+    /// <param name="valueSize">Size of the value data in bytes</param>
+    /// <returns>Boxed object pointer, or null on failure</returns>
+    public static void* BoxValue(void* methodTable, void* valueData, int valueSize)
+    {
+        if (methodTable == null || valueData == null || valueSize <= 0)
+            return null;
+
+        var mt = (MethodTable*)methodTable;
+        var obj = RuntimeHelpers.RhpNewFast(mt);
+        if (obj == null)
+            return null;
+
+        // Copy value data after MethodTable pointer (offset 8)
+        byte* dest = (byte*)obj + 8;
+        byte* src = (byte*)valueData;
+        for (int i = 0; i < valueSize; i++)
+            dest[i] = src[i];
+
+        return obj;
+    }
 
     /// <summary>
     /// Box an Int32 value. Creates a new boxed object and copies the value.

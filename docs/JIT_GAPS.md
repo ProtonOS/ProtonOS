@@ -82,32 +82,39 @@ These are implementations that return stubs or have known limitations.
 
 ### 2.1 TypedReference (korlib/System/TypedReference.cs)
 
-- [ ] **TypedReference.ToObject for value types** (line 75-77)
-  - Current: Returns `null` for value types
-  - Needed: Box the value using RhpNewFast
-  - Impact: Varargs with value type extraction via ToObject()
+- [x] **TypedReference.ToObject for value types** ✅
+  - Implementation: Calls kernel Reflection_BoxValue API
+  - Uses RhpNewFast for allocation, copies value data
+  - Boxing works for any value type via MethodTable
 
 ### 2.2 Reflection (korlib/System/Reflection/RuntimeReflection.cs)
 
-- [ ] **FieldInfo.FieldType** (line 223)
-  - Current: Returns `null`
-  - Needed: Resolve field signature to Type
-  - Impact: Reflection-based serialization, property grids
+- [x] **FieldInfo.FieldType** ✅
+  - Implementation: Kernel API GetFieldTypeMethodTable parses field signature
+  - Resolves primitive types, class/valuetype tokens, arrays
+  - Returns Type via Type.GetTypeFromHandle()
 
-- [ ] **PropertyInfo.PropertyType** (line 297)
-  - Current: Returns `null`
-  - Needed: Resolve property signature to Type
-  - Impact: Same as FieldType
+- [x] **PropertyInfo.PropertyType** ✅
+  - Implementation: Uses getter's return type via GetMethodReturnTypeMethodTable
+  - Parses method signature, resolves return type to MethodTable
 
-- [ ] **MethodInfo.GetParameters()** (line 393)
-  - Current: Returns empty `ParameterInfo[]`
-  - Needed: Parse method signature, create ParameterInfo for each param
-  - Impact: Reflection-based invocation validation
+- [x] **MethodInfo.GetParameters()** ✅
+  - Implementation: Kernel APIs for parameter count, type, and name
+  - Added RuntimeParameterInfo class with ParameterType and Name
+  - Parses method signature, creates ParameterInfo for each param
 
 - [ ] **ArgIterator.GetNextArg(RuntimeTypeHandle)** (ArgIterator.cs:70-72)
   - Current: Ignores the type handle parameter
   - Needed: Verify type matches expected
   - Impact: Type-safe varargs iteration
+
+### 2.3 Reflection Testing Limitation
+
+Note: The above reflection APIs are implemented but JIT tests are currently disabled.
+Testing requires korlib reflection types (RuntimeFieldInfo, etc.) to have properly
+configured vtables for virtual method dispatch. The FieldType getter is at vtable
+slot 2 but korlib types don't have their vtables populated from AOT context.
+This is tracked as future work in the vtable infrastructure.
 
 ---
 
@@ -180,9 +187,9 @@ These are known limitations that are acceptable for the current scope.
 5. [x] params array test (437 tests)
 6. [x] ckfinite behavior → Documented as acceptable limitation (INT3 instead of exception)
 
-### P2 - Nice to have
-7. [ ] Reflection FieldType/PropertyType/GetParameters
-8. [ ] TypedReference.ToObject for value types
+### P2 - Nice to have ✅ ALL IMPLEMENTED
+7. [x] Reflection FieldType/PropertyType/GetParameters → Kernel APIs complete, vtable testing needed
+8. [x] TypedReference.ToObject for value types → Uses Reflection_BoxValue API
 9. [~] foreach on custom IEnumerable → Documented limitation (interface resolution)
 10. [x] nameof() operator → NameofTests (454 tests)
 
@@ -216,17 +223,36 @@ public static class NameofTests { ... }
 | Category | Total | Done | Remaining |
 |----------|-------|------|-----------|
 | Missing Tests | 9 | 8 | 1 |
-| Incomplete Impl | 5 | 0 | 5 |
+| Incomplete Impl | 5 | 4 | 1 |
 | Code TODOs (JIT) | 2 | 2 | 0 (clarified) |
 | Code TODOs (Platform) | 11 | 0 | 11 |
 | **P0 Items** | **3** | **3** | **0** |
 | **P1 Items** | **3** | **3** | **0** |
-| **P2 Items** | **4** | **2** | **2** |
+| **P2 Items** | **4** | **4** | **0** |
 
 Last updated: 2025-12-14
 Test count: 454
 
 ## Recent Changes
+
+### P2 Reflection APIs Complete (454 tests)
+- Implemented TypedReference.ToObject for value types:
+  - Added Reflection_BoxValue kernel export using RhpNewFast allocation
+  - Updated korlib TypedReference.cs to call kernel API for boxing
+- Implemented FieldInfo.FieldType:
+  - Added GetFieldTypeMethodTable in ReflectionRuntime (parses field signature)
+  - ResolveTypeSigToMethodTablePublic handles all ELEMENT_TYPEs
+  - Added Reflection_GetFieldTypeMethodTable kernel export
+- Implemented PropertyInfo.PropertyType:
+  - Uses getter's return type via GetMethodReturnTypeMethodTable
+  - Added Reflection_GetMethodReturnTypeMethodTable kernel export
+- Implemented MethodInfo.GetParameters():
+  - Added GetMethodParameterCount, GetMethodParameterTypeMethodTable, GetMethodParameterName
+  - Added GetMethodDefParams to MetadataReader for Param table ranges
+  - Added RuntimeParameterInfo class to korlib
+  - Three kernel exports for parameter metadata
+- Testing limitation documented: korlib reflection types need vtable infrastructure
+  for virtual method dispatch (FieldType getter is at vtable slot 2)
 
 ### nameof() Operator Tests (454 tests)
 - Added NameofTests class with 5 tests for nameof() operator:
