@@ -41,6 +41,10 @@ public static unsafe class RuntimeHelpers
     private static void* _isAssignableToPtr;
     private static void* _getInterfaceMethodPtr;
 
+    // MD array allocation helper pointers
+    private static void* _newMDArray2DPtr;
+    private static void* _newMDArray3DPtr;
+
     // MD array header offsets (common to all ranks)
     private const int MDOffsetMethodTable = 0;
     private const int MDOffsetLength = 8;
@@ -97,6 +101,10 @@ public static unsafe class RuntimeHelpers
         _debugLdfldPtr = (void*)(delegate*<void*, int, void*, void>)&DebugLdfld;
         _debugStelemStackPtr = (void*)(delegate*<void*, ulong, void*, int, void>)&DebugStelemStack;
         _debugVtableDispatchPtr = (void*)(delegate*<void*, int, void>)&DebugVtableDispatch;
+
+        // Cache MD array allocation helper pointers
+        _newMDArray2DPtr = (void*)(delegate*<MethodTable*, int, int, void*>)&NewMDArray2D;
+        _newMDArray3DPtr = (void*)(delegate*<MethodTable*, int, int, int, void*>)&NewMDArray3D;
 
         // Register MD array helpers with the CompiledMethodRegistry
         RegisterMDArrayHelpers();
@@ -193,6 +201,18 @@ public static unsafe class RuntimeHelpers
     /// Signature: void DebugVtableDispatch(void* thisPtr, int slot)
     /// </summary>
     public static void* GetDebugVtableDispatchPtr() => _debugVtableDispatchPtr;
+
+    /// <summary>
+    /// Get the NewMDArray2D function pointer for the ILCompiler.
+    /// Signature: void* NewMDArray2D(MethodTable* pMT, int dim0, int dim1)
+    /// </summary>
+    public static void* GetMDArray2DHelperPtr() => _newMDArray2DPtr;
+
+    /// <summary>
+    /// Get the NewMDArray3D function pointer for the ILCompiler.
+    /// Signature: void* NewMDArray3D(MethodTable* pMT, int dim0, int dim1, int dim2)
+    /// </summary>
+    public static void* GetMDArray3DHelperPtr() => _newMDArray3DPtr;
 
     #endregion
 

@@ -89,6 +89,9 @@ public static unsafe class AotMethodRegistry
         // Register Delegate methods
         RegisterDelegateMethods();
 
+        // Register Array methods
+        RegisterArrayMethods();
+
         _initialized = true;
 
         int count;
@@ -458,6 +461,32 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register Array methods with their wrapper addresses.
+    /// </summary>
+    private static void RegisterArrayMethods()
+    {
+        // Array.get_Length - instance property getter
+        // Returns the total number of elements in the array (stored at offset 8)
+        Register(
+            "System.Array", "get_Length",
+            (nint)(delegate*<Array, int>)&ArrayHelpers.GetLength,
+            0, ReturnKind.Int32, true, false);
+
+        // Array.get_LongLength - instance property getter (64-bit version)
+        Register(
+            "System.Array", "get_LongLength",
+            (nint)(delegate*<Array, long>)&ArrayHelpers.GetLongLength,
+            0, ReturnKind.Int64, true, false);
+
+        // Array.get_Rank - instance property getter
+        // For single-dimension arrays returns 1, for MD arrays returns stored rank
+        Register(
+            "System.Array", "get_Rank",
+            (nint)(delegate*<Array, int>)&ArrayHelpers.GetRank,
+            0, ReturnKind.Int32, true, false);
+    }
+
+    /// <summary>
     /// Register an AOT method.
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
@@ -605,6 +634,10 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.Delegate"))
             return true;
         if (StringMatches(typeName, "System.MulticastDelegate"))
+            return true;
+
+        // Array type
+        if (StringMatches(typeName, "System.Array"))
             return true;
 
         // Reflection types
@@ -1206,5 +1239,64 @@ public static class DelegateHelpers
     public static Delegate? RemoveImplWrapper(MulticastDelegate self, Delegate d)
     {
         return self.InvokeRemoveImpl(d);
+    }
+}
+
+/// <summary>
+/// Helper methods for Array operations.
+/// These provide AOT-compiled implementations of System.Array methods
+/// that JIT-compiled code can call.
+/// </summary>
+public static unsafe class ArrayHelpers
+{
+    /// <summary>
+    /// Get the total number of elements in the array.
+    /// Works for both single-dimension (SZARRAY) and multi-dimension (ARRAY) types.
+    /// The length is stored at offset 8 from the array pointer (after the MethodTable pointer).
+    /// </summary>
+    public static int GetLength(Array array)
+    {
+        if (array == null)
+            return 0;
+
+        // Length is stored at offset 8 from the object pointer
+        // This works for both 1D arrays and MD arrays
+        // Note: Unsafe.AsPointer(ref array) gives us the address of the local variable,
+        // so we dereference it to get the actual object pointer
+        byte* ptr = *(byte**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref array);
+        return *(int*)(ptr + 8);
+    }
+
+    /// <summary>
+    /// Get the total number of elements as a 64-bit integer.
+    /// </summary>
+    public static long GetLongLength(Array array)
+    {
+        return GetLength(array);
+    }
+
+    /// <summary>
+    /// Get the rank (number of dimensions) of the array.
+    /// For single-dimension arrays (SZARRAY), returns 1.
+    /// For multi-dimension arrays (ARRAY), returns the stored rank.
+    /// </summary>
+    public static int GetRank(Array array)
+    {
+        if (array == null)
+            return 0;
+
+        // Check if this is an MD array by examining the MethodTable's BaseSize
+        // MD arrays have BaseSize = 16 + 8 * rank, so rank = (BaseSize - 16) / 8
+        // 1D arrays have BaseSize = 16 (MT* + Length), which gives (16-16)/8 = 0
+        // But 1D arrays should return 1, so we use: rank > 0 ? rank : 1
+        // Note: Dereference to get the object pointer from the local variable
+        byte* ptr = *(byte**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref array);
+        MethodTable* mt = *(MethodTable**)ptr;
+        int baseSize = (int)mt->BaseSize;
+
+        // For MD arrays, calculate rank from BaseSize
+        // BaseSize = 16 + 8 * rank
+        int rank = (baseSize - 16) / 8;
+        return rank > 0 ? rank : 1;  // 1D arrays return 1
     }
 }

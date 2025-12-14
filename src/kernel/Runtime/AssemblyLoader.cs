@@ -5623,6 +5623,126 @@ public static unsafe class AssemblyLoader
         return arrayMT;
     }
 
+    // Cache of created MD array MethodTables (element MT ptr, rank -> array MT ptr)
+    private const int MaxMDArrayMTCache = 64;
+    private static MethodTable** _mdArrayMTCacheElementMTs;
+    private static int* _mdArrayMTCacheRanks;
+    private static MethodTable** _mdArrayMTCacheArrayMTs;
+    private static int _mdArrayMTCacheCount;
+
+    /// <summary>
+    /// Get or create a multi-dimensional array MethodTable for a given element type and rank.
+    /// The array MT has ComponentSize set to the element size.
+    /// Used by newobj for MD array construction.
+    /// </summary>
+    /// <param name="elementMT">Element type's MethodTable</param>
+    /// <param name="rank">Number of dimensions (2, 3, etc.)</param>
+    public static MethodTable* GetOrCreateMDArrayMethodTable(MethodTable* elementMT, int rank)
+    {
+        if (elementMT == null || rank < 2)
+            return null;
+
+        // Initialize cache on first use
+        if (_mdArrayMTCacheElementMTs == null)
+        {
+            _mdArrayMTCacheElementMTs = (MethodTable**)HeapAllocator.AllocZeroed(
+                (ulong)(MaxMDArrayMTCache * sizeof(MethodTable*)));
+            _mdArrayMTCacheRanks = (int*)HeapAllocator.AllocZeroed(
+                (ulong)(MaxMDArrayMTCache * sizeof(int)));
+            _mdArrayMTCacheArrayMTs = (MethodTable**)HeapAllocator.AllocZeroed(
+                (ulong)(MaxMDArrayMTCache * sizeof(MethodTable*)));
+            _mdArrayMTCacheCount = 0;
+
+            if (_mdArrayMTCacheElementMTs == null || _mdArrayMTCacheRanks == null || _mdArrayMTCacheArrayMTs == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] Failed to allocate MD array MT cache");
+                return null;
+            }
+        }
+
+        // Check cache for existing MD array MT
+        for (int i = 0; i < _mdArrayMTCacheCount; i++)
+        {
+            if (_mdArrayMTCacheElementMTs[i] == elementMT && _mdArrayMTCacheRanks[i] == rank)
+                return _mdArrayMTCacheArrayMTs[i];
+        }
+
+        // Compute element size
+        ushort elementSize;
+        if (elementMT->IsValueType)
+        {
+            elementSize = (ushort)elementMT->BaseSize;
+        }
+        else
+        {
+            elementSize = 8;  // Reference type pointer
+        }
+
+        // Create new MD array MethodTable
+        MethodTable* arrayMT = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        if (arrayMT == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] Failed to allocate MD array MethodTable");
+            return null;
+        }
+
+        // Initialize MD array MT
+        arrayMT->_usComponentSize = elementSize;
+        // Set IsArray flag
+        arrayMT->_usFlags = (ushort)((MTFlags.IsArray | MTFlags.HasComponentSize) >> 16);
+        // MD array base size: MT ptr (8) + length (4) + rank (4) + bounds (4*rank) + loBounds (4*rank)
+        // = 16 + 8*rank bytes
+        arrayMT->_uBaseSize = (uint)(16 + 8 * rank);
+        // _relatedType points to element type's MethodTable
+        arrayMT->_relatedType = elementMT;
+        // Store rank in NumVtableSlots (we don't use vtable for arrays anyway)
+        // This is a bit of a hack but avoids adding a new field
+        arrayMT->_usNumVtableSlots = (ushort)rank;
+        arrayMT->_usNumInterfaces = 0;
+        arrayMT->_uHashCode = (uint)((ulong)elementMT ^ (uint)(rank << 16));
+
+        // Cache the new MD array MT
+        if (_mdArrayMTCacheCount < MaxMDArrayMTCache)
+        {
+            _mdArrayMTCacheElementMTs[_mdArrayMTCacheCount] = elementMT;
+            _mdArrayMTCacheRanks[_mdArrayMTCacheCount] = rank;
+            _mdArrayMTCacheArrayMTs[_mdArrayMTCacheCount] = arrayMT;
+            _mdArrayMTCacheCount++;
+        }
+
+        DebugConsole.Write("[AsmLoader] Created MD array MT: rank=");
+        DebugConsole.WriteDecimal((uint)rank);
+        DebugConsole.Write(" elemSize=");
+        DebugConsole.WriteDecimal(elementSize);
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)arrayMT);
+        DebugConsole.WriteLine();
+
+        return arrayMT;
+    }
+
+    /// <summary>
+    /// Check if a MethodTable represents an MD array and get its rank.
+    /// Returns 0 for non-arrays or single-dimension arrays, rank for MD arrays.
+    /// </summary>
+    public static int GetMDArrayRank(MethodTable* mt)
+    {
+        if (mt == null || !mt->IsArray)
+            return 0;
+
+        // Check if BaseSize matches MD array pattern (16 + 8*rank)
+        // Single-dim arrays have BaseSize = 16
+        if (mt->BaseSize <= 16)
+            return 0;
+
+        // Calculate rank from BaseSize
+        int rank = (int)(mt->BaseSize - 16) / 8;
+        if (rank >= 2)
+            return rank;
+
+        return 0;
+    }
+
     // Cache for generic instantiation MethodTables
     private const int MaxGenericInstCache = 64;
     private static uint* _genericInstCacheDefTokens;

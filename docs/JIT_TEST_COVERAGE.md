@@ -99,9 +99,19 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ Generic arrays (T[])
 
 ### Multi-Dimension Arrays (ARRAY)
-- 🔲 newobj for multi-dim arrays
-- 🔲 Array.Get, Array.Set, Array.Address
-- 🔲 ldelem/stelem for multi-dim
+- ✅ newobj for multi-dim arrays (2D and 3D)
+  - Allocates via NewMDArray2D/NewMDArray3D runtime helpers
+  - MD array layout: MT* + Length(4) + Rank(4) + Bounds[rank] + LoBounds[rank] + Elements[]
+  - Tests: Test2DIntAllocation, Test3DIntAllocation
+- ✅ Array.Get, Array.Set, Array.Address (JIT intrinsics)
+  - Compiled inline with linear index calculation
+  - 2D: index = i*dim1 + j
+  - 3D: index = (i*dim1 + j)*dim2 + k
+  - Supports byte, short, int, long, and reference element types
+  - Tests: Test2DIntSetGet, Test2DIntZeroed, Test2DIntCorners, Test2DIntSum, Test2DByteSetGet, Test2DLongSetGet, Test2DDiagonal, Test2DShortSetGet, TestMultiple2DArrays
+  - Tests: Test3DIntSetGet, Test3DIntCorners, Test3DByteSetGet, Test3DIntSum
+- ⚠️ ldelem/stelem for multi-dim (use Get/Set methods instead)
+- Note: System.Array::get_Length not yet callable on MD arrays (requires registering System.Array in AotMethodRegistry)
 
 ### Bounds Checking
 - ✅ Array bounds checks (ldelem, stelem, ldelema, ldelem.r4/r8, stelem.r4/r8, ldelem/stelem with token)

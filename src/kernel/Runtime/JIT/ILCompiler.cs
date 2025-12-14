@@ -372,6 +372,28 @@ public unsafe struct ResolvedMethod
 
     /// <summary>MethodTable pointer for the type argument T in Activator.CreateInstance&lt;T&gt;().</summary>
     public void* ActivatorTypeArgMT;
+
+    /// <summary>True if this is an MD array method (Get, Set, Address, .ctor).</summary>
+    public bool IsMDArrayMethod;
+
+    /// <summary>Kind of MD array method (only valid if IsMDArrayMethod).</summary>
+    public MDArrayMethodKind MDArrayKind;
+
+    /// <summary>Rank of the MD array (only valid if IsMDArrayMethod).</summary>
+    public byte MDArrayRank;
+
+    /// <summary>Element size of the MD array (only valid if IsMDArrayMethod).</summary>
+    public ushort MDArrayElemSize;
+}
+
+/// <summary>Kind of multi-dimensional array method.</summary>
+public enum MDArrayMethodKind : byte
+{
+    None = 0,
+    Ctor = 1,    // .ctor(int, int, ...) - constructor
+    Get = 2,     // Get(int, int, ...) -> T - get element
+    Set = 3,     // Set(int, int, ..., T) - set element
+    Address = 4  // Address(int, int, ...) -> T& - get element address
 }
 
 /// <summary>
@@ -4280,6 +4302,12 @@ public unsafe struct ILCompiler
             return CompileActivatorCreateInstance((MethodTable*)method.ActivatorTypeArgMT);
         }
 
+        // Handle MD array methods (Get, Set, Address) as JIT intrinsic
+        if (method.IsMDArrayMethod)
+        {
+            return CompileMDArrayMethod(method);
+        }
+
         int totalArgs = method.ArgCount;
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg
@@ -7101,6 +7129,311 @@ public unsafe struct ILCompiler
         return true;
     }
 
+    // ==================== MD Array Operations ====================
+    //
+    // MD Array layout:
+    //   +0:  MethodTable*
+    //   +8:  Length (total element count, 4 bytes)
+    //   +12: Rank (4 bytes)
+    //   +16: Bounds[0], Bounds[1], ... (4 bytes each)
+    //   +16+4*rank: LoBounds[0], LoBounds[1], ... (4 bytes each)
+    //   +16+8*rank: Elements[0], Elements[1], ...
+    //
+    // HeaderSize = 16 + 8 * rank (32 for 2D, 40 for 3D)
+
+    /// <summary>
+    /// Compile MD array method (Get, Set, Address).
+    /// Emits inline code for element access using the RuntimeHelpers functions.
+    /// </summary>
+    private bool CompileMDArrayMethod(ResolvedMethod method)
+    {
+        byte rank = method.MDArrayRank;
+        ushort elemSize = method.MDArrayElemSize;
+
+        // Currently only support 2D and 3D
+        if (rank < 2 || rank > 3)
+        {
+            DebugConsole.Write("[JIT] MD array: unsupported rank ");
+            DebugConsole.WriteDecimal((uint)rank);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        switch (method.MDArrayKind)
+        {
+            case MDArrayMethodKind.Get:
+                return CompileMDArrayGet(rank, elemSize);
+            case MDArrayMethodKind.Set:
+                return CompileMDArraySet(rank, elemSize);
+            case MDArrayMethodKind.Address:
+                return CompileMDArrayAddress(rank, elemSize);
+            default:
+                DebugConsole.Write("[JIT] MD array: unexpected method kind ");
+                DebugConsole.WriteDecimal((uint)method.MDArrayKind);
+                DebugConsole.WriteLine();
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Compile MD array Get method.
+    /// Stack (2D): ..., array, i, j -> ..., value
+    /// Stack (3D): ..., array, i, j, k -> ..., value
+    /// </summary>
+    private bool CompileMDArrayGet(byte rank, ushort elemSize)
+    {
+        int headerSize = 16 + 8 * rank;
+
+        if (rank == 2)
+        {
+            // Pop: j (top), i, array
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = i * dim1 + j
+            // dim1 is at array + 20 (Bounds[1])
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            // Element address = array + headerSize + index * elemSize
+            // For now, use multiply for all sizes
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = array + header + index*elemSize
+
+            // Load element value
+            EmitMDArrayLoad(VReg.R1, elemSize);
+        }
+        else // rank == 3
+        {
+            // Pop: k (top), j, i, array
+            X64Emitter.Pop(ref _code, VReg.R4);   // R9 = k
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = (i * dim1 + j) * dim2 + k
+            // dim1 is at array + 20, dim2 is at array + 24
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 24);  // RAX = dim2
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = (i*dim1+j) * dim2
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R4);         // RDX = index + k
+
+            // Element address = array + headerSize + index * elemSize
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = array + header + index*elemSize
+
+            // Load element value
+            EmitMDArrayLoad(VReg.R1, elemSize);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Emit code to load an MD array element and push onto eval stack.
+    /// </summary>
+    private void EmitMDArrayLoad(VReg addrReg, ushort elemSize)
+    {
+        switch (elemSize)
+        {
+            case 1:
+                X64Emitter.MovzxByte(ref _code, VReg.R0, addrReg, 0);
+                break;
+            case 2:
+                X64Emitter.MovzxWord(ref _code, VReg.R0, addrReg, 0);
+                break;
+            case 4:
+                X64Emitter.MovRM32(ref _code, VReg.R0, addrReg, 0);
+                break;
+            case 8:
+            default:
+                X64Emitter.MovRM(ref _code, VReg.R0, addrReg, 0);
+                break;
+        }
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.NativeInt);
+    }
+
+    /// <summary>
+    /// Compile MD array Set method.
+    /// Stack (2D): ..., array, i, j, value -> ...
+    /// Stack (3D): ..., array, i, j, k, value -> ...
+    /// </summary>
+    private bool CompileMDArraySet(byte rank, ushort elemSize)
+    {
+        int headerSize = 16 + 8 * rank;
+
+        if (rank == 2)
+        {
+            // Pop: value (top), j, i, array
+            // Use callee-saved registers to preserve values across calculations
+            X64Emitter.Pop(ref _code, VReg.R8);   // R12 = value
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = i * dim1 + j
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            // Element address = array + headerSize + index * elemSize
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = element address
+
+            // Store value
+            EmitMDArrayStore(VReg.R1, VReg.R8, elemSize);
+        }
+        else // rank == 3
+        {
+            // Pop: value (top), k, j, i, array
+            X64Emitter.Pop(ref _code, VReg.R8);   // R12 = value
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R4);   // R9 = k
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = (i * dim1 + j) * dim2 + k
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 24);  // RAX = dim2
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = (i*dim1+j) * dim2
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R4);         // RDX = index + k
+
+            // Element address = array + headerSize + index * elemSize
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = element address
+
+            // Store value
+            EmitMDArrayStore(VReg.R1, VReg.R8, elemSize);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Emit code to store a value to an MD array element.
+    /// </summary>
+    private void EmitMDArrayStore(VReg addrReg, VReg valueReg, ushort elemSize)
+    {
+        switch (elemSize)
+        {
+            case 1:
+                X64Emitter.MovMR8(ref _code, addrReg, 0, valueReg);
+                break;
+            case 2:
+                X64Emitter.MovMR16(ref _code, addrReg, 0, valueReg);
+                break;
+            case 4:
+                X64Emitter.MovMR32(ref _code, addrReg, 0, valueReg);
+                break;
+            case 8:
+            default:
+                X64Emitter.MovMR(ref _code, addrReg, 0, valueReg);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Compile MD array Address method.
+    /// Stack (2D): ..., array, i, j -> ..., &element
+    /// Stack (3D): ..., array, i, j, k -> ..., &element
+    /// </summary>
+    private bool CompileMDArrayAddress(byte rank, ushort elemSize)
+    {
+        int headerSize = 16 + 8 * rank;
+
+        if (rank == 2)
+        {
+            // Pop: j (top), i, array
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = i * dim1 + j
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            // Element address = array + headerSize + index * elemSize
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = element address
+
+            // Push address
+            X64Emitter.Push(ref _code, VReg.R1);
+            PushEntry(EvalStackEntry.NativeInt);
+        }
+        else // rank == 3
+        {
+            // Pop: k (top), j, i, array
+            X64Emitter.Pop(ref _code, VReg.R4);   // R9 = k
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R3);   // R8 = j
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R2);   // RDX = i
+            PopEntry();
+            X64Emitter.Pop(ref _code, VReg.R1);   // RCX = array
+            PopEntry();
+
+            // Calculate linear index: index = (i * dim1 + j) * dim2 + k
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 20);  // RAX = dim1
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = i * dim1
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R3);         // RDX = i * dim1 + j
+
+            X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 24);  // RAX = dim2
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = (i*dim1+j) * dim2
+            X64Emitter.AddRR(ref _code, VReg.R2, VReg.R4);         // RDX = index + k
+
+            // Element address = array + headerSize + index * elemSize
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)elemSize);
+            X64Emitter.ImulRR(ref _code, VReg.R2, VReg.R0);        // RDX = index * elemSize
+            X64Emitter.AddRR(ref _code, VReg.R1, VReg.R2);         // RCX = array + index*elemSize
+            X64Emitter.AddRI(ref _code, VReg.R1, headerSize);      // RCX = element address
+
+            // Push address
+            X64Emitter.Push(ref _code, VReg.R1);
+            PushEntry(EvalStackEntry.NativeInt);
+        }
+
+        return true;
+    }
+
     // ==================== Array Operations ====================
     //
     // Array layout (NativeAOT):
@@ -7437,15 +7770,6 @@ public unsafe struct ILCompiler
         // Try to resolve as a registered constructor
         ResolvedMethod ctor;
         bool resolved = ResolveMethod(token, out ctor);
-        // newobj token debug (verbose - commented out)
-        // DebugConsole.WriteHex(token);
-        // DebugConsole.Write(" resolved=");
-        // DebugConsole.Write(resolved ? "Y" : "N");
-        // DebugConsole.Write(" valid=");
-        // DebugConsole.Write(ctor.IsValid ? "Y" : "N");
-        // DebugConsole.Write(" MT=0x");
-        // DebugConsole.WriteHex((ulong)ctor.MethodTable);
-        // DebugConsole.WriteLine();
 
         // Special case: Factory-style constructors (like String..ctor)
         // These have NativeCode but no MethodTable - they allocate and return the object themselves
@@ -7515,6 +7839,13 @@ public unsafe struct ILCompiler
             if (mt->IsDelegate)
             {
                 return CompileNewobjDelegate(mt, ctor.ArgCount);
+            }
+
+            // Special case: MD array constructor
+            // MD arrays are allocated by runtime helpers, not regular constructors
+            if (ctor.IsMDArrayMethod && ctor.MDArrayKind == MDArrayMethodKind.Ctor)
+            {
+                return CompileNewobjMDArray(mt, ctor.MDArrayRank, ctor.MDArrayElemSize);
             }
 
             // We have a constructor with MethodTable - full newobj implementation
@@ -7750,6 +8081,66 @@ public unsafe struct ILCompiler
         X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
         // Push delegate object onto eval stack
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.NativeInt);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile newobj for multi-dimensional arrays.
+    /// Stack: ..., dim0, dim1, ... dimN-1 -> ..., array
+    /// Calls NewMDArray2D or NewMDArray3D runtime helper.
+    /// </summary>
+    private bool CompileNewobjMDArray(MethodTable* mt, byte rank, ushort elemSize)
+    {
+        // Currently support 2D and 3D arrays
+        if (rank < 2 || rank > 3)
+        {
+            DebugConsole.Write("[JIT] newobj MD array: unsupported rank ");
+            DebugConsole.WriteDecimal((uint)rank);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        // Pop dimension args into temp registers (in reverse order)
+        // Stack order: ..., dim0, dim1 (dim1 on top for 2D)
+        VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9 };  // RBX, R12, R13
+        for (int i = rank - 1; i >= 0; i--)
+        {
+            X64Emitter.Pop(ref _code, tempRegs[i]);
+            PopEntry();
+        }
+
+        // Reserve shadow space
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Set up call to NewMDArrayND helper
+        // Signature: void* NewMDArrayND(MethodTable* pMT, int dim0, int dim1, ...)
+        X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)mt);  // RCX = MT
+        X64Emitter.MovRR(ref _code, VReg.R2, tempRegs[0]);  // RDX = dim0
+        X64Emitter.MovRR(ref _code, VReg.R3, tempRegs[1]);  // R8 = dim1
+
+        void* helperPtr;
+        if (rank == 2)
+        {
+            helperPtr = RuntimeHelpers.GetMDArray2DHelperPtr();
+        }
+        else // rank == 3
+        {
+            X64Emitter.MovRR(ref _code, VReg.R4, tempRegs[2]);  // R9 = dim2
+            helperPtr = RuntimeHelpers.GetMDArray3DHelperPtr();
+        }
+
+        // Call the helper
+        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)helperPtr);
+        X64Emitter.CallR(ref _code, VReg.R0);
+        RecordSafePoint();
+
+        // Restore shadow space
+        X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+        // Push array reference onto eval stack (in RAX)
         X64Emitter.Push(ref _code, VReg.R0);
         PushEntry(EvalStackEntry.NativeInt);
 

@@ -53,6 +53,9 @@ public static class TestRunner
         // Array tests
         RunArrayTests();
 
+        // Multi-dimensional array tests
+        RunMDArrayTests();
+
         // Field tests
         RunFieldTests();
 
@@ -576,6 +579,30 @@ public static class TestRunner
         RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
         RecordResult("ArrayTests.TestBoundsCheckValidLastIndex", ArrayTests.TestBoundsCheckValidLastIndex() == 42);
+    }
+
+    private static void RunMDArrayTests()
+    {
+        // 2D array tests
+        RecordResult("MDArrayTests.Test2DIntAllocation", MDArrayTests.Test2DIntAllocation() == 12);
+        RecordResult("MDArrayTests.Test2DIntSetGet", MDArrayTests.Test2DIntSetGet() == 42);
+        RecordResult("MDArrayTests.Test2DIntZeroed", MDArrayTests.Test2DIntZeroed() == 42);
+        RecordResult("MDArrayTests.Test2DIntCorners", MDArrayTests.Test2DIntCorners() == 10);
+        RecordResult("MDArrayTests.Test2DIntSum", MDArrayTests.Test2DIntSum() == 78);
+        RecordResult("MDArrayTests.Test2DByteSetGet", MDArrayTests.Test2DByteSetGet() == 200);
+        RecordResult("MDArrayTests.Test2DLongSetGet", MDArrayTests.Test2DLongSetGet() == 9876543210L);
+        RecordResult("MDArrayTests.Test2DDiagonal", MDArrayTests.Test2DDiagonal() == 100);
+
+        // 3D array tests
+        RecordResult("MDArrayTests.Test3DIntAllocation", MDArrayTests.Test3DIntAllocation() == 24);
+        RecordResult("MDArrayTests.Test3DIntSetGet", MDArrayTests.Test3DIntSetGet() == 42);
+        RecordResult("MDArrayTests.Test3DIntCorners", MDArrayTests.Test3DIntCorners() == 36);
+        RecordResult("MDArrayTests.Test3DByteSetGet", MDArrayTests.Test3DByteSetGet() == 123);
+        RecordResult("MDArrayTests.Test3DIntSum", MDArrayTests.Test3DIntSum() == 36);
+
+        // Mixed type tests
+        RecordResult("MDArrayTests.Test2DShortSetGet", MDArrayTests.Test2DShortSetGet() == 12345);
+        RecordResult("MDArrayTests.TestMultiple2DArrays", MDArrayTests.TestMultiple2DArrays() == 100);
     }
 
     private static void RunFieldTests()
@@ -1623,6 +1650,236 @@ public static class ArrayTests
         int[] arr = new int[5];
         arr[4] = 42;  // Last valid index
         return arr[4];  // Should return 42
+    }
+}
+
+// =============================================================================
+// Multi-Dimensional Array Tests
+// =============================================================================
+
+public static class MDArrayTests
+{
+    // ===================== 2D Array Tests =====================
+
+    /// <summary>
+    /// Test creating a 2D int array and getting its length.
+    /// </summary>
+    public static int Test2DIntAllocation()
+    {
+        int[,] arr = new int[3, 4];
+        // Total length should be 3 * 4 = 12
+        return arr.Length;
+    }
+
+    /// <summary>
+    /// Test setting and getting a value in a 2D int array.
+    /// </summary>
+    public static int Test2DIntSetGet()
+    {
+        int[,] arr = new int[3, 4];
+        arr[1, 2] = 42;
+        return arr[1, 2];
+    }
+
+    /// <summary>
+    /// Test that array is zeroed on allocation.
+    /// </summary>
+    public static int Test2DIntZeroed()
+    {
+        int[,] arr = new int[3, 4];
+        // Should be zeroed
+        if (arr[0, 0] != 0) return 0;
+        if (arr[1, 1] != 0) return 0;
+        if (arr[2, 3] != 0) return 0;
+        return 42;
+    }
+
+    /// <summary>
+    /// Test accessing all corners of a 2D array.
+    /// </summary>
+    public static int Test2DIntCorners()
+    {
+        int[,] arr = new int[3, 4];
+        arr[0, 0] = 1;
+        arr[0, 3] = 2;
+        arr[2, 0] = 3;
+        arr[2, 3] = 4;
+
+        int sum = arr[0, 0] + arr[0, 3] + arr[2, 0] + arr[2, 3];
+        return sum;  // 1 + 2 + 3 + 4 = 10
+    }
+
+    /// <summary>
+    /// Test filling a 2D array and computing sum.
+    /// </summary>
+    public static int Test2DIntSum()
+    {
+        int[,] arr = new int[3, 4];
+        int val = 1;
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                arr[i, j] = val++;
+            }
+        }
+
+        int sum = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                sum += arr[i, j];
+            }
+        }
+        // 1+2+3+4+5+6+7+8+9+10+11+12 = 78
+        return sum;
+    }
+
+    /// <summary>
+    /// Test 2D array with byte element type.
+    /// </summary>
+    public static int Test2DByteSetGet()
+    {
+        byte[,] arr = new byte[5, 5];
+        arr[2, 3] = 200;
+        return arr[2, 3];
+    }
+
+    /// <summary>
+    /// Test 2D array with long element type.
+    /// </summary>
+    public static long Test2DLongSetGet()
+    {
+        long[,] arr = new long[2, 2];
+        arr[1, 1] = 9876543210L;
+        return arr[1, 1];
+    }
+
+    /// <summary>
+    /// Test 2D array diagonal access pattern.
+    /// </summary>
+    public static int Test2DDiagonal()
+    {
+        int[,] arr = new int[4, 4];
+        for (int i = 0; i < 4; i++)
+        {
+            arr[i, i] = (i + 1) * 10;  // 10, 20, 30, 40
+        }
+        return arr[0, 0] + arr[1, 1] + arr[2, 2] + arr[3, 3];  // 100
+    }
+
+    // ===================== 3D Array Tests =====================
+
+    /// <summary>
+    /// Test creating a 3D int array.
+    /// </summary>
+    public static int Test3DIntAllocation()
+    {
+        int[,,] arr = new int[2, 3, 4];
+        // Total length should be 2 * 3 * 4 = 24
+        return arr.Length;
+    }
+
+    /// <summary>
+    /// Test setting and getting a value in a 3D int array.
+    /// </summary>
+    public static int Test3DIntSetGet()
+    {
+        int[,,] arr = new int[2, 3, 4];
+        arr[1, 2, 3] = 42;
+        return arr[1, 2, 3];
+    }
+
+    /// <summary>
+    /// Test 3D array corners.
+    /// </summary>
+    public static int Test3DIntCorners()
+    {
+        int[,,] arr = new int[2, 3, 4];
+        arr[0, 0, 0] = 1;
+        arr[0, 0, 3] = 2;
+        arr[0, 2, 0] = 3;
+        arr[0, 2, 3] = 4;
+        arr[1, 0, 0] = 5;
+        arr[1, 0, 3] = 6;
+        arr[1, 2, 0] = 7;
+        arr[1, 2, 3] = 8;
+
+        int sum = arr[0, 0, 0] + arr[0, 0, 3] + arr[0, 2, 0] + arr[0, 2, 3] +
+                  arr[1, 0, 0] + arr[1, 0, 3] + arr[1, 2, 0] + arr[1, 2, 3];
+        return sum;  // 1+2+3+4+5+6+7+8 = 36
+    }
+
+    /// <summary>
+    /// Test 3D array with byte element type.
+    /// </summary>
+    public static int Test3DByteSetGet()
+    {
+        byte[,,] arr = new byte[3, 3, 3];
+        arr[1, 1, 1] = 123;
+        return arr[1, 1, 1];
+    }
+
+    /// <summary>
+    /// Test 3D array sum computation.
+    /// </summary>
+    public static int Test3DIntSum()
+    {
+        int[,,] arr = new int[2, 2, 2];
+        int val = 1;
+        for (int i = 0; i < 2; i++)
+        {
+            for (int j = 0; j < 2; j++)
+            {
+                for (int k = 0; k < 2; k++)
+                {
+                    arr[i, j, k] = val++;
+                }
+            }
+        }
+
+        int sum = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            for (int j = 0; j < 2; j++)
+            {
+                for (int k = 0; k < 2; k++)
+                {
+                    sum += arr[i, j, k];
+                }
+            }
+        }
+        // 1+2+3+4+5+6+7+8 = 36
+        return sum;
+    }
+
+    // ===================== Mixed Type Tests =====================
+
+    /// <summary>
+    /// Test 2D short array.
+    /// </summary>
+    public static int Test2DShortSetGet()
+    {
+        short[,] arr = new short[3, 3];
+        arr[1, 1] = 12345;
+        return arr[1, 1];
+    }
+
+    /// <summary>
+    /// Test multiple 2D arrays.
+    /// </summary>
+    public static int TestMultiple2DArrays()
+    {
+        int[,] a = new int[2, 2];
+        int[,] b = new int[2, 2];
+
+        a[0, 0] = 10;
+        a[1, 1] = 20;
+        b[0, 0] = 30;
+        b[1, 1] = 40;
+
+        return a[0, 0] + a[1, 1] + b[0, 0] + b[1, 1];  // 100
     }
 }
 

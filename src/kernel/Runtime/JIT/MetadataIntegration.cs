@@ -1830,6 +1830,173 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Try to resolve a MemberRef as an MD array method (Get, Set, Address, .ctor).
+    /// MD array methods are synthetic - they have no IL body and are handled by the JIT.
+    /// </summary>
+    private static bool TryResolveMDArrayMemberRef(uint token, out ResolvedMethod result)
+    {
+        result = default;
+
+        if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
+            return false;
+
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, rowId);
+
+        // MD array methods have their class as a TypeSpec (not TypeRef)
+        if (classRef.Table != MetadataTableId.TypeSpec)
+            return false;
+
+        // Get the TypeSpec blob
+        uint typeSpecSigIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        byte* typeSpecBlob = MetadataReader.GetBlob(ref *_metadataRoot, typeSpecSigIdx, out uint typeSpecLen);
+
+        if (typeSpecBlob == null || typeSpecLen < 2)
+            return false;
+
+        // Check if it's ELEMENT_TYPE_ARRAY (0x14) - multi-dimensional array
+        if (typeSpecBlob[0] != 0x14)
+            return false;
+
+        // Parse the MD array type to get rank and element type
+        byte* ptr = typeSpecBlob + 1;
+        byte* end = typeSpecBlob + typeSpecLen;
+
+        // Resolve element type
+        MethodTable* elemMt = ResolveTypeSigToMethodTable(ref ptr, end);
+        if (elemMt == null)
+        {
+            DebugConsole.WriteLine("[MetaInt] MD array MemberRef: failed to resolve element type");
+            return false;
+        }
+
+        // Read rank
+        uint rank = MetadataReader.ReadCompressedUInt(ref ptr);
+        if (rank < 2 || rank > 32)
+            return false;
+
+        // Get member name to determine method kind
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, rowId);
+        byte* memberName = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+
+        if (memberName == null)
+            return false;
+
+        // Determine method kind from name
+        MDArrayMethodKind kind = MDArrayMethodKind.None;
+        if (ByteStringEquals(memberName, ".ctor"))
+        {
+            kind = MDArrayMethodKind.Ctor;
+        }
+        else if (ByteStringEquals(memberName, "Get"))
+        {
+            kind = MDArrayMethodKind.Get;
+        }
+        else if (ByteStringEquals(memberName, "Set"))
+        {
+            kind = MDArrayMethodKind.Set;
+        }
+        else if (ByteStringEquals(memberName, "Address"))
+        {
+            kind = MDArrayMethodKind.Address;
+        }
+
+        if (kind == MDArrayMethodKind.None)
+            return false;
+
+        // Get element size
+        ushort elemSize = elemMt->IsValueType ? (ushort)elemMt->BaseSize : (ushort)8;
+
+        // Get or create the MD array MethodTable
+        MethodTable* arrayMT = AssemblyLoader.GetOrCreateMDArrayMethodTable(elemMt, (int)rank);
+
+        // Fill in the result
+        result.IsValid = true;
+        result.IsMDArrayMethod = true;
+        result.MDArrayKind = kind;
+        result.MDArrayRank = (byte)rank;
+        result.MDArrayElemSize = elemSize;
+        result.MethodTable = arrayMT;
+        result.NativeCode = null;  // Handled inline by JIT
+        result.HasThis = true;  // Array methods are instance methods (array is 'this')
+
+        // Set ArgCount based on method kind
+        // .ctor: rank args (dimensions)
+        // Get: rank args (indices)
+        // Set: rank args (indices) + 1 (value)
+        // Address: rank args (indices)
+        switch (kind)
+        {
+            case MDArrayMethodKind.Ctor:
+            case MDArrayMethodKind.Get:
+            case MDArrayMethodKind.Address:
+                result.ArgCount = (byte)rank;
+                break;
+            case MDArrayMethodKind.Set:
+                result.ArgCount = (byte)(rank + 1);  // indices + value
+                break;
+        }
+
+        // Set return type
+        switch (kind)
+        {
+            case MDArrayMethodKind.Ctor:
+                result.ReturnKind = ReturnKind.Void;
+                break;
+            case MDArrayMethodKind.Get:
+                // Return type depends on element type
+                if (elemSize <= 8)
+                    result.ReturnKind = ReturnKind.IntPtr;  // Primitive or reference
+                else
+                {
+                    result.ReturnKind = ReturnKind.Struct;
+                    result.ReturnStructSize = elemSize;
+                }
+                break;
+            case MDArrayMethodKind.Set:
+                result.ReturnKind = ReturnKind.Void;
+                break;
+            case MDArrayMethodKind.Address:
+                result.ReturnKind = ReturnKind.IntPtr;  // Returns pointer
+                break;
+        }
+
+        DebugConsole.Write("[MetaInt] MD array method: rank=");
+        DebugConsole.WriteDecimal(rank);
+        DebugConsole.Write(" kind=");
+        DebugConsole.WriteDecimal((uint)kind);
+        DebugConsole.Write(" elemSize=");
+        DebugConsole.WriteDecimal(elemSize);
+        DebugConsole.WriteLine();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compare a null-terminated byte string to a literal.
+    /// </summary>
+    private static bool ByteStringEquals(byte* str, string literal)
+    {
+        if (str == null)
+            return false;
+
+        int i = 0;
+        while (i < literal.Length && str[i] != 0)
+        {
+            if (str[i] != (byte)literal[i])
+                return false;
+            i++;
+        }
+
+        // Both must end at same position
+        return i == literal.Length && str[i] == 0;
+    }
+
+    /// <summary>
     /// Resolve a MemberRef method token to method call information.
     /// This handles cross-assembly method references.
     /// </summary>
@@ -1839,6 +2006,12 @@ public static unsafe class MetadataIntegration
 
         // First, try to resolve via the AOT method registry for well-known types like String
         if (TryResolveAotMemberRef(token, out result))
+        {
+            return true;
+        }
+
+        // Check if this MemberRef is on an MD array type (Get, Set, Address, .ctor)
+        if (TryResolveMDArrayMemberRef(token, out result))
         {
             return true;
         }
@@ -2663,10 +2836,43 @@ public static unsafe class MetadataIntegration
                 return null;
             }
 
-            case 0x14:  // ARRAY - multi-dimensional array (not commonly used)
+            case 0x14:  // ARRAY - multi-dimensional array
             {
-                DebugConsole.WriteLine("[MetaInt] Multi-dimensional ARRAY TypeSpec not yet supported");
-                return null;
+                // Format: ElementType Rank NumSizes Size* NumLoBounds LoBound*
+                // Get element type
+                MethodTable* elemMt = ResolveTypeSigToMethodTable(ref ptr, end);
+                if (elemMt == null)
+                {
+                    DebugConsole.WriteLine("[MetaInt] MD array: failed to resolve element type");
+                    return null;
+                }
+
+                // Read rank
+                uint rank = MetadataReader.ReadCompressedUInt(ref ptr);
+                if (rank < 2 || rank > 32)
+                {
+                    DebugConsole.Write("[MetaInt] MD array: invalid rank ");
+                    DebugConsole.WriteDecimal(rank);
+                    DebugConsole.WriteLine();
+                    return null;
+                }
+
+                // Skip NumSizes and Size* values (we don't need them at runtime)
+                uint numSizes = MetadataReader.ReadCompressedUInt(ref ptr);
+                for (uint i = 0; i < numSizes; i++)
+                {
+                    MetadataReader.ReadCompressedUInt(ref ptr);  // Skip each size
+                }
+
+                // Skip NumLoBounds and LoBound* values
+                uint numLoBounds = MetadataReader.ReadCompressedUInt(ref ptr);
+                for (uint i = 0; i < numLoBounds; i++)
+                {
+                    MetadataReader.ReadCompressedInt(ref ptr);  // Skip each loBound (signed)
+                }
+
+                // Create MD array MethodTable
+                return AssemblyLoader.GetOrCreateMDArrayMethodTable(elemMt, (int)rank);
             }
 
             case 0x0F:  // PTR - pointer type
