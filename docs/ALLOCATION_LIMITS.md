@@ -40,44 +40,36 @@ These registries now use the BlockAllocator with small block sizes (32 entries) 
 - **Now**: Grows dynamically, no hard limit
 - **Note**: Storage block (64KB) is still fixed
 
----
+### ✅ MetadataIntegration.TypeRegistry (global AOT types)
+- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 512 entries
+- **Now**: Grows dynamically, no hard limit
 
-## Remaining High Priority (Still Fixed)
+### ✅ MetadataIntegration.StaticFieldRegistry (global AOT statics)
+- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 256 entries
+- **Now**: Grows dynamically, no hard limit
+- **Note**: Static storage block (64KB) is still fixed
 
-### 🔴 MetadataIntegration.MaxTypeEntries = 512
-- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs:130`
-- **Warning**: "Type registry full"
-- **Growth rate**: All types across all assemblies
-- **Impact**: Type resolution fails
-- **Recommendation**: Increase to 2048 or make dynamic
+### ✅ MetadataIntegration.FieldLayoutCache
+- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 512 entries
+- **Now**: Grows dynamically, no hard limit
 
-### 🟡 MetadataIntegration.MaxFieldLayoutEntries = 512
-- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs:145`
-- **Warning**: "Field layout cache full"
-- **Growth rate**: Every unique type's field layout
-- **Impact**: Field access may fail or require re-computation
-- **Recommendation**: Increase to 2048
+### ✅ MetadataIntegration.CctorRegistry
+- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 256 entries
+- **Now**: Grows dynamically, no hard limit
 
-### 🟡 MetadataIntegration.MaxCctorEntries = 256
-- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs:175`
-- **Warning**: "Cctor registry full"
-- **Growth rate**: Every type with static constructor
-- **Impact**: Static constructors won't be tracked
-- **Recommendation**: Increase to 1024
-
-### 🟡 MetadataIntegration.MaxStaticFields = 256
-- **File**: `src/kernel/Runtime/JIT/MetadataIntegration.cs:135`
-- **Warning**: "Static field registry full"
-- **Growth rate**: Every static field across all types
-- **Impact**: Static field access may fail
-- **Recommendation**: Increase to 1024
-
-### 🟡 ReflectionRuntime.MaxTypeInfoEntries = 512
-- **File**: `src/kernel/Runtime/Reflection/ReflectionRuntime.cs:32`
-- **Warning**: "Type info registry full"
-- **Growth rate**: Every type registered for reflection
-- **Impact**: Type info lookup fails
-- **Recommendation**: Match MetadataIntegration.MaxTypeEntries
+### ✅ ReflectionRuntime.TypeInfoRegistry
+- **File**: `src/kernel/Runtime/Reflection/ReflectionRuntime.cs`
+- **Block size**: 32 entries per block
+- **Was**: Fixed 512 entries
+- **Now**: Grows dynamically, no hard limit
 
 ---
 
@@ -159,28 +151,35 @@ Created `BlockAllocator.cs` providing growable block-based storage:
 - Chains blocks together as needed
 - No hard limit (grows until memory exhausted)
 - Common implementation reusable across registries
-- Already applied to 4 critical registries
+- Applied to 9 critical registries (all high-priority conversions complete)
 
-### Remaining: Convert More Registries
-Apply block allocator to remaining high-priority registries:
-- MetadataIntegration.MaxTypeEntries → BlockAllocator
-- MetadataIntegration.MaxFieldLayoutEntries → BlockAllocator
-- MetadataIntegration.MaxCctorEntries → BlockAllocator
-- MetadataIntegration.MaxStaticFields → BlockAllocator
-- ReflectionRuntime.MaxTypeInfoEntries → BlockAllocator
+### Future: Convert Medium-Priority Caches
+Could apply block allocator to caching structures for consistency:
+- AssemblyLoader.MaxArrayMTCache → BlockAllocator
+- AssemblyLoader.MaxGenericInstCache → BlockAllocator
+
+These are lower priority since cache exhaustion only affects performance, not correctness.
 
 ---
 
 ## Change Log
 
-### 2025-12 Block Allocator Implementation
+### 2025-12 MetadataIntegration/ReflectionRuntime Conversion
+- Converted MetadataIntegration.TypeRegistry (global AOT types) to block allocator
+- Converted MetadataIntegration.StaticFieldRegistry to block allocator
+- Converted MetadataIntegration.FieldLayoutCache to block allocator
+- Converted MetadataIntegration.CctorRegistry to block allocator
+- Converted ReflectionRuntime.TypeInfoRegistry to block allocator
+- Updated PrintStatistics() to report block chain statistics
+- All 300 tests pass with 9 registries using block allocator
+
+### 2025-12 Block Allocator Implementation (Phase 1)
 - Created `BlockAllocator.cs` with generic block chain implementation
 - Converted FunctionTableStorage to block allocator (was hitting 512 limit)
 - Converted JITMethodRegistry to block allocator
 - Converted TypeRegistry (per-assembly) to block allocator
 - Converted StaticFieldStorage field entries to block allocator
 - All registries use 32-entry blocks to exercise growth during tests
-- All 300 tests pass with the new allocations
 
 ### 2025-12 Function Table Fix (Initial)
 - Increased MaxFunctionTables from 512 to 2048

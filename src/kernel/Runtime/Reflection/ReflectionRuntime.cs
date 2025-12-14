@@ -5,6 +5,7 @@
 using System.Runtime;
 using ProtonOS.Memory;
 using ProtonOS.Platform;
+using ProtonOS.Runtime;
 using ProtonOS.Runtime.JIT;
 
 namespace ProtonOS.Runtime.Reflection;
@@ -29,9 +30,9 @@ public static unsafe class ReflectionRuntime
     private static bool _initialized;
 
     // Reverse lookup: MethodTable* -> TypeReflectionInfo
-    private const int MaxTypeInfoEntries = 512;
-    private static TypeReflectionInfo* _typeInfoRegistry;
-    private static int _typeInfoCount;
+    // Now uses BlockChain for unlimited growth.
+    private const int TypeInfoBlockSize = 32;
+    private static BlockChain _typeInfoChain;
 
     /// <summary>
     /// Initialize the reflection runtime.
@@ -41,15 +42,15 @@ public static unsafe class ReflectionRuntime
         if (_initialized)
             return;
 
-        // Allocate the type info registry
-        _typeInfoRegistry = (TypeReflectionInfo*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxTypeInfoEntries * sizeof(TypeReflectionInfo)));
-        if (_typeInfoRegistry == null)
+        // Initialize type info registry block chain
+        fixed (BlockChain* chain = &_typeInfoChain)
         {
-            DebugConsole.WriteLine("[ReflectionRuntime] Failed to allocate type info registry");
-            return;
+            if (!BlockAllocator.Init(chain, sizeof(TypeReflectionInfo), TypeInfoBlockSize))
+            {
+                DebugConsole.WriteLine("[ReflectionRuntime] Failed to init type info chain");
+                return;
+            }
         }
-        _typeInfoCount = 0;
 
         DebugConsole.WriteLine("[ReflectionRuntime] Initialized");
         _initialized = true;
@@ -64,29 +65,36 @@ public static unsafe class ReflectionRuntime
         if (!_initialized || mt == null)
             return;
 
-        // Check if already registered
-        for (int i = 0; i < _typeInfoCount; i++)
+        // Check if already registered - iterate through blocks
+        fixed (BlockChain* chain = &_typeInfoChain)
         {
-            if (_typeInfoRegistry[i].MT == mt)
+            var block = chain->First;
+            while (block != null)
             {
-                // Update existing
-                _typeInfoRegistry[i].AssemblyId = assemblyId;
-                _typeInfoRegistry[i].TypeDefToken = typeDefToken;
-                return;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (TypeReflectionInfo*)block->GetEntry(i);
+                    if (entry->MT == mt)
+                    {
+                        // Update existing
+                        entry->AssemblyId = assemblyId;
+                        entry->TypeDefToken = typeDefToken;
+                        return;
+                    }
+                }
+                block = block->Next;
+            }
+
+            // Add new entry
+            TypeReflectionInfo newEntry;
+            newEntry.AssemblyId = assemblyId;
+            newEntry.TypeDefToken = typeDefToken;
+            newEntry.MT = mt;
+            if (BlockAllocator.Add(chain, &newEntry) == null)
+            {
+                DebugConsole.WriteLine("[ReflectionRuntime] Type info allocation failed");
             }
         }
-
-        // Add new entry
-        if (_typeInfoCount >= MaxTypeInfoEntries)
-        {
-            DebugConsole.WriteLine("[ReflectionRuntime] Type info registry full");
-            return;
-        }
-
-        _typeInfoRegistry[_typeInfoCount].AssemblyId = assemblyId;
-        _typeInfoRegistry[_typeInfoCount].TypeDefToken = typeDefToken;
-        _typeInfoRegistry[_typeInfoCount].MT = mt;
-        _typeInfoCount++;
     }
 
     /// <summary>
@@ -100,13 +108,22 @@ public static unsafe class ReflectionRuntime
         if (!_initialized || mt == null)
             return false;
 
-        for (int i = 0; i < _typeInfoCount; i++)
+        fixed (BlockChain* chain = &_typeInfoChain)
         {
-            if (_typeInfoRegistry[i].MT == mt)
+            var block = chain->First;
+            while (block != null)
             {
-                assemblyId = _typeInfoRegistry[i].AssemblyId;
-                typeDefToken = _typeInfoRegistry[i].TypeDefToken;
-                return true;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (TypeReflectionInfo*)block->GetEntry(i);
+                    if (entry->MT == mt)
+                    {
+                        assemblyId = entry->AssemblyId;
+                        typeDefToken = entry->TypeDefToken;
+                        return true;
+                    }
+                }
+                block = block->Next;
             }
         }
 

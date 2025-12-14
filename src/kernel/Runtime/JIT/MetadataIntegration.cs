@@ -127,14 +127,14 @@ public static unsafe class MetadataIntegration
 {
     // Global type registry for well-known AOT types (System.String, etc.)
     // These are registered without an assembly context.
-    private const int MaxTypeEntries = 512;
-    private static TypeRegistryEntry* _typeRegistry;
-    private static int _typeCount;
+    // Now uses BlockChain for unlimited growth.
+    private const int TypeBlockSize = 32;
+    private static BlockChain _typeChain;
 
     // Global static field storage (legacy - used for AOT statics)
-    private const int MaxStaticFields = 256;
-    private static StaticFieldEntry* _staticFields;
-    private static int _staticFieldCount;
+    // Now uses BlockChain for unlimited growth.
+    private const int StaticFieldBlockSize = 32;
+    private static BlockChain _staticFieldChain;
 
     // Global static storage block (legacy - for AOT statics)
     private const int StaticStorageBlockSize = 64 * 1024;  // 64KB per block
@@ -142,9 +142,9 @@ public static unsafe class MetadataIntegration
     private static int _staticStorageUsed;
 
     // Field layout cache (shared across assemblies for now)
-    private const int MaxFieldLayoutEntries = 512;
-    private static FieldLayoutEntry* _fieldLayoutCache;
-    private static int _fieldLayoutCount;
+    // Now uses BlockChain for unlimited growth.
+    private const int FieldLayoutBlockSize = 32;
+    private static BlockChain _fieldLayoutChain;
 
     // Default metadata context (for backward compatibility with single-assembly mode)
     private static MetadataRoot* _metadataRoot;
@@ -172,9 +172,9 @@ public static unsafe class MetadataIntegration
 
     // Static constructor (cctor) context registry
     // Tracks StaticClassConstructionContext addresses for types with static constructors
-    private const int MaxCctorEntries = 256;
-    private static CctorRegistryEntry* _cctorRegistry;
-    private static int _cctorCount;
+    // Now uses BlockChain for unlimited growth.
+    private const int CctorBlockSize = 32;
+    private static BlockChain _cctorChain;
 
     private static bool _initialized;
 
@@ -186,31 +186,44 @@ public static unsafe class MetadataIntegration
         if (_initialized)
             return;
 
-        // Allocate type registry
-        _typeRegistry = (TypeRegistryEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxTypeEntries * sizeof(TypeRegistryEntry)));
-        if (_typeRegistry == null)
+        // Initialize type registry block chain
+        fixed (BlockChain* chain = &_typeChain)
         {
-            DebugConsole.WriteLine("[MetaInt] Failed to allocate type registry");
-            return;
+            if (!BlockAllocator.Init(chain, sizeof(TypeRegistryEntry), TypeBlockSize))
+            {
+                DebugConsole.WriteLine("[MetaInt] Failed to init type registry chain");
+                return;
+            }
         }
 
-        // Allocate static field storage registry
-        _staticFields = (StaticFieldEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxStaticFields * sizeof(StaticFieldEntry)));
-        if (_staticFields == null)
+        // Initialize static field registry block chain
+        fixed (BlockChain* chain = &_staticFieldChain)
         {
-            DebugConsole.WriteLine("[MetaInt] Failed to allocate static field registry");
-            return;
+            if (!BlockAllocator.Init(chain, sizeof(StaticFieldEntry), StaticFieldBlockSize))
+            {
+                DebugConsole.WriteLine("[MetaInt] Failed to init static field chain");
+                return;
+            }
         }
 
-        // Allocate field layout cache
-        _fieldLayoutCache = (FieldLayoutEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxFieldLayoutEntries * sizeof(FieldLayoutEntry)));
-        if (_fieldLayoutCache == null)
+        // Initialize field layout cache block chain
+        fixed (BlockChain* chain = &_fieldLayoutChain)
         {
-            DebugConsole.WriteLine("[MetaInt] Failed to allocate field layout cache");
-            return;
+            if (!BlockAllocator.Init(chain, sizeof(FieldLayoutEntry), FieldLayoutBlockSize))
+            {
+                DebugConsole.WriteLine("[MetaInt] Failed to init field layout chain");
+                return;
+            }
+        }
+
+        // Initialize cctor registry block chain
+        fixed (BlockChain* chain = &_cctorChain)
+        {
+            if (!BlockAllocator.Init(chain, sizeof(CctorRegistryEntry), CctorBlockSize))
+            {
+                DebugConsole.WriteLine("[MetaInt] Failed to init cctor chain");
+                return;
+            }
         }
 
         // Allocate MethodSpec type argument storage
@@ -233,19 +246,6 @@ public static unsafe class MetadataIntegration
         }
         _typeTypeArgCount = 0;
 
-        // Allocate cctor registry
-        _cctorRegistry = (CctorRegistryEntry*)HeapAllocator.AllocZeroed(
-            (ulong)(MaxCctorEntries * sizeof(CctorRegistryEntry)));
-        if (_cctorRegistry == null)
-        {
-            DebugConsole.WriteLine("[MetaInt] Failed to allocate cctor registry");
-            return;
-        }
-        _cctorCount = 0;
-
-        _typeCount = 0;
-        _staticFieldCount = 0;
-        _fieldLayoutCount = 0;
         _staticStorageBase = null;
         _staticStorageUsed = 0;
         _initialized = true;
@@ -823,26 +823,34 @@ public static unsafe class MetadataIntegration
         if (mt == null)
             return false;
 
-        // Check if already registered
-        for (int i = 0; i < _typeCount; i++)
+        // Check if already registered - iterate through blocks
+        fixed (BlockChain* chain = &_typeChain)
         {
-            if (_typeRegistry[i].Token == token)
+            var block = chain->First;
+            while (block != null)
             {
-                _typeRegistry[i].MT = mt;  // Update existing
-                return true;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (TypeRegistryEntry*)block->GetEntry(i);
+                    if (entry->Token == token)
+                    {
+                        entry->MT = mt;  // Update existing
+                        return true;
+                    }
+                }
+                block = block->Next;
+            }
+
+            // Add new entry
+            TypeRegistryEntry newEntry;
+            newEntry.Token = token;
+            newEntry.MT = mt;
+            if (BlockAllocator.Add(chain, &newEntry) == null)
+            {
+                DebugConsole.WriteLine("[MetaInt] Type registry allocation failed");
+                return false;
             }
         }
-
-        // Add new entry
-        if (_typeCount >= MaxTypeEntries)
-        {
-            DebugConsole.WriteLine("[MetaInt] Type registry full");
-            return false;
-        }
-
-        _typeRegistry[_typeCount].Token = token;
-        _typeRegistry[_typeCount].MT = mt;
-        _typeCount++;
 
         return true;
     }
@@ -852,10 +860,19 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static MethodTable* LookupType(uint token)
     {
-        for (int i = 0; i < _typeCount; i++)
+        fixed (BlockChain* chain = &_typeChain)
         {
-            if (_typeRegistry[i].Token == token)
-                return _typeRegistry[i].MT;
+            var block = chain->First;
+            while (block != null)
+            {
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (TypeRegistryEntry*)block->GetEntry(i);
+                    if (entry->Token == token)
+                        return entry->MT;
+                }
+                block = block->Next;
+            }
         }
         return null;
     }
@@ -1099,41 +1116,49 @@ public static unsafe class MetadataIntegration
         if (!_initialized)
             Initialize();
 
-        // Check if already registered
-        for (int i = 0; i < _staticFieldCount; i++)
+        // Check if already registered - iterate through blocks
+        fixed (BlockChain* chain = &_staticFieldChain)
         {
-            if (_staticFields[i].Token == fieldToken)
-                return _staticFields[i].Address;  // Return existing
+            var block = chain->First;
+            while (block != null)
+            {
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (StaticFieldEntry*)block->GetEntry(i);
+                    if (entry->Token == fieldToken)
+                        return entry->Address;  // Return existing
+                }
+                block = block->Next;
+            }
+
+            // Allocate storage
+            void* addr = AllocateStaticStorage(size);
+            if (addr == null)
+                return null;
+
+            // Add new entry
+            StaticFieldEntry newEntry;
+            newEntry.Token = fieldToken;
+            newEntry.TypeToken = typeToken;
+            newEntry.Address = addr;
+            newEntry.Size = size;
+            newEntry.IsGCRef = isGCRef;
+            if (BlockAllocator.Add(chain, &newEntry) == null)
+            {
+                DebugConsole.WriteLine("[MetaInt] Static field registry allocation failed");
+                return null;
+            }
+
+            DebugConsole.Write("[MetaInt] Registered static field 0x");
+            DebugConsole.WriteHex(fieldToken);
+            DebugConsole.Write(" at 0x");
+            DebugConsole.WriteHex((ulong)addr);
+            DebugConsole.Write(" size ");
+            DebugConsole.WriteDecimal((uint)size);
+            DebugConsole.WriteLine();
+
+            return addr;
         }
-
-        // Allocate storage
-        void* addr = AllocateStaticStorage(size);
-        if (addr == null)
-            return null;
-
-        // Register
-        if (_staticFieldCount >= MaxStaticFields)
-        {
-            DebugConsole.WriteLine("[MetaInt] Static field registry full");
-            return null;
-        }
-
-        _staticFields[_staticFieldCount].Token = fieldToken;
-        _staticFields[_staticFieldCount].TypeToken = typeToken;
-        _staticFields[_staticFieldCount].Address = addr;
-        _staticFields[_staticFieldCount].Size = size;
-        _staticFields[_staticFieldCount].IsGCRef = isGCRef;
-        _staticFieldCount++;
-
-        DebugConsole.Write("[MetaInt] Registered static field 0x");
-        DebugConsole.WriteHex(fieldToken);
-        DebugConsole.Write(" at 0x");
-        DebugConsole.WriteHex((ulong)addr);
-        DebugConsole.Write(" size ");
-        DebugConsole.WriteDecimal((uint)size);
-        DebugConsole.WriteLine();
-
-        return addr;
     }
 
     /// <summary>
@@ -1141,10 +1166,19 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static void* LookupStaticField(uint fieldToken)
     {
-        for (int i = 0; i < _staticFieldCount; i++)
+        fixed (BlockChain* chain = &_staticFieldChain)
         {
-            if (_staticFields[i].Token == fieldToken)
-                return _staticFields[i].Address;
+            var block = chain->First;
+            while (block != null)
+            {
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (StaticFieldEntry*)block->GetEntry(i);
+                    if (entry->Token == fieldToken)
+                        return entry->Address;
+                }
+                block = block->Next;
+            }
         }
         return null;
     }
@@ -1164,49 +1198,55 @@ public static unsafe class MetadataIntegration
 
         uint asmId = _currentAssemblyId;
 
-        // Check if already cached (match both token AND assembly ID)
-        for (int i = 0; i < _fieldLayoutCount; i++)
+        // Check if already cached - iterate through blocks
+        fixed (BlockChain* chain = &_fieldLayoutChain)
         {
-            if (_fieldLayoutCache[i].Token == token &&
-                _fieldLayoutCache[i].AssemblyId == asmId)
+            var block = chain->First;
+            while (block != null)
             {
-                // Update existing entry
-                _fieldLayoutCache[i].Offset = offset;
-                _fieldLayoutCache[i].Size = size;
-                _fieldLayoutCache[i].IsSigned = isSigned;
-                _fieldLayoutCache[i].IsStatic = isStatic;
-                _fieldLayoutCache[i].IsGCRef = isGCRef;
-                _fieldLayoutCache[i].StaticAddress = staticAddress;
-                _fieldLayoutCache[i].IsDeclaringTypeValueType = isDeclaringTypeValueType;
-                _fieldLayoutCache[i].DeclaringTypeSize = declaringTypeSize;
-                _fieldLayoutCache[i].IsFieldTypeValueType = isFieldTypeValueType;
-                _fieldLayoutCache[i].DeclaringTypeToken = declaringTypeToken;
-                _fieldLayoutCache[i].DeclaringTypeAssemblyId = declaringTypeAssemblyId;
-                return;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (FieldLayoutEntry*)block->GetEntry(i);
+                    if (entry->Token == token && entry->AssemblyId == asmId)
+                    {
+                        // Update existing entry
+                        entry->Offset = offset;
+                        entry->Size = size;
+                        entry->IsSigned = isSigned;
+                        entry->IsStatic = isStatic;
+                        entry->IsGCRef = isGCRef;
+                        entry->StaticAddress = staticAddress;
+                        entry->IsDeclaringTypeValueType = isDeclaringTypeValueType;
+                        entry->DeclaringTypeSize = declaringTypeSize;
+                        entry->IsFieldTypeValueType = isFieldTypeValueType;
+                        entry->DeclaringTypeToken = declaringTypeToken;
+                        entry->DeclaringTypeAssemblyId = declaringTypeAssemblyId;
+                        return;
+                    }
+                }
+                block = block->Next;
+            }
+
+            // Add new entry
+            FieldLayoutEntry newEntry;
+            newEntry.Token = token;
+            newEntry.AssemblyId = asmId;
+            newEntry.Offset = offset;
+            newEntry.Size = size;
+            newEntry.IsSigned = isSigned;
+            newEntry.IsStatic = isStatic;
+            newEntry.IsGCRef = isGCRef;
+            newEntry.StaticAddress = staticAddress;
+            newEntry.IsDeclaringTypeValueType = isDeclaringTypeValueType;
+            newEntry.DeclaringTypeSize = declaringTypeSize;
+            newEntry.IsFieldTypeValueType = isFieldTypeValueType;
+            newEntry.DeclaringTypeToken = declaringTypeToken;
+            newEntry.DeclaringTypeAssemblyId = declaringTypeAssemblyId;
+            if (BlockAllocator.Add(chain, &newEntry) == null)
+            {
+                DebugConsole.WriteLine("[MetaInt] Field layout cache allocation failed");
             }
         }
-
-        // Add new entry
-        if (_fieldLayoutCount >= MaxFieldLayoutEntries)
-        {
-            DebugConsole.WriteLine("[MetaInt] Field layout cache full");
-            return;
-        }
-
-        _fieldLayoutCache[_fieldLayoutCount].Token = token;
-        _fieldLayoutCache[_fieldLayoutCount].AssemblyId = asmId;
-        _fieldLayoutCache[_fieldLayoutCount].Offset = offset;
-        _fieldLayoutCache[_fieldLayoutCount].Size = size;
-        _fieldLayoutCache[_fieldLayoutCount].IsSigned = isSigned;
-        _fieldLayoutCache[_fieldLayoutCount].IsStatic = isStatic;
-        _fieldLayoutCache[_fieldLayoutCount].IsGCRef = isGCRef;
-        _fieldLayoutCache[_fieldLayoutCount].StaticAddress = staticAddress;
-        _fieldLayoutCache[_fieldLayoutCount].IsDeclaringTypeValueType = isDeclaringTypeValueType;
-        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeSize = declaringTypeSize;
-        _fieldLayoutCache[_fieldLayoutCount].IsFieldTypeValueType = isFieldTypeValueType;
-        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeToken = declaringTypeToken;
-        _fieldLayoutCache[_fieldLayoutCount].DeclaringTypeAssemblyId = declaringTypeAssemblyId;
-        _fieldLayoutCount++;
     }
 
     /// <summary>
@@ -1218,13 +1258,21 @@ public static unsafe class MetadataIntegration
 
         // Cache key is (token, assemblyId) pair - same token in different assemblies
         // refers to different fields
-        for (int i = 0; i < _fieldLayoutCount; i++)
+        fixed (BlockChain* chain = &_fieldLayoutChain)
         {
-            if (_fieldLayoutCache[i].Token == token &&
-                _fieldLayoutCache[i].AssemblyId == _currentAssemblyId)
+            var block = chain->First;
+            while (block != null)
             {
-                entry = _fieldLayoutCache[i];
-                return true;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var e = (FieldLayoutEntry*)block->GetEntry(i);
+                    if (e->Token == token && e->AssemblyId == _currentAssemblyId)
+                    {
+                        entry = *e;
+                        return true;
+                    }
+                }
+                block = block->Next;
             }
         }
         return false;
@@ -3955,17 +4003,33 @@ public static unsafe class MetadataIntegration
     public static void PrintStatistics()
     {
         DebugConsole.WriteLine("[MetaInt] Statistics:");
+
+        // Get stats from block chains
+        int typeEntries, typeBlocks, typeCapacity;
+        int staticFieldEntries, staticFieldBlocks, staticFieldCapacity;
+        int fieldLayoutEntries, fieldLayoutBlocks, fieldLayoutCapacity;
+        int cctorEntries, cctorBlocks, cctorCapacity;
+
+        fixed (BlockChain* chain = &_typeChain)
+            BlockAllocator.GetStats(chain, out typeEntries, out typeBlocks, out typeCapacity);
+        fixed (BlockChain* chain = &_staticFieldChain)
+            BlockAllocator.GetStats(chain, out staticFieldEntries, out staticFieldBlocks, out staticFieldCapacity);
+        fixed (BlockChain* chain = &_fieldLayoutChain)
+            BlockAllocator.GetStats(chain, out fieldLayoutEntries, out fieldLayoutBlocks, out fieldLayoutCapacity);
+        fixed (BlockChain* chain = &_cctorChain)
+            BlockAllocator.GetStats(chain, out cctorEntries, out cctorBlocks, out cctorCapacity);
+
         DebugConsole.Write("  Types registered: ");
-        DebugConsole.WriteDecimal((uint)_typeCount);
-        DebugConsole.Write("/");
-        DebugConsole.WriteDecimal(MaxTypeEntries);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteDecimal((uint)typeEntries);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)typeBlocks);
+        DebugConsole.WriteLine(" blocks)");
 
         DebugConsole.Write("  Static fields: ");
-        DebugConsole.WriteDecimal((uint)_staticFieldCount);
-        DebugConsole.Write("/");
-        DebugConsole.WriteDecimal(MaxStaticFields);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteDecimal((uint)staticFieldEntries);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)staticFieldBlocks);
+        DebugConsole.WriteLine(" blocks)");
 
         DebugConsole.Write("  Static storage used: ");
         DebugConsole.WriteDecimal((uint)_staticStorageUsed);
@@ -3974,10 +4038,16 @@ public static unsafe class MetadataIntegration
         DebugConsole.WriteLine();
 
         DebugConsole.Write("  Field layouts cached: ");
-        DebugConsole.WriteDecimal((uint)_fieldLayoutCount);
-        DebugConsole.Write("/");
-        DebugConsole.WriteDecimal(MaxFieldLayoutEntries);
-        DebugConsole.WriteLine();
+        DebugConsole.WriteDecimal((uint)fieldLayoutEntries);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)fieldLayoutBlocks);
+        DebugConsole.WriteLine(" blocks)");
+
+        DebugConsole.Write("  Cctor contexts: ");
+        DebugConsole.WriteDecimal((uint)cctorEntries);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)cctorBlocks);
+        DebugConsole.WriteLine(" blocks)");
     }
 
     /// <summary>
@@ -4272,26 +4342,36 @@ public static unsafe class MetadataIntegration
     /// <param name="contextAddress">Address of StaticClassConstructionContext.</param>
     public static void RegisterCctorContext(uint assemblyId, uint typeToken, nint* contextAddress)
     {
-        if (_cctorRegistry == null || _cctorCount >= MaxCctorEntries)
-        {
-            DebugConsole.WriteLine("[MetaInt] Cctor registry full or not initialized");
-            return;
-        }
+        if (!_initialized)
+            Initialize();
 
-        // Check if already registered
-        for (int i = 0; i < _cctorCount; i++)
+        // Check if already registered - iterate through blocks
+        fixed (BlockChain* chain = &_cctorChain)
         {
-            if (_cctorRegistry[i].AssemblyId == assemblyId &&
-                _cctorRegistry[i].TypeToken == typeToken)
+            var block = chain->First;
+            while (block != null)
             {
-                return;  // Already registered
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (CctorRegistryEntry*)block->GetEntry(i);
+                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken)
+                    {
+                        return;  // Already registered
+                    }
+                }
+                block = block->Next;
+            }
+
+            // Add new entry
+            CctorRegistryEntry newEntry;
+            newEntry.AssemblyId = assemblyId;
+            newEntry.TypeToken = typeToken;
+            newEntry.ContextAddress = contextAddress;
+            if (BlockAllocator.Add(chain, &newEntry) == null)
+            {
+                DebugConsole.WriteLine("[MetaInt] Cctor registry allocation failed");
             }
         }
-
-        _cctorRegistry[_cctorCount].AssemblyId = assemblyId;
-        _cctorRegistry[_cctorCount].TypeToken = typeToken;
-        _cctorRegistry[_cctorCount].ContextAddress = contextAddress;
-        _cctorCount++;
 
         // DebugConsole.Write("[MetaInt] Registered cctor for type 0x");
         // DebugConsole.WriteHex(typeToken);
@@ -4310,15 +4390,23 @@ public static unsafe class MetadataIntegration
     /// <returns>Pointer to the context, or null if no cctor.</returns>
     public static nint* GetCctorContext(uint assemblyId, uint typeToken)
     {
-        if (_cctorRegistry == null)
-            return null;
-
-        for (int i = 0; i < _cctorCount; i++)
+        fixed (BlockChain* chain = &_cctorChain)
         {
-            if (_cctorRegistry[i].AssemblyId == assemblyId &&
-                _cctorRegistry[i].TypeToken == typeToken)
+            if (chain->First == null)
+                return null;
+
+            var block = chain->First;
+            while (block != null)
             {
-                return _cctorRegistry[i].ContextAddress;
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var entry = (CctorRegistryEntry*)block->GetEntry(i);
+                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken)
+                    {
+                        return entry->ContextAddress;
+                    }
+                }
+                block = block->Next;
             }
         }
 

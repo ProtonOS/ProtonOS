@@ -378,11 +378,16 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 Implemented dynamic block-based allocator to eliminate fixed-size limits:
 - **Created**: `BlockAllocator.cs` - generic block chain implementation
 - **Block size**: 32 entries per block (small to exercise growth during 300+ tests)
-- **Converted registries**:
+- **Converted registries** (9 total):
   - `FunctionTableStorage` - exception handling function tables
   - `JITMethodRegistry` - JIT method metadata
   - `TypeRegistry` - per-assembly type registries
   - `StaticFieldStorage` - per-assembly static field entries
+  - `MetadataIntegration.TypeRegistry` - global AOT type mappings
+  - `MetadataIntegration.StaticFieldRegistry` - global AOT static fields
+  - `MetadataIntegration.FieldLayoutCache` - field layout information
+  - `MetadataIntegration.CctorRegistry` - static constructor contexts
+  - `ReflectionRuntime.TypeInfoRegistry` - MethodTable to type info mapping
 - **Benefits**: No fixed limits, grows until memory exhausted
 - **Testing**: All 300 tests pass, block allocation growth is exercised
 - **Documentation**: See `docs/ALLOCATION_LIMITS.md` for full details
