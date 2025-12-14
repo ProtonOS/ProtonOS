@@ -376,6 +376,12 @@ public static unsafe class MetadataIntegration
         // Span types - ref struct memory access
         public const uint Span = 0xF0000060;           // Span`1
         public const uint ReadOnlySpan = 0xF0000061;   // ReadOnlySpan`1
+
+        // Base types - for type hierarchy
+        public const uint ValueType = 0xF0000070;
+        public const uint Enum = 0xF0000071;
+        public const uint Array = 0xF0000072;
+        public const uint Void = 0xF0000073;
     }
 
     /// <summary>
@@ -1850,7 +1856,7 @@ public static unsafe class MetadataIntegration
             DebugConsole.WriteLine();
 
             result.NativeCode = (void*)entry.NativeCode;
-            result.ArgCount = entry.ArgCount;
+            result.ArgCount = (byte)entry.ArgCount;
             result.ReturnKind = entry.ReturnKind;
             result.ReturnStructSize = entry.ReturnStructSize;
             result.HasThis = entry.HasThis;
@@ -2287,7 +2293,7 @@ public static unsafe class MetadataIntegration
                     if (AotMethodRegistry.TryLookup(fullTypeName, memberName, argCount, out AotMethodEntry entry))
                     {
                         result.NativeCode = (void*)entry.NativeCode;
-                        result.ArgCount = entry.ArgCount;
+                        result.ArgCount = (byte)entry.ArgCount;
                         result.ReturnKind = entry.ReturnKind;
                         result.ReturnStructSize = entry.ReturnStructSize;
                         result.HasThis = entry.HasThis;

@@ -11,33 +11,156 @@ using ProtonOS.Runtime.Reflection;
 namespace ProtonOS.Runtime;
 
 /// <summary>
+/// Flags byte for AotMethodEntry.
+/// </summary>
+[Flags]
+public enum AotMethodFlags : byte
+{
+    None = 0,
+    HasThis = 1,
+    IsVirtual = 2,
+    HasRefParams = 4,
+    HasPointerParams = 8,
+}
+
+/// <summary>
 /// Entry for a registered AOT method.
+/// Upgraded to 48 bytes to support generic types, method signatures, and instantiations.
 /// </summary>
 public unsafe struct AotMethodEntry
 {
     /// <summary>Type name hash (e.g., hash of "System.String").</summary>
-    public uint TypeNameHash;
+    public ulong TypeNameHash;
 
     /// <summary>Method name hash (e.g., hash of "get_Length").</summary>
-    public uint MethodNameHash;
+    public ulong MethodNameHash;
+
+    /// <summary>Parameter type and modifier signature hash for overload resolution.</summary>
+    public ulong SignatureHash;
 
     /// <summary>Native code address.</summary>
     public nint NativeCode;
 
+    /// <summary>Hash of generic instantiation arguments (0 for non-generic or open generic).</summary>
+    public uint InstantiationHash;
+
     /// <summary>Number of parameters (NOT including 'this' for instance methods).</summary>
-    public byte ArgCount;
+    public ushort ArgCount;
 
     /// <summary>Return type kind.</summary>
     public ReturnKind ReturnKind;
 
     /// <summary>Size in bytes for struct returns (0 for non-struct returns).</summary>
-    public ushort ReturnStructSize;
+    public byte ReturnStructSize;
+
+    /// <summary>Number of generic type parameters on the declaring type (0 for non-generic).</summary>
+    public byte TypeGenericArity;
+
+    /// <summary>Number of generic method parameters (0 for non-generic methods).</summary>
+    public byte MethodGenericArity;
+
+    /// <summary>Method flags (HasThis, IsVirtual, HasRefParams, etc.).</summary>
+    public AotMethodFlags Flags;
+
+    /// <summary>Reserved for future use.</summary>
+    public byte Reserved;
 
     /// <summary>Whether this is an instance method (has 'this' pointer).</summary>
-    public bool HasThis;
+    public bool HasThis => (Flags & AotMethodFlags.HasThis) != 0;
 
     /// <summary>Whether this is a virtual method.</summary>
-    public bool IsVirtual;
+    public bool IsVirtual => (Flags & AotMethodFlags.IsVirtual) != 0;
+
+    /// <summary>Whether this method has ref/out/in parameters.</summary>
+    public bool HasRefParams => (Flags & AotMethodFlags.HasRefParams) != 0;
+}
+
+/// <summary>
+/// Encodes method parameter signatures into a 64-bit hash for overload resolution.
+/// Each parameter gets 6 bits: 4 bits for ElementType, 2 bits for modifier (ref/out/in).
+/// Supports up to 10 parameters (60 bits used).
+/// </summary>
+public static unsafe class SignatureEncoder
+{
+    // Parameter modifiers
+    public const byte ModNone = 0;
+    public const byte ModRef = 1;   // ref parameter
+    public const byte ModOut = 2;   // out parameter
+    public const byte ModIn = 3;    // in parameter (readonly ref)
+
+    // Common element types (subset of ECMA-335 element types)
+    public const byte TypeVoid = 0x01;
+    public const byte TypeBoolean = 0x02;
+    public const byte TypeChar = 0x03;
+    public const byte TypeI1 = 0x04;
+    public const byte TypeU1 = 0x05;
+    public const byte TypeI2 = 0x06;
+    public const byte TypeU2 = 0x07;
+    public const byte TypeI4 = 0x08;
+    public const byte TypeU4 = 0x09;
+    public const byte TypeI8 = 0x0A;
+    public const byte TypeU8 = 0x0B;
+    public const byte TypeR4 = 0x0C;
+    public const byte TypeR8 = 0x0D;
+    public const byte TypeString = 0x0E;
+    public const byte TypePtr = 0x0F;    // Pointer type
+
+    /// <summary>
+    /// Encode parameter types and modifiers into a 64-bit hash.
+    /// </summary>
+    /// <param name="paramCount">Number of parameters to encode.</param>
+    /// <param name="types">Array of element types (4 bits each).</param>
+    /// <param name="modifiers">Array of modifiers (2 bits each, optional).</param>
+    /// <returns>64-bit signature hash.</returns>
+    public static ulong Encode(int paramCount, byte* types, byte* modifiers = null)
+    {
+        ulong hash = 0;
+        int count = paramCount > 10 ? 10 : paramCount;
+
+        for (int i = 0; i < count; i++)
+        {
+            byte type = (byte)(types[i] & 0x0F);
+            byte mod = modifiers != null ? (byte)(modifiers[i] & 0x03) : (byte)0;
+            ulong encoded = (ulong)type | ((ulong)mod << 4);
+            hash |= encoded << (i * 6);
+        }
+        return hash;
+    }
+
+    /// <summary>
+    /// Encode a single parameter type and modifier.
+    /// Useful for building signatures incrementally.
+    /// </summary>
+    public static ulong EncodeParam(int paramIndex, byte elementType, byte modifier = ModNone)
+    {
+        if (paramIndex >= 10)
+            return 0;
+
+        byte type = (byte)(elementType & 0x0F);
+        byte mod = (byte)(modifier & 0x03);
+        ulong encoded = (ulong)type | ((ulong)mod << 4);
+        return encoded << (paramIndex * 6);
+    }
+
+    /// <summary>
+    /// Extract the element type from a signature hash for a given parameter index.
+    /// </summary>
+    public static byte GetParamType(ulong signatureHash, int paramIndex)
+    {
+        if (paramIndex >= 10)
+            return 0;
+        return (byte)((signatureHash >> (paramIndex * 6)) & 0x0F);
+    }
+
+    /// <summary>
+    /// Extract the modifier from a signature hash for a given parameter index.
+    /// </summary>
+    public static byte GetParamModifier(ulong signatureHash, int paramIndex)
+    {
+        if (paramIndex >= 10)
+            return 0;
+        return (byte)((signatureHash >> (paramIndex * 6 + 4)) & 0x03);
+    }
 }
 
 /// <summary>
@@ -97,6 +220,9 @@ public static unsafe class AotMethodRegistry
 
         // Register ArgIterator methods (for varargs support)
         RegisterArgIteratorMethods();
+
+        // Register Span helpers (for memory operations)
+        RegisterSpanMethods();
 
         _initialized = true;
 
@@ -612,24 +738,125 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
-    /// Register an AOT method.
+    /// Register Span helper methods.
+    /// These are static helpers that operate on the raw memory layout of Span<T>.
+    /// Registered under "ProtonOS.Runtime.SpanHelpers" for direct JIT access.
+    /// </summary>
+    private static void RegisterSpanMethods()
+    {
+        // SpanHelpers.GetLength(nint spanPtr) - works for any Span<T>
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "GetLength",
+            (nint)(delegate*<nint, int>)&SpanHelpers.GetLength,
+            1, ReturnKind.Int32, false, false);
+
+        // SpanHelpers.GetPointer(nint spanPtr) - get data pointer
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "GetPointer",
+            (nint)(delegate*<nint, nint>)&SpanHelpers.GetPointer,
+            1, ReturnKind.IntPtr, false, false);
+
+        // SpanHelpers.IsEmpty(nint spanPtr)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "IsEmpty",
+            (nint)(delegate*<nint, bool>)&SpanHelpers.IsEmpty,
+            1, ReturnKind.Int32, false, false);
+
+        // SpanHelpers.InitByteSpanFromArray(nint spanPtr, byte[] array)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "InitByteSpanFromArray",
+            (nint)(delegate*<nint, byte[]?, void>)&SpanHelpers.InitByteSpanFromArray,
+            2, ReturnKind.Void, false, false);
+
+        // SpanHelpers.InitIntSpanFromArray(nint spanPtr, int[] array)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "InitIntSpanFromArray",
+            (nint)(delegate*<nint, int[]?, void>)&SpanHelpers.InitIntSpanFromArray,
+            2, ReturnKind.Void, false, false);
+
+        // SpanHelpers.InitSpanFromPointer(nint spanPtr, void* pointer, int length)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "InitSpanFromPointer",
+            (nint)(delegate*<nint, void*, int, void>)&SpanHelpers.InitSpanFromPointer,
+            3, ReturnKind.Void, false, false);
+
+        // SpanHelpers.GetByte(nint spanPtr, int index)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "GetByte",
+            (nint)(delegate*<nint, int, byte>)&SpanHelpers.GetByte,
+            2, ReturnKind.Int32, false, false);
+
+        // SpanHelpers.SetByte(nint spanPtr, int index, byte value)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "SetByte",
+            (nint)(delegate*<nint, int, byte, void>)&SpanHelpers.SetByte,
+            3, ReturnKind.Void, false, false);
+
+        // SpanHelpers.GetInt(nint spanPtr, int index)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "GetInt",
+            (nint)(delegate*<nint, int, int>)&SpanHelpers.GetInt,
+            2, ReturnKind.Int32, false, false);
+
+        // SpanHelpers.SetInt(nint spanPtr, int index, int value)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "SetInt",
+            (nint)(delegate*<nint, int, int, void>)&SpanHelpers.SetInt,
+            3, ReturnKind.Void, false, false);
+
+        // SpanHelpers.ClearByteSpan(nint spanPtr)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "ClearByteSpan",
+            (nint)(delegate*<nint, void>)&SpanHelpers.ClearByteSpan,
+            1, ReturnKind.Void, false, false);
+
+        // SpanHelpers.FillByteSpan(nint spanPtr, byte value)
+        Register(
+            "ProtonOS.Runtime.SpanHelpers", "FillByteSpan",
+            (nint)(delegate*<nint, byte, void>)&SpanHelpers.FillByteSpan,
+            2, ReturnKind.Void, false, false);
+    }
+
+    /// <summary>
+    /// Register an AOT method (legacy overload for backwards compatibility).
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
                                   byte argCount, ReturnKind returnKind, bool hasThis, bool isVirtual,
                                   ushort returnStructSize = 0)
     {
-        uint typeHash = HashString(typeName);
-        uint methodHash = HashString(methodName);
+        AotMethodFlags flags = AotMethodFlags.None;
+        if (hasThis) flags |= AotMethodFlags.HasThis;
+        if (isVirtual) flags |= AotMethodFlags.IsVirtual;
+
+        RegisterEx(typeName, methodName, nativeCode, argCount, returnKind,
+                   (byte)returnStructSize, flags, 0, 0, 0, 0);
+    }
+
+    /// <summary>
+    /// Register an AOT method with full control over all fields.
+    /// </summary>
+    private static void RegisterEx(string typeName, string methodName, nint nativeCode,
+                                    ushort argCount, ReturnKind returnKind, byte returnStructSize,
+                                    AotMethodFlags flags, ulong signatureHash = 0,
+                                    uint instantiationHash = 0, byte typeGenericArity = 0,
+                                    byte methodGenericArity = 0)
+    {
+        ulong typeHash = HashString(typeName);
+        ulong methodHash = HashString(methodName);
 
         AotMethodEntry entry;
         entry.TypeNameHash = typeHash;
         entry.MethodNameHash = methodHash;
+        entry.SignatureHash = signatureHash;
         entry.NativeCode = nativeCode;
+        entry.InstantiationHash = instantiationHash;
         entry.ArgCount = argCount;
         entry.ReturnKind = returnKind;
         entry.ReturnStructSize = returnStructSize;
-        entry.HasThis = hasThis;
-        entry.IsVirtual = isVirtual;
+        entry.TypeGenericArity = typeGenericArity;
+        entry.MethodGenericArity = methodGenericArity;
+        entry.Flags = flags;
+        entry.Reserved = 0;
 
         fixed (BlockChain* chain = &_entryChain)
         {
@@ -643,21 +870,82 @@ public static unsafe class AotMethodRegistry
     /// <summary>
     /// Look up an AOT method by type and method name.
     /// Returns true if found and populates the entry.
+    /// Uses three-tier lookup: exact match, open generic, legacy arg-count.
     /// </summary>
     public static bool TryLookup(byte* typeName, byte* methodName, byte argCount, out AotMethodEntry entry,
                                   bool isCharPtrVariant = false)
+    {
+        // Legacy lookup - use extended lookup with no signature/instantiation
+        return TryLookupEx(typeName, methodName, argCount, 0, 0, out entry, isCharPtrVariant);
+    }
+
+    /// <summary>
+    /// Extended lookup with signature and instantiation hash support.
+    /// Implements three-tier lookup:
+    /// - Tier 1: Exact match (type + method + signature + instantiation)
+    /// - Tier 2: Open generic match (type + method + signature, ignore instantiation)
+    /// - Tier 3: Legacy arg-count match (type + method + arg count, ignore signature)
+    /// </summary>
+    public static bool TryLookupEx(byte* typeName, byte* methodName, byte argCount,
+                                    ulong signatureHash, uint instantiationHash,
+                                    out AotMethodEntry entry, bool isCharPtrVariant = false)
     {
         entry = default;
 
         if (typeName == null || methodName == null)
             return false;
 
-        uint typeHash = HashBytes(typeName);
-        uint methodHash = HashBytes(methodName);
+        ulong typeHash = HashBytes(typeName);
+        ulong methodHash = HashBytes(methodName);
 
         // For char* variant constructors, look for the special ".ctor$ptr" entry
-        uint methodHashPtrVariant = isCharPtrVariant ? HashString(".ctor$ptr") : 0;
+        ulong methodHashPtrVariant = isCharPtrVariant ? HashString(".ctor$ptr") : 0;
+        ulong targetMethodHash = isCharPtrVariant ? methodHashPtrVariant : methodHash;
 
+        // Tier 1: Exact match (including signature and instantiation)
+        if (signatureHash != 0)
+        {
+            fixed (BlockChain* chain = &_entryChain)
+            {
+                var block = chain->First;
+                while (block != null)
+                {
+                    for (int i = 0; i < block->Used; i++)
+                    {
+                        var e = (AotMethodEntry*)block->GetEntry(i);
+                        if (e->TypeNameHash == typeHash && e->MethodNameHash == targetMethodHash &&
+                            e->SignatureHash == signatureHash && e->InstantiationHash == instantiationHash)
+                        {
+                            entry = *e;
+                            return true;
+                        }
+                    }
+                    block = block->Next;
+                }
+            }
+
+            // Tier 2: Open generic match (ignore instantiation hash)
+            fixed (BlockChain* chain = &_entryChain)
+            {
+                var block = chain->First;
+                while (block != null)
+                {
+                    for (int i = 0; i < block->Used; i++)
+                    {
+                        var e = (AotMethodEntry*)block->GetEntry(i);
+                        if (e->TypeNameHash == typeHash && e->MethodNameHash == targetMethodHash &&
+                            e->SignatureHash == signatureHash && e->TypeGenericArity > 0)
+                        {
+                            entry = *e;
+                            return true;
+                        }
+                    }
+                    block = block->Next;
+                }
+            }
+        }
+
+        // Tier 3: Legacy arg-count match (backwards compatible)
         fixed (BlockChain* chain = &_entryChain)
         {
             var block = chain->First;
@@ -666,8 +954,6 @@ public static unsafe class AotMethodRegistry
                 for (int i = 0; i < block->Used; i++)
                 {
                     var e = (AotMethodEntry*)block->GetEntry(i);
-                    // If looking for char* variant, match against the $ptr variant
-                    uint targetMethodHash = isCharPtrVariant ? methodHashPtrVariant : methodHash;
                     if (e->TypeNameHash == typeHash && e->MethodNameHash == targetMethodHash)
                     {
                         // For overloaded methods, match by arg count
@@ -696,8 +982,8 @@ public static unsafe class AotMethodRegistry
         if (typeName == null || methodName == null)
             return 0;
 
-        uint typeHash = HashString(typeName);
-        uint methodHash = HashString(methodName);
+        ulong typeHash = HashString(typeName);
+        ulong methodHash = HashString(methodName);
 
         fixed (BlockChain* chain = &_entryChain)
         {
@@ -799,30 +1085,30 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
-    /// Hash a managed string for lookup.
+    /// Hash a managed string for lookup (64-bit).
     /// </summary>
-    private static uint HashString(string s)
+    private static ulong HashString(string s)
     {
         if (s == null)
             return 0;
 
-        uint hash = 5381;
+        ulong hash = 5381;
         for (int i = 0; i < s.Length; i++)
         {
-            hash = ((hash << 5) + hash) ^ (uint)s[i];
+            hash = ((hash << 5) + hash) ^ (ulong)s[i];
         }
         return hash;
     }
 
     /// <summary>
-    /// Hash a null-terminated byte string.
+    /// Hash a null-terminated byte string (64-bit).
     /// </summary>
-    private static uint HashBytes(byte* s)
+    private static ulong HashBytes(byte* s)
     {
         if (s == null)
             return 0;
 
-        uint hash = 5381;
+        ulong hash = 5381;
         while (*s != 0)
         {
             hash = ((hash << 5) + hash) ^ *s;
@@ -1787,5 +2073,165 @@ public static unsafe class ArgIteratorHelpers
     public static void End(nint thisPtr)
     {
         // Nothing to clean up
+    }
+}
+
+/// <summary>
+/// Helper methods for Span operations.
+/// Span<T> is a ref struct with layout: [0..7] = pointer to data, [8..11] = length
+/// These helpers operate on the raw memory layout to support JIT-compiled code.
+/// </summary>
+public static unsafe class SpanHelpers
+{
+    /// <summary>
+    /// Initialize a Span<byte> from a byte array.
+    /// spanPtr points to a 16-byte stack allocation for the Span struct.
+    /// </summary>
+    public static void InitByteSpanFromArray(nint spanPtr, byte[]? array)
+    {
+        byte* spanBytes = (byte*)spanPtr;
+
+        if (array == null || array.Length == 0)
+        {
+            // Default span - null pointer and zero length
+            *(nint*)spanBytes = 0;
+            *(int*)(spanBytes + 8) = 0;
+            return;
+        }
+
+        // Get pointer to array data (skip MT and length at offsets 0 and 8)
+        byte* arrayPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref array[0]);
+        *(nint*)spanBytes = (nint)arrayPtr;
+        *(int*)(spanBytes + 8) = array.Length;
+    }
+
+    /// <summary>
+    /// Initialize a Span<int> from an int array.
+    /// </summary>
+    public static void InitIntSpanFromArray(nint spanPtr, int[]? array)
+    {
+        byte* spanBytes = (byte*)spanPtr;
+
+        if (array == null || array.Length == 0)
+        {
+            *(nint*)spanBytes = 0;
+            *(int*)(spanBytes + 8) = 0;
+            return;
+        }
+
+        byte* arrayPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref array[0]);
+        *(nint*)spanBytes = (nint)arrayPtr;
+        *(int*)(spanBytes + 8) = array.Length;
+    }
+
+    /// <summary>
+    /// Initialize a Span from a pointer and length.
+    /// Works for any T since layout is the same.
+    /// </summary>
+    public static void InitSpanFromPointer(nint spanPtr, void* pointer, int length)
+    {
+        byte* spanBytes = (byte*)spanPtr;
+        *(nint*)spanBytes = (nint)pointer;
+        *(int*)(spanBytes + 8) = length;
+    }
+
+    /// <summary>
+    /// Get the length of a Span. Works for any T since layout is the same.
+    /// </summary>
+    public static int GetLength(nint spanPtr)
+    {
+        return *(int*)((byte*)spanPtr + 8);
+    }
+
+    /// <summary>
+    /// Get the data pointer from a Span. Works for any T.
+    /// </summary>
+    public static nint GetPointer(nint spanPtr)
+    {
+        return *(nint*)spanPtr;
+    }
+
+    /// <summary>
+    /// Get a byte from Span<byte> at the specified index.
+    /// </summary>
+    public static byte GetByte(nint spanPtr, int index)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        byte* data = (byte*)*(nint*)spanPtr;
+        return data[index];
+    }
+
+    /// <summary>
+    /// Set a byte in Span<byte> at the specified index.
+    /// </summary>
+    public static void SetByte(nint spanPtr, int index, byte value)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        byte* data = (byte*)*(nint*)spanPtr;
+        data[index] = value;
+    }
+
+    /// <summary>
+    /// Get an int from Span<int> at the specified index.
+    /// </summary>
+    public static int GetInt(nint spanPtr, int index)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        int* data = (int*)*(nint*)spanPtr;
+        return data[index];
+    }
+
+    /// <summary>
+    /// Set an int in Span<int> at the specified index.
+    /// </summary>
+    public static void SetInt(nint spanPtr, int index, int value)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        int* data = (int*)*(nint*)spanPtr;
+        data[index] = value;
+    }
+
+    /// <summary>
+    /// Clear a Span<byte> (set all bytes to 0).
+    /// </summary>
+    public static void ClearByteSpan(nint spanPtr)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        byte* data = (byte*)*(nint*)spanPtr;
+
+        for (int i = 0; i < length; i++)
+            data[i] = 0;
+    }
+
+    /// <summary>
+    /// Fill a Span<byte> with a value.
+    /// </summary>
+    public static void FillByteSpan(nint spanPtr, byte value)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        byte* data = (byte*)*(nint*)spanPtr;
+
+        for (int i = 0; i < length; i++)
+            data[i] = value;
+    }
+
+    /// <summary>
+    /// Check if a Span is empty (length == 0).
+    /// </summary>
+    public static bool IsEmpty(nint spanPtr)
+    {
+        return *(int*)((byte*)spanPtr + 8) == 0;
     }
 }

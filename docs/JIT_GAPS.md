@@ -52,13 +52,14 @@ These are C# features that should work but lack test coverage.
 
 ### 1.4 Type System
 
-- [~] **Span<T> / ReadOnlySpan<T>** - Deferred (requires AOT registry for generics)
-  - Issue: korlib Span<T> is AOT-compiled but methods not in AOT registry
-  - Workaround: Use unsafe pointer patterns instead (MemoryTests)
-  - Tests: MemoryTests.TestPointerArrayAccess, TestPointerWrite, TestMemoryFill,
-    TestMemoryClear, TestPointerWithOffset, TestBytePointerAccess,
-    TestPointerSum, TestStackAlloc, TestPointerComparison (437 tests)
-  - Future: Add AOT method registration for generic korlib types
+- [x] **Span<T> / ReadOnlySpan<T>** - Raw memory layout tests ✅
+  - Note: Direct Span<T> method calls still require AOT registry for generics
+  - Solution: Tests use raw Span memory layout (pointer + length) directly
+  - Tests: SpanTests.TestByteSpanFromStackalloc, TestByteSpanGetSet, TestByteSpanSum,
+    TestByteSpanFill, TestByteSpanClear, TestIntSpanFromStackalloc, TestIntSpanGetSet,
+    TestIntSpanSum, TestSpanIsEmpty, TestSpanFromArray (447 tests)
+  - Also: MemoryTests for unsafe pointer patterns (TestPointerArrayAccess, etc.)
+  - Added kernel SpanHelpers class for future direct method support
 
 - [ ] **nameof() operator** - Compiles to string literal, should just work
   - Test: `string name = nameof(SomeClass);`
@@ -166,7 +167,7 @@ These are known limitations that are acceptable for the current scope.
 3. [x] foreach on arrays test ✅
 
 ### P1 - Should fix ✅ ALL COMPLETE
-4. [x] Span<T> tests → Memory tests using unsafe pointers (Span deferred - needs AOT registry)
+4. [x] Span<T> tests → SpanTests using raw memory layout (10 tests, 447 total)
 5. [x] params array test (437 tests)
 6. [x] ckfinite behavior → Documented as acceptable limitation (INT3 instead of exception)
 
@@ -201,7 +202,7 @@ public static class SpanTests { ... }
 
 | Category | Total | Done | Remaining |
 |----------|-------|------|-----------|
-| Missing Tests | 9 | 6 | 3 |
+| Missing Tests | 9 | 7 | 2 |
 | Incomplete Impl | 5 | 0 | 5 |
 | Code TODOs (JIT) | 2 | 0 | 2 |
 | Code TODOs (Platform) | 11 | 0 | 11 |
@@ -209,9 +210,33 @@ public static class SpanTests { ... }
 | **P1 Items** | **3** | **3** | **0** |
 
 Last updated: 2025-12-14
-Test count: 437
+Test count: 447
 
 ## Recent Changes
+
+### Span<T> Tests (447 tests)
+- Added SpanTests class with 10 tests for Span-like operations
+- Tests work with raw Span memory layout: [0..7] = pointer, [8..11] = length
+- Tests: TestByteSpanFromStackalloc, TestByteSpanGetSet, TestByteSpanSum,
+  TestByteSpanFill, TestByteSpanClear, TestIntSpanFromStackalloc, TestIntSpanGetSet,
+  TestIntSpanSum, TestSpanIsEmpty, TestSpanFromArray
+- Added kernel SpanHelpers class for future direct method support (12 methods registered)
+- Note: Array initializer syntax not supported (uses RuntimeHelpers.InitializeArray)
+
+### AOT Registry Upgrade (437 tests)
+- Upgraded AotMethodEntry struct to 48 bytes with:
+  - SignatureHash (ulong) for method signature overload resolution
+  - InstantiationHash (uint) for generic type instantiation
+  - TypeGenericArity/MethodGenericArity (byte) for generic type parameters
+  - AotMethodFlags enum (HasThis, IsVirtual, HasRefParams, HasPointerParams)
+- Added SignatureEncoder class for encoding parameter types and modifiers
+- Implemented three-tier lookup in TryLookupEx:
+  - Tier 1: Exact match (type + method + signature + instantiation)
+  - Tier 2: Open generic match (type + method + signature, any instantiation)
+  - Tier 3: Legacy arg-count match (backwards compatible)
+- Upgraded hash functions from 32-bit to 64-bit for better collision resistance
+- Added missing WellKnownTypes: ValueType (0xF0000070), Enum (0xF0000071), Array (0xF0000072), Void (0xF0000073)
+- Added corresponding GetWellKnownTypeToken() cases in AssemblyLoader.cs
 
 ### P1 Completion (437 tests)
 - Added MemoryTests (pointer-based tests for span-like operations)

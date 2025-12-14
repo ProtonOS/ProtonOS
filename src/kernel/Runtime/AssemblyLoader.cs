@@ -3645,13 +3645,19 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.Object;
                 break;
 
-            case (byte)'E':  // Exception
+            case (byte)'E':  // Exception, Enum
                 if (name[1] == 'x' && name[2] == 'c' && name[3] == 'e' && name[4] == 'p' &&
                     name[5] == 't' && name[6] == 'i' && name[7] == 'o' && name[8] == 'n' && name[9] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.Exception;
+                // Enum
+                if (name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Enum;
                 break;
 
-            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException, ArgIterator
+            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException, ArgIterator, Array
+                // Array
+                if (name[1] == 'r' && name[2] == 'r' && name[3] == 'a' && name[4] == 'y' && name[5] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Array;
                 if (name[1] == 'r' && name[2] == 'g')
                 {
                     // ArgIterator
@@ -3761,6 +3767,16 @@ public static unsafe class AssemblyLoader
                     name[9] == 'p' && name[10] == 'a' && name[11] == 'n' && name[12] == '`' &&
                     name[13] == '1' && name[14] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan;
+                break;
+
+            case (byte)'V':  // ValueType, Void
+                // ValueType
+                if (name[1] == 'a' && name[2] == 'l' && name[3] == 'u' && name[4] == 'e' &&
+                    name[5] == 'T' && name[6] == 'y' && name[7] == 'p' && name[8] == 'e' && name[9] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.ValueType;
+                // Void
+                if (name[1] == 'o' && name[2] == 'i' && name[3] == 'd' && name[4] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.Void;
                 break;
         }
 

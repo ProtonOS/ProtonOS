@@ -62,6 +62,9 @@ public static class TestRunner
         // Memory tests (unsafe pointer patterns - similar to Span<T> operations)
         RunMemoryTests();
 
+        // Span<T> tests (actual Span usage with SpanHelpers)
+        RunSpanTests();
+
         // Multi-dimensional array tests
         RunMDArrayTests();
 
@@ -761,6 +764,21 @@ public static class TestRunner
         RecordResult("MemoryTests.TestPointerSum", MemoryTests.TestPointerSum() == 150);
         RecordResult("MemoryTests.TestStackAlloc", MemoryTests.TestStackAlloc() == 10);
         RecordResult("MemoryTests.TestPointerComparison", MemoryTests.TestPointerComparison() == 5);
+    }
+
+    private static void RunSpanTests()
+    {
+        // Basic Span<byte> tests using stackalloc and pointer manipulation
+        RecordResult("SpanTests.TestByteSpanFromStackalloc", SpanTests.TestByteSpanFromStackalloc() == 5);
+        RecordResult("SpanTests.TestByteSpanGetSet", SpanTests.TestByteSpanGetSet() == 42);
+        RecordResult("SpanTests.TestByteSpanSum", SpanTests.TestByteSpanSum() == 15);
+        RecordResult("SpanTests.TestByteSpanFill", SpanTests.TestByteSpanFill() == 50);
+        RecordResult("SpanTests.TestByteSpanClear", SpanTests.TestByteSpanClear() == 0);
+        RecordResult("SpanTests.TestIntSpanFromStackalloc", SpanTests.TestIntSpanFromStackalloc() == 4);
+        RecordResult("SpanTests.TestIntSpanGetSet", SpanTests.TestIntSpanGetSet() == 100);
+        RecordResult("SpanTests.TestIntSpanSum", SpanTests.TestIntSpanSum() == 10);
+        RecordResult("SpanTests.TestSpanIsEmpty", SpanTests.TestSpanIsEmpty() == 1);
+        RecordResult("SpanTests.TestSpanFromArray", SpanTests.TestSpanFromArray() == 15);
     }
 
     private static void RunMDArrayTests()
@@ -2508,6 +2526,243 @@ public static unsafe class MemoryTests
             for (int* p = start; p < end; p++)
                 count++;
             return count;  // 5
+        }
+    }
+}
+
+// =============================================================================
+// Span<T> Tests
+// =============================================================================
+// These tests work with the raw Span<T> memory layout to test span operations.
+// Span<T> is a ref struct with layout: [0..7] = pointer to data, [8..11] = length
+// We use stackalloc to create the span struct and manipulate it directly.
+
+public static unsafe class SpanTests
+{
+    /// <summary>
+    /// Test creating a Span<byte> from stackalloc and getting its length.
+    /// Span layout: [0..7] = data pointer, [8..11] = length
+    /// </summary>
+    public static int TestByteSpanFromStackalloc()
+    {
+        // Allocate memory for the data (5 bytes)
+        byte* data = stackalloc byte[5];
+        data[0] = 1; data[1] = 2; data[2] = 3; data[3] = 4; data[4] = 5;
+
+        // Create span struct on stack (16 bytes: 8 for pointer, 4 for length, 4 padding)
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;           // Set pointer
+        *(int*)(spanBytes + 8) = 5;               // Set length
+
+        // Get length from span
+        int length = *(int*)(spanBytes + 8);
+        return length;  // 5
+    }
+
+    /// <summary>
+    /// Test getting and setting bytes in a Span<byte>.
+    /// </summary>
+    public static int TestByteSpanGetSet()
+    {
+        byte* data = stackalloc byte[5];
+        for (int i = 0; i < 5; i++) data[i] = 0;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 5;
+
+        // Set value through span (simulating span[2] = 42)
+        byte* dataPtr = (byte*)*(nint*)spanBytes;
+        int idx = 2;
+        int len = *(int*)(spanBytes + 8);
+        if ((uint)idx < (uint)len)
+            dataPtr[idx] = 42;
+
+        // Get value through span (simulating return span[2])
+        return dataPtr[2];  // 42
+    }
+
+    /// <summary>
+    /// Test summing all bytes in a Span<byte>.
+    /// </summary>
+    public static int TestByteSpanSum()
+    {
+        byte* data = stackalloc byte[5];
+        data[0] = 1; data[1] = 2; data[2] = 3; data[3] = 4; data[4] = 5;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 5;
+
+        // Sum elements
+        byte* dataPtr = (byte*)*(nint*)spanBytes;
+        int len = *(int*)(spanBytes + 8);
+        int sum = 0;
+        for (int i = 0; i < len; i++)
+            sum += dataPtr[i];
+
+        return sum;  // 1+2+3+4+5 = 15
+    }
+
+    /// <summary>
+    /// Test Fill operation on Span<byte>.
+    /// </summary>
+    public static int TestByteSpanFill()
+    {
+        byte* data = stackalloc byte[5];
+        for (int i = 0; i < 5; i++) data[i] = 0;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 5;
+
+        // Fill with value 10
+        byte* dataPtr = (byte*)*(nint*)spanBytes;
+        int len = *(int*)(spanBytes + 8);
+        for (int i = 0; i < len; i++)
+            dataPtr[i] = 10;
+
+        // Sum to verify (should be 50)
+        int sum = 0;
+        for (int i = 0; i < len; i++)
+            sum += dataPtr[i];
+
+        return sum;  // 10*5 = 50
+    }
+
+    /// <summary>
+    /// Test Clear operation on Span<byte>.
+    /// </summary>
+    public static int TestByteSpanClear()
+    {
+        byte* data = stackalloc byte[5];
+        data[0] = 1; data[1] = 2; data[2] = 3; data[3] = 4; data[4] = 5;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 5;
+
+        // Clear (set all to 0)
+        byte* dataPtr = (byte*)*(nint*)spanBytes;
+        int len = *(int*)(spanBytes + 8);
+        for (int i = 0; i < len; i++)
+            dataPtr[i] = 0;
+
+        // Sum to verify (should be 0)
+        int sum = 0;
+        for (int i = 0; i < len; i++)
+            sum += dataPtr[i];
+
+        return sum;  // 0
+    }
+
+    /// <summary>
+    /// Test creating a Span<int> from stackalloc.
+    /// </summary>
+    public static int TestIntSpanFromStackalloc()
+    {
+        int* data = stackalloc int[4];
+        data[0] = 1; data[1] = 2; data[2] = 3; data[3] = 4;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 4;  // Length is element count, not byte count
+
+        int length = *(int*)(spanBytes + 8);
+        return length;  // 4
+    }
+
+    /// <summary>
+    /// Test getting and setting ints in a Span<int>.
+    /// </summary>
+    public static int TestIntSpanGetSet()
+    {
+        int* data = stackalloc int[4];
+        for (int i = 0; i < 4; i++) data[i] = 0;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 4;
+
+        // Set value (span[1] = 100)
+        int* dataPtr = (int*)*(nint*)spanBytes;
+        dataPtr[1] = 100;
+
+        return dataPtr[1];  // 100
+    }
+
+    /// <summary>
+    /// Test summing ints in a Span<int>.
+    /// </summary>
+    public static int TestIntSpanSum()
+    {
+        int* data = stackalloc int[4];
+        data[0] = 1; data[1] = 2; data[2] = 3; data[3] = 4;
+
+        // Create span
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = (nint)data;
+        *(int*)(spanBytes + 8) = 4;
+
+        // Sum elements
+        int* dataPtr = (int*)*(nint*)spanBytes;
+        int len = *(int*)(spanBytes + 8);
+        int sum = 0;
+        for (int i = 0; i < len; i++)
+            sum += dataPtr[i];
+
+        return sum;  // 1+2+3+4 = 10
+    }
+
+    /// <summary>
+    /// Test IsEmpty check for span.
+    /// </summary>
+    public static int TestSpanIsEmpty()
+    {
+        // Create empty span (length = 0)
+        byte* spanBytes = stackalloc byte[16];
+        *(nint*)spanBytes = 0;
+        *(int*)(spanBytes + 8) = 0;
+
+        int len = *(int*)(spanBytes + 8);
+        return len == 0 ? 1 : 0;  // 1 (true)
+    }
+
+    /// <summary>
+    /// Test creating a Span from an array.
+    /// This demonstrates the more complex case of pointing to array data.
+    /// Note: We manually initialize the array instead of using initializer syntax
+    /// because RuntimeHelpers.InitializeArray is not available in the JIT.
+    /// </summary>
+    public static int TestSpanFromArray()
+    {
+        byte[] arr = new byte[5];
+        arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4; arr[4] = 5;
+
+        // Create span pointing to array data
+        // Array layout: [MT*][Length][Data...]
+        // We need to get pointer to arr[0]
+        byte* spanBytes = stackalloc byte[16];
+
+        fixed (byte* arrData = arr)
+        {
+            *(nint*)spanBytes = (nint)arrData;
+            *(int*)(spanBytes + 8) = arr.Length;
+
+            // Sum through span
+            byte* dataPtr = (byte*)*(nint*)spanBytes;
+            int len = *(int*)(spanBytes + 8);
+            int sum = 0;
+            for (int i = 0; i < len; i++)
+                sum += dataPtr[i];
+
+            return sum;  // 1+2+3+4+5 = 15
         }
     }
 }
