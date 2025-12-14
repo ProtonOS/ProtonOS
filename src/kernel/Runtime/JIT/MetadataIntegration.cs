@@ -372,6 +372,9 @@ public static unsafe class MetadataIntegration
 
         // Interface types - for using statement / IDisposable support
         public const uint IDisposable = 0xF0000050;
+        // Note: IEnumerable/IEnumerator are NOT well-known types because their methods
+        // need to be resolved from korlib metadata (for interface dispatch).
+        // They are resolved via korlib fallback in ResolveTypeRef.
 
         // Span types - ref struct memory access
         public const uint Span = 0xF0000060;           // Span`1

@@ -154,6 +154,15 @@ public static class TestRunner
         // Recursion tests - verifies recursive calls work after tail call infrastructure
         RunRecursionTests();
 
+        // Nameof tests - tests nameof() operator compiles to string literal
+        RunNameofTests();
+
+        // Note: Iterator tests (foreach on custom IEnumerable) disabled for now.
+        // Requires IEnumerable/IEnumerator interfaces to be resolvable, which needs
+        // either adding them to System.Runtime or implementing korlib type forwarding.
+        // This is tracked as a P2 item in JIT_GAPS.md.
+        // RunIteratorTests();
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -163,6 +172,23 @@ public static class TestRunner
         RecordResult("RecursionTests.TestFactorialAccumulator", RecursionTests.TestFactorialAccumulator() == 1);
         RecordResult("RecursionTests.TestRecursiveSum", RecursionTests.TestRecursiveSum() == 1);
         RecordResult("RecursionTests.TestRecursiveFib", RecursionTests.TestRecursiveFib() == 1);
+    }
+
+    private static void RunNameofTests()
+    {
+        RecordResult("NameofTests.TestNameofLocal", NameofTests.TestNameofLocal() == 10);
+        RecordResult("NameofTests.TestNameofField", NameofTests.TestNameofField() == 10);
+        RecordResult("NameofTests.TestNameofMethod", NameofTests.TestNameofMethod() == 16);
+        RecordResult("NameofTests.TestNameofType", NameofTests.TestNameofType() == 11);
+        RecordResult("NameofTests.TestNameofParameter", NameofTests.TestNameofParameter() == 5);
+    }
+
+    private static void RunIteratorTests()
+    {
+        RecordResult("IteratorTests.TestForeachCustomRange", IteratorTests.TestForeachCustomRange() == 15);
+        RecordResult("IteratorTests.TestForeachCustomCount", IteratorTests.TestForeachCustomCount() == 3);
+        RecordResult("IteratorTests.TestForeachCustomEmpty", IteratorTests.TestForeachCustomEmpty() == 1);
+        RecordResult("IteratorTests.TestForeachCustomBreak", IteratorTests.TestForeachCustomBreak() == 6);
     }
 
     private static void RunStringFormatTests()
@@ -7677,6 +7703,193 @@ public static class RecursionTests
     {
         if (n <= 1) return n;
         return Fib(n - 1) + Fib(n - 2);
+    }
+}
+
+// =============================================================================
+// Nameof Tests (tests nameof() operator compiles to string literal)
+// =============================================================================
+
+/// <summary>
+/// Tests the nameof() operator, which should compile to a string literal.
+/// </summary>
+public static class NameofTests
+{
+    private static int _testField = 42;
+
+    /// <summary>
+    /// Test nameof on a local variable.
+    /// </summary>
+    public static int TestNameofLocal()
+    {
+        int myVariable = 10;
+        string name = nameof(myVariable);
+        // "myVariable" should be 10 characters
+        return name.Length;
+    }
+
+    /// <summary>
+    /// Test nameof on a static field.
+    /// </summary>
+    public static int TestNameofField()
+    {
+        string name = nameof(_testField);
+        // "_testField" should be 10 characters
+        return name.Length;
+    }
+
+    /// <summary>
+    /// Test nameof on a method.
+    /// </summary>
+    public static int TestNameofMethod()
+    {
+        string name = nameof(TestNameofMethod);
+        // "TestNameofMethod" should be 16 characters
+        return name.Length;
+    }
+
+    /// <summary>
+    /// Test nameof on a type.
+    /// </summary>
+    public static int TestNameofType()
+    {
+        string name = nameof(NameofTests);
+        // "NameofTests" should be 11 characters
+        return name.Length;
+    }
+
+    /// <summary>
+    /// Test nameof on a parameter.
+    /// </summary>
+    public static int TestNameofParameter()
+    {
+        return GetParamNameLength(42);
+    }
+
+    private static int GetParamNameLength(int value)
+    {
+        string name = nameof(value);
+        // "value" should be 5 characters
+        return name.Length;
+    }
+}
+
+// =============================================================================
+// Iterator Tests (tests foreach on custom IEnumerable)
+// =============================================================================
+
+/// <summary>
+/// Tests foreach on custom IEnumerable implementations.
+/// </summary>
+public static class IteratorTests
+{
+    /// <summary>
+    /// Simple range that implements IEnumerable.
+    /// </summary>
+    public class IntRange : System.Collections.IEnumerable
+    {
+        private readonly int _start;
+        private readonly int _count;
+
+        public IntRange(int start, int count)
+        {
+            _start = start;
+            _count = count;
+        }
+
+        public System.Collections.IEnumerator GetEnumerator()
+        {
+            return new IntRangeEnumerator(_start, _count);
+        }
+
+        private class IntRangeEnumerator : System.Collections.IEnumerator
+        {
+            private readonly int _start;
+            private readonly int _count;
+            private int _index = -1;
+
+            public IntRangeEnumerator(int start, int count)
+            {
+                _start = start;
+                _count = count;
+            }
+
+            public object? Current => _start + _index;
+
+            public bool MoveNext()
+            {
+                _index++;
+                return _index < _count;
+            }
+
+            public void Reset()
+            {
+                _index = -1;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Test foreach over a custom IEnumerable range.
+    /// </summary>
+    public static int TestForeachCustomRange()
+    {
+        var range = new IntRange(1, 5);  // 1, 2, 3, 4, 5
+        int sum = 0;
+        foreach (object? item in range)
+        {
+            if (item != null)
+                sum += (int)item;
+        }
+        return sum;  // 1+2+3+4+5 = 15
+    }
+
+    /// <summary>
+    /// Test foreach iteration count.
+    /// </summary>
+    public static int TestForeachCustomCount()
+    {
+        var range = new IntRange(10, 3);  // 10, 11, 12
+        int count = 0;
+        foreach (object? item in range)
+        {
+            count++;
+        }
+        return count;  // 3 iterations
+    }
+
+    /// <summary>
+    /// Test foreach over empty range.
+    /// </summary>
+    public static int TestForeachCustomEmpty()
+    {
+        var range = new IntRange(0, 0);  // empty
+        int sum = 0;
+        foreach (object? item in range)
+        {
+            sum += 100;  // should never execute
+        }
+        return sum == 0 ? 1 : 0;  // 1 for pass
+    }
+
+    /// <summary>
+    /// Test foreach with early break.
+    /// </summary>
+    public static int TestForeachCustomBreak()
+    {
+        var range = new IntRange(1, 10);  // 1 through 10
+        int sum = 0;
+        foreach (object? item in range)
+        {
+            if (item != null)
+            {
+                int val = (int)item;
+                if (val > 3)
+                    break;
+                sum += val;
+            }
+        }
+        return sum;  // 1+2+3 = 6
     }
 }
 

@@ -39,9 +39,11 @@ These are C# features that should work but lack test coverage.
     TestForeachIterationCount (421 tests)
   - Note: C# optimizes array foreach to indexed access, no IEnumerator used
 
-- [ ] **foreach on custom IEnumerable** - Custom iterator pattern not tested
-  - Test: `foreach (var item in customEnumerable) { ... }`
-  - Verifies: GetEnumerator(), MoveNext(), Current, Dispose()
+- [~] **foreach on custom IEnumerable** - Requires interface resolution
+  - Issue: IEnumerable/IEnumerator interfaces referenced via System.Runtime but
+    not resolvable without type forwarder support or adding to System.Runtime
+  - Workaround: Use foreach on arrays (C# optimizes to indexed access)
+  - Test code written but disabled - see IteratorTests in Program.cs
 
 - [x] **params arrays** - Explicit array passing works ✅
   - Tests: TestParamsExplicitArray, TestParamsSingleElement, TestParamsEmptyArray,
@@ -61,9 +63,10 @@ These are C# features that should work but lack test coverage.
   - Also: MemoryTests for unsafe pointer patterns (TestPointerArrayAccess, etc.)
   - Added kernel SpanHelpers class for future direct method support
 
-- [ ] **nameof() operator** - Compiles to string literal, should just work
-  - Test: `string name = nameof(SomeClass);`
-  - Verifies: Compiler generates correct string
+- [x] **nameof() operator** - Compiles to string literal ✅
+  - Tests: NameofTests.TestNameofLocal, TestNameofField, TestNameofMethod,
+    TestNameofType, TestNameofParameter (454 tests)
+  - Verifies: Compiler generates correct string, String.Length works
 
 ### 1.5 Synchronization (Lower Priority)
 
@@ -180,7 +183,8 @@ These are known limitations that are acceptable for the current scope.
 ### P2 - Nice to have
 7. [ ] Reflection FieldType/PropertyType/GetParameters
 8. [ ] TypedReference.ToObject for value types
-9. [ ] foreach on custom IEnumerable
+9. [~] foreach on custom IEnumerable → Documented limitation (interface resolution)
+10. [x] nameof() operator → NameofTests (454 tests)
 
 ---
 
@@ -195,11 +199,14 @@ public static class ExceptionTests { ... }
 // Resource management tests
 public static class DisposableTests { ... }
 
-// Iterator tests
+// Iterator tests (disabled - interface resolution needed)
 public static class IteratorTests { ... }
 
 // Span tests
 public static class SpanTests { ... }
+
+// nameof() operator tests
+public static class NameofTests { ... }
 ```
 
 ---
@@ -208,17 +215,27 @@ public static class SpanTests { ... }
 
 | Category | Total | Done | Remaining |
 |----------|-------|------|-----------|
-| Missing Tests | 9 | 7 | 2 |
+| Missing Tests | 9 | 8 | 1 |
 | Incomplete Impl | 5 | 0 | 5 |
 | Code TODOs (JIT) | 2 | 2 | 0 (clarified) |
 | Code TODOs (Platform) | 11 | 0 | 11 |
 | **P0 Items** | **3** | **3** | **0** |
 | **P1 Items** | **3** | **3** | **0** |
+| **P2 Items** | **4** | **2** | **2** |
 
 Last updated: 2025-12-14
-Test count: 449
+Test count: 454
 
 ## Recent Changes
+
+### nameof() Operator Tests (454 tests)
+- Added NameofTests class with 5 tests for nameof() operator:
+  - TestNameofLocal, TestNameofField, TestNameofMethod, TestNameofType, TestNameofParameter
+  - nameof() compiles to string literal at compile time, no runtime support needed
+- Documented foreach on custom IEnumerable as limitation:
+  - Requires IEnumerable/IEnumerator interface resolution from System.Runtime
+  - Test code written (IteratorTests) but disabled pending type forwarder support
+- Expanded IsSystemNamespace to match "System." prefixed namespaces
 
 ### Array Initializer Support (449 tests)
 - Completed RuntimeHelpers.InitializeArray JIT intrinsic:

@@ -3466,12 +3466,18 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
-    /// Check if the namespace is "System".
+    /// Check if the namespace is "System" or starts with "System."
+    /// This covers System, System.Collections, System.Collections.Generic, etc.
     /// </summary>
     private static bool IsSystemNamespace(byte* ns)
     {
-        return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
-               ns[4] == 'e' && ns[5] == 'm' && ns[6] == 0;
+        // Must start with "System"
+        if (!(ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
+              ns[4] == 'e' && ns[5] == 'm'))
+            return false;
+
+        // Either exactly "System" or "System.*"
+        return ns[6] == 0 || ns[6] == '.';
     }
 
     /// <summary>
@@ -3585,6 +3591,9 @@ public static unsafe class AssemblyLoader
                     name[5] == 'o' && name[6] == 's' && name[7] == 'a' && name[8] == 'b' &&
                     name[9] == 'l' && name[10] == 'e' && name[11] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.IDisposable;
+                // Note: IEnumerable/IEnumerator are NOT well-known types.
+                // They're interfaces defined in korlib that need metadata resolution
+                // for proper interface dispatch. They're resolved via korlib fallback.
                 break;
 
             case (byte)'U':  // UInt32, UInt64, UInt16, UIntPtr
