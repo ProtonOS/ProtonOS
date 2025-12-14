@@ -5182,4 +5182,70 @@ public static unsafe class MetadataIntegration
 
         return context;
     }
+
+    /// <summary>
+    /// Get the method token for a method in an interface at a given index.
+    /// </summary>
+    /// <param name="assemblyId">The assembly ID containing the interface.</param>
+    /// <param name="interfaceTypeToken">The TypeDef token of the interface.</param>
+    /// <param name="methodIndex">The 0-based index of the method in the interface.</param>
+    /// <returns>The MethodDef token, or 0 if not found.</returns>
+    public static uint GetInterfaceMethodToken(uint assemblyId, uint interfaceTypeToken, int methodIndex)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        // Get type RID from token
+        uint typeRid = interfaceTypeToken & 0x00FFFFFF;
+
+        // Get the method list start for this type
+        uint methodListStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRid);
+
+        // Get method count by looking at next type's method list
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint totalMethodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+        uint nextMethodList;
+
+        if (typeRid < typeDefCount)
+        {
+            nextMethodList = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRid + 1);
+        }
+        else
+        {
+            nextMethodList = totalMethodCount + 1;
+        }
+
+        // Calculate method count
+        int methodCount = (int)(nextMethodList - methodListStart);
+
+        if (methodIndex < 0 || methodIndex >= methodCount)
+            return 0;
+
+        // Return the method token at this index
+        uint methodRid = methodListStart + (uint)methodIndex;
+        return 0x06000000 | methodRid;
+    }
+
+    /// <summary>
+    /// Check if an interface method has a body (is not abstract).
+    /// Methods with bodies have non-zero RVA in their metadata.
+    /// </summary>
+    /// <param name="assemblyId">The assembly ID containing the method.</param>
+    /// <param name="methodToken">The MethodDef token.</param>
+    /// <returns>True if the method has a body, false if abstract.</returns>
+    public static bool InterfaceMethodHasBody(uint assemblyId, uint methodToken)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return false;
+
+        // Get method RID from token
+        uint methodRid = methodToken & 0x00FFFFFF;
+
+        // Get the method's RVA - if non-zero, it has a body
+        uint rva = MetadataReader.GetMethodDefRva(ref asm->Tables, ref asm->Sizes, methodRid);
+
+        return rva != 0;
+    }
 }

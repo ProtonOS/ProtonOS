@@ -288,6 +288,13 @@ public static class TestRunner
         RecordResult("InterfaceTests.TestExplicitInterfaceImplicit", InterfaceTests.TestExplicitInterfaceImplicit() == 10);
         RecordResult("InterfaceTests.TestExplicitInterfaceExplicit", InterfaceTests.TestExplicitInterfaceExplicit() == 42);
         RecordResult("InterfaceTests.TestExplicitInterfaceBoth", InterfaceTests.TestExplicitInterfaceBoth() == 52);
+
+        // Default interface method tests (C# 8+ feature)
+        RecordResult("InterfaceTests.TestDefaultMethodBase", InterfaceTests.TestDefaultMethodBase() == 21);
+        RecordResult("InterfaceTests.TestDefaultMethodNotOverridden", InterfaceTests.TestDefaultMethodNotOverridden() == 42);
+        RecordResult("InterfaceTests.TestDefaultMethodFixed", InterfaceTests.TestDefaultMethodFixed() == 100);
+        RecordResult("InterfaceTests.TestDefaultMethodOverridden", InterfaceTests.TestDefaultMethodOverridden() == 30);
+        RecordResult("InterfaceTests.TestDefaultMethodPartialOverride", InterfaceTests.TestDefaultMethodPartialOverride() == 100);
     }
 
     private static void RunStructWithRefTests()
@@ -4441,6 +4448,43 @@ public interface IAdder
 }
 
 /// <summary>
+/// Interface with a default method implementation (C# 8+ feature).
+/// </summary>
+public interface IWithDefault
+{
+    int GetBaseValue();
+
+    // Default interface method - provides implementation in the interface itself
+    int GetDoubled() => GetBaseValue() * 2;
+
+    // Another default method with a fixed value
+    int GetFixed() => 100;
+}
+
+/// <summary>
+/// Class that implements IWithDefault but only overrides GetBaseValue.
+/// GetDoubled and GetFixed should use the default implementations.
+/// </summary>
+public class DefaultMethodImpl : IWithDefault
+{
+    public int GetBaseValue() => 21;
+    // Note: Does NOT override GetDoubled or GetFixed - uses defaults
+}
+
+/// <summary>
+/// Class that implements IWithDefault and overrides one default method.
+/// </summary>
+public class PartialOverrideImpl : IWithDefault
+{
+    public int GetBaseValue() => 10;
+
+    // Override the default method
+    public int GetDoubled() => GetBaseValue() * 3;  // Triple instead of double
+
+    // Does NOT override GetFixed - uses default
+}
+
+/// <summary>
 /// Implementation of IValue that returns 42.
 /// </summary>
 public class ValueImpl : IValue
@@ -4658,6 +4702,57 @@ public static class InterfaceTests
         int implicitVal = v.GetValue();  // 10
         int explicitVal = e.GetValue();  // 42
         return implicitVal + explicitVal;  // Should return 52
+    }
+
+    // =========================================================================
+    // Default Interface Method Tests (C# 8+ feature)
+    // =========================================================================
+
+    /// <summary>
+    /// Test calling the abstract method that the class implements.
+    /// </summary>
+    public static int TestDefaultMethodBase()
+    {
+        IWithDefault obj = new DefaultMethodImpl();
+        return obj.GetBaseValue();  // Should return 21
+    }
+
+    /// <summary>
+    /// Test calling a default interface method (not overridden by class).
+    /// The default implementation calls GetBaseValue() * 2.
+    /// </summary>
+    public static int TestDefaultMethodNotOverridden()
+    {
+        IWithDefault obj = new DefaultMethodImpl();
+        return obj.GetDoubled();  // Should return 21 * 2 = 42
+    }
+
+    /// <summary>
+    /// Test calling a default interface method with fixed return value.
+    /// </summary>
+    public static int TestDefaultMethodFixed()
+    {
+        IWithDefault obj = new DefaultMethodImpl();
+        return obj.GetFixed();  // Should return 100
+    }
+
+    /// <summary>
+    /// Test calling an overridden default method.
+    /// PartialOverrideImpl overrides GetDoubled to triple instead of double.
+    /// </summary>
+    public static int TestDefaultMethodOverridden()
+    {
+        IWithDefault obj = new PartialOverrideImpl();
+        return obj.GetDoubled();  // Should return 10 * 3 = 30
+    }
+
+    /// <summary>
+    /// Test that non-overridden default still works when other defaults are overridden.
+    /// </summary>
+    public static int TestDefaultMethodPartialOverride()
+    {
+        IWithDefault obj = new PartialOverrideImpl();
+        return obj.GetFixed();  // Should return 100 (default, not overridden)
     }
 }
 

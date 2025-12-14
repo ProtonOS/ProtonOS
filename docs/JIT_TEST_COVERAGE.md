@@ -269,7 +269,17 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ castclass with interface ((T)obj)
 
 ### Default Interface Methods
-- 🔲 Not planned (C# 8+ feature)
+- ✅ Default methods in interfaces (C# 8+)
+  - ✅ Calling default method through base interface
+  - ✅ Calling default method on implementing class (not overridden)
+  - ✅ Calling overridden method on implementing class
+  - ✅ Partial override (class overrides some but not all defaults)
+- Implementation details:
+  - Interface vtable slots expanded to include all interface methods
+  - `CountInterfaceMethodSlots()` sums all interface method counts
+  - `PopulateInterfaceMap()` advances slot by interface method count
+  - `TryResolveDefaultInterfaceMethod()` finds and compiles default implementations
+  - 5 new tests: TestDefaultMethodBase, TestDefaultMethodNotOverridden, TestDefaultMethodFixed, TestDefaultMethodOverridden, TestDefaultMethodPartialOverride
 
 ---
 
@@ -445,11 +455,21 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 404 passing
+- Current test count: 409 passing
 - Target: Comprehensive JIT coverage for driver development
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Default Interface Methods (2025-12)
+Implemented C# 8+ default interface method support:
+- **Vtable size fix**: `totalVtableSlots` now uses `max(newVirtualSlots, interfaceMethodSlots)` to account for default methods
+- **CountInterfaceMethodSlots()**: New function to sum interface method counts from interface MTs
+- **PopulateInterfaceMap() fix**: Now advances `currentSlot` by actual interface method count (was always 1)
+- **TryResolveDefaultInterfaceMethod()**: Finds and compiles default implementations when vtable slot is 0
+- **InterfaceMethodHasBody()**: Checks if interface method has RVA (implementation body)
+- **5 new tests**: TestDefaultMethodBase, TestDefaultMethodNotOverridden, TestDefaultMethodFixed, TestDefaultMethodOverridden, TestDefaultMethodPartialOverride
+- Test count increased from 404 to 409
 
 ### Tail Call Optimization (2025-12)
 Added self-recursive tail call optimization:

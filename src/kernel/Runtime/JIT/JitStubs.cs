@@ -252,7 +252,19 @@ public static unsafe class JitStubs
             return;
         }
 
-        // No method registered for this vtable slot - this is a gap in our metadata
+        // No method registered for this vtable slot - check for default interface method
+        MethodTable* mt = (MethodTable*)methodTable;
+
+        // Try to find a default interface implementation for this slot
+        nint defaultImplCode = TryResolveDefaultInterfaceMethod(mt, vtableSlot);
+        if (defaultImplCode != 0)
+        {
+            // Found a default implementation, populate the vtable
+            vtable[vtableSlot] = defaultImplCode;
+            return;
+        }
+
+        // Still not found - this is a gap in our metadata
         DebugConsole.Write("[JitStubs] FATAL: VTable slot ");
         DebugConsole.WriteDecimal((uint)vtableSlot);
         DebugConsole.Write(" has no registered method for MT 0x");
@@ -281,5 +293,101 @@ public static unsafe class JitStubs
 
         DebugConsole.WriteLine("!!! SYSTEM HALTED - Missing vtable method registration");
         CPU.HaltForever();
+    }
+
+    /// <summary>
+    /// Try to resolve a default interface method for a vtable slot.
+    /// Called when a class implements an interface but doesn't override a method
+    /// that has a default implementation in the interface.
+    /// </summary>
+    /// <param name="mt">The MethodTable of the implementing class.</param>
+    /// <param name="vtableSlot">The vtable slot to resolve.</param>
+    /// <returns>The native code pointer for the default implementation, or 0 if not found.</returns>
+    private static nint TryResolveDefaultInterfaceMethod(MethodTable* mt, short vtableSlot)
+    {
+        if (mt == null || mt->_usNumInterfaces == 0)
+            return 0;
+
+        // Iterate through the interface map to find which interface this slot belongs to
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int numInterfaces = mt->_usNumInterfaces;
+
+        for (int i = 0; i < numInterfaces; i++)
+        {
+            MethodTable* interfaceMT = map[i].InterfaceMT;
+            int startSlot = map[i].StartSlot;
+
+            if (interfaceMT == null)
+                continue;
+
+            // Check if vtableSlot is in this interface's range
+            int interfaceMethodCount = interfaceMT->_usNumVtableSlots;
+            if (vtableSlot >= startSlot && vtableSlot < startSlot + interfaceMethodCount)
+            {
+                // This slot belongs to this interface
+                int methodIndex = vtableSlot - startSlot;
+
+                DebugConsole.Write("[JitStubs] VTable slot ");
+                DebugConsole.WriteDecimal((uint)vtableSlot);
+                DebugConsole.Write(" is interface method ");
+                DebugConsole.WriteDecimal((uint)methodIndex);
+                DebugConsole.Write(" of interface MT 0x");
+                DebugConsole.WriteHex((ulong)interfaceMT);
+                DebugConsole.WriteLine();
+
+                // Look up the interface type info to get its assembly ID and type token
+                Reflection.ReflectionRuntime.LookupTypeInfo(interfaceMT, out uint interfaceAsmId, out uint interfaceTypeToken);
+
+                if (interfaceAsmId == 0 || interfaceTypeToken == 0)
+                {
+                    DebugConsole.WriteLine("[JitStubs] Could not resolve interface type info");
+                    continue;
+                }
+
+                // Find the method token for the interface method at this index
+                uint interfaceMethodToken = MetadataIntegration.GetInterfaceMethodToken(
+                    interfaceAsmId, interfaceTypeToken, methodIndex);
+
+                if (interfaceMethodToken == 0)
+                {
+                    DebugConsole.Write("[JitStubs] Could not find interface method token at index ");
+                    DebugConsole.WriteDecimal((uint)methodIndex);
+                    DebugConsole.WriteLine();
+                    continue;
+                }
+
+                DebugConsole.Write("[JitStubs] Interface method token: 0x");
+                DebugConsole.WriteHex(interfaceMethodToken);
+                DebugConsole.Write(" asm ");
+                DebugConsole.WriteDecimal(interfaceAsmId);
+                DebugConsole.WriteLine();
+
+                // Check if this method has a body (is not abstract)
+                bool hasBody = MetadataIntegration.InterfaceMethodHasBody(interfaceAsmId, interfaceMethodToken);
+                if (!hasBody)
+                {
+                    DebugConsole.WriteLine("[JitStubs] Interface method is abstract, no default impl");
+                    continue;
+                }
+
+                DebugConsole.WriteLine("[JitStubs] Found default interface method - compiling");
+
+                // Compile the interface's default implementation
+                var result = Tier0JIT.CompileMethod(interfaceAsmId, interfaceMethodToken);
+                if (result.Success && result.CodeAddress != null)
+                {
+                    DebugConsole.Write("[JitStubs] Default impl compiled at 0x");
+                    DebugConsole.WriteHex((ulong)result.CodeAddress);
+                    DebugConsole.WriteLine();
+                    return (nint)result.CodeAddress;
+                }
+                else
+                {
+                    DebugConsole.WriteLine("[JitStubs] Failed to compile default interface method");
+                }
+            }
+        }
+
+        return 0;
     }
 }

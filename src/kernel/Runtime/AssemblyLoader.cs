@@ -1656,15 +1656,26 @@ public static unsafe class AssemblyLoader
         // Count new virtual slots introduced by this type
         ushort newVirtualSlots = CountNewVirtualSlots(asm, rowId);
 
-        // Total vtable slots = inherited + new
-        ushort totalVtableSlots = (ushort)(baseVtableSlots + newVirtualSlots);
-
-        // Count interfaces implemented by this type (for interface map)
+        // Count interfaces and interface method slots
         ushort numInterfaces = 0;
+        ushort interfaceMethodSlots = 0;
         if (!isInterface)
         {
             numInterfaces = CountInterfacesForType(asm, rowId);
+            if (numInterfaces > 0)
+            {
+                interfaceMethodSlots = CountInterfaceMethodSlots(asm, rowId);
+            }
         }
+
+        // Total vtable slots = inherited + max(newVirtualSlots, interfaceMethodSlots)
+        // - newVirtualSlots counts methods the class defines (including interface implementations)
+        // - interfaceMethodSlots counts all interface methods (including defaults not implemented)
+        // Using max() ensures we have enough slots for both cases:
+        // - Regular classes: newVirtualSlots covers implementations
+        // - Classes with default interface methods: interfaceMethodSlots covers defaults
+        ushort extraSlots = newVirtualSlots > interfaceMethodSlots ? newVirtualSlots : interfaceMethodSlots;
+        ushort totalVtableSlots = (ushort)(baseVtableSlots + extraSlots);
 
         // Allocate MethodTable with vtable space AND interface map space
         ulong mtSize = (ulong)(MethodTable.HeaderSize + totalVtableSlots * sizeof(nint) + numInterfaces * InterfaceMapEntry.Size);
@@ -1748,10 +1759,12 @@ public static unsafe class AssemblyLoader
 
         DebugConsole.Write("[CreateMT] token=0x");
         DebugConsole.WriteHex(token);
-        DebugConsole.Write(" baseSlots=");
+        DebugConsole.Write(" base=");
         DebugConsole.WriteDecimal(baseVtableSlots);
-        DebugConsole.Write(" newSlots=");
+        DebugConsole.Write(" new=");
         DebugConsole.WriteDecimal(newVirtualSlots);
+        DebugConsole.Write(" iface=");
+        DebugConsole.WriteDecimal(interfaceMethodSlots);
         DebugConsole.Write(" total=");
         DebugConsole.WriteDecimal(totalVtableSlots);
         DebugConsole.WriteLine();
@@ -2283,6 +2296,67 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Count the total number of vtable slots needed for interface methods.
+    /// This sums up all methods from all interfaces the type implements.
+    /// </summary>
+    private static ushort CountInterfaceMethodSlots(LoadedAssembly* asm, uint typeDefRow)
+    {
+        uint interfaceImplCount = asm->Tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
+        ushort totalSlots = 0;
+
+        for (uint i = 1; i <= interfaceImplCount; i++)
+        {
+            uint classRowId = MetadataReader.GetInterfaceImplClass(ref asm->Tables, ref asm->Sizes, i);
+            if (classRowId != typeDefRow)
+                continue;
+
+            // Get the interface TypeDefOrRef
+            uint rawInterface = MetadataReader.GetInterfaceImplInterface(ref asm->Tables, ref asm->Sizes, i);
+            uint tag = rawInterface & 0x03;
+            uint rowId = rawInterface >> 2;
+
+            MethodTable* interfaceMT = null;
+
+            if (tag == 0)  // TypeDef
+            {
+                uint interfaceToken = 0x02000000 | rowId;
+                interfaceMT = asm->Types.Lookup(interfaceToken);
+                if (interfaceMT == null)
+                    interfaceMT = CreateTypeDefMethodTable(asm, interfaceToken);
+            }
+            else if (tag == 1)  // TypeRef
+            {
+                LoadedAssembly* targetAsm = null;
+                uint targetToken = 0;
+                if (ResolveTypeRefToTypeDef(asm, rowId, out targetAsm, out targetToken) && targetAsm != null)
+                {
+                    interfaceMT = targetAsm->Types.Lookup(targetToken);
+                    if (interfaceMT == null)
+                        interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                }
+            }
+            else if (tag == 2)  // TypeSpec - generic interface
+            {
+                uint typeSpecToken = 0x1B000000 | rowId;
+                interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+            }
+
+            if (interfaceMT != null)
+            {
+                // Add the number of methods in this interface
+                totalSlots += interfaceMT->_usNumVtableSlots;
+            }
+            else
+            {
+                // Fallback: assume 1 method if we can't resolve the interface
+                totalSlots++;
+            }
+        }
+
+        return totalSlots;
+    }
+
+    /// <summary>
     /// Populate the interface map for a MethodTable.
     /// For each interface, records the interface MT and the starting vtable slot.
     /// </summary>
@@ -2345,9 +2419,10 @@ public static unsafe class AssemblyLoader
                 map[mapIndex].StartSlot = currentSlot;
 
                 // Advance slot by number of methods in the interface
-                // For now, just use 1 (most interfaces have few methods)
-                // TODO: Get actual method count from interface's MT
-                currentSlot++;
+                ushort interfaceMethodCount = interfaceMT->_usNumVtableSlots;
+                if (interfaceMethodCount == 0)
+                    interfaceMethodCount = 1;  // Fallback for safety
+                currentSlot += interfaceMethodCount;
                 mapIndex++;
             }
         }
@@ -2416,7 +2491,10 @@ public static unsafe class AssemblyLoader
                 map[mapIndex].StartSlot = currentSlot;
 
                 // Advance slot by number of methods in the interface
-                currentSlot++;
+                ushort interfaceMethodCount = interfaceMT->_usNumVtableSlots;
+                if (interfaceMethodCount == 0)
+                    interfaceMethodCount = 1;  // Fallback for safety
+                currentSlot += interfaceMethodCount;
                 mapIndex++;
             }
         }
