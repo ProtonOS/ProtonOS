@@ -524,7 +524,7 @@ public static unsafe class MetadataIntegration
         mt->_usComponentSize = componentSize;
         mt->_usFlags = ValueTypeFlag;
         mt->_uBaseSize = baseSize;
-        mt->_relatedType = null;  // TODO: point to ValueType/Object
+        mt->_relatedType = null;  // Value types keep null - IsReferenceType checks this
         mt->_usNumVtableSlots = NumVtableSlots;
         mt->_usNumInterfaces = 0;
         mt->_uHashCode = 0;
@@ -2126,6 +2126,24 @@ public static unsafe class MetadataIntegration
     {
         result = default;
 
+        // Check for RuntimeHelpers.InitializeArray - handle as JIT intrinsic
+        uint memberRefRowId = token & 0x00FFFFFF;
+        if (IsRuntimeHelpersInitializeArrayMemberRef(memberRefRowId))
+        {
+            DebugConsole.WriteLine("[MetaInt] Detected RuntimeHelpers.InitializeArray - handling as JIT intrinsic");
+            result.IsValid = true;
+            result.IsInitializeArray = true;
+            result.NativeCode = null;  // Handled inline by JIT
+            result.HasThis = false;    // Static method
+            result.ArgCount = 2;       // (Array array, RuntimeFieldHandle fldHandle)
+            result.ReturnKind = ReturnKind.Void;
+            result.IsVirtual = false;
+            result.VtableSlot = -1;
+            result.MethodTable = null;
+            result.RegistryEntry = null;
+            return true;
+        }
+
         // First, try to resolve via the AOT method registry for well-known types like String
         if (TryResolveAotMemberRef(token, out result))
         {
@@ -3421,6 +3439,79 @@ public static unsafe class MetadataIntegration
         // "System" = 6 chars
         return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
                ns[4] == 'e' && ns[5] == 'm' && ns[6] == 0;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef row refers to System.Runtime.CompilerServices.RuntimeHelpers.InitializeArray.
+    /// </summary>
+    private static bool IsRuntimeHelpersInitializeArrayMemberRef(uint memberRefRowId)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the member name
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        if (name == null)
+            return false;
+
+        // Check if name is "InitializeArray"
+        if (!IsInitializeArrayName(name))
+            return false;
+
+        // Get the class (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+
+        // Must be a TypeRef to RuntimeHelpers
+        if (classRef.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+        byte* typeName = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+
+        // Check if type is "RuntimeHelpers" in namespace "System.Runtime.CompilerServices"
+        return IsRuntimeHelpersName(typeName) && IsCompilerServicesNamespace(typeNs);
+    }
+
+    /// <summary>Check if name equals "InitializeArray".</summary>
+    private static bool IsInitializeArrayName(byte* name)
+    {
+        if (name == null) return false;
+        // "InitializeArray" = 15 chars
+        return name[0] == 'I' && name[1] == 'n' && name[2] == 'i' && name[3] == 't' &&
+               name[4] == 'i' && name[5] == 'a' && name[6] == 'l' && name[7] == 'i' &&
+               name[8] == 'z' && name[9] == 'e' && name[10] == 'A' && name[11] == 'r' &&
+               name[12] == 'r' && name[13] == 'a' && name[14] == 'y' && name[15] == 0;
+    }
+
+    /// <summary>Check if name equals "RuntimeHelpers".</summary>
+    private static bool IsRuntimeHelpersName(byte* name)
+    {
+        if (name == null) return false;
+        // "RuntimeHelpers" = 14 chars
+        return name[0] == 'R' && name[1] == 'u' && name[2] == 'n' && name[3] == 't' &&
+               name[4] == 'i' && name[5] == 'm' && name[6] == 'e' && name[7] == 'H' &&
+               name[8] == 'e' && name[9] == 'l' && name[10] == 'p' && name[11] == 'e' &&
+               name[12] == 'r' && name[13] == 's' && name[14] == 0;
+    }
+
+    /// <summary>Check if namespace equals "System.Runtime.CompilerServices".</summary>
+    private static bool IsCompilerServicesNamespace(byte* ns)
+    {
+        if (ns == null) return false;
+        // "System.Runtime.CompilerServices" = 31 chars
+        return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
+               ns[4] == 'e' && ns[5] == 'm' && ns[6] == '.' && ns[7] == 'R' &&
+               ns[8] == 'u' && ns[9] == 'n' && ns[10] == 't' && ns[11] == 'i' &&
+               ns[12] == 'm' && ns[13] == 'e' && ns[14] == '.' && ns[15] == 'C' &&
+               ns[16] == 'o' && ns[17] == 'm' && ns[18] == 'p' && ns[19] == 'i' &&
+               ns[20] == 'l' && ns[21] == 'e' && ns[22] == 'r' && ns[23] == 'S' &&
+               ns[24] == 'e' && ns[25] == 'r' && ns[26] == 'v' && ns[27] == 'i' &&
+               ns[28] == 'c' && ns[29] == 'e' && ns[30] == 's' && ns[31] == 0;
     }
 
     /// <summary>

@@ -6288,6 +6288,92 @@ public static unsafe class AssemblyLoader
         return null;
     }
 
+    // ============================================================================
+    // Field RVA Resolution (for array initializers)
+    // ============================================================================
+
+    /// <summary>
+    /// Get the data address for a field that has an RVA entry (static data like array initializers).
+    /// The FieldRVA table maps FieldDef row IDs to RVAs where static data is stored in the PE.
+    /// Returns null if the field has no RVA (not a static data field).
+    /// </summary>
+    /// <param name="assemblyId">Assembly containing the field</param>
+    /// <param name="fieldDefRowId">FieldDef row ID (not token - just the row number)</param>
+    /// <returns>Pointer to the field's static data, or null if not found</returns>
+    public static byte* GetFieldDataAddress(uint assemblyId, uint fieldDefRowId)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        // Get the number of rows in the FieldRVA table
+        uint fieldRvaRowCount = asm->Tables.RowCounts[(int)MetadataTableId.FieldRVA];
+        if (fieldRvaRowCount == 0)
+            return null;
+
+        // Search the FieldRVA table for a matching field
+        // FieldRVA layout: RVA (4 bytes) + Field (field index)
+        for (uint row = 1; row <= fieldRvaRowCount; row++)
+        {
+            uint fieldRowId = MetadataReader.GetFieldRvaField(ref asm->Tables, ref asm->Sizes, row);
+            if (fieldRowId == fieldDefRowId)
+            {
+                // Found the field - get the RVA
+                uint rva = MetadataReader.GetFieldRvaRva(ref asm->Tables, ref asm->Sizes, row);
+                if (rva == 0)
+                    return null;
+
+                // Convert RVA to actual address
+                // RVA is relative to section virtual addresses, not file offsets
+                // Use PEHelper.RvaToFilePointer to do proper section-aware conversion
+                byte* dataAddress = (byte*)PEHelper.RvaToFilePointer(asm->ImageBase, rva);
+
+                DebugConsole.Write("[AsmLoader] GetFieldDataAddress: field row ");
+                DebugConsole.WriteDecimal(fieldDefRowId);
+                DebugConsole.Write(" RVA=0x");
+                DebugConsole.WriteHex(rva);
+                DebugConsole.Write(" addr=0x");
+                DebugConsole.WriteHex((ulong)dataAddress);
+                DebugConsole.WriteLine();
+
+                return dataAddress;
+            }
+        }
+
+        return null;  // Field not in FieldRVA table (not static data)
+    }
+
+    /// <summary>
+    /// Get the data address for a field token (FieldDef or MemberRef).
+    /// This handles the token-to-row-ID conversion and cross-assembly resolution.
+    /// </summary>
+    /// <param name="assemblyId">Assembly where the token appears</param>
+    /// <param name="fieldToken">Field token (FieldDef 0x04 or MemberRef 0x0A)</param>
+    /// <returns>Pointer to the field's static data, or null if not found</returns>
+    public static byte* GetFieldDataAddressByToken(uint assemblyId, uint fieldToken)
+    {
+        byte tableId = (byte)(fieldToken >> 24);
+        uint rowId = fieldToken & 0x00FFFFFF;
+
+        if (tableId == 0x04)  // FieldDef
+        {
+            // Direct field definition - look up in this assembly
+            return GetFieldDataAddress(assemblyId, rowId);
+        }
+        else if (tableId == 0x0A)  // MemberRef
+        {
+            // Cross-assembly reference - need to resolve to target assembly
+            uint targetFieldToken, targetAsmId;
+            if (ResolveMemberRefField(assemblyId, fieldToken, out targetFieldToken, out targetAsmId))
+            {
+                uint targetRowId = targetFieldToken & 0x00FFFFFF;
+                return GetFieldDataAddress(targetAsmId, targetRowId);
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Print loader statistics.
     /// </summary>

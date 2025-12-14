@@ -725,6 +725,8 @@ public static class TestRunner
         RecordResult("ArrayTests.TestStelem", ArrayTests.TestStelem() == 42);
         RecordResult("ArrayTests.TestLdlen", ArrayTests.TestLdlen() == 5);
         RecordResult("ArrayTests.TestArraySum", ArrayTests.TestArraySum() == 15);
+        RecordResult("ArrayTests.TestArrayInitializer", ArrayTests.TestArrayInitializer() == 15);
+        RecordResult("ArrayTests.TestByteArrayInitializer", ArrayTests.TestByteArrayInitializer() == 100);
         RecordResult("ArrayTests.TestBoundsCheckReadOverflow", ArrayTests.TestBoundsCheckReadOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
@@ -2084,6 +2086,38 @@ public static class ArrayTests
             sum += arr[i];
         }
         return sum;  // 15
+    }
+
+    /// <summary>
+    /// Test array initializer syntax: new int[] { 1, 2, 3, 4, 5 }
+    /// This tests RuntimeHelpers.InitializeArray which is now handled as a JIT intrinsic.
+    /// </summary>
+    public static int TestArrayInitializer()
+    {
+        // Simplified test: just check if first element is 1
+        int[] arr = new int[] { 1, 2, 3, 4, 5 };
+        // Return first element - should be 1, but returning 15 means sum check would pass
+        // Actually return the sum so we can detect both problems
+        int sum = 0;
+        for (int i = 0; i < arr.Length; i++)
+        {
+            sum += arr[i];
+        }
+        return sum;  // Should be 15
+    }
+
+    /// <summary>
+    /// Test byte array initializer syntax.
+    /// </summary>
+    public static int TestByteArrayInitializer()
+    {
+        byte[] arr = new byte[] { 10, 20, 30, 40 };
+        int sum = 0;
+        for (int i = 0; i < arr.Length; i++)
+        {
+            sum += arr[i];
+        }
+        return sum;  // 100
     }
 
     /// <summary>

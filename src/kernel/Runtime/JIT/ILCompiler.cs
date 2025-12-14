@@ -373,6 +373,9 @@ public unsafe struct ResolvedMethod
     /// <summary>MethodTable pointer for the type argument T in Activator.CreateInstance&lt;T&gt;().</summary>
     public void* ActivatorTypeArgMT;
 
+    /// <summary>True if this is RuntimeHelpers.InitializeArray (JIT intrinsic).</summary>
+    public bool IsInitializeArray;
+
     /// <summary>True if this is an MD array method (Get, Set, Address, .ctor).</summary>
     public bool IsMDArrayMethod;
 
@@ -1155,7 +1158,9 @@ public unsafe struct ILCompiler
         // Emit prologue
         // Calculate local space: localCount * 64 + evalStack space + struct return temp
         // Use 64 bytes per local to support value type locals up to 64 bytes
-        // TODO: Parse local signature to get exact type sizes
+        // Note: Local sizes are parsed and stored in _localTypeSize but we use fixed
+        // 64-byte slots for simplicity. Variable-sized slots would save stack space
+        // but require refactoring GetLocalOffset and all call sites.
         int localBytes = _localCount * 64 + 64;  // 64 bytes per local + eval stack
         int structReturnTempBytes = 32;           // 32 bytes for struct return temps
         _structReturnTempOffset = -(localBytes + 16);  // First 16 bytes of the temp area
@@ -4526,6 +4531,12 @@ public unsafe struct ILCompiler
         if (method.IsActivatorCreateInstance)
         {
             return CompileActivatorCreateInstance((MethodTable*)method.ActivatorTypeArgMT);
+        }
+
+        // Handle RuntimeHelpers.InitializeArray as JIT intrinsic
+        if (method.IsInitializeArray)
+        {
+            return CompileInitializeArray();
         }
 
         // Handle MD array methods (Get, Set, Address) as JIT intrinsic
@@ -9799,8 +9810,26 @@ public unsafe struct ILCompiler
                 break;
 
             case 0x04:  // FieldDef
-                // Field token - encode as (assemblyId << 32) | token
-                handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                // Field token - check if it has static data (array initializer)
+                // If so, return the actual data address; otherwise return token-based handle
+                {
+                    byte* fieldData = AssemblyLoader.GetFieldDataAddressByToken(_debugAssemblyId, token);
+                    if (fieldData != null)
+                    {
+                        // Field has static data - return actual address
+                        handleValue = (ulong)fieldData;
+                        DebugConsole.Write("[JIT] ldtoken field 0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.Write(" -> data addr 0x");
+                        DebugConsole.WriteHex(handleValue);
+                        DebugConsole.WriteLine();
+                    }
+                    else
+                    {
+                        // Regular field - encode as (assemblyId << 32) | token
+                        handleValue = ((ulong)_debugAssemblyId << 32) | token;
+                    }
+                }
                 break;
 
             case 0x06:  // MethodDef
@@ -9810,13 +9839,28 @@ public unsafe struct ILCompiler
                 break;
 
             case 0x0A:  // MemberRef - could be method or field
-                // Try field resolver first, then assume method
+                // Try to resolve as field with static data first
+                {
+                    byte* fieldData = AssemblyLoader.GetFieldDataAddressByToken(_debugAssemblyId, token);
+                    if (fieldData != null)
+                    {
+                        // MemberRef to field with static data - return actual address
+                        handleValue = (ulong)fieldData;
+                        DebugConsole.Write("[JIT] ldtoken memberref field 0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.Write(" -> data addr 0x");
+                        DebugConsole.WriteHex(handleValue);
+                        DebugConsole.WriteLine();
+                        break;
+                    }
+                }
+                // Try field resolver for regular fields
                 if (_fieldResolver != null)
                 {
                     ResolvedField field;
                     if (_fieldResolver(token, out field) && field.IsValid)
                     {
-                        // It's a field
+                        // It's a regular field
                         handleValue = ((ulong)_debugAssemblyId << 32) | token;
                         break;
                     }
@@ -11252,6 +11296,97 @@ public unsafe struct ILCompiler
         }
 
         DebugConsole.WriteLine("[JIT] CompileActivatorCreateInstance done");
+        return true;
+    }
+
+    /// <summary>
+    /// Compile RuntimeHelpers.InitializeArray as a JIT intrinsic.
+    /// Copies static data embedded in the assembly to an array's data section.
+    /// Stack: [..., Array array, RuntimeFieldHandle fldHandle] -> [...]
+    /// </summary>
+    private bool CompileInitializeArray()
+    {
+        DebugConsole.WriteLine("[JIT] CompileInitializeArray - inlining array initialization");
+
+        // Stack has: [array, fieldHandle] with fieldHandle on top
+        // The fieldHandle.Value is a pointer to the static data in the assembly
+
+        // Pop fieldHandle (pointer to static data)
+        PopReg(VReg.R2);  // RDX = fieldHandle.Value (source pointer)
+
+        // Pop array reference
+        PopReg(VReg.R1);  // RCX = array reference
+
+        // R1 (RCX) = array object pointer
+        // R2 (RDX) = source data pointer (from RuntimeFieldHandle)
+
+        // Get MethodTable* from array object: MT = *(void**)array
+        X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = array->MethodTable
+
+        // Get componentSize from MethodTable: componentSize = *(ushort*)MT (offset 0)
+        // movzx r8d, word ptr [rax]
+        _code.EmitByte(0x44);  // REX.R
+        _code.EmitByte(0x0F);  // 2-byte opcode prefix
+        _code.EmitByte(0xB7);  // MOVZX r32, r/m16
+        _code.EmitByte(0x00);  // ModR/M: R8, [RAX]
+        // R8 = componentSize
+
+        // Get array length: length = *(uint*)(array + 8)
+        // For SZ arrays, length is at offset 8 (after MT pointer)
+        X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R1, 8);  // EAX = array.Length
+
+        // Calculate total bytes: totalBytes = length * componentSize
+        // imul eax, r8d
+        _code.EmitByte(0x41);  // REX.B
+        _code.EmitByte(0x0F);
+        _code.EmitByte(0xAF);  // IMUL r32, r/m32
+        _code.EmitByte(0xC0);  // ModR/M: EAX, R8D
+        // RAX = total bytes to copy
+
+        // Calculate destination: dest = array + 16 (data starts after MT + Length + padding)
+        X64Emitter.Lea(ref _code, VReg.R3, VReg.R1, 16);  // R8 = array data pointer (dest)
+        // Note: VReg.R3 maps to x64 R8
+
+        // Source is already in RDX
+
+        // Now emit a simple byte copy loop:
+        // for (int i = 0; i < totalBytes; i++) dest[i] = src[i]
+        //
+        // Using RCX as counter (totalBytes), RSI as src, RDI as dest
+        // But we can use a simpler approach with indexed addressing
+
+        // Move count to RCX for rep movsb
+        X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);  // RCX = byte count
+
+        // Save RSI and RDI (callee-saved in Windows x64 ABI)
+        // push rsi
+        _code.EmitByte(0x56);
+        // push rdi
+        _code.EmitByte(0x57);
+
+        // Set up RSI (source) and RDI (dest) for rep movsb
+        // RSI = RDX (source), RDI = R8 (dest)
+        // mov rsi, rdx
+        _code.EmitByte(0x48);  // REX.W
+        _code.EmitByte(0x89);
+        _code.EmitByte(0xD6);  // ModR/M: RSI, RDX
+
+        // mov rdi, r8
+        _code.EmitByte(0x4C);  // REX.WR
+        _code.EmitByte(0x89);
+        _code.EmitByte(0xC7);  // ModR/M: RDI, R8
+
+        // rep movsb - copy RCX bytes from [RSI] to [RDI]
+        _code.EmitByte(0xF3);  // REP prefix
+        _code.EmitByte(0xA4);  // MOVSB
+
+        // Restore RDI and RSI
+        // pop rdi
+        _code.EmitByte(0x5F);
+        // pop rsi
+        _code.EmitByte(0x5E);
+
+        DebugConsole.WriteLine("[JIT] CompileInitializeArray done");
         return true;
     }
 }

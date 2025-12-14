@@ -114,10 +114,16 @@ These are TODO comments found in kernel code that may need attention.
 
 ### 3.1 JIT Compiler
 
-| File | Line | TODO |
-|------|------|------|
-| ILCompiler.cs | 1158 | Parse local signature to get exact type sizes |
-| MetadataIntegration.cs | 486 | Point ValueType relatedType to ValueType/Object |
+| File | Line | Status | Notes |
+|------|------|--------|-------|
+| ILCompiler.cs | 1158 | Clarified | Local sizes ARE parsed, fixed 64-byte layout is intentional for simplicity |
+| MetadataIntegration.cs | 527 | Clarified | Value types correctly keep `_relatedType = null` for IsReferenceType check |
+
+### 3.3 Partial Implementations
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| RuntimeHelpers.InitializeArray | Complete | JIT intrinsic with FieldRVA resolution via PEHelper.RvaToFilePointer |
 
 ### 3.2 Platform/Drivers (can defer)
 
@@ -204,15 +210,30 @@ public static class SpanTests { ... }
 |----------|-------|------|-----------|
 | Missing Tests | 9 | 7 | 2 |
 | Incomplete Impl | 5 | 0 | 5 |
-| Code TODOs (JIT) | 2 | 0 | 2 |
+| Code TODOs (JIT) | 2 | 2 | 0 (clarified) |
 | Code TODOs (Platform) | 11 | 0 | 11 |
 | **P0 Items** | **3** | **3** | **0** |
 | **P1 Items** | **3** | **3** | **0** |
 
 Last updated: 2025-12-14
-Test count: 447
+Test count: 449
 
 ## Recent Changes
+
+### Array Initializer Support (449 tests)
+- Completed RuntimeHelpers.InitializeArray JIT intrinsic:
+  - Added GetFieldDataAddress() in AssemblyLoader to search FieldRVA table
+  - Fixed RVA-to-file-offset conversion using PEHelper.RvaToFilePointer
+  - ldtoken now resolves field tokens to actual data addresses for static initializers
+  - CompileInitializeArray uses rep movsb to copy data (with RSI/RDI save/restore)
+- Added 2 new tests: TestArrayInitializer, TestByteArrayInitializer
+- Array syntax `new int[] { 1, 2, 3, 4, 5 }` now works correctly
+
+### Technical Debt Cleanup (447 tests)
+- Clarified JIT TODOs that were misleading:
+  - ILCompiler.cs:1158 - Local sizes ARE parsed via Tier0JIT, fixed 64-byte layout is intentional for simplicity
+  - MetadataIntegration.cs:527 - Value types correctly keep `_relatedType = null` for IsReferenceType check
+- Korlib Span<T> method registration deferred - requires generic method instantiation in JIT
 
 ### Span<T> Tests (447 tests)
 - Added SpanTests class with 10 tests for Span-like operations
