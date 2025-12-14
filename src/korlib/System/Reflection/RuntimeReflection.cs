@@ -38,6 +38,24 @@ namespace System.Reflection
                         _name = BytePtrToString(namePtr);
                     else
                         _name = "<unknown>";
+
+                    // Debug: print token and cached name length
+                    byte* prefix = stackalloc byte[20];
+                    prefix[0] = (byte)'N'; prefix[1] = (byte)'a'; prefix[2] = (byte)'m'; prefix[3] = (byte)'e';
+                    prefix[4] = (byte)' '; prefix[5] = (byte)'c'; prefix[6] = (byte)'a'; prefix[7] = (byte)'c';
+                    prefix[8] = (byte)'h'; prefix[9] = (byte)'e'; prefix[10] = (byte)'d'; prefix[11] = (byte)'=';
+                    prefix[12] = 0;
+                    Debug_PrintInt(prefix, _name.Length);
+                }
+                else
+                {
+                    // Debug: print when returning cached value
+                    byte* prefix = stackalloc byte[20];
+                    prefix[0] = (byte)'N'; prefix[1] = (byte)'a'; prefix[2] = (byte)'m'; prefix[3] = (byte)'e';
+                    prefix[4] = (byte)' '; prefix[5] = (byte)'r'; prefix[6] = (byte)'e'; prefix[7] = (byte)'t';
+                    prefix[8] = (byte)'u'; prefix[9] = (byte)'r'; prefix[10] = (byte)'n'; prefix[11] = (byte)'=';
+                    prefix[12] = 0;
+                    Debug_PrintInt(prefix, _name.Length);
                 }
                 return _name;
             }
@@ -87,7 +105,7 @@ namespace System.Reflection
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture)
         {
-            return Reflection_InvokeMethod(_methodToken, obj, parameters);
+            return Reflection_InvokeMethod(_assemblyId, _methodToken, obj, parameters);
         }
 
         public override MethodInfo GetBaseDefinition() => this;
@@ -96,6 +114,12 @@ namespace System.Reflection
             throw new NotSupportedException();
 
         public override int MetadataToken => (int)_methodToken;
+
+        /// <summary>
+        /// Gets the assembly ID where this method is defined.
+        /// ProtonOS-specific extension for reflection invoke support.
+        /// </summary>
+        internal uint AssemblyId => _assemblyId;
 
         // Import kernel reflection APIs
         [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
@@ -108,7 +132,10 @@ namespace System.Reflection
         private static extern bool Reflection_IsMethodVirtual(uint assemblyId, uint methodToken);
 
         [DllImport("*", EntryPoint = "Reflection_InvokeMethod", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern object? Reflection_InvokeMethod(uint methodToken, object? target, object?[]? args);
+        private static extern object? Reflection_InvokeMethod(uint assemblyId, uint methodToken, object? target, object?[]? args);
+
+        [DllImport("*", EntryPoint = "Debug_PrintInt", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern void Debug_PrintInt(byte* prefix, int value);
 
         private static string BytePtrToString(byte* ptr)
         {
@@ -122,11 +149,27 @@ namespace System.Reflection
             if (len == 0)
                 return string.Empty;
 
+            // Debug: print calculated length
+            byte* prefixLen = stackalloc byte[16];
+            prefixLen[0] = (byte)'M'; prefixLen[1] = (byte)'e'; prefixLen[2] = (byte)'t'; prefixLen[3] = (byte)'h';
+            prefixLen[4] = (byte)' '; prefixLen[5] = (byte)'l'; prefixLen[6] = (byte)'e'; prefixLen[7] = (byte)'n';
+            prefixLen[8] = (byte)'='; prefixLen[9] = 0;
+            Debug_PrintInt(prefixLen, len);
+
             char* chars = stackalloc char[len];
             for (int i = 0; i < len; i++)
                 chars[i] = (char)ptr[i];
 
-            return new string(chars, 0, len);
+            string result = new string(chars, 0, len);
+
+            // Debug: print resulting string length
+            byte* prefixRes = stackalloc byte[16];
+            prefixRes[0] = (byte)'M'; prefixRes[1] = (byte)'e'; prefixRes[2] = (byte)'t'; prefixRes[3] = (byte)'h';
+            prefixRes[4] = (byte)' '; prefixRes[5] = (byte)'r'; prefixRes[6] = (byte)'e'; prefixRes[7] = (byte)'s';
+            prefixRes[8] = (byte)'='; prefixRes[9] = 0;
+            Debug_PrintInt(prefixRes, result.Length);
+
+            return result;
         }
     }
 
@@ -352,7 +395,7 @@ namespace System.Reflection
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture)
         {
-            return Reflection_InvokeMethod(_methodToken, obj, parameters);
+            return Reflection_InvokeMethod(_assemblyId, _methodToken, obj, parameters);
         }
 
         public override object Invoke(BindingFlags invokeAttr, Binder? binder,
@@ -360,16 +403,22 @@ namespace System.Reflection
         {
             // Create instance then call constructor
             // For now, simplified - just invoke
-            return Reflection_InvokeMethod(_methodToken, null, parameters) ?? new object();
+            return Reflection_InvokeMethod(_assemblyId, _methodToken, null, parameters) ?? new object();
         }
 
         public override int MetadataToken => (int)_methodToken;
+
+        /// <summary>
+        /// Gets the assembly ID where this constructor is defined.
+        /// ProtonOS-specific extension for reflection invoke support.
+        /// </summary>
+        internal uint AssemblyId => _assemblyId;
 
         [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
         private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
 
         [DllImport("*", EntryPoint = "Reflection_InvokeMethod", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
-        private static extern object? Reflection_InvokeMethod(uint methodToken, object? target, object?[]? args);
+        private static extern object? Reflection_InvokeMethod(uint assemblyId, uint methodToken, object? target, object?[]? args);
 
         private static string BytePtrToString(byte* ptr)
         {

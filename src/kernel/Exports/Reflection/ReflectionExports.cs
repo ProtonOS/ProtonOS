@@ -79,12 +79,12 @@ public static unsafe class ReflectionExports
     // ========================================================================
 
     /// <summary>
-    /// Invoke a method by its token.
+    /// Invoke a method by its assembly ID and token.
     /// </summary>
     [RuntimeExport("Reflection_InvokeMethod")]
-    public static object? InvokeMethod(uint methodToken, object? target, object?[]? args)
+    public static object? InvokeMethod(uint assemblyId, uint methodToken, object? target, object?[]? args)
     {
-        return ReflectionRuntime.InvokeMethod(methodToken, target, args);
+        return ReflectionRuntime.InvokeMethod(assemblyId, methodToken, target, args);
     }
 
     // ========================================================================
@@ -258,5 +258,40 @@ public static unsafe class ReflectionExports
     public static uint FindTypeByName(uint assemblyId, byte* nameUtf8, byte* namespaceUtf8)
     {
         return ReflectionRuntime.FindTypeByName(assemblyId, nameUtf8, namespaceUtf8);
+    }
+
+    // ========================================================================
+    // Debug APIs (for korlib debugging)
+    // ========================================================================
+
+    /// <summary>
+    /// Print a debug message with an integer value.
+    /// </summary>
+    [RuntimeExport("Debug_PrintInt")]
+    public static void PrintInt(byte* prefix, int value)
+    {
+        ProtonOS.Platform.DebugConsole.Write("[korlib] ");
+        while (*prefix != 0)
+        {
+            ProtonOS.Platform.DebugConsole.WriteChar((char)*prefix);
+            prefix++;
+        }
+        ProtonOS.Platform.DebugConsole.WriteDecimal((uint)value);
+        ProtonOS.Platform.DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Print a debug message.
+    /// </summary>
+    [RuntimeExport("Debug_Print")]
+    public static void Print(byte* message)
+    {
+        ProtonOS.Platform.DebugConsole.Write("[korlib] ");
+        while (*message != 0)
+        {
+            ProtonOS.Platform.DebugConsole.WriteChar((char)*message);
+            message++;
+        }
+        ProtonOS.Platform.DebugConsole.WriteLine();
     }
 }

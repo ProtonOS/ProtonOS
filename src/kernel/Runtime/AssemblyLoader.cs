@@ -85,6 +85,18 @@ public unsafe struct TypeRegistry
         if (!Initialized || mt == null)
             return false;
 
+        // Debug: log registrations for assembly 5
+        if (AssemblyId == 5)
+        {
+            DebugConsole.Write("[TypeReg.Register] asm=");
+            DebugConsole.WriteDecimal(AssemblyId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)mt);
+            DebugConsole.WriteLine();
+        }
+
         fixed (BlockChain* chainPtr = &Chain)
         {
             // Check if already registered - iterate through all blocks
@@ -3503,28 +3515,35 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.Exception;
                 break;
 
-            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException
-                if (name[1] == 'r' && name[2] == 'g' && name[3] == 'u' && name[4] == 'm' &&
-                    name[5] == 'e' && name[6] == 'n' && name[7] == 't')
+            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException, ArgIterator
+                if (name[1] == 'r' && name[2] == 'g')
                 {
-                    // ArgumentException
-                    if (name[8] == 'E' && name[9] == 'x' && name[10] == 'c' && name[11] == 'e' &&
-                        name[12] == 'p' && name[13] == 't' && name[14] == 'i' && name[15] == 'o' &&
-                        name[16] == 'n' && name[17] == 0)
-                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentException;
-                    // ArgumentNullException
-                    if (name[8] == 'N' && name[9] == 'u' && name[10] == 'l' && name[11] == 'l' &&
-                        name[12] == 'E' && name[13] == 'x' && name[14] == 'c' && name[15] == 'e' &&
-                        name[16] == 'p' && name[17] == 't' && name[18] == 'i' && name[19] == 'o' &&
-                        name[20] == 'n' && name[21] == 0)
-                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentNullException;
-                    // ArgumentOutOfRangeException
-                    if (name[8] == 'O' && name[9] == 'u' && name[10] == 't' && name[11] == 'O' &&
-                        name[12] == 'f' && name[13] == 'R' && name[14] == 'a' && name[15] == 'n' &&
-                        name[16] == 'g' && name[17] == 'e' && name[18] == 'E' && name[19] == 'x' &&
-                        name[20] == 'c' && name[21] == 'e' && name[22] == 'p' && name[23] == 't' &&
-                        name[24] == 'i' && name[25] == 'o' && name[26] == 'n' && name[27] == 0)
-                        return JIT.MetadataIntegration.WellKnownTypes.ArgumentOutOfRangeException;
+                    // ArgIterator
+                    if (name[3] == 'I' && name[4] == 't' && name[5] == 'e' && name[6] == 'r' &&
+                        name[7] == 'a' && name[8] == 't' && name[9] == 'o' && name[10] == 'r' && name[11] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.ArgIterator;
+                    // Argument* exceptions
+                    if (name[3] == 'u' && name[4] == 'm' && name[5] == 'e' && name[6] == 'n' && name[7] == 't')
+                    {
+                        // ArgumentException
+                        if (name[8] == 'E' && name[9] == 'x' && name[10] == 'c' && name[11] == 'e' &&
+                            name[12] == 'p' && name[13] == 't' && name[14] == 'i' && name[15] == 'o' &&
+                            name[16] == 'n' && name[17] == 0)
+                            return JIT.MetadataIntegration.WellKnownTypes.ArgumentException;
+                        // ArgumentNullException
+                        if (name[8] == 'N' && name[9] == 'u' && name[10] == 'l' && name[11] == 'l' &&
+                            name[12] == 'E' && name[13] == 'x' && name[14] == 'c' && name[15] == 'e' &&
+                            name[16] == 'p' && name[17] == 't' && name[18] == 'i' && name[19] == 'o' &&
+                            name[20] == 'n' && name[21] == 0)
+                            return JIT.MetadataIntegration.WellKnownTypes.ArgumentNullException;
+                        // ArgumentOutOfRangeException
+                        if (name[8] == 'O' && name[9] == 'u' && name[10] == 't' && name[11] == 'O' &&
+                            name[12] == 'f' && name[13] == 'R' && name[14] == 'a' && name[15] == 'n' &&
+                            name[16] == 'g' && name[17] == 'e' && name[18] == 'E' && name[19] == 'x' &&
+                            name[20] == 'c' && name[21] == 'e' && name[22] == 'p' && name[23] == 't' &&
+                            name[24] == 'i' && name[25] == 'o' && name[26] == 'n' && name[27] == 0)
+                            return JIT.MetadataIntegration.WellKnownTypes.ArgumentOutOfRangeException;
+                    }
                 }
                 break;
 
@@ -3573,16 +3592,33 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.MulticastDelegate;
                 break;
 
-            case (byte)'T':  // Type
-                if (name[1] == 'y' && name[2] == 'p' && name[3] == 'e' && name[4] == 0)
-                    return JIT.MetadataIntegration.WellKnownTypes.Type;
+            case (byte)'T':  // Type, TypedReference
+                if (name[1] == 'y' && name[2] == 'p' && name[3] == 'e')
+                {
+                    if (name[4] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.Type;
+                    // TypedReference
+                    if (name[4] == 'd' && name[5] == 'R' && name[6] == 'e' && name[7] == 'f' &&
+                        name[8] == 'e' && name[9] == 'r' && name[10] == 'e' && name[11] == 'n' &&
+                        name[12] == 'c' && name[13] == 'e' && name[14] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.TypedReference;
+                }
                 break;
 
-            case (byte)'R':  // RuntimeType
+            case (byte)'R':  // RuntimeType, RuntimeArgumentHandle
                 if (name[1] == 'u' && name[2] == 'n' && name[3] == 't' && name[4] == 'i' &&
-                    name[5] == 'm' && name[6] == 'e' && name[7] == 'T' && name[8] == 'y' &&
-                    name[9] == 'p' && name[10] == 'e' && name[11] == 0)
-                    return JIT.MetadataIntegration.WellKnownTypes.RuntimeType;
+                    name[5] == 'm' && name[6] == 'e')
+                {
+                    // RuntimeType
+                    if (name[7] == 'T' && name[8] == 'y' && name[9] == 'p' && name[10] == 'e' && name[11] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.RuntimeType;
+                    // RuntimeArgumentHandle
+                    if (name[7] == 'A' && name[8] == 'r' && name[9] == 'g' && name[10] == 'u' &&
+                        name[11] == 'm' && name[12] == 'e' && name[13] == 'n' && name[14] == 't' &&
+                        name[15] == 'H' && name[16] == 'a' && name[17] == 'n' && name[18] == 'd' &&
+                        name[19] == 'l' && name[20] == 'e' && name[21] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.RuntimeArgumentHandle;
+                }
                 break;
         }
 
@@ -4004,9 +4040,19 @@ public static unsafe class AssemblyLoader
                 return false;
             }
         }
+        else if (classRef.Table == MetadataTableId.MethodDef)
+        {
+            // MemberRef to a MethodDef in the same assembly
+            // This happens for varargs call sites - the MemberRef has a signature with
+            // the actual vararg types, but the class is the original MethodDef
+            targetAsm = sourceAsm;
+            methodToken = 0x06000000 | classRef.RowId;
+            targetAsmId = sourceAsmId;
+            return true;
+        }
         else
         {
-            // Other class types (ModuleRef, MethodDef) not implemented
+            // Other class types (ModuleRef) not implemented
             return false;
         }
 

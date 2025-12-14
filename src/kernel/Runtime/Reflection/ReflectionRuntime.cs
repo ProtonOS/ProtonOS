@@ -65,6 +65,18 @@ public static unsafe class ReflectionRuntime
         if (!_initialized || mt == null)
             return;
 
+        // Debug log for assembly 5 (FullTest.dll)
+        if (assemblyId == 5)
+        {
+            DebugConsole.Write("[ReflRuntime.Register] asmId=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(typeDefToken);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)mt);
+            DebugConsole.WriteLine();
+        }
+
         // Check if already registered - iterate through blocks
         fixed (BlockChain* chain = &_typeInfoChain)
         {
@@ -142,31 +154,65 @@ public static unsafe class ReflectionRuntime
         if (methodTable == null)
             return;
 
+        DebugConsole.Write("[ReflRuntime.GetTypeInfo] Looking up MT=0x");
+        DebugConsole.WriteHex((ulong)methodTable);
+        DebugConsole.WriteLine();
+
         if (LookupTypeInfo((MethodTable*)methodTable, out uint asmId, out uint token))
         {
+            DebugConsole.Write("[ReflRuntime.GetTypeInfo] Found: asmId=");
+            DebugConsole.WriteDecimal(asmId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
             if (outAssemblyId != null) *outAssemblyId = asmId;
             if (outTypeDefToken != null) *outTypeDefToken = token;
+        }
+        else
+        {
+            DebugConsole.WriteLine("[ReflRuntime.GetTypeInfo] NOT FOUND");
         }
     }
 
     /// <summary>
-    /// Invoke a method by its token.
+    /// Invoke a method by its assembly ID and token.
     /// </summary>
+    /// <param name="assemblyId">The assembly containing the method.</param>
     /// <param name="methodToken">The MethodDef token (0x06xxxxxx).</param>
     /// <param name="target">The target object (null for static methods).</param>
     /// <param name="args">Array of arguments.</param>
     /// <returns>The return value, or null for void methods.</returns>
-    public static object? InvokeMethod(uint methodToken, object? target, object?[]? args)
+    public static object? InvokeMethod(uint assemblyId, uint methodToken, object? target, object?[]? args)
     {
         // Look up the compiled method
         CompiledMethodInfo* methodInfo = CompiledMethodRegistry.Lookup(methodToken);
         if (methodInfo == null || !methodInfo->IsCompiled)
         {
-            // Method not found or not compiled
-            DebugConsole.Write("[Reflection] Method not found: 0x");
+            // Method not compiled yet - JIT compile it on demand
+            DebugConsole.Write("[Reflection] JIT compiling method 0x");
             DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" from asm ");
+            DebugConsole.WriteDecimal(assemblyId);
             DebugConsole.WriteLine();
-            return null;
+
+            var result = JIT.Tier0JIT.CompileMethod(assemblyId, methodToken);
+            if (!result.Success)
+            {
+                DebugConsole.Write("[Reflection] JIT compilation failed: 0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.WriteLine();
+                return null;
+            }
+
+            // Look up again after compilation
+            methodInfo = CompiledMethodRegistry.Lookup(methodToken);
+            if (methodInfo == null || !methodInfo->IsCompiled)
+            {
+                DebugConsole.Write("[Reflection] Method still not found after JIT: 0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.WriteLine();
+                return null;
+            }
         }
 
         void* nativeCode = methodInfo->NativeCode;
@@ -957,72 +1003,147 @@ public static unsafe class ReflectionRuntime
     }
 
     // ========================================================================
-    // Int32 return helpers (return discarded - boxing not supported)
+    // Int32/Int64 return helpers with boxing support
     // ========================================================================
+
+    /// <summary>
+    /// Box an Int32 value. Creates a new boxed object and copies the value.
+    /// </summary>
+    private static object? BoxInt32(int value)
+    {
+        var mt = JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Int32);
+        if (mt == null)
+        {
+            DebugConsole.WriteLine("[Reflection] Cannot box Int32: MethodTable not found");
+            return null;
+        }
+        var obj = RuntimeHelpers.RhpNewFast(mt);
+        if (obj == null)
+            return null;
+        // Copy value after MethodTable pointer (offset 8)
+        *(int*)((byte*)obj + 8) = value;
+        return System.Runtime.CompilerServices.Unsafe.As<nint, object>(ref *(nint*)&obj);
+    }
+
+    /// <summary>
+    /// Unbox an Int32 from an object reference.
+    /// If the object is null or not a boxed int, returns 0.
+    /// </summary>
+    private static int UnboxInt32(object? boxed)
+    {
+        if (boxed == null) return 0;
+        // Read value from offset 8 (after MethodTable pointer)
+        byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref boxed);
+        objPtr = *(byte**)objPtr;  // Dereference to get actual object pointer
+        return *(int*)(objPtr + 8);
+    }
+
+    /// <summary>
+    /// Box an Int64 value. Creates a new boxed object and copies the value.
+    /// </summary>
+    private static object? BoxInt64(long value)
+    {
+        var mt = JIT.MetadataIntegration.LookupType(JIT.MetadataIntegration.WellKnownTypes.Int64);
+        if (mt == null)
+        {
+            DebugConsole.WriteLine("[Reflection] Cannot box Int64: MethodTable not found");
+            return null;
+        }
+        var obj = RuntimeHelpers.RhpNewFast(mt);
+        if (obj == null)
+            return null;
+        // Copy value after MethodTable pointer (offset 8)
+        *(long*)((byte*)obj + 8) = value;
+        return System.Runtime.CompilerServices.Unsafe.As<nint, object>(ref *(nint*)&obj);
+    }
 
     private static object? InvokeInt32Static0(void* code)
     {
-        ((delegate*<int>)code)();
-        return null;  // Boxing not supported
+        int result = ((delegate*<int>)code)();
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt64Static0(void* code)
     {
-        ((delegate*<long>)code)();
-        return null;  // Boxing not supported
+        long result = ((delegate*<long>)code)();
+        return BoxInt64(result);
     }
 
     private static object? InvokeInt32Static1(void* code, object? a0)
     {
-        ((delegate*<object?, int>)code)(a0);
-        return null;
+        // Assume argument is int - unbox it
+        int arg0 = UnboxInt32(a0);
+        int result = ((delegate*<int, int>)code)(arg0);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Static2(void* code, object? a0, object? a1)
     {
-        ((delegate*<object?, object?, int>)code)(a0, a1);
-        return null;
+        // Assume arguments are ints - unbox them
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int result = ((delegate*<int, int, int>)code)(arg0, arg1);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Static3(void* code, object? a0, object? a1, object? a2)
     {
-        ((delegate*<object?, object?, object?, int>)code)(a0, a1, a2);
-        return null;
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int arg2 = UnboxInt32(a2);
+        int result = ((delegate*<int, int, int, int>)code)(arg0, arg1, arg2);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Static4(void* code, object? a0, object? a1, object? a2, object? a3)
     {
-        ((delegate*<object?, object?, object?, object?, int>)code)(a0, a1, a2, a3);
-        return null;
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int arg2 = UnboxInt32(a2);
+        int arg3 = UnboxInt32(a3);
+        int result = ((delegate*<int, int, int, int, int>)code)(arg0, arg1, arg2, arg3);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Instance0(void* code, object? target)
     {
-        ((delegate*<object?, int>)code)(target);
-        return null;
+        // target is object reference, no args to unbox
+        int result = ((delegate*<object?, int>)code)(target);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Instance1(void* code, object? target, object? a0)
     {
-        ((delegate*<object?, object?, int>)code)(target, a0);
-        return null;
+        // target is object reference, args are ints
+        int arg0 = UnboxInt32(a0);
+        int result = ((delegate*<object?, int, int>)code)(target, arg0);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Instance2(void* code, object? target, object? a0, object? a1)
     {
-        ((delegate*<object?, object?, object?, int>)code)(target, a0, a1);
-        return null;
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int result = ((delegate*<object?, int, int, int>)code)(target, arg0, arg1);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Instance3(void* code, object? target, object? a0, object? a1, object? a2)
     {
-        ((delegate*<object?, object?, object?, object?, int>)code)(target, a0, a1, a2);
-        return null;
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int arg2 = UnboxInt32(a2);
+        int result = ((delegate*<object?, int, int, int, int>)code)(target, arg0, arg1, arg2);
+        return BoxInt32(result);
     }
 
     private static object? InvokeInt32Instance4(void* code, object? target, object? a0, object? a1, object? a2, object? a3)
     {
-        ((delegate*<object?, object?, object?, object?, object?, int>)code)(target, a0, a1, a2, a3);
-        return null;
+        int arg0 = UnboxInt32(a0);
+        int arg1 = UnboxInt32(a1);
+        int arg2 = UnboxInt32(a2);
+        int arg3 = UnboxInt32(a3);
+        int result = ((delegate*<object?, int, int, int, int, int>)code)(target, arg0, arg1, arg2, arg3);
+        return BoxInt32(result);
     }
 }

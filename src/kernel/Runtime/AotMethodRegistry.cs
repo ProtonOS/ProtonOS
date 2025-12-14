@@ -30,6 +30,9 @@ public unsafe struct AotMethodEntry
     /// <summary>Return type kind.</summary>
     public ReturnKind ReturnKind;
 
+    /// <summary>Size in bytes for struct returns (0 for non-struct returns).</summary>
+    public ushort ReturnStructSize;
+
     /// <summary>Whether this is an instance method (has 'this' pointer).</summary>
     public bool HasThis;
 
@@ -91,6 +94,9 @@ public static unsafe class AotMethodRegistry
 
         // Register Array methods
         RegisterArrayMethods();
+
+        // Register ArgIterator methods (for varargs support)
+        RegisterArgIteratorMethods();
 
         _initialized = true;
 
@@ -180,6 +186,14 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<char[], string>)&StringHelpers.Ctor_CharArray,
             1, ReturnKind.IntPtr, false, false);
 
+        // String constructor: .ctor(char*, int, int) - 3 parameters, static (factory method)
+        // This is used by BytePtrToString for reflection APIs.
+        // Registered as ".ctor$ptr" to distinguish from char[] variant.
+        Register(
+            "System.String", ".ctor$ptr",
+            (nint)(delegate*<char*, int, int, string>)&StringHelpers.Ctor_CharPtrStartLength,
+            3, ReturnKind.IntPtr, false, false);
+
         // String.Format overloads - static methods for formatted strings
         // Format(string, object) - 2 parameters
         Register(
@@ -249,11 +263,12 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetName,
             0, ReturnKind.IntPtr, true, true);  // Virtual
 
-        // MemberInfo.get_Name - In .NET, Type inherits from MemberInfo
-        // The compiler generates calls to MemberInfo.get_Name when calling t.Name on a Type
+        // MemberInfo.get_Name - polymorphic handler for all MemberInfo subclasses
+        // This is called when JIT code calls .Name on Type, MethodInfo, FieldInfo, etc.
+        // We need to dispatch to the correct implementation based on actual runtime type.
         Register(
             "System.Reflection.MemberInfo", "get_Name",
-            (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetName,
+            (nint)(delegate*<System.Reflection.MemberInfo, string?>)&MemberInfoHelpers.GetName,
             0, ReturnKind.IntPtr, true, true);  // Virtual
 
         // Type.get_FullName - property getter, returns string
@@ -288,6 +303,79 @@ public static unsafe class AotMethodRegistry
             "System.Reflection.FieldInfo", "GetFieldFromHandle",
             (nint)(delegate*<nint, System.Reflection.FieldInfo?>)&TypeMethodHelpers.GetFieldFromHandle,
             1, ReturnKind.IntPtr, false, false);  // Static, non-virtual
+
+        // MethodBase.Invoke(object?, object?[]?) - virtual method
+        // Wrapper that dispatches to the appropriate runtime implementation
+        Register(
+            "System.Reflection.MethodBase", "Invoke",
+            (nint)(delegate*<System.Reflection.MethodBase, object?, object?[]?, object?>)&ReflectionHelpers.MethodBaseInvoke,
+            2, ReturnKind.IntPtr, true, true);  // HasThis=true, IsVirtual=true
+
+        // Type.GetMethods() - virtual method, returns MethodInfo[]
+        Register(
+            "System.Type", "GetMethods",
+            (nint)(delegate*<Type, System.Reflection.MethodInfo[]>)&TypeMethodHelpers.GetMethods,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Type.GetFields() - virtual method, returns FieldInfo[]
+        Register(
+            "System.Type", "GetFields",
+            (nint)(delegate*<Type, System.Reflection.FieldInfo[]>)&TypeMethodHelpers.GetFields,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Type.GetConstructors() - virtual method, returns ConstructorInfo[]
+        Register(
+            "System.Type", "GetConstructors",
+            (nint)(delegate*<Type, System.Reflection.ConstructorInfo[]>)&TypeMethodHelpers.GetConstructors,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Type.GetMethod(string) - virtual method, returns MethodInfo?
+        Register(
+            "System.Type", "GetMethod",
+            (nint)(delegate*<Type, string?, System.Reflection.MethodInfo?>)&TypeMethodHelpers.GetMethod,
+            1, ReturnKind.IntPtr, true, true);
+
+        // Type.GetField(string) - virtual method, returns FieldInfo?
+        Register(
+            "System.Type", "GetField",
+            (nint)(delegate*<Type, string?, System.Reflection.FieldInfo?>)&TypeMethodHelpers.GetField,
+            1, ReturnKind.IntPtr, true, true);
+
+        // MethodInfo.op_Equality - static, reference comparison
+        Register(
+            "System.Reflection.MethodInfo", "op_Equality",
+            (nint)(delegate*<System.Reflection.MethodInfo?, System.Reflection.MethodInfo?, bool>)&ReflectionHelpers.MethodInfoEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // MethodInfo.op_Inequality - static, reference comparison
+        Register(
+            "System.Reflection.MethodInfo", "op_Inequality",
+            (nint)(delegate*<System.Reflection.MethodInfo?, System.Reflection.MethodInfo?, bool>)&ReflectionHelpers.MethodInfoNotEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // FieldInfo.op_Equality - static, reference comparison
+        Register(
+            "System.Reflection.FieldInfo", "op_Equality",
+            (nint)(delegate*<System.Reflection.FieldInfo?, System.Reflection.FieldInfo?, bool>)&ReflectionHelpers.FieldInfoEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // FieldInfo.op_Inequality - static, reference comparison
+        Register(
+            "System.Reflection.FieldInfo", "op_Inequality",
+            (nint)(delegate*<System.Reflection.FieldInfo?, System.Reflection.FieldInfo?, bool>)&ReflectionHelpers.FieldInfoNotEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // MemberInfo.op_Equality - static, reference comparison
+        Register(
+            "System.Reflection.MemberInfo", "op_Equality",
+            (nint)(delegate*<System.Reflection.MemberInfo?, System.Reflection.MemberInfo?, bool>)&ReflectionHelpers.MemberInfoEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // MemberInfo.op_Inequality - static, reference comparison
+        Register(
+            "System.Reflection.MemberInfo", "op_Inequality",
+            (nint)(delegate*<System.Reflection.MemberInfo?, System.Reflection.MemberInfo?, bool>)&ReflectionHelpers.MemberInfoNotEquals,
+            2, ReturnKind.Int32, false, false);
     }
 
     /// <summary>
@@ -487,10 +575,48 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register ArgIterator methods for varargs support.
+    /// ArgIterator is a ref struct (value type) with a single _current pointer field.
+    /// 'this' is passed as a pointer to the stack-allocated ArgIterator.
+    /// </summary>
+    private static void RegisterArgIteratorMethods()
+    {
+        // ArgIterator::.ctor(RuntimeArgumentHandle)
+        // 'this' is pointer to ArgIterator, arg1 is RuntimeArgumentHandle (which is just nint)
+        Register(
+            "System.ArgIterator", ".ctor",
+            (nint)(delegate*<nint, nint, void>)&ArgIteratorHelpers.Ctor,
+            1, ReturnKind.Void, true, false);
+
+        // ArgIterator::GetNextArg() - returns TypedReference (16 bytes)
+        // 'this' is pointer to ArgIterator
+        // TRICK: Register with ReturnStructSize=17 to force hidden buffer mode
+        // This makes the JIT pass: RCX=retBuf, RDX=thisPtr (shifting 'this' to second arg)
+        // which matches the AOT helper's signature
+        Register(
+            "System.ArgIterator", "GetNextArg",
+            (nint)(delegate*<nint, nint, void>)&ArgIteratorHelpers.GetNextArg,
+            0, ReturnKind.Struct, true, false, 17);
+
+        // ArgIterator::GetRemainingCount() - returns int
+        Register(
+            "System.ArgIterator", "GetRemainingCount",
+            (nint)(delegate*<nint, int>)&ArgIteratorHelpers.GetRemainingCount,
+            0, ReturnKind.Int32, true, false);
+
+        // ArgIterator::End() - no-op
+        Register(
+            "System.ArgIterator", "End",
+            (nint)(delegate*<nint, void>)&ArgIteratorHelpers.End,
+            0, ReturnKind.Void, true, false);
+    }
+
+    /// <summary>
     /// Register an AOT method.
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
-                                  byte argCount, ReturnKind returnKind, bool hasThis, bool isVirtual)
+                                  byte argCount, ReturnKind returnKind, bool hasThis, bool isVirtual,
+                                  ushort returnStructSize = 0)
     {
         uint typeHash = HashString(typeName);
         uint methodHash = HashString(methodName);
@@ -501,6 +627,7 @@ public static unsafe class AotMethodRegistry
         entry.NativeCode = nativeCode;
         entry.ArgCount = argCount;
         entry.ReturnKind = returnKind;
+        entry.ReturnStructSize = returnStructSize;
         entry.HasThis = hasThis;
         entry.IsVirtual = isVirtual;
 
@@ -517,7 +644,8 @@ public static unsafe class AotMethodRegistry
     /// Look up an AOT method by type and method name.
     /// Returns true if found and populates the entry.
     /// </summary>
-    public static bool TryLookup(byte* typeName, byte* methodName, byte argCount, out AotMethodEntry entry)
+    public static bool TryLookup(byte* typeName, byte* methodName, byte argCount, out AotMethodEntry entry,
+                                  bool isCharPtrVariant = false)
     {
         entry = default;
 
@@ -527,6 +655,9 @@ public static unsafe class AotMethodRegistry
         uint typeHash = HashBytes(typeName);
         uint methodHash = HashBytes(methodName);
 
+        // For char* variant constructors, look for the special ".ctor$ptr" entry
+        uint methodHashPtrVariant = isCharPtrVariant ? HashString(".ctor$ptr") : 0;
+
         fixed (BlockChain* chain = &_entryChain)
         {
             var block = chain->First;
@@ -535,7 +666,9 @@ public static unsafe class AotMethodRegistry
                 for (int i = 0; i < block->Used; i++)
                 {
                     var e = (AotMethodEntry*)block->GetEntry(i);
-                    if (e->TypeNameHash == typeHash && e->MethodNameHash == methodHash)
+                    // If looking for char* variant, match against the $ptr variant
+                    uint targetMethodHash = isCharPtrVariant ? methodHashPtrVariant : methodHash;
+                    if (e->TypeNameHash == typeHash && e->MethodNameHash == targetMethodHash)
                     {
                         // For overloaded methods, match by arg count
                         // Note: argCount includes 'this' for instance methods
@@ -649,7 +782,17 @@ public static unsafe class AotMethodRegistry
             return true;
         if (StringMatches(typeName, "System.Reflection.MethodBase"))
             return true;
+        if (StringMatches(typeName, "System.Reflection.MethodInfo"))
+            return true;
         if (StringMatches(typeName, "System.Reflection.FieldInfo"))
+            return true;
+
+        // Varargs types
+        if (StringMatches(typeName, "System.TypedReference"))
+            return true;
+        if (StringMatches(typeName, "System.RuntimeArgumentHandle"))
+            return true;
+        if (StringMatches(typeName, "System.ArgIterator"))
             return true;
 
         return false;
@@ -719,7 +862,12 @@ public static unsafe class StringHelpers
     {
         if (s == null)
             return 0;
-        return s.Length;
+        int len = s.Length;
+        // Debug: print what GetLength is returning
+        ProtonOS.Platform.DebugConsole.Write("[GetLen] len=");
+        ProtonOS.Platform.DebugConsole.WriteDecimal((uint)len);
+        ProtonOS.Platform.DebugConsole.WriteLine();
+        return len;
     }
 
     /// <summary>
@@ -775,9 +923,25 @@ public static unsafe class StringHelpers
     {
         if (ReferenceEquals(a, b)) return true;
         if (a is null || b is null) return false;
-        if (a.Length != b.Length) return false;
 
-        for (int i = 0; i < a.Length; i++)
+        // Debug: check lengths
+        int lenA = a.Length;
+        int lenB = b.Length;
+        if (lenA != lenB)
+        {
+            // Only log when looking for method names (short strings)
+            if (lenA < 20 && lenB < 20 && lenA > 0 && lenB > 0)
+            {
+                ProtonOS.Platform.DebugConsole.Write("[StrEq] len mismatch: ");
+                ProtonOS.Platform.DebugConsole.WriteDecimal((uint)lenA);
+                ProtonOS.Platform.DebugConsole.Write(" vs ");
+                ProtonOS.Platform.DebugConsole.WriteDecimal((uint)lenB);
+                ProtonOS.Platform.DebugConsole.WriteLine();
+            }
+            return false;
+        }
+
+        for (int i = 0; i < lenA; i++)
         {
             if (a[i] != b[i]) return false;
         }
@@ -844,6 +1008,15 @@ public static unsafe class StringHelpers
     public static string Ctor_CharArray(char[] value)
     {
         return string.Ctor_CharArray(value);
+    }
+
+    /// <summary>
+    /// Factory method for String..ctor(char*, int, int).
+    /// Creates a new string from a portion of a char pointer.
+    /// </summary>
+    public static unsafe string Ctor_CharPtrStartLength(char* value, int startIndex, int length)
+    {
+        return string.Ctor_CharPtrStartLength(value, startIndex, length);
     }
 
     /// <summary>
@@ -984,6 +1157,145 @@ public static unsafe class Int32Helpers
         // Value is at offset 8
         int* valuePtr = (int*)(thisPtr + 8);
         return *valuePtr;
+    }
+}
+
+/// <summary>
+/// Helper methods for reflection equality operators.
+/// These provide implementations for op_Equality/op_Inequality on reflection types.
+/// </summary>
+public static class ReflectionHelpers
+{
+    // MethodInfo equality - reference comparison
+    public static bool MethodInfoEquals(System.Reflection.MethodInfo? left, System.Reflection.MethodInfo? right)
+    {
+        if (left is null)
+            return right is null;
+        if (right is null)
+            return false;
+        return ReferenceEquals(left, right);
+    }
+
+    public static bool MethodInfoNotEquals(System.Reflection.MethodInfo? left, System.Reflection.MethodInfo? right)
+        => !MethodInfoEquals(left, right);
+
+    // FieldInfo equality - reference comparison
+    public static bool FieldInfoEquals(System.Reflection.FieldInfo? left, System.Reflection.FieldInfo? right)
+    {
+        if (left is null)
+            return right is null;
+        if (right is null)
+            return false;
+        return ReferenceEquals(left, right);
+    }
+
+    public static bool FieldInfoNotEquals(System.Reflection.FieldInfo? left, System.Reflection.FieldInfo? right)
+        => !FieldInfoEquals(left, right);
+
+    // MemberInfo equality - reference comparison
+    public static bool MemberInfoEquals(System.Reflection.MemberInfo? left, System.Reflection.MemberInfo? right)
+    {
+        if (left is null)
+            return right is null;
+        if (right is null)
+            return false;
+        return ReferenceEquals(left, right);
+    }
+
+    public static bool MemberInfoNotEquals(System.Reflection.MemberInfo? left, System.Reflection.MemberInfo? right)
+        => !MemberInfoEquals(left, right);
+
+    /// <summary>
+    /// Wrapper for MethodBase.Invoke that dispatches to the appropriate runtime implementation.
+    /// This handles the virtual dispatch for RuntimeMethodInfo and RuntimeConstructorInfo.
+    /// </summary>
+    public static object? MethodBaseInvoke(System.Reflection.MethodBase method, object? target, object?[]? args)
+    {
+        if (method == null)
+            return null;
+
+        // Get the method token and assembly ID
+        uint methodToken = (uint)method.MetadataToken;
+        uint assemblyId = 0;
+
+        // Get assembly ID from the concrete runtime type
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            assemblyId = rmi.AssemblyId;
+        }
+        else if (method is System.Reflection.RuntimeConstructorInfo rci)
+        {
+            assemblyId = rci.AssemblyId;
+        }
+
+        // Call the kernel's InvokeMethod implementation with assembly ID
+        return Runtime.Reflection.ReflectionRuntime.InvokeMethod(assemblyId, methodToken, target, args);
+    }
+}
+
+/// <summary>
+/// Helper methods for MemberInfo operations.
+/// Provides polymorphic dispatch for MemberInfo virtual methods.
+/// </summary>
+public static unsafe class MemberInfoHelpers
+{
+    /// <summary>
+    /// Get the Name of any MemberInfo (Type, MethodInfo, FieldInfo, PropertyInfo, etc.).
+    /// This is called when JIT code invokes callvirt MemberInfo.get_Name.
+    /// Since the JIT doesn't do proper vtable dispatch, we need to check the runtime type
+    /// and dispatch to the correct implementation.
+    /// </summary>
+    public static string? GetName(System.Reflection.MemberInfo member)
+    {
+        if (member == null)
+            return null;
+
+        ProtonOS.Platform.DebugConsole.Write("[MemberInfoHelpers.GetName] called");
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
+        // Try to determine the actual type and dispatch accordingly
+        // We check the types in order of likely frequency
+
+        // Check if it's a RuntimeMethodInfo
+        if (member is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            ProtonOS.Platform.DebugConsole.Write("[MemberInfoHelpers.GetName] -> RuntimeMethodInfo");
+            ProtonOS.Platform.DebugConsole.WriteLine();
+            return rmi.Name;
+        }
+
+        // Check if it's a RuntimeFieldInfo
+        if (member is System.Reflection.RuntimeFieldInfo rfi)
+        {
+            return rfi.Name;
+        }
+
+        // Check if it's a RuntimePropertyInfo
+        if (member is System.Reflection.RuntimePropertyInfo rpi)
+        {
+            return rpi.Name;
+        }
+
+        // Check if it's a RuntimeConstructorInfo
+        if (member is System.Reflection.RuntimeConstructorInfo rci)
+        {
+            return rci.Name;
+        }
+
+        // Check if it's a Type (RuntimeType)
+        if (member is Type type)
+        {
+            ProtonOS.Platform.DebugConsole.Write("[MemberInfoHelpers.GetName] -> Type");
+            ProtonOS.Platform.DebugConsole.WriteLine();
+            return TypeMethodHelpers.GetName(type);
+        }
+
+        // Fallback - try to read name from the object directly
+        // This is a last resort if we can't identify the type
+        ProtonOS.Platform.DebugConsole.Write("[MemberInfoHelpers] Unknown MemberInfo type at 0x");
+        ProtonOS.Platform.DebugConsole.WriteHex((ulong)System.Runtime.CompilerServices.Unsafe.AsPointer(ref member));
+        ProtonOS.Platform.DebugConsole.WriteLine();
+        return null;
     }
 }
 
@@ -1149,6 +1461,115 @@ public static unsafe class TypeMethodHelpers
         // Create RuntimeFieldInfo - field details will be resolved via reflection exports
         return new System.Reflection.RuntimeFieldInfo(assemblyId, token, null!, 0, 0, false);
     }
+
+    /// <summary>
+    /// Get all public methods of a Type.
+    /// Wrapper for Type.GetMethods() virtual call.
+    /// </summary>
+    public static System.Reflection.MethodInfo[] GetMethods(Type type)
+    {
+        if (type == null)
+            return System.Array.Empty<System.Reflection.MethodInfo>();
+
+        // Cast to RuntimeType and call directly to bypass virtual dispatch issues
+        if (type is RuntimeType rt)
+        {
+            // Debug: get the internal state
+            var asmId = rt.GetAssemblyIdInternal();
+            var token = rt.GetTypeTokenInternal();
+            DebugConsole.Write("[GetMethods] asmId=");
+            DebugConsole.WriteDecimal(asmId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+
+            var result = rt.GetMethodsInternal();
+            DebugConsole.Write("[GetMethods] Got ");
+            DebugConsole.WriteDecimal((uint)result.Length);
+            DebugConsole.WriteLine(" methods");
+            return result;
+        }
+
+        // Fallback for other Type implementations
+        return type.GetMethods();
+    }
+
+    /// <summary>
+    /// Get all public fields of a Type.
+    /// Wrapper for Type.GetFields() virtual call.
+    /// </summary>
+    public static System.Reflection.FieldInfo[] GetFields(Type type)
+    {
+        if (type == null)
+            return System.Array.Empty<System.Reflection.FieldInfo>();
+
+        // Cast to RuntimeType and call directly to bypass virtual dispatch issues
+        if (type is RuntimeType rt)
+            return rt.GetFieldsInternal();
+
+        return type.GetFields();
+    }
+
+    /// <summary>
+    /// Get all public constructors of a Type.
+    /// Wrapper for Type.GetConstructors() virtual call.
+    /// </summary>
+    public static System.Reflection.ConstructorInfo[] GetConstructors(Type type)
+    {
+        if (type == null)
+            return System.Array.Empty<System.Reflection.ConstructorInfo>();
+
+        // Cast to RuntimeType and call directly to bypass virtual dispatch issues
+        if (type is RuntimeType rt)
+            return rt.GetConstructorsInternal();
+
+        return type.GetConstructors();
+    }
+
+    /// <summary>
+    /// Get a method by name.
+    /// Wrapper for Type.GetMethod(string) virtual call.
+    /// </summary>
+    public static System.Reflection.MethodInfo? GetMethod(Type type, string? name)
+    {
+        ProtonOS.Platform.DebugConsole.Write("[AOT.GetMethod] type=");
+        ProtonOS.Platform.DebugConsole.Write(type == null ? "null" : "ok");
+        ProtonOS.Platform.DebugConsole.Write(" name=");
+        ProtonOS.Platform.DebugConsole.Write(name ?? "null");
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
+        if (type == null || name == null)
+            return null;
+
+        // Cast to RuntimeType and call directly to bypass virtual dispatch issues
+        System.Reflection.MethodInfo? result;
+        if (type is RuntimeType rt)
+            result = rt.GetMethodInternal(name);
+        else
+            result = type.GetMethod(name);
+
+        ProtonOS.Platform.DebugConsole.Write("[AOT.GetMethod] result=");
+        ProtonOS.Platform.DebugConsole.Write(result == null ? "null" : "found");
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
+        return result;
+    }
+
+    /// <summary>
+    /// Get a field by name.
+    /// Wrapper for Type.GetField(string) virtual call.
+    /// </summary>
+    public static System.Reflection.FieldInfo? GetField(Type type, string? name)
+    {
+        if (type == null || name == null)
+            return null;
+
+        // Cast to RuntimeType and call directly to bypass virtual dispatch issues
+        if (type is RuntimeType rt)
+            return rt.GetFieldInternal(name);
+
+        return type.GetField(name);
+    }
 }
 
 /// <summary>
@@ -1298,5 +1719,73 @@ public static unsafe class ArrayHelpers
         // BaseSize = 16 + 8 * rank
         int rank = (baseSize - 16) / 8;
         return rank > 0 ? rank : 1;  // 1D arrays return 1
+    }
+}
+
+/// <summary>
+/// Helper methods for ArgIterator operations.
+/// ArgIterator is a ref struct with a single _current pointer field (8 bytes).
+/// Varargs are stored as TypedReference entries (16 bytes each: value ptr + type ptr).
+/// The list ends with a sentinel TypedReference (type = 0).
+/// </summary>
+public static unsafe class ArgIteratorHelpers
+{
+    /// <summary>
+    /// Initialize ArgIterator from RuntimeArgumentHandle.
+    /// 'thisPtr' points to the ArgIterator struct on the stack.
+    /// 'handle' is the RuntimeArgumentHandle value (a pointer to varargs).
+    /// </summary>
+    public static void Ctor(nint thisPtr, nint handle)
+    {
+        // ArgIterator._current is at offset 0
+        *(nint*)thisPtr = handle;
+    }
+
+    /// <summary>
+    /// Get the next TypedReference from the vararg list.
+    /// Uses hidden buffer return: RCX=retBuf, RDX=thisPtr
+    /// (Registered with ReturnStructSize=17 to force hidden buffer mode)
+    /// </summary>
+    public static void GetNextArg(nint retBuf, nint thisPtr)
+    {
+        // Read current position from ArgIterator._current (offset 0)
+        byte* current = *(byte**)thisPtr;
+
+        // Copy TypedReference (16 bytes) to return buffer
+        nint* src = (nint*)current;
+        nint* dst = (nint*)retBuf;
+        dst[0] = src[0];  // _value
+        dst[1] = src[1];  // _type
+
+        // Advance current pointer by 16 bytes
+        *(byte**)thisPtr = current + 16;
+    }
+
+    /// <summary>
+    /// Count remaining varargs by scanning for sentinel (type = 0).
+    /// 'thisPtr' points to the ArgIterator struct.
+    /// </summary>
+    public static int GetRemainingCount(nint thisPtr)
+    {
+        // Read current position
+        byte* current = *(byte**)thisPtr;
+
+        int count = 0;
+        // TypedReference layout: +0 = value (nint), +8 = type (nint)
+        // Count until type == 0 (sentinel)
+        while (*(nint*)(current + 8) != 0)
+        {
+            count++;
+            current += 16;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// End iteration. No-op in our implementation.
+    /// </summary>
+    public static void End(nint thisPtr)
+    {
+        // Nothing to clean up
     }
 }

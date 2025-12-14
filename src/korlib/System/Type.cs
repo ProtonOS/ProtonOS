@@ -105,16 +105,37 @@ namespace System
         /// <summary>
         /// Gets a specific method by name and binding flags.
         /// </summary>
-        public virtual MethodInfo? GetMethod(string name, BindingFlags bindingAttr)
+        public virtual unsafe MethodInfo? GetMethod(string name, BindingFlags bindingAttr)
         {
+            byte* prefix = stackalloc byte[20];
+            prefix[0] = (byte)'['; prefix[1] = (byte)'G'; prefix[2] = (byte)'M';
+            prefix[3] = (byte)']'; prefix[4] = (byte)' '; prefix[5] = 0;
+
             var methods = GetMethods(bindingAttr);
+            Debug_PrintInt(prefix, methods.Length * 100 + (name?.Length ?? 0));  // methods count and target name length
+
             for (int i = 0; i < methods.Length; i++)
             {
                 if (methods[i].Name == name)
+                {
+                    byte* found = stackalloc byte[20];
+                    found[0] = (byte)'['; found[1] = (byte)'G'; found[2] = (byte)'M';
+                    found[3] = (byte)'!'; found[4] = (byte)']'; found[5] = 0;
+                    Debug_PrintInt(found, i);  // Found at index i
                     return methods[i];
+                }
             }
+
+            byte* notfound = stackalloc byte[20];
+            notfound[0] = (byte)'['; notfound[1] = (byte)'G'; notfound[2] = (byte)'M';
+            notfound[3] = (byte)'?'; notfound[4] = (byte)']'; notfound[5] = 0;
+            Debug_PrintInt(notfound, -1);  // Not found
+
             return null;
         }
+
+        [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Debug_PrintInt", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern unsafe void Debug_PrintInt(byte* prefix, int value);
 
         /// <summary>
         /// Gets a specific field by name.
@@ -251,6 +272,56 @@ namespace System
                     return name;
                 return ns + "." + name;
             }
+        }
+
+        /// <summary>
+        /// Internal non-virtual method for AOT wrapper to bypass virtual dispatch.
+        /// </summary>
+        public MethodInfo[] GetMethodsInternal()
+        {
+            return GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+        }
+
+        /// <summary>
+        /// Get internal assembly ID for debugging.
+        /// </summary>
+        public uint GetAssemblyIdInternal() => _assemblyId;
+
+        /// <summary>
+        /// Get internal type token for debugging.
+        /// </summary>
+        public uint GetTypeTokenInternal() => _typeDefToken;
+
+        /// <summary>
+        /// Internal non-virtual method for AOT wrapper to bypass virtual dispatch.
+        /// </summary>
+        public FieldInfo[] GetFieldsInternal()
+        {
+            return GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+        }
+
+        /// <summary>
+        /// Internal non-virtual method for AOT wrapper to bypass virtual dispatch.
+        /// </summary>
+        public ConstructorInfo[] GetConstructorsInternal()
+        {
+            return GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+        }
+
+        /// <summary>
+        /// Internal non-virtual method for AOT wrapper to bypass virtual dispatch.
+        /// </summary>
+        public MethodInfo? GetMethodInternal(string name)
+        {
+            return GetMethod(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+        }
+
+        /// <summary>
+        /// Internal non-virtual method for AOT wrapper to bypass virtual dispatch.
+        /// </summary>
+        public FieldInfo? GetFieldInternal(string name)
+        {
+            return GetField(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
         }
 
         public override MethodInfo[] GetMethods(BindingFlags bindingAttr)
@@ -431,5 +502,31 @@ namespace System
 
         [DllImport("*", EntryPoint = "Reflection_GetMethodName", CallingConvention = CallingConvention.Cdecl)]
         private static extern byte* Reflection_GetMethodName(uint assemblyId, uint methodToken);
+
+        // Static field to defeat dead code elimination
+        private static RuntimeType? _vtableKeepDummy;
+
+        /// <summary>
+        /// Force bflat to keep virtual method vtable entries by explicitly calling them.
+        /// This prevents dead code elimination from removing vtable slots that JIT code needs.
+        /// Called from kernel init.
+        /// NOTE: Only force-keep the specific methods needed for JIT reflection.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(
+            System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
+            System.Runtime.CompilerServices.MethodImplOptions.NoOptimization)]
+        public static void ForceKeepVtableMethods()
+        {
+            // Use static field to prevent compiler from proving null
+            if (_vtableKeepDummy != null)
+            {
+                // Force Type virtual methods used by JIT reflection code
+                _ = _vtableKeepDummy.GetMethods();
+                _ = _vtableKeepDummy.GetFields();
+                _ = _vtableKeepDummy.GetConstructors();
+                _ = _vtableKeepDummy.GetMethod("x");
+                _ = _vtableKeepDummy.GetField("x");
+            }
+        }
     }
 }

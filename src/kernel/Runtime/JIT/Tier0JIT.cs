@@ -342,7 +342,9 @@ public static unsafe class Tier0JIT
         {
             // Already being compiled - this is a recursive call
             // The outer compilation will complete eventually
-            // DebugConsole.WriteLine("[Tier0JIT] Method already being compiled (recursive)");
+            DebugConsole.Write("[Tier0JIT] Method 0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.WriteLine(" already being compiled (recursive)");
             RestoreContext(savedAsmId);
             return JitResult.Fail();
         }
@@ -477,7 +479,13 @@ public static unsafe class Tier0JIT
 
         if (code == null)
         {
-            DebugConsole.WriteLine("[Tier0JIT] ERROR: Compilation failed");
+            // Cancel the reservation so the method can be retried later
+            CompiledMethodRegistry.CancelCompilation(methodToken, assemblyId);
+            DebugConsole.Write("[Tier0JIT] ERROR: Compilation failed for 0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" asm ");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.WriteLine();
             return JitResult.Fail();
         }
 
@@ -858,6 +866,14 @@ public static unsafe class Tier0JIT
                     }
                 }
             }
+            else if (elemType == 0x16) // ELEMENT_TYPE_TYPEDBYREF
+            {
+                // TypedReference (typedbyreference) is a 16-byte value type
+                // It contains: nint _value (8 bytes) + nint _type (8 bytes)
+                isValueType[i] = true;
+                if (typeSize != null)
+                    typeSize[i] = 16;
+            }
             else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
             {
                 // DebugConsole.Write(" SZARRAY");
@@ -1094,6 +1110,14 @@ public static unsafe class Tier0JIT
         {
             isValueType = true;
             typeSize = 8; // Pointer size on x64
+            return;
+        }
+
+        // TYPEDBYREF (0x16) - TypedReference is a 16-byte value type
+        if (elemType == 0x16)
+        {
+            isValueType = true;
+            typeSize = 16; // TypedReference: 8 bytes _value + 8 bytes _type
             return;
         }
 
@@ -1576,6 +1600,10 @@ public static unsafe class Tier0JIT
 
         // Value types
         if (elemType == ElementType.ValueType)
+            return ReturnKind.Struct;
+
+        // TypedByRef (0x16) is a 16-byte struct
+        if (elemType == 0x16)  // ELEMENT_TYPE_TYPEDBYREF
             return ReturnKind.Struct;
 
         // Default to IntPtr for unknown types

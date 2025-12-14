@@ -384,6 +384,18 @@ public unsafe struct ResolvedMethod
 
     /// <summary>Element size of the MD array (only valid if IsMDArrayMethod).</summary>
     public ushort MDArrayElemSize;
+
+    /// <summary>True if the target method accepts varargs (has VARARG calling convention).</summary>
+    public bool IsVarargMethod;
+
+    /// <summary>True if this is a varargs call with varargs at the call site.</summary>
+    public bool IsVarargCall;
+
+    /// <summary>Number of varargs passed at this call site.</summary>
+    public byte VarargCount;
+
+    /// <summary>Pointer to array of MethodTable pointers for vararg types (or null).</summary>
+    public void** VarargMTs;
 }
 
 /// <summary>Kind of multi-dimensional array method.</summary>
@@ -2399,13 +2411,12 @@ public unsafe struct ILCompiler
             int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
             // DebugConsole.Write("[stloc VT] idx=");
             // DebugConsole.WriteDecimal((uint)index);
-            // DebugConsole.Write(" copySize=");
-            // DebugConsole.WriteDecimal((uint)copySize);
-            // DebugConsole.Write(" stackBytes=");
-            // DebugConsole.WriteDecimal((uint)stackByteSize);
-            // DebugConsole.Write(" dest=[FP-");
+            // DebugConsole.Write(" off=-");
             // DebugConsole.WriteDecimal((uint)(-destOffset));
-            // DebugConsole.Write("]");
+            // DebugConsole.Write(" cp=");
+            // DebugConsole.WriteDecimal((uint)copySize);
+            // DebugConsole.Write(" st=");
+            // DebugConsole.WriteDecimal((uint)stackByteSize);
             // DebugConsole.WriteLine();
 
             // Copy from [RSP] (top of eval stack) into the local slot
@@ -4308,6 +4319,14 @@ public unsafe struct ILCompiler
             return CompileMDArrayMethod(method);
         }
 
+        // Handle vararg calls with TypedReference entries
+        // Note: Even when VarargCount == 0, we need to emit the sentinel TypedReference
+        // Also handle the case when calling a vararg method with 0 varargs (direct MethodDef call)
+        if (method.IsVarargCall || method.IsVarargMethod)
+        {
+            return CompileVarargCall(token, method);
+        }
+
         int totalArgs = method.ArgCount;
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg
@@ -4809,9 +4828,9 @@ public unsafe struct ILCompiler
 
             case ReturnKind.Struct:
                 // Handle struct returns based on size
-                // DebugConsole.Write("[JIT] Call struct return: size=");
-                DebugConsole.WriteDecimal(method.ReturnStructSize);
-                DebugConsole.WriteLine();
+                // DebugConsole.Write("[JIT Call] structRet=");
+                // DebugConsole.WriteDecimal(method.ReturnStructSize);
+                // DebugConsole.WriteLine();
                 if (method.ReturnStructSize <= 8)
                 {
                     // Small struct (1-8 bytes): value in RAX, push directly
@@ -4827,9 +4846,8 @@ public unsafe struct ILCompiler
                     // push RAX  -> [RSP] = bytes 0-7, [RSP+8] = bytes 8-15
                     X64Emitter.Push(ref _code, VReg.R2);  // RDX = bytes 8-15 (pushed first, ends up at RSP+8)
                     X64Emitter.Push(ref _code, VReg.R0);  // RAX = bytes 0-7 (pushed second, ends up at RSP)
-                    // Track as multi-slot value type so stloc knows to copy 16 bytes
-                    PushEntry(EvalStackEntry.Struct(8));
-                    PushEntry(EvalStackEntry.Struct(8));
+                    // Track as ONE entry with 16-byte size so stloc copies all bytes
+                    PushEntry(EvalStackEntry.Struct(16));
                 }
                 else
                 {
@@ -4844,11 +4862,8 @@ public unsafe struct ILCompiler
                     // Buffer was allocated as ((size+7)&~7) rounded to 16 bytes
                     int bufferSize8 = (method.ReturnStructSize + 7) & ~7;
                     int allocatedBuffer = (bufferSize8 + 15) & ~15;
-                    int bufferSlots = allocatedBuffer / 8;
-                    // CRITICAL: Push each slot as ValueType so stloc/ldfld
-                    // know this is a multi-slot value type and copy the correct size
-                    for (int i = 0; i < bufferSlots; i++)
-                        PushEntry(EvalStackEntry.Struct(8));
+                    // Push ONE entry with the full buffer size so stloc pops the correct amount
+                    PushEntry(EvalStackEntry.Struct(allocatedBuffer));
                 }
                 break;
         }
@@ -9786,7 +9801,8 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileRefanyval(uint typeToken)
     {
-        if (_evalStackDepth < 2)
+        // TypedReference is tracked as 1 entry (a 16-byte struct), not 2
+        if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] refanyval: stack underflow");
             return false;
@@ -9818,7 +9834,8 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileRefanytype()
     {
-        if (_evalStackDepth < 2)
+        // TypedReference is tracked as 1 entry (a 16-byte struct), not 2
+        if (_evalStackDepth < 1)
         {
             DebugConsole.WriteLine("[JIT] refanytype: stack underflow");
             return false;
@@ -9844,6 +9861,282 @@ public unsafe struct ILCompiler
     ///
     /// Returns a RuntimeArgumentHandle pointing to the varargs portion of the arguments.
     /// </summary>
+    /// <summary>
+    /// Compile a varargs call with TypedReference entries.
+    /// For each vararg, we create a TypedReference (16 bytes: value + MethodTable*).
+    /// A sentinel TypedReference (0, 0) is added at the end.
+    /// </summary>
+    private unsafe bool CompileVarargCall(uint token, ResolvedMethod method)
+    {
+        // Calculate total items on eval stack: declared args + varargs
+        int varargCount = method.VarargCount;
+        int declaredArgs = method.ArgCount;
+        if (method.HasThis)
+            declaredArgs++;
+        int totalArgs = declaredArgs + varargCount;
+
+        if (_evalStackDepth < totalArgs)
+        {
+            DebugConsole.Write("[JIT VarargCall] Insufficient stack depth for 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.WriteLine();
+            return false;
+        }
+
+        MethodTable** varargMTs = (MethodTable**)method.VarargMTs;
+
+        DebugConsole.Write("[JIT VarargCall] ");
+        DebugConsole.WriteDecimal((uint)varargCount);
+        DebugConsole.Write(" varargs, ");
+        DebugConsole.WriteDecimal((uint)declaredArgs);
+        DebugConsole.Write(" declared for 0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.WriteLine();
+
+        // Stack layout on eval stack (before we start):
+        //   [declared arg 0]        <- bottom
+        //   [declared arg 1]
+        //   ...
+        //   [vararg 0]
+        //   [vararg 1]
+        //   ...
+        //   [vararg N-1]            <- top
+        //
+        // Native stack has these values pushed in order.
+        // We need to:
+        // 1. Read the vararg values from the native stack
+        // 2. Build TypedReference entries
+        // 3. Pop declared args into registers
+        // 4. Call with TypedReference entries on stack
+
+        // Calculate TypedReference array size (varargs + sentinel)
+        int typedRefSize = (varargCount + 1) * 16;  // +1 for sentinel
+        int alignedSize = (typedRefSize + 15) & ~15;
+
+        // The vararg values are currently at [RSP+0], [RSP+8], etc.
+        // (with declared args below them)
+        // Varargs: [RSP + declaredArgs*8] to [RSP + totalArgs*8 - 8]
+
+        // Step 1: Read all vararg values from the native stack into the TypedReference array
+        // We'll build the array in-place where the varargs currently are
+        //
+        // Current layout (native stack, RSP at top):
+        //   [vararg N-1]  <- RSP
+        //   [vararg N-2]
+        //   ...
+        //   [vararg 0]
+        //   [declared args]
+        //
+        // We need to transform varargs into TypedReference entries.
+        // Each raw value (8 bytes) becomes a TypedReference (16 bytes).
+        // So we need extra space.
+
+        // Allocate space for the full TypedReference array (varargs + sentinel)
+        // Each TypedReference is 16 bytes: _value (8) + _type (8)
+        // We need: varargCount * 16 (for varargs) + 16 (for sentinel) = (varargCount + 1) * 16
+        int typedRefArraySize = (varargCount + 1) * 16;
+        int alignedExtra = (typedRefArraySize + 15) & ~15;
+        X64Emitter.SubRI(ref _code, VReg.SP, alignedExtra);
+
+        // Now the vararg values are at [RSP + alignedExtra]
+        // We need to copy them to TypedReference entries at RSP
+
+        // Build TypedReference entries starting from index 0
+        // TypedReference._value is a POINTER to the data, not the data itself
+        for (int i = 0; i < varargCount; i++)
+        {
+            // Get address of vararg value on stack: RSP + alignedExtra + (varargCount - 1 - i) * 8
+            // (reverse order because last vararg is at RSP+alignedExtra, first at higher address)
+            int srcOffset = alignedExtra + (varargCount - 1 - i) * 8;
+
+            // Store POINTER to value as _value (TypedReference._value is a pointer)
+            int destOffset = i * 16;
+            X64Emitter.Lea(ref _code, VReg.R0, VReg.SP, srcOffset);
+            X64Emitter.MovMR(ref _code, VReg.SP, destOffset, VReg.R0);  // _value = pointer to data
+
+            // Load and store MethodTable
+            MethodTable* mt = varargMTs != null ? varargMTs[i] : null;
+            if (mt != null)
+            {
+                X64Emitter.MovRI64(ref _code, VReg.R10, (ulong)mt);
+            }
+            else
+            {
+                X64Emitter.XorRR(ref _code, VReg.R10, VReg.R10);
+            }
+            X64Emitter.MovMR(ref _code, VReg.SP, destOffset + 8, VReg.R10);  // _type
+        }
+
+        // Write sentinel at the end
+        int sentinelOffset = varargCount * 16;
+        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);
+        X64Emitter.MovMR(ref _code, VReg.SP, sentinelOffset, VReg.R0);      // _value = 0
+        X64Emitter.MovMR(ref _code, VReg.SP, sentinelOffset + 8, VReg.R0);  // _type = 0
+
+        // Pop varargs from eval stack tracking (we've consumed them)
+        for (int i = 0; i < varargCount; i++)
+            PopEntry();
+
+        // Now pop declared args into registers
+        // They're at [RSP + alignedExtra + varargCount * 8 + ...]
+        // Actually, they're still on the eval stack
+        if (declaredArgs >= 4)
+        {
+            // Load from native stack at offset
+            int offset = alignedExtra + varargCount * 8 + 3 * 8;
+            X64Emitter.MovRM(ref _code, VReg.R9, VReg.SP, offset);
+            PopEntry();
+        }
+        if (declaredArgs >= 3)
+        {
+            int offset = alignedExtra + varargCount * 8 + 2 * 8;
+            X64Emitter.MovRM(ref _code, VReg.R8, VReg.SP, offset);
+            PopEntry();
+        }
+        if (declaredArgs >= 2)
+        {
+            int offset = alignedExtra + varargCount * 8 + 1 * 8;
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, offset);
+            PopEntry();
+        }
+        if (declaredArgs >= 1)
+        {
+            int offset = alignedExtra + varargCount * 8;
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, offset);
+            PopEntry();
+        }
+
+        // Adjust stack to remove old vararg values and declared args
+        // The TypedReference array is at RSP, old values are above it
+        // We need to keep only the TypedReference array
+        // Add offset to skip over old values: alignedExtra + (varargCount + declaredArgs) * 8
+        // But wait, we need the TypedReference array to stay at the top
+        //
+        // Current layout:
+        //   [TypedReference array + sentinel]  <- RSP, size = alignedSize
+        //   [original vararg values]            <- RSP + alignedSize (roughly), size = varargCount * 8
+        //   [declared arg values]               <- size = declaredArgs * 8
+        //
+        // We need:
+        //   [TypedReference array + sentinel]  <- RSP at call time
+        //
+        // So we need to remove the old vararg and declared arg values
+        int oldValuesSize = (varargCount + declaredArgs) * 8;
+        int alignedOldValues = (oldValuesSize + 15) & ~15;
+
+        // Move RSP up past the old values, but keep TypedReference array where it is
+        // Actually, the TypedReference array is already at RSP, we just need to skip the old values
+        // which are above (at higher stack addresses, i.e., lower memory addresses after our sub rsp)
+        //
+        // Wait, I think I have the layout wrong. Let me reconsider.
+        // After sub rsp, alignedExtra:
+        //   RSP points to new space (lower address)
+        //   Old vararg values are at RSP + alignedExtra
+        //
+        // We wrote TypedReference entries starting at RSP.
+        // Old vararg values and declared args are above (at RSP + alignedExtra to RSP + alignedExtra + totalArgs*8)
+        //
+        // For the call, we need TypedReference array at RSP. We don't need the old values anymore.
+        // But the old values are "below" the TypedReference array in terms of stack (higher addresses).
+        // When we call, we push return address and the stack grows down.
+        //
+        // Actually, we want the TypedReference array to be the ONLY thing on the stack at call time.
+        // We need to "remove" the old vararg/declared values.
+        //
+        // One way: copy the TypedReference array up to overwrite the old values.
+        // But that's expensive.
+        //
+        // Simpler approach for now: just leave them there as dead space.
+        // The callee won't access them. We'll clean them up after the call.
+
+        // Total cleanup after call: alignedExtra + totalArgs * 8 (to remove everything we pushed)
+        int totalCleanup = alignedExtra + totalArgs * 8;
+        int alignedCleanup = (totalCleanup + 15) & ~15;
+
+        // Actually wait, we did sub rsp, alignedExtra but the original args are still on the stack
+        // from before. We haven't removed them. Let me trace through again:
+        //
+        // Before CompileVarargCall:
+        //   Native stack has args pushed: [declaredArg0, declaredArg1, ..., vararg0, vararg1, ...]
+        //   RSP points to top (last vararg)
+        //
+        // After sub rsp, alignedExtra:
+        //   RSP points to new space
+        //   Old args are at RSP + alignedExtra
+        //
+        // We build TypedReference array at RSP.
+        // We load declared args from native stack into registers.
+        //
+        // Now for the call, we need TypedReference array at RSP.
+        // The old values are dead space between RSP + alignedSize and RSP + alignedExtra + oldValuesSize
+        //
+        // Wait, alignedSize might be larger than alignedExtra. Let me recalculate.
+        // alignedExtra = (varargCount * 8 + 16 + 15) & ~15
+        // alignedSize = ((varargCount + 1) * 16 + 15) & ~15
+        //
+        // For varargCount = 2:
+        //   alignedExtra = (16 + 16 + 15) & ~15 = 48 -> 48
+        //   alignedSize = (3 * 16 + 15) & ~15 = 63 -> 48
+        //
+        // So they're about the same. The TypedReference array fits in the extra space we allocated.
+        //
+        // After we've built the TypedReference array, we just need to clean up the old values.
+        // Since declared args are now in registers, and TypedReference entries are at RSP,
+        // we need to remove the old vararg values (which are between RSP + alignedExtra and RSP + alignedExtra + varargCount*8)
+        // and declared arg values (above that).
+        //
+        // But for the call to work correctly, RSP should point to the TypedReference array.
+        // And it does! So we just call.
+        //
+        // After the call returns, we clean up: add rsp, alignedExtra + totalArgs*8
+        // This removes both the TypedReference array space AND the original pushed values.
+
+        // x64 ABI REQUIRES 32 bytes of shadow space before the call
+        // The callee expects [RBP+16..47] as shadow space for homing register args
+        // Without this, shadow space overlaps with our TypedReference array!
+        X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+        // Call the function
+        if (method.NativeCode != null)
+        {
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
+            X64Emitter.CallR(ref _code, VReg.R0);
+        }
+        else if (method.RegistryEntry != null)
+        {
+            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.RegistryEntry);
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
+            X64Emitter.CallR(ref _code, VReg.R0);
+        }
+        else
+        {
+            DebugConsole.WriteLine("[JIT VarargCall] No native code or registry entry");
+            return false;
+        }
+
+        // Clean up: shadow space + extra space + original args
+        X64Emitter.AddRI(ref _code, VReg.SP, 32 + alignedExtra + totalArgs * 8);
+
+        // Handle return value
+        switch (method.ReturnKind)
+        {
+            case ReturnKind.Void:
+                break;
+            case ReturnKind.Int32:
+            case ReturnKind.Int64:
+            case ReturnKind.IntPtr:
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+                break;
+            default:
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+                break;
+        }
+
+        return true;
+    }
+
     private bool CompileArglist()
     {
         // In a varargs method, after the declared parameters, there may be additional
@@ -9852,13 +10145,24 @@ public unsafe struct ILCompiler
         //
         // For our implementation:
         // - The handle is a pointer to where the varargs begin on the stack
-        // - In x64 calling convention, args after the first 4 are on the stack
-        // - The varargs start after the declared parameters
+        // - In x64 calling convention:
+        //   - First 4 args are in registers (RCX, RDX, R8, R9), not on stack
+        //   - Caller reserves 32-byte shadow space at [RSP+0..31]
+        //   - 5th+ args go on stack starting at [RSP+32]
+        //   - Varargs TypedReference array is placed after any stack args
+        //
+        // Stack layout in callee frame (after prologue):
+        //   [RBP+0]  = saved RBP
+        //   [RBP+8]  = return address
+        //   [RBP+16] = shadow space (32 bytes, [RBP+16..47])
+        //   [RBP+48] = TypedReference array start (for 0-4 declared args)
+        //   [RBP+48 + (argCount-4)*8] = TypedReference array start (for 5+ declared args)
 
-        // Calculate the address where varargs would begin
-        // This is: RBP + 16 + (argCount * 8)
-        // (RBP points to saved RBP, +8 is return address, +16 is start of shadow space/args)
-        int varargOffset = 16 + (_argCount * 8);
+        // Calculate the address where varargs TypedReference array begins
+        // Base offset: 48 (16 for saved RBP + return addr, 32 for shadow space)
+        // Stack args: for declared args > 4, they take space at [RBP+48], [RBP+56], etc.
+        int stackArgs = _argCount > 4 ? _argCount - 4 : 0;
+        int varargOffset = 48 + (stackArgs * 8);
 
         X64Emitter.MovRR(ref _code, VReg.R0, VReg.FP);
         X64Emitter.AddRI(ref _code, VReg.R0, varargOffset);

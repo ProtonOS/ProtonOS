@@ -176,6 +176,11 @@ public static unsafe class MetadataIntegration
     private const int CctorBlockSize = 32;
     private static BlockChain _cctorChain;
 
+    // Synthetic MethodTable for ArgIterator (value type, 8 bytes)
+    // Used by newobj to know the size of the value type to allocate on stack
+    private static byte* _argIteratorMTBuffer;
+    private static MethodTable* _argIteratorMT;
+
     private static bool _initialized;
 
     /// <summary>
@@ -248,6 +253,24 @@ public static unsafe class MetadataIntegration
 
         _staticStorageBase = null;
         _staticStorageUsed = 0;
+
+        // Create synthetic MethodTable for ArgIterator (value type, 8 bytes)
+        // ArgIterator has one field: byte* _current (8 bytes)
+        // BaseSize for value types = field size (boxed size would add MT ptr)
+        _argIteratorMTBuffer = (byte*)HeapAllocator.AllocZeroed((ulong)MethodTableWithVtableSize);
+        if (_argIteratorMTBuffer != null)
+        {
+            _argIteratorMT = (MethodTable*)_argIteratorMTBuffer;
+            _argIteratorMT->_usComponentSize = 0;
+            _argIteratorMT->_usFlags = 0x0020;  // IsValueType flag
+            _argIteratorMT->_uBaseSize = 8;  // 8 bytes for one pointer field
+            _argIteratorMT->_relatedType = null;
+            _argIteratorMT->_usNumVtableSlots = 0;
+            _argIteratorMT->_usNumInterfaces = 0;
+            _argIteratorMT->_uHashCode = 0;
+            DebugConsole.WriteLine("[MetaInt] Created ArgIterator synthetic MethodTable");
+        }
+
         _initialized = true;
 
         DebugConsole.WriteLine("[MetaInt] Initialized metadata integration layer");
@@ -337,6 +360,11 @@ public static unsafe class MetadataIntegration
         // Reflection types - for GetType() support
         public const uint Type = 0xF0000030;
         public const uint RuntimeType = 0xF0000031;
+
+        // Varargs types - for __arglist support
+        public const uint TypedReference = 0xF0000040;
+        public const uint RuntimeArgumentHandle = 0xF0000041;
+        public const uint ArgIterator = 0xF0000042;
     }
 
     /// <summary>
@@ -910,6 +938,17 @@ public static unsafe class MetadataIntegration
             MethodTable* mt = AssemblyLoader.ResolveType(_currentAssemblyId, token);
             if (mt != null)
             {
+                // Debug: log TypeDef resolutions for FullTest (assembly 5)
+                if (_currentAssemblyId == 5 && (token >> 24) == 0x02)
+                {
+                    DebugConsole.Write("[MetaInt.ResolveType] token=0x");
+                    DebugConsole.WriteHex(token);
+                    DebugConsole.Write(" asm=");
+                    DebugConsole.WriteDecimal(_currentAssemblyId);
+                    DebugConsole.Write(" MT=0x");
+                    DebugConsole.WriteHex((ulong)mt);
+                    DebugConsole.WriteLine();
+                }
                 methodTablePtr = mt;
                 return true;
             }
@@ -1729,7 +1768,43 @@ public static unsafe class MetadataIntegration
         DebugConsole.WriteDecimal(paramCount);
         DebugConsole.WriteLine();
 
-        if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry))
+        // Special handling for String constructors - need to distinguish char* from char[]
+        // For .ctor with 3 params, check if first param is pointer (char*) vs array (char[])
+        bool useCharPtrVariant = false;
+        if (NameEquals(typeName, "System.String") && NameEquals(memberName, ".ctor") && paramCount == 3)
+        {
+            // Parse signature to check first parameter type
+            // sig format: calling_conv | param_count | return_type | param_types...
+            // pos 0: calling convention
+            // pos 1: param count (compressed)
+            // pos 2+: return type (void = 0x01), then param types
+            // Debug: dump first 6 bytes of signature
+            DebugConsole.Write("[AotMemberRef] String..ctor sig: ");
+            for (int d = 0; d < 6 && d < sigLen; d++)
+            {
+                DebugConsole.WriteHex(sig[d]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+
+            int pos = sigPos;  // Continue from where param count was decoded
+            // Skip return type - void is 0x01
+            pos++;
+            // Now at first param type - check for pointer (0x0F = ELEMENT_TYPE_PTR)
+            DebugConsole.Write("[AotMemberRef] First param type at pos ");
+            DebugConsole.WriteDecimal((uint)pos);
+            DebugConsole.Write(" = 0x");
+            DebugConsole.WriteHex(sig[pos]);
+            DebugConsole.WriteLine();
+
+            if (sig[pos] == 0x0F)  // PTR
+            {
+                useCharPtrVariant = true;
+                DebugConsole.WriteLine("[AotMemberRef] String..ctor detected char* variant");
+            }
+        }
+
+        if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry, useCharPtrVariant))
         {
             DebugConsole.Write("[AotMemberRef] Found AOT method: ");
             WriteByteString(typeName);
@@ -1742,6 +1817,7 @@ public static unsafe class MetadataIntegration
             result.NativeCode = (void*)entry.NativeCode;
             result.ArgCount = entry.ArgCount;
             result.ReturnKind = entry.ReturnKind;
+            result.ReturnStructSize = entry.ReturnStructSize;
             result.HasThis = entry.HasThis;
             result.IsValid = true;
             result.IsVirtual = entry.IsVirtual;
@@ -1755,7 +1831,12 @@ public static unsafe class MetadataIntegration
             {
                 result.VtableSlot = -1;  // Not a vtable method
             }
-            result.MethodTable = null;
+            // For value type constructors, we need to provide the MethodTable
+            // so that newobj can allocate stack space
+            if (NameEquals(typeName, "System.ArgIterator"))
+                result.MethodTable = _argIteratorMT;
+            else
+                result.MethodTable = null;
             result.IsInterfaceMethod = false;
             result.InterfaceMT = null;
             result.InterfaceMethodSlot = 0;
@@ -2173,7 +2254,7 @@ public static unsafe class MetadataIntegration
                         result.NativeCode = (void*)entry.NativeCode;
                         result.ArgCount = entry.ArgCount;
                         result.ReturnKind = entry.ReturnKind;
-                        result.ReturnStructSize = 0;
+                        result.ReturnStructSize = entry.ReturnStructSize;
                         result.HasThis = entry.HasThis;
                         result.IsValid = true;
                         result.IsVirtual = entry.IsVirtual;
@@ -2339,6 +2420,12 @@ public static unsafe class MetadataIntegration
         {
             _typeTypeArgMTs[0] = savedTypeArg;
             _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+        }
+
+        // Parse vararg info from the MemberRef signature if this is a vararg call
+        if (success)
+        {
+            ParseVarargInfo(_currentAssemblyId, token, ref result);
         }
 
         return success;
@@ -4123,6 +4210,12 @@ public static unsafe class MetadataIntegration
             result.InterfaceMT = info->InterfaceMT;
             result.InterfaceMethodSlot = info->InterfaceMethodSlot;
             result.RegistryEntry = info;  // Set registry entry
+
+            // Check if this is a vararg method (has VARARG calling convention)
+            // This is needed even for direct calls with 0 varargs
+            // Only set IsVarargMethod, don't overwrite other fields from registry
+            CheckVarargMethod(_currentAssemblyId, token, ref result);
+
             return true;
         }
         else if (tableId == 0x0A) // MemberRef token
@@ -4331,6 +4424,12 @@ public static unsafe class MetadataIntegration
                 case 0x0E: // ELEMENT_TYPE_STRING
                 case 0x12: // ELEMENT_TYPE_CLASS
                 case 0x14: // ELEMENT_TYPE_SZARRAY
+                    result.ReturnKind = ReturnKind.IntPtr;
+                    break;
+                case 0x16: // ELEMENT_TYPE_TYPEDBYREF - TypedReference is a 16-byte struct
+                    result.ReturnKind = ReturnKind.Struct;
+                    result.ReturnStructSize = 16;
+                    break;
                 default:
                     result.ReturnKind = ReturnKind.IntPtr;
                     break;
@@ -4339,7 +4438,32 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Check if a MethodDef has VARARG calling convention.
+    /// Only sets IsVarargMethod, does not modify other fields.
+    /// </summary>
+    private static void CheckVarargMethod(uint asmId, uint methodDefToken, ref ResolvedMethod result)
+    {
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(asmId);
+        if (asm == null)
+            return;
+
+        uint rowId = methodDefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return;
+
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 1)
+            return;
+
+        // Read calling convention and check for VARARG (0x05)
+        byte callConv = sig[0];
+        result.IsVarargMethod = (callConv & 0x0F) == 0x05;
+    }
+
+    /// <summary>
     /// Parse a MethodDef signature to get arg count and return type for interface methods.
+    /// Also detects VARARG calling convention.
     /// </summary>
     private static void ParseMethodDefSignature(uint asmId, uint methodDefToken, ref ResolvedMethod result)
     {
@@ -4360,6 +4484,9 @@ public static unsafe class MetadataIntegration
         int sigPos = 0;
         byte callConv = sig[sigPos++];
         result.HasThis = (callConv & 0x20) != 0;
+
+        // Check for VARARG calling convention (0x05)
+        result.IsVarargMethod = (callConv & 0x0F) == 0x05;
 
         // Decode compressed parameter count
         byte b = sig[sigPos++];
@@ -4413,10 +4540,304 @@ public static unsafe class MetadataIntegration
                 case 0x0E: // ELEMENT_TYPE_STRING
                 case 0x12: // ELEMENT_TYPE_CLASS
                 case 0x14: // ELEMENT_TYPE_SZARRAY
+                    result.ReturnKind = ReturnKind.IntPtr;
+                    break;
+                case 0x16: // ELEMENT_TYPE_TYPEDBYREF - TypedReference is a 16-byte struct
+                    result.ReturnKind = ReturnKind.Struct;
+                    result.ReturnStructSize = 16;
+                    break;
                 default:
                     result.ReturnKind = ReturnKind.IntPtr;
                     break;
             }
+        }
+    }
+
+    // Buffer for storing vararg MethodTable pointers (max 16 varargs)
+    private const int MaxVarargs = 16;
+    private static MethodTable** _varargMTBuffer;
+
+    /// <summary>
+    /// Parse vararg info from a MemberRef signature.
+    /// Detects if the signature has SENTINEL (varargs) and gets the MethodTable for each vararg type.
+    /// </summary>
+    private static void ParseVarargInfo(uint asmId, uint memberRefToken, ref ResolvedMethod result)
+    {
+        result.IsVarargCall = false;
+        result.VarargCount = 0;
+        result.VarargMTs = null;
+
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(asmId);
+        if (asm == null)
+            return;
+
+        uint rowId = memberRefToken & 0x00FFFFFF;
+        if (rowId == 0)
+            return;
+
+        uint sigIdx = MetadataReader.GetMemberRefSignature(ref asm->Tables, ref asm->Sizes, rowId);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 3)
+            return;
+
+        // Parse the signature looking for SENTINEL (0x41)
+        int sigPos = 0;
+        byte callConv = sig[sigPos++];
+
+        // Decode compressed parameter count
+        uint paramCount = DecodeCompressedUint(sig, ref sigPos, (int)sigLen);
+
+        // Skip return type
+        SkipTypeInSignature(sig, ref sigPos, (int)sigLen);
+
+        // Scan through declared params looking for SENTINEL
+        uint declaredParams = 0;
+        while (sigPos < sigLen && declaredParams < paramCount)
+        {
+            if (sig[sigPos] == ElementType.Sentinel)
+            {
+                // Found SENTINEL - everything after this is varargs
+                sigPos++;  // Skip SENTINEL
+
+                // Count and parse vararg types
+                int varargStartPos = sigPos;
+                byte varargCount = 0;
+
+                // First pass: count varargs
+                int countPos = sigPos;
+                while (countPos < sigLen && varargCount < MaxVarargs)
+                {
+                    SkipTypeInSignature(sig, ref countPos, (int)sigLen);
+                    varargCount++;
+                }
+
+                // Mark this as a vararg call even when varargCount == 0
+                // We need to emit the sentinel TypedReference in all cases
+                result.IsVarargCall = true;
+                result.VarargCount = varargCount;
+
+                if (varargCount > 0)
+                {
+                    // Allocate buffer for vararg MTs if needed
+                    if (_varargMTBuffer == null)
+                    {
+                        _varargMTBuffer = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxVarargs * sizeof(MethodTable*)));
+                    }
+
+                    // Second pass: get MethodTable for each vararg type
+                    sigPos = varargStartPos;
+                    for (int i = 0; i < varargCount; i++)
+                    {
+                        _varargMTBuffer[i] = GetMethodTableForSignatureType(sig, ref sigPos, (int)sigLen, asmId);
+                    }
+
+                    result.VarargMTs = (void**)_varargMTBuffer;
+                }
+
+                DebugConsole.Write("[Vararg] Found ");
+                DebugConsole.WriteDecimal(varargCount);
+                DebugConsole.Write(" varargs for MemberRef 0x");
+                DebugConsole.WriteHex(memberRefToken);
+                DebugConsole.WriteLine();
+                return;
+            }
+            // Skip this declared parameter type
+            SkipTypeInSignature(sig, ref sigPos, (int)sigLen);
+            declaredParams++;
+        }
+    }
+
+    /// <summary>
+    /// Decode a compressed unsigned integer from a signature blob.
+    /// </summary>
+    private static uint DecodeCompressedUint(byte* sig, ref int pos, int maxLen)
+    {
+        if (pos >= maxLen)
+            return 0;
+
+        byte b = sig[pos++];
+        if ((b & 0x80) == 0)
+            return b;
+        if ((b & 0xC0) == 0x80)
+        {
+            if (pos >= maxLen) return 0;
+            return (uint)(((b & 0x3F) << 8) | sig[pos++]);
+        }
+        if ((b & 0xE0) == 0xC0)
+        {
+            if (pos + 2 >= maxLen) return 0;
+            uint val = (uint)(((b & 0x1F) << 24) | (sig[pos] << 16) | (sig[pos + 1] << 8) | sig[pos + 2]);
+            pos += 3;
+            return val;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Skip a type in a signature blob (advances pos past the type).
+    /// </summary>
+    private static void SkipTypeInSignature(byte* sig, ref int pos, int maxLen)
+    {
+        if (pos >= maxLen)
+            return;
+
+        byte elemType = sig[pos++];
+
+        switch (elemType)
+        {
+            case 0x01: // VOID
+            case 0x02: // BOOLEAN
+            case 0x03: // CHAR
+            case 0x04: // I1
+            case 0x05: // U1
+            case 0x06: // I2
+            case 0x07: // U2
+            case 0x08: // I4
+            case 0x09: // U4
+            case 0x0A: // I8
+            case 0x0B: // U8
+            case 0x0C: // R4
+            case 0x0D: // R8
+            case 0x0E: // STRING
+            case 0x18: // I (native int)
+            case 0x19: // U (native uint)
+            case 0x1C: // OBJECT
+            case 0x16: // TYPEDBYREF
+                // Simple types - no additional data
+                break;
+
+            case 0x0F: // PTR
+            case 0x10: // BYREF
+            case 0x1D: // SZARRAY
+            case 0x45: // PINNED
+                // These are followed by another type
+                SkipTypeInSignature(sig, ref pos, maxLen);
+                break;
+
+            case 0x11: // VALUETYPE
+            case 0x12: // CLASS
+                // Followed by TypeDefOrRefOrSpecEncoded
+                DecodeCompressedUint(sig, ref pos, maxLen);
+                break;
+
+            case 0x14: // ARRAY
+                // Skip element type, then rank, then sizes and lower bounds
+                SkipTypeInSignature(sig, ref pos, maxLen);
+                uint rank = DecodeCompressedUint(sig, ref pos, maxLen);
+                uint numSizes = DecodeCompressedUint(sig, ref pos, maxLen);
+                for (uint i = 0; i < numSizes; i++)
+                    DecodeCompressedUint(sig, ref pos, maxLen);
+                uint numLoBounds = DecodeCompressedUint(sig, ref pos, maxLen);
+                for (uint i = 0; i < numLoBounds; i++)
+                    DecodeCompressedUint(sig, ref pos, maxLen);
+                break;
+
+            case 0x15: // GENERICINST
+                // Skip generic type kind (CLASS/VALUETYPE), then base type, then type args
+                pos++;  // Skip CLASS or VALUETYPE
+                DecodeCompressedUint(sig, ref pos, maxLen);  // Skip type token
+                uint typeArgCount = DecodeCompressedUint(sig, ref pos, maxLen);
+                for (uint i = 0; i < typeArgCount; i++)
+                    SkipTypeInSignature(sig, ref pos, maxLen);
+                break;
+
+            case 0x13: // VAR (type parameter)
+            case 0x1E: // MVAR (method type parameter)
+                DecodeCompressedUint(sig, ref pos, maxLen);
+                break;
+
+            case 0x1B: // FNPTR
+                // Skip the entire method signature
+                // Skip calling convention
+                pos++;
+                uint fnParamCount = DecodeCompressedUint(sig, ref pos, maxLen);
+                SkipTypeInSignature(sig, ref pos, maxLen);  // Return type
+                for (uint i = 0; i < fnParamCount; i++)
+                    SkipTypeInSignature(sig, ref pos, maxLen);
+                break;
+
+            case 0x20: // CMOD_OPT
+            case 0x1F: // CMOD_REQD
+                DecodeCompressedUint(sig, ref pos, maxLen);  // Skip modifier type
+                SkipTypeInSignature(sig, ref pos, maxLen);   // Skip actual type
+                break;
+
+            default:
+                // Unknown type - best effort skip
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Get the MethodTable for a type encoded in a signature.
+    /// </summary>
+    private static MethodTable* GetMethodTableForSignatureType(byte* sig, ref int pos, int maxLen, uint asmId)
+    {
+        if (pos >= maxLen)
+            return null;
+
+        byte elemType = sig[pos++];
+
+        switch (elemType)
+        {
+            case 0x02: // BOOLEAN
+                return LookupType(WellKnownTypes.Boolean);
+            case 0x03: // CHAR
+                return LookupType(WellKnownTypes.Char);
+            case 0x04: // I1
+                return LookupType(WellKnownTypes.SByte);
+            case 0x05: // U1
+                return LookupType(WellKnownTypes.Byte);
+            case 0x06: // I2
+                return LookupType(WellKnownTypes.Int16);
+            case 0x07: // U2
+                return LookupType(WellKnownTypes.UInt16);
+            case 0x08: // I4
+                return LookupType(WellKnownTypes.Int32);
+            case 0x09: // U4
+                return LookupType(WellKnownTypes.UInt32);
+            case 0x0A: // I8
+                return LookupType(WellKnownTypes.Int64);
+            case 0x0B: // U8
+                return LookupType(WellKnownTypes.UInt64);
+            case 0x0C: // R4
+                return LookupType(WellKnownTypes.Single);
+            case 0x0D: // R8
+                return LookupType(WellKnownTypes.Double);
+            case 0x18: // I (native int)
+                return LookupType(WellKnownTypes.IntPtr);
+            case 0x19: // U (native uint)
+                return LookupType(WellKnownTypes.UIntPtr);
+            case 0x0E: // STRING
+                return LookupType(WellKnownTypes.String);
+            case 0x1C: // OBJECT
+                return LookupType(WellKnownTypes.Object);
+
+            case 0x11: // VALUETYPE
+            case 0x12: // CLASS
+            {
+                // Decode TypeDefOrRefOrSpecEncoded token
+                uint codedToken = DecodeCompressedUint(sig, ref pos, maxLen);
+                // Decode coded index: low 2 bits are table tag (0=TypeDef, 1=TypeRef, 2=TypeSpec)
+                uint tableTag = codedToken & 0x3;
+                uint rowId = codedToken >> 2;
+                uint token;
+                if (tableTag == 0)
+                    token = 0x02000000 | rowId;  // TypeDef
+                else if (tableTag == 1)
+                    token = 0x01000000 | rowId;  // TypeRef
+                else
+                    token = 0x1B000000 | rowId;  // TypeSpec
+
+                // Look up the MethodTable for this type
+                return AssemblyLoader.ResolveType(asmId, token);
+            }
+
+            default:
+                // For complex types, skip them and return Object MT as fallback
+                pos--;  // Put back the element type
+                SkipTypeInSignature(sig, ref pos, maxLen);
+                return LookupType(WellKnownTypes.Object);
         }
     }
 

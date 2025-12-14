@@ -258,6 +258,27 @@ public static unsafe class JitStubs
         DebugConsole.Write(" has no registered method for MT 0x");
         DebugConsole.WriteHex((ulong)methodTable);
         DebugConsole.WriteLine();
+
+        // Try to identify the type from ReflectionRuntime
+        Reflection.ReflectionRuntime.LookupTypeInfo((MethodTable*)methodTable, out uint asmId, out uint token);
+        DebugConsole.Write("  Type info: asmId=");
+        DebugConsole.WriteDecimal(asmId);
+        DebugConsole.Write(" token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.WriteLine();
+
+        // Print vtable slots 0-3 to help identify the type
+        DebugConsole.Write("  VTable slots: ");
+        for (int i = 0; i < 4; i++)
+        {
+            DebugConsole.Write("[");
+            DebugConsole.WriteDecimal((uint)i);
+            DebugConsole.Write("]=0x");
+            DebugConsole.WriteHex((ulong)vtable[i]);
+            DebugConsole.Write(" ");
+        }
+        DebugConsole.WriteLine();
+
         DebugConsole.WriteLine("!!! SYSTEM HALTED - Missing vtable method registration");
         CPU.HaltForever();
     }

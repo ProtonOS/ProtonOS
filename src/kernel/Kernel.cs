@@ -174,6 +174,14 @@ public static unsafe class Kernel
         // Initialize assembly loader (requires HeapAllocator)
         AssemblyLoader.Initialize();
 
+        // Initialize ReflectionRuntime for type info reverse lookups (MT* -> assembly/token)
+        Runtime.Reflection.ReflectionRuntime.Init();
+
+        // Force bflat to keep virtual method vtable entries for reflection types.
+        // Without this, DCE may remove vtable slots that JIT code needs.
+        System.RuntimeType.ForceKeepVtableMethods();
+        System.Reflection.ReflectionVtableKeeper.ForceKeepVtableMethods();
+
         // Register System.Runtime.dll first (dependency for other assemblies)
         if (_systemRuntimeBytes != null)
         {

@@ -137,6 +137,18 @@ namespace System.Reflection
 
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);
         public override int GetHashCode() => base.GetHashCode();
+
+        // Equality operators - reference comparison
+        public static bool operator ==(MemberInfo? left, MemberInfo? right)
+        {
+            if (left is null)
+                return right is null;
+            if (right is null)
+                return false;
+            return ReferenceEquals(left, right);
+        }
+
+        public static bool operator !=(MemberInfo? left, MemberInfo? right) => !(left == right);
     }
 
     /// <summary>
@@ -193,6 +205,23 @@ namespace System.Reflection
         public virtual Type ReturnType => null!;
         public abstract MethodInfo GetBaseDefinition();
         public abstract ICustomAttributeProvider ReturnTypeCustomAttributes { get; }
+
+        public static bool operator ==(MethodInfo? left, MethodInfo? right)
+        {
+            if ((object?)left == null)
+                return (object?)right == null;
+            if ((object?)right == null)
+                return false;
+            return ReferenceEquals(left, right);
+        }
+
+        public static bool operator !=(MethodInfo? left, MethodInfo? right)
+        {
+            return !(left == right);
+        }
+
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj);
+        public override int GetHashCode() => base.GetHashCode();
     }
 
     /// <summary>
@@ -200,13 +229,30 @@ namespace System.Reflection
     /// </summary>
     public abstract class ConstructorInfo : MethodBase
     {
-        public static readonly string ConstructorName = ".ctor";
-        public static readonly string TypeConstructorName = ".cctor";
+        public const string ConstructorName = ".ctor";
+        public const string TypeConstructorName = ".cctor";
 
         public override MemberTypes MemberType => MemberTypes.Constructor;
 
         public abstract object Invoke(BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture);
+
+        public static bool operator ==(ConstructorInfo? left, ConstructorInfo? right)
+        {
+            if ((object?)left == null)
+                return (object?)right == null;
+            if ((object?)right == null)
+                return false;
+            return ReferenceEquals(left, right);
+        }
+
+        public static bool operator !=(ConstructorInfo? left, ConstructorInfo? right)
+        {
+            return !(left == right);
+        }
+
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj);
+        public override int GetHashCode() => base.GetHashCode();
     }
 
     /// <summary>
@@ -252,6 +298,23 @@ namespace System.Reflection
         {
             SetValue(obj, value, BindingFlags.Default, null, null);
         }
+
+        public static bool operator ==(FieldInfo? left, FieldInfo? right)
+        {
+            if ((object?)left == null)
+                return (object?)right == null;
+            if ((object?)right == null)
+                return false;
+            return ReferenceEquals(left, right);
+        }
+
+        public static bool operator !=(FieldInfo? left, FieldInfo? right)
+        {
+            return !(left == right);
+        }
+
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj);
+        public override int GetHashCode() => base.GetHashCode();
     }
 
     /// <summary>
@@ -416,5 +479,45 @@ namespace System.Reflection
 
         /// <summary>Returns a string representation.</summary>
         public override string ToString() => FullName;
+    }
+
+    /// <summary>
+    /// Helper class to force bflat to keep virtual method vtable entries.
+    /// This prevents dead code elimination from removing vtable slots that JIT code needs.
+    /// </summary>
+    public static class ReflectionVtableKeeper
+    {
+        // Static fields to defeat dead code elimination
+        private static RuntimeMethodInfo? _keepRmi;
+        private static RuntimeFieldInfo? _keepRfi;
+        private static RuntimeConstructorInfo? _keepRci;
+
+        /// <summary>
+        /// Force bflat to keep virtual method vtable entries by explicitly calling them.
+        /// Called from kernel init.
+        /// NOTE: Only force-keep the specific methods needed for JIT reflection.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(
+            System.Runtime.CompilerServices.MethodImplOptions.NoInlining |
+            System.Runtime.CompilerServices.MethodImplOptions.NoOptimization)]
+        public static void ForceKeepVtableMethods()
+        {
+            // Use static fields to prevent compiler from proving null
+            if (_keepRmi != null)
+            {
+                // Force MemberInfo virtual methods needed by reflection iteration
+                _ = _keepRmi.Name;
+            }
+
+            if (_keepRfi != null)
+            {
+                _ = _keepRfi.Name;
+            }
+
+            if (_keepRci != null)
+            {
+                _ = _keepRci.Name;
+            }
+        }
     }
 }

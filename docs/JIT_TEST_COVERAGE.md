@@ -110,8 +110,8 @@ This document tracks test coverage for JIT compiler features. Each area should h
   - Supports byte, short, int, long, and reference element types
   - Tests: Test2DIntSetGet, Test2DIntZeroed, Test2DIntCorners, Test2DIntSum, Test2DByteSetGet, Test2DLongSetGet, Test2DDiagonal, Test2DShortSetGet, TestMultiple2DArrays
   - Tests: Test3DIntSetGet, Test3DIntCorners, Test3DByteSetGet, Test3DIntSum
+- ✅ System.Array properties on MD arrays (get_Length, get_LongLength, get_Rank via AotMethodRegistry)
 - ⚠️ ldelem/stelem for multi-dim (use Get/Set methods instead)
-- Note: System.Array::get_Length not yet callable on MD arrays (requires registering System.Array in AotMethodRegistry)
 
 ### Bounds Checking
 - ✅ Array bounds checks (ldelem, stelem, ldelema, ldelem.r4/r8, stelem.r4/r8, ldelem/stelem with token)
@@ -301,8 +301,9 @@ This document tracks test coverage for JIT compiler features. Each area should h
 
 ---
 
-## 12. Reflection (if needed)
+## 12. Reflection
 
+### Type Reflection
 - ✅ ldtoken (type handle) - pushes MethodTable pointer for type tokens
 - ✅ Type.GetTypeFromHandle - creates RuntimeType from RuntimeTypeHandle
 - ✅ typeof(ConcreteType) - works for int, string, object, arrays, custom classes
@@ -312,6 +313,29 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ ldtoken for field handles - encodes (assemblyId << 32) | fieldToken
 - ✅ MethodBase.GetMethodFromHandle - creates RuntimeMethodInfo from handle
 - ✅ FieldInfo.GetFieldFromHandle - creates RuntimeFieldInfo from handle
+
+### Method Reflection
+- ✅ Type.GetMethods() - returns MethodInfo[] for all methods on a type
+- ✅ Type.GetMethod(string) - finds method by name
+- ✅ MethodInfo.Name - returns method name from metadata
+- ✅ MethodInfo.IsStatic - checks method attributes
+- ✅ MethodInfo.IsVirtual - checks method attributes
+- ✅ MethodInfo.Invoke() - invokes method via reflection
+  - ✅ Static method, no args
+  - ✅ Static method, with int args (unboxing)
+  - ✅ Instance method, no args
+  - ✅ Instance method, with args
+  - ✅ Int32 return values (boxing)
+
+### Field Reflection
+- ✅ Type.GetFields() - returns FieldInfo[] for all fields on a type
+- ✅ Type.GetField(string) - finds field by name
+- ✅ FieldInfo.Name - returns field name from metadata
+- ✅ FieldInfo.GetValue() - reads field value
+- ✅ FieldInfo.SetValue() - writes field value
+
+### Constructor Reflection
+- ✅ Type.GetConstructors() - returns ConstructorInfo[] for all constructors
 
 ---
 
@@ -332,8 +356,15 @@ This document tracks test coverage for JIT compiler features. Each area should h
 - ✅ unaligned. (no-op on x64)
 
 ### Rare Opcodes
-- ❌ arglist (varargs)
-- ❌ mkrefany / refanyval / refanytype (TypedReference)
+- ✅ arglist (varargs) - Full varargs support with TypedReference emission and ArgIterator
+  - ✅ Basic vararg calls (TestVarargNoArgs, TestVarargOneArg, TestVarargMultipleArgs)
+  - ✅ ArgIterator constructor (TestArgIteratorCtorCall)
+  - ✅ GetRemainingCount (TestGetRemainingCountZero, TestGetRemainingCountTwo, TestGetRemainingCountThree)
+  - ✅ GetNextArg single/multiple calls (TestGetNextArgBasic, TestGetNextArgTwice)
+  - ✅ GetRemainingCount then GetNextArg (TestGetRemainingThenGetNextTwo)
+  - ✅ Full iteration with loops (TestWhileLoopTwo, TestLoopNoRefvalueTwo, TestReuseLocal)
+  - ✅ Sum iteration with __refvalue (TestSumIntsTwo, TestSumIntsThree, TestSumIntsFive)
+- ✅ mkrefany / refanyval / refanytype (TypedReference)
 - ✅ sizeof (primitive types and structs)
 
 ---
@@ -348,11 +379,11 @@ This document tracks test coverage for JIT compiler features. Each area should h
 ### P1 - Important for Robustness
 4. ✅ Delegates (for callbacks) - static and instance delegates working
 5. ✅ Static constructors - cctor invocation working
-6. Complex generics
+6. ✅ Complex generics - nested generics, constraints, generic interfaces, generic delegates
 
 ### P2 - Nice to Have
-7. Multi-dimensional arrays
-8. Reflection basics
+7. ✅ Multi-dimensional arrays - 2D/3D allocation, Get/Set, System.Array properties
+8. Reflection basics (limited - Type.GetTypeFromHandle, typeof works)
 9. ✅ Overflow checking - implemented via INT 4 interrupt handler
 
 ---
@@ -378,11 +409,60 @@ Tests should be added to `src/FullTest/Program.cs` in appropriate test classes:
 
 ## Notes
 
-- Current test count: 300 passing
+- Current test count: 358 passing
 - Target: Add ~50-100 more targeted tests before driver work
 - Focus on failure isolation - each test should test ONE thing
 
 ## Recent Updates
+
+### Reflection Invoke and Member Enumeration (2025-12)
+Implemented full reflection method/field/constructor enumeration and invocation:
+- **Type.GetMethods()**: Returns array of RuntimeMethodInfo for all type methods
+- **Type.GetFields()**: Returns array of RuntimeFieldInfo for all type fields
+- **Type.GetConstructors()**: Returns array of RuntimeConstructorInfo
+- **MethodInfo.Invoke()**: Full method invocation via reflection
+  - Added `assemblyId` parameter to `Reflection_InvokeMethod` (tokens not globally unique)
+  - On-demand JIT compilation when method not yet compiled
+  - Boxing for Int32/Int64 return values (`BoxInt32()`, `BoxInt64()`)
+  - Unboxing for Int32 parameters (`UnboxInt32()`)
+- **MethodBase.Invoke AOT registration**: Virtual method dispatch routed through AOT helper
+- **AssemblyId property**: Added to RuntimeMethodInfo and RuntimeConstructorInfo
+- **23 new tests**: GetMethods, GetFields, GetConstructors, GetMethod(name), GetField(name), Invoke (static/instance, with/without args)
+- Test count increased from 335 to 358
+
+### Varargs Full Support - GetNextArg and Iteration (2025-12)
+Completed full varargs (`__arglist`) support with GetNextArg and loop iteration:
+- **GetNextArg AOT helper**: Added `ArgIteratorHelpers.GetNextArg()` with hidden buffer calling convention
+  - Registered with `ReturnStructSize=17` to force hidden buffer mode (RCX=retBuf, RDX=this)
+  - Copies 16-byte TypedReference from vararg array to return buffer
+  - Advances ArgIterator._current pointer by 16 bytes
+- **Hidden buffer eval stack fix**: Fixed JIT bug where large struct (>16 bytes) returns pushed multiple 8-byte entries
+  - Bug: stloc only popped ONE entry (8 bytes) instead of all entries, corrupting stack
+  - Fix: Push ONE entry with full buffer size instead of multiple small entries
+  - This also fixes any future methods returning large structs via hidden buffer
+- **16 vararg tests**: All passing
+  - Basic calls: TestVarargNoArgs, TestVarargOneArg, TestVarargMultipleArgs
+  - ArgIterator: TestArgIteratorCtorCall
+  - GetRemainingCount: TestGetRemainingCountZero, TestGetRemainingCountTwo, TestGetRemainingCountThree
+  - GetNextArg: TestGetNextArgBasic, TestGetNextArgTwice, TestGetRemainingThenGetNextTwo
+  - Loop iteration: TestWhileLoopTwo, TestLoopNoRefvalueTwo, TestReuseLocal
+  - Full sum iteration: TestSumIntsTwo, TestSumIntsThree, TestSumIntsFive
+- Test count: 335 passing
+
+### Varargs Support - Call-site TypedReference Emission (2025-12)
+Implemented varargs (`__arglist`) call-site TypedReference emission:
+- **TypedReference in korlib**: Added 16-byte struct (value pointer + type pointer) for varargs
+- **RuntimeArgumentHandle**: Added handle struct returned by `arglist` instruction
+- **ArgIterator in korlib**: Added iterator struct with AOT-registered methods
+- **Well-known types**: Added TypedReference (0xF0000040), RuntimeArgumentHandle (0xF0000041), ArgIterator (0xF0000042)
+- **ArgIterator AOT methods**: Registered .ctor, GetNextArg, GetRemainingCount, End as AOT helpers
+- **Synthetic MethodTable**: Created ArgIterator MethodTable for value type constructor support
+- **mkrefany/refanyval/refanytype**: Fixed stack depth checks (changed < 2 to < 1)
+- **MemberRef MethodDef resolution**: Added support for varargs call sites where MemberRef class is MethodDef (table=6)
+- **Call-site TypedReference emission**: CompileVarargCall emits TypedReference array with sentinel at call sites
+- **Vararg signature parsing**: ParseVarargInfo detects SENTINEL (0x41) in MemberRef signatures and extracts vararg types
+- **MethodTable for varargs**: GetMethodTableForSignatureType maps signature types to MethodTable pointers
+- **16-byte struct return fix**: Fixed eval stack tracking for 16-byte struct returns (push 1 entry with ByteSize=16)
 
 ### Block Allocator for Kernel Registries (2025-12)
 Implemented dynamic block-based allocator to eliminate fixed-size limits:

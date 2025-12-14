@@ -17,6 +17,7 @@
 
 using System.Runtime;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace System
 {
@@ -44,18 +45,60 @@ namespace System
         }
 
         // Compiler-required equality operators
-        public static bool operator ==(string? a, string? b)
+        public static unsafe bool operator ==(string? a, string? b)
         {
             if ((object?)a == (object?)b) return true;
             if (a is null || b is null) return false;
-            if (a.Length != b.Length) return false;
 
-            for (int i = 0; i < a.Length; i++)
+            int lenA = a.Length;
+            int lenB = b.Length;
+            if (lenA != lenB) return false;
+
+            // Debug: for 9-char strings (likely "StaticAdd"), show more detail
+            if (lenA == 9)
+            {
+                byte* prefix = stackalloc byte[20];
+                prefix[0] = (byte)'['; prefix[1] = (byte)'S'; prefix[2] = (byte)'9';
+                prefix[3] = (byte)']'; prefix[4] = (byte)' '; prefix[5] = 0;
+
+                // Print first char codes
+                int firstA = (int)a[0];
+                int firstB = (int)b[0];
+                Debug_PrintInt(prefix, firstA * 1000 + firstB); // First chars
+
+                // Print result
+                bool match = true;
+                for (int j = 0; j < lenA; j++)
+                {
+                    if (a[j] != b[j])
+                    {
+                        match = false;
+                        // Print mismatch position and chars
+                        byte* prefix2 = stackalloc byte[20];
+                        prefix2[0] = (byte)'['; prefix2[1] = (byte)'S'; prefix2[2] = (byte)'9';
+                        prefix2[3] = (byte)'!'; prefix2[4] = (byte)']'; prefix2[5] = 0;
+                        Debug_PrintInt(prefix2, j * 10000 + (int)a[j] * 100 + (int)b[j]);
+                        break;
+                    }
+                }
+                if (match)
+                {
+                    byte* prefix3 = stackalloc byte[20];
+                    prefix3[0] = (byte)'['; prefix3[1] = (byte)'S'; prefix3[2] = (byte)'9';
+                    prefix3[3] = (byte)'='; prefix3[4] = (byte)']'; prefix3[5] = 0;
+                    Debug_PrintInt(prefix3, 1); // Match!
+                }
+            }
+
+            for (int i = 0; i < lenA; i++)
             {
                 if (a[i] != b[i]) return false;
             }
             return true;
         }
+
+        [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Debug_PrintInt", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+        private static extern unsafe void Debug_PrintInt(byte* prefix, int value);
 
         public static bool operator !=(string? a, string? b) => !(a == b);
 
@@ -817,6 +860,21 @@ namespace System
             string result = FastNewString(value.Length);
             for (int i = 0; i < value.Length; i++)
                 Unsafe.Add(ref result._firstChar, i) = value[i];
+            return result;
+        }
+
+        /// <summary>
+        /// Factory method for String(char*, int, int) constructor.
+        /// Used by reflection APIs for BytePtrToString.
+        /// </summary>
+        public static unsafe string Ctor_CharPtrStartLength(char* value, int startIndex, int length)
+        {
+            if (value == null || length <= 0)
+                return Empty;
+
+            string result = FastNewString(length);
+            for (int i = 0; i < length; i++)
+                Unsafe.Add(ref result._firstChar, i) = value[startIndex + i];
             return result;
         }
 

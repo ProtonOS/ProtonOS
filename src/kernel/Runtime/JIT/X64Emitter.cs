@@ -260,30 +260,11 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(0x7D);
         code.EmitByte(0xD8);  // -40
 
-        // Home arguments to shadow space (required for ldarg after calls)
-        // mov [rbp+16], rcx  ; arg0
-        code.EmitByte(0x48);
-        code.EmitByte(0x89);
-        code.EmitByte(0x4D);
-        code.EmitByte(0x10);  // +16
-
-        // mov [rbp+24], rdx  ; arg1
-        code.EmitByte(0x48);
-        code.EmitByte(0x89);
-        code.EmitByte(0x55);
-        code.EmitByte(0x18);  // +24
-
-        // mov [rbp+32], r8   ; arg2
-        code.EmitByte(0x4C);
-        code.EmitByte(0x89);
-        code.EmitByte(0x45);
-        code.EmitByte(0x20);  // +32
-
-        // mov [rbp+40], r9   ; arg3
-        code.EmitByte(0x4C);
-        code.EmitByte(0x89);
-        code.EmitByte(0x4D);
-        code.EmitByte(0x28);  // +40
+        // Note: Arguments are homed separately via HomeArguments() call in ILCompiler.cs
+        // We must NOT home arguments here because:
+        // 1. For vararg methods with 0 declared args, shadow space contains the sentinel TypedReference
+        // 2. Homing garbage register values would overwrite the caller's data in shadow space
+        // HomeArguments is called after EmitPrologue with the correct argument count.
 
         return frameSize;
     }

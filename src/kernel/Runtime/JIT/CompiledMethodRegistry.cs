@@ -542,6 +542,16 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return null;
 
+        // Debug: log ALL reserve calls for assembly 5 to track when 0x8B is touched
+        if (assemblyId == 5 && (token & 0xFFFFFF00) == 0x06000000)
+        {
+            DebugConsole.Write("[CMR] Reserve 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" asm ");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.WriteLine();
+        }
+
         // Check if already exists (use assembly-aware lookup)
         CompiledMethodInfo* existing = Lookup(token, assemblyId);
         if (existing != null)
@@ -549,6 +559,15 @@ public static unsafe class CompiledMethodRegistry
             if (existing->IsBeingCompiled)
             {
                 // Already being compiled - this is a recursive call
+                DebugConsole.Write("[CMR] Token 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" asm ");
+                DebugConsole.WriteDecimal(assemblyId);
+                DebugConsole.Write(" found existing: token=0x");
+                DebugConsole.WriteHex(existing->Token);
+                DebugConsole.Write(" asm=");
+                DebugConsole.WriteDecimal(existing->AssemblyId);
+                DebugConsole.WriteLine(" IsBeingCompiled=true");
                 return null;
             }
             if (existing->IsCompiled)
@@ -558,6 +577,15 @@ public static unsafe class CompiledMethodRegistry
             }
             // Update the entry
             existing->IsBeingCompiled = true;
+            // Debug
+            if (token == 0x0600008B && assemblyId == 5)
+            {
+                DebugConsole.Write("[CMR] EXISTING entry for 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" asm ");
+                DebugConsole.WriteDecimal(assemblyId);
+                DebugConsole.WriteLine(" IsBeingCompiled=true");
+            }
             existing->ArgCount = argCount;
             existing->ReturnKind = returnKind;
             existing->ReturnStructSize = returnStructSize;
@@ -590,6 +618,16 @@ public static unsafe class CompiledMethodRegistry
         entry->HasThis = hasThis;
         entry->IsCompiled = false;
         entry->IsBeingCompiled = true;  // Mark as being compiled
+
+        // Debug: log new entry creation
+        if (token == 0x0600008B && assemblyId == 5)
+        {
+            DebugConsole.Write("[CMR] NEW entry for 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" asm ");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.WriteLine(" IsBeingCompiled=true");
+        }
         entry->IsVirtual = false;
         entry->VtableSlot = -1;
         entry->MethodTable = null;
@@ -619,6 +657,20 @@ public static unsafe class CompiledMethodRegistry
 
         entry->NativeCode = code;
         entry->IsCompiled = true;
+        entry->IsBeingCompiled = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Cancel a reserved compilation (e.g., on failure).
+    /// Clears the IsBeingCompiled flag so the method can be retried later.
+    /// </summary>
+    public static bool CancelCompilation(uint token, uint assemblyId = 0)
+    {
+        CompiledMethodInfo* entry = Lookup(token, assemblyId);
+        if (entry == null)
+            return false;
+
         entry->IsBeingCompiled = false;
         return true;
     }
