@@ -415,20 +415,37 @@ public static unsafe class ReflectionRuntime
     /// <returns>MethodTable pointer for the field's type, or null if not resolved</returns>
     public static void* GetFieldTypeMethodTable(uint assemblyId, uint fieldToken)
     {
+        DebugConsole.Write("[GetFieldTypeMT] asm=");
+        DebugConsole.WriteDecimal(assemblyId);
+        DebugConsole.Write(" token=0x");
+        DebugConsole.WriteHex(fieldToken);
+        DebugConsole.WriteLine();
+
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
         if (asm == null)
+        {
+            DebugConsole.WriteLine("[GetFieldTypeMT] assembly not found");
             return null;
+        }
 
         uint rowId = fieldToken & 0x00FFFFFF;
         uint sigBlobIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, rowId);
 
         byte* blob = MetadataReader.GetBlob(ref asm->Metadata, sigBlobIdx, out uint blobLen);
         if (blob == null || blobLen < 2)
+        {
+            DebugConsole.WriteLine("[GetFieldTypeMT] no signature blob");
             return null;
+        }
 
         // Field signature: FIELD (0x06) followed by Type
         if (blob[0] != 0x06) // SignatureHeader.Field
+        {
+            DebugConsole.Write("[GetFieldTypeMT] bad sig header: 0x");
+            DebugConsole.WriteHex(blob[0]);
+            DebugConsole.WriteLine();
             return null;
+        }
 
         // Set assembly context for type resolution
         JIT.MetadataIntegration.SetCurrentAssembly(assemblyId);
@@ -438,7 +455,11 @@ public static unsafe class ReflectionRuntime
         byte* end = blob + blobLen;
 
         // Use MetadataIntegration to resolve the type signature to MethodTable
-        return ResolveTypeSigToMethodTablePublic(ref ptr, end);
+        void* result = ResolveTypeSigToMethodTablePublic(ref ptr, end);
+        DebugConsole.Write("[GetFieldTypeMT] result=0x");
+        DebugConsole.WriteHex((ulong)result);
+        DebugConsole.WriteLine();
+        return result;
     }
 
     /// <summary>
@@ -912,6 +933,12 @@ public static unsafe class ReflectionRuntime
     /// </summary>
     public static byte* GetTypeName(uint assemblyId, uint typeDefToken)
     {
+        // Handle well-known primitive types (assembly ID 0)
+        if (assemblyId == 0 && (typeDefToken & 0xF0000000) == 0xF0000000)
+        {
+            return GetWellKnownTypeName(typeDefToken);
+        }
+
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
         if (asm == null)
             return null;
@@ -921,11 +948,99 @@ public static unsafe class ReflectionRuntime
         return MetadataReader.GetString(ref asm->Metadata, nameIdx);
     }
 
+    // Cached UTF-8 type name pointers (lazily allocated)
+    private static byte* _nameInt32;
+    private static byte* _nameInt64;
+    private static byte* _nameBoolean;
+    private static byte* _nameByte;
+    private static byte* _nameChar;
+    private static byte* _nameDouble;
+    private static byte* _nameSingle;
+    private static byte* _nameInt16;
+    private static byte* _nameUInt16;
+    private static byte* _nameUInt32;
+    private static byte* _nameUInt64;
+    private static byte* _nameIntPtr;
+    private static byte* _nameUIntPtr;
+    private static byte* _nameSByte;
+    private static byte* _nameString;
+    private static byte* _nameObject;
+    private static byte* _nsSystem;
+    private static bool _primNamesInit;
+
+    private static void InitPrimitiveNames()
+    {
+        if (_primNamesInit) return;
+        _nameInt32 = AllocUtf8("Int32");
+        _nameInt64 = AllocUtf8("Int64");
+        _nameBoolean = AllocUtf8("Boolean");
+        _nameByte = AllocUtf8("Byte");
+        _nameChar = AllocUtf8("Char");
+        _nameDouble = AllocUtf8("Double");
+        _nameSingle = AllocUtf8("Single");
+        _nameInt16 = AllocUtf8("Int16");
+        _nameUInt16 = AllocUtf8("UInt16");
+        _nameUInt32 = AllocUtf8("UInt32");
+        _nameUInt64 = AllocUtf8("UInt64");
+        _nameIntPtr = AllocUtf8("IntPtr");
+        _nameUIntPtr = AllocUtf8("UIntPtr");
+        _nameSByte = AllocUtf8("SByte");
+        _nameString = AllocUtf8("String");
+        _nameObject = AllocUtf8("Object");
+        _nsSystem = AllocUtf8("System");
+        _primNamesInit = true;
+    }
+
+    private static byte* AllocUtf8(string s)
+    {
+        int len = s.Length;
+        byte* p = (byte*)Memory.HeapAllocator.Alloc((ulong)(len + 1));
+        for (int i = 0; i < len; i++)
+            p[i] = (byte)s[i];
+        p[len] = 0;
+        return p;
+    }
+
+    /// <summary>
+    /// Get name for well-known primitive types.
+    /// </summary>
+    private static byte* GetWellKnownTypeName(uint token)
+    {
+        InitPrimitiveNames();
+        return token switch
+        {
+            JIT.MetadataIntegration.WellKnownTypes.Int32 => _nameInt32,
+            JIT.MetadataIntegration.WellKnownTypes.Int64 => _nameInt64,
+            JIT.MetadataIntegration.WellKnownTypes.Boolean => _nameBoolean,
+            JIT.MetadataIntegration.WellKnownTypes.Byte => _nameByte,
+            JIT.MetadataIntegration.WellKnownTypes.Char => _nameChar,
+            JIT.MetadataIntegration.WellKnownTypes.Double => _nameDouble,
+            JIT.MetadataIntegration.WellKnownTypes.Single => _nameSingle,
+            JIT.MetadataIntegration.WellKnownTypes.Int16 => _nameInt16,
+            JIT.MetadataIntegration.WellKnownTypes.UInt16 => _nameUInt16,
+            JIT.MetadataIntegration.WellKnownTypes.UInt32 => _nameUInt32,
+            JIT.MetadataIntegration.WellKnownTypes.UInt64 => _nameUInt64,
+            JIT.MetadataIntegration.WellKnownTypes.IntPtr => _nameIntPtr,
+            JIT.MetadataIntegration.WellKnownTypes.UIntPtr => _nameUIntPtr,
+            JIT.MetadataIntegration.WellKnownTypes.SByte => _nameSByte,
+            JIT.MetadataIntegration.WellKnownTypes.String => _nameString,
+            JIT.MetadataIntegration.WellKnownTypes.Object => _nameObject,
+            _ => null
+        };
+    }
+
     /// <summary>
     /// Get type namespace from TypeDef token.
     /// </summary>
     public static byte* GetTypeNamespace(uint assemblyId, uint typeDefToken)
     {
+        // Well-known primitive types all have "System" namespace
+        if (assemblyId == 0 && (typeDefToken & 0xF0000000) == 0xF0000000)
+        {
+            InitPrimitiveNames();
+            return _nsSystem;
+        }
+
         LoadedAssembly* asm = AssemblyLoader.GetAssembly(assemblyId);
         if (asm == null)
             return null;

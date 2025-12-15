@@ -188,12 +188,16 @@ public static class TestRunner
 
     private static void RunReflectionTypeTests()
     {
-        // Reflection type tests disabled for now.
-        // The kernel APIs are implemented (FieldInfo.FieldType, PropertyInfo.PropertyType,
-        // MethodInfo.GetParameters, TypedReference.ToObject for value types), but testing
-        // requires korlib reflection types to have their vtables properly set up for
-        // virtual method dispatch (get_FieldType is vtable slot 2).
-        // This is tracked as future work in JIT_GAPS.md.
+        // Test FieldInfo.FieldType - uses AOT helper to bypass vtable dispatch
+        RecordResult("ReflectionTypeTests.TestFieldTypeInt", ReflectionTypeTests.TestFieldTypeInt() == 1);
+        RecordResult("ReflectionTypeTests.TestFieldTypeString", ReflectionTypeTests.TestFieldTypeString() == 1);
+
+        // Test MethodInfo.GetParameters - uses AOT helper (MethodBase.GetParameters)
+        RecordResult("ReflectionTypeTests.TestGetParametersCount", ReflectionTypeTests.TestGetParametersCount() == 1);
+        RecordResult("ReflectionTypeTests.TestGetParameterType", ReflectionTypeTests.TestGetParameterType() == 1);
+
+        // Note: PropertyInfo.PropertyType tests disabled - requires Type.GetProperty which
+        // needs Property metadata APIs (PropertyMap table) to be implemented.
     }
 
     private static void RunIteratorTests()

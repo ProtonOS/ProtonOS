@@ -56,6 +56,10 @@ namespace System.Reflection
 
         public override int Position => _position;
 
+        // Internal accessors for AOT helper bypass
+        internal uint AssemblyId => _assemblyId;
+        internal uint MethodToken => _methodToken;
+
         [DllImport("*", EntryPoint = "Reflection_GetMethodParameterName", CallingConvention = CallingConvention.Cdecl)]
         private static extern byte* Reflection_GetMethodParameterName(uint assemblyId, uint methodToken, int paramIndex);
 

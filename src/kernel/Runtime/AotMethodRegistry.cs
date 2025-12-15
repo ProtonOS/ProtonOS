@@ -409,6 +409,13 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<Type, string?>)&TypeMethodHelpers.GetNamespace,
             0, ReturnKind.IntPtr, true, true);  // Virtual
 
+        // Type.get_TypeHandle - property getter, returns RuntimeTypeHandle (struct with nint)
+        // RuntimeTypeHandle is passed as nint by value
+        Register(
+            "System.Type", "get_TypeHandle",
+            (nint)(delegate*<Type, nint>)&TypeMethodHelpers.GetTypeHandle,
+            0, ReturnKind.IntPtr, true, true);  // Virtual
+
         // Type.GetTypeFromHandle(RuntimeTypeHandle) - static method for typeof() support
         // RuntimeTypeHandle is a struct with just nint _value, passed as native int
         Register(
@@ -502,6 +509,43 @@ public static unsafe class AotMethodRegistry
             "System.Reflection.MemberInfo", "op_Inequality",
             (nint)(delegate*<System.Reflection.MemberInfo?, System.Reflection.MemberInfo?, bool>)&ReflectionHelpers.MemberInfoNotEquals,
             2, ReturnKind.Int32, false, false);
+
+        // FieldInfo.get_FieldType - virtual property getter
+        // Bypasses vtable dispatch since korlib vtables aren't properly set up by AOT
+        Register(
+            "System.Reflection.FieldInfo", "get_FieldType",
+            (nint)(delegate*<System.Reflection.FieldInfo, Type?>)&ReflectionHelpers.FieldInfoGetFieldType,
+            0, ReturnKind.IntPtr, true, true);
+
+        // PropertyInfo.get_PropertyType - virtual property getter
+        Register(
+            "System.Reflection.PropertyInfo", "get_PropertyType",
+            (nint)(delegate*<System.Reflection.PropertyInfo, Type?>)&ReflectionHelpers.PropertyInfoGetPropertyType,
+            0, ReturnKind.IntPtr, true, true);
+
+        // MethodInfo.GetParameters() - virtual method
+        Register(
+            "System.Reflection.MethodInfo", "GetParameters",
+            (nint)(delegate*<System.Reflection.MethodInfo, System.Reflection.ParameterInfo[]?>)&ReflectionHelpers.MethodInfoGetParameters,
+            0, ReturnKind.IntPtr, true, true);
+
+        // MethodBase.GetParameters() - virtual method (IL calls this on MethodBase type reference)
+        Register(
+            "System.Reflection.MethodBase", "GetParameters",
+            (nint)(delegate*<System.Reflection.MethodBase, System.Reflection.ParameterInfo[]?>)&ReflectionHelpers.MethodBaseGetParameters,
+            0, ReturnKind.IntPtr, true, true);
+
+        // ConstructorInfo.GetParameters() - virtual method
+        Register(
+            "System.Reflection.ConstructorInfo", "GetParameters",
+            (nint)(delegate*<System.Reflection.ConstructorInfo, System.Reflection.ParameterInfo[]?>)&ReflectionHelpers.ConstructorInfoGetParameters,
+            0, ReturnKind.IntPtr, true, true);
+
+        // ParameterInfo.get_ParameterType - virtual property getter
+        Register(
+            "System.Reflection.ParameterInfo", "get_ParameterType",
+            (nint)(delegate*<System.Reflection.ParameterInfo, Type?>)&ReflectionHelpers.ParameterInfoGetParameterType,
+            0, ReturnKind.IntPtr, true, true);
     }
 
     /// <summary>
@@ -1072,6 +1116,12 @@ public static unsafe class AotMethodRegistry
             return true;
         if (StringMatches(typeName, "System.Reflection.FieldInfo"))
             return true;
+        if (StringMatches(typeName, "System.Reflection.PropertyInfo"))
+            return true;
+        if (StringMatches(typeName, "System.Reflection.ParameterInfo"))
+            return true;
+        if (StringMatches(typeName, "System.Reflection.ConstructorInfo"))
+            return true;
 
         // Varargs types
         if (StringMatches(typeName, "System.TypedReference"))
@@ -1492,6 +1542,171 @@ public static class ReflectionHelpers
         => !MemberInfoEquals(left, right);
 
     /// <summary>
+    /// Get the FieldType of a FieldInfo.
+    /// Bypasses vtable dispatch since korlib reflection types don't have properly set up vtables.
+    /// </summary>
+    public static Type? FieldInfoGetFieldType(System.Reflection.FieldInfo field)
+    {
+        ProtonOS.Platform.DebugConsole.Write("[FieldInfoGetFieldType] called");
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
+        if (field is null)
+        {
+            ProtonOS.Platform.DebugConsole.WriteLine("[FieldInfoGetFieldType] field is null");
+            return null;
+        }
+
+        // Dispatch to the concrete implementation
+        if (field is System.Reflection.RuntimeFieldInfo rfi)
+        {
+            ProtonOS.Platform.DebugConsole.WriteLine("[FieldInfoGetFieldType] -> RuntimeFieldInfo");
+            var result = rfi.FieldType;
+            if (result is null)
+            {
+                ProtonOS.Platform.DebugConsole.WriteLine("[FieldInfoGetFieldType] result is null");
+            }
+            else
+            {
+                ProtonOS.Platform.DebugConsole.Write("[FieldInfoGetFieldType] result=");
+                var name = result.Name;
+                if (name != null)
+                {
+                    ProtonOS.Platform.DebugConsole.Write(name);
+                }
+                ProtonOS.Platform.DebugConsole.WriteLine();
+            }
+            return result;
+        }
+
+        ProtonOS.Platform.DebugConsole.WriteLine("[FieldInfoGetFieldType] not RuntimeFieldInfo");
+        // Fallback - shouldn't happen in practice
+        return null;
+    }
+
+    /// <summary>
+    /// Get the PropertyType of a PropertyInfo.
+    /// Bypasses vtable dispatch since korlib reflection types don't have properly set up vtables.
+    /// </summary>
+    public static Type? PropertyInfoGetPropertyType(System.Reflection.PropertyInfo prop)
+    {
+        if (prop is null)
+            return null;
+
+        // Dispatch to the concrete implementation
+        if (prop is System.Reflection.RuntimePropertyInfo rpi)
+        {
+            return rpi.PropertyType;
+        }
+
+        // Fallback - shouldn't happen in practice
+        return null;
+    }
+
+    /// <summary>
+    /// Get the parameters of a MethodInfo.
+    /// Bypasses vtable dispatch since korlib reflection types don't have properly set up vtables.
+    /// </summary>
+    public static System.Reflection.ParameterInfo[]? MethodInfoGetParameters(System.Reflection.MethodInfo method)
+    {
+        if (method is null)
+            return null;
+
+        // Dispatch to the concrete implementation
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            // Get parameter count via kernel export
+            uint assemblyId = rmi.AssemblyId;
+            uint methodToken = (uint)rmi.MetadataToken;
+            int count = Reflection.ReflectionRuntime.GetMethodParameterCount(assemblyId, methodToken);
+
+            if (count <= 0)
+                return new System.Reflection.ParameterInfo[0];
+
+            // Create parameters manually to avoid vtable dispatch issues
+            var parameters = new System.Reflection.ParameterInfo[count];
+            for (int i = 0; i < count; i++)
+            {
+                parameters[i] = new System.Reflection.RuntimeParameterInfo(assemblyId, methodToken, i);
+            }
+            return parameters;
+        }
+
+        // Fallback - return empty array
+        return new System.Reflection.ParameterInfo[0];
+    }
+
+    /// <summary>
+    /// Get the parameters of a MethodBase (called when IL references MethodBase::GetParameters).
+    /// Dispatches to appropriate handler based on runtime type.
+    /// </summary>
+    public static System.Reflection.ParameterInfo[]? MethodBaseGetParameters(System.Reflection.MethodBase method)
+    {
+        if (method is null)
+            return null;
+
+        // Dispatch based on runtime type
+        if (method is System.Reflection.MethodInfo mi)
+        {
+            return MethodInfoGetParameters(mi);
+        }
+        if (method is System.Reflection.ConstructorInfo ci)
+        {
+            return ConstructorInfoGetParameters(ci);
+        }
+
+        // Fallback - return empty array
+        return new System.Reflection.ParameterInfo[0];
+    }
+
+    /// <summary>
+    /// Get the parameters of a ConstructorInfo.
+    /// Bypasses vtable dispatch since korlib reflection types don't have properly set up vtables.
+    /// </summary>
+    public static System.Reflection.ParameterInfo[]? ConstructorInfoGetParameters(System.Reflection.ConstructorInfo ctor)
+    {
+        if (ctor is null)
+            return null;
+
+        // Dispatch to the concrete implementation
+        if (ctor is System.Reflection.RuntimeConstructorInfo rci)
+        {
+            return rci.GetParameters();
+        }
+
+        // Fallback - return empty array
+        return new System.Reflection.ParameterInfo[0];
+    }
+
+    /// <summary>
+    /// Get the type of a ParameterInfo.
+    /// Bypasses vtable dispatch since korlib reflection types don't have properly set up vtables.
+    /// </summary>
+    public static unsafe Type? ParameterInfoGetParameterType(System.Reflection.ParameterInfo param)
+    {
+        if (param is null)
+            return null;
+
+        // Dispatch to the concrete implementation
+        if (param is System.Reflection.RuntimeParameterInfo rpi)
+        {
+            // Get parameter type MT via kernel export
+            uint assemblyId = rpi.AssemblyId;
+            uint methodToken = rpi.MethodToken;
+            int position = rpi.Position;
+
+            void* mt = Reflection.ReflectionRuntime.GetMethodParameterTypeMethodTable(assemblyId, methodToken, position);
+            if (mt == null)
+                return null;
+
+            // Create RuntimeType from the MethodTable
+            return Type.GetTypeFromHandle(new RuntimeTypeHandle((nint)mt));
+        }
+
+        // Fallback - return null
+        return null;
+    }
+
+    /// <summary>
     /// Wrapper for MethodBase.Invoke that dispatches to the appropriate runtime implementation.
     /// This handles the virtual dispatch for RuntimeMethodInfo and RuntimeConstructorInfo.
     /// </summary>
@@ -1600,18 +1815,13 @@ public static unsafe class TypeMethodHelpers
         if (type == null)
             return null;
 
-        // Get the RuntimeType's internal MethodTable pointer
-        // Type object layout: [MethodTable*][_pMethodTable field at offset 8]
-        void* typePtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref type);
-        if (typePtr == null)
-            return null;
-
-        // Read the _pMethodTable field (first field after MT pointer, at offset 8)
-        void* storedMT = *(void**)((byte*)typePtr + 8);
-        if (storedMT == null)
+        // Use our GetTypeHandle helper to get the _pMethodTable
+        nint typeHandleValue = GetTypeHandle(type);
+        if (typeHandleValue == 0)
             return "RuntimeType";
 
-        // Look up the type info from the reflection runtime
+        // Look up the type info from the reflection runtime using TypeHandle
+        void* storedMT = (void*)typeHandleValue;
         uint asmId = 0, token = 0;
         ReflectionRuntime.GetTypeInfo(storedMT, &asmId, &token);
 
@@ -1651,17 +1861,13 @@ public static unsafe class TypeMethodHelpers
         if (type == null)
             return null;
 
-        // Get the RuntimeType's internal MethodTable pointer
-        void* typePtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref type);
-        if (typePtr == null)
-            return null;
-
-        // Read the _pMethodTable field (first field after MT pointer, at offset 8)
-        void* storedMT = *(void**)((byte*)typePtr + 8);
-        if (storedMT == null)
+        // Use our GetTypeHandle helper to get the _pMethodTable
+        nint typeHandleValue = GetTypeHandle(type);
+        if (typeHandleValue == 0)
             return null;
 
         // Look up the type info from the reflection runtime
+        void* storedMT = (void*)typeHandleValue;
         uint asmId = 0, token = 0;
         ReflectionRuntime.GetTypeInfo(storedMT, &asmId, &token);
 
@@ -1699,17 +1905,52 @@ public static unsafe class TypeMethodHelpers
     }
 
     /// <summary>
+    /// Get the TypeHandle (RuntimeTypeHandle) for a Type.
+    /// Returns the internal _pMethodTable as an nint.
+    /// </summary>
+    public static nint GetTypeHandle(Type type)
+    {
+        if (type == null)
+            return 0;
+
+        // Based on empirical testing, RuntimeType's _pMethodTable is at offset 0x18 (24 bytes)
+        // This accounts for: Object header (8) + some padding/other fields (16) = 24
+
+        // Get the object pointer
+        void* typePtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref type);
+        if (typePtr == null)
+            return 0;
+
+        // Read _pMethodTable at offset 0x18 (24)
+        void* storedMT = *(void**)((byte*)typePtr + 0x18);
+        return (nint)storedMT;
+    }
+
+    /// <summary>
     /// Create a Type from a RuntimeTypeHandle (MethodTable pointer).
     /// This is the implementation for typeof() operator support.
     /// The handle parameter is the MethodTable pointer from ldtoken.
     /// </summary>
     public static Type? GetTypeFromHandle(nint handle)
     {
+        ProtonOS.Platform.DebugConsole.Write("[GetTypeFromHandle] handle=0x");
+        ProtonOS.Platform.DebugConsole.WriteHex((ulong)handle);
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
         if (handle == 0)
             return null;
+
         // Create RuntimeType directly from MethodTable pointer
         // Cast to System.Runtime.MethodTable* which RuntimeType expects
-        return new RuntimeType((System.Runtime.MethodTable*)handle);
+        var result = new RuntimeType((System.Runtime.MethodTable*)handle);
+
+        // Debug: check what got stored via TypeHandle property
+        nint typeHandleValue = result.TypeHandle.Value;
+        ProtonOS.Platform.DebugConsole.Write("[GetTypeFromHandle] TypeHandle.Value=0x");
+        ProtonOS.Platform.DebugConsole.WriteHex((ulong)typeHandleValue);
+        ProtonOS.Platform.DebugConsole.WriteLine();
+
+        return result;
     }
 
     /// <summary>

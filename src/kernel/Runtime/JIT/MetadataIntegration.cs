@@ -424,12 +424,14 @@ public static unsafe class MetadataIntegration
 
         // System.String - extract from empty string literal
         string emptyStr = "";
-        if (RegisterType(WellKnownTypes.String, (MethodTable*)emptyStr.m_pMethodTable))
+        MethodTable* stringMT = (MethodTable*)emptyStr.m_pMethodTable;
+        if (RegisterType(WellKnownTypes.String, stringMT))
             count++;
+        // Register String with ReflectionRuntime so FieldType lookups work
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.String, stringMT);
 
         // System.Object - use the parent type pointer from String's MT
         // String inherits from Object, so String's parent is Object
-        MethodTable* stringMT = (MethodTable*)emptyStr.m_pMethodTable;
         if (stringMT != null)
         {
             MethodTable* objectMT = stringMT->GetParentType();
@@ -437,6 +439,8 @@ public static unsafe class MetadataIntegration
             {
                 if (RegisterType(WellKnownTypes.Object, objectMT))
                     count++;
+                // Register Object with ReflectionRuntime
+                Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Object, objectMT);
             }
         }
 
@@ -661,71 +665,85 @@ public static unsafe class MetadataIntegration
         mt = GetPrimitiveMT(0);
         InitPrimitiveMT(mt, 4, 12, int32ToString, objectEquals, int32GetHashCode);
         if (RegisterType(WellKnownTypes.Int32, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Int32, mt);
 
         // Int64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(1);
         InitPrimitiveMT(mt, 8, 16, int64ToString, objectEquals, int64GetHashCode);
         if (RegisterType(WellKnownTypes.Int64, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Int64, mt);
 
         // Boolean - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(2);
         InitPrimitiveMT(mt, 1, 9, boolToString, objectEquals, boolGetHashCode);
         if (RegisterType(WellKnownTypes.Boolean, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Boolean, mt);
 
         // Byte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(3);
         InitPrimitiveMT(mt, 1, 9, byteToString, objectEquals, byteGetHashCode);
         if (RegisterType(WellKnownTypes.Byte, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Byte, mt);
 
         // Char - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(4);
         InitPrimitiveMT(mt, 2, 10, charToString, objectEquals, charGetHashCode);
         if (RegisterType(WellKnownTypes.Char, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Char, mt);
 
         // Double - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(5);
         InitPrimitiveMT(mt, 8, 16, doubleToString, objectEquals, doubleGetHashCode);
         if (RegisterType(WellKnownTypes.Double, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Double, mt);
 
         // Single - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(6);
         InitPrimitiveMT(mt, 4, 12, singleToString, objectEquals, singleGetHashCode);
         if (RegisterType(WellKnownTypes.Single, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Single, mt);
 
         // Int16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(7);
         InitPrimitiveMT(mt, 2, 10, int16ToString, objectEquals, int16GetHashCode);
         if (RegisterType(WellKnownTypes.Int16, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.Int16, mt);
 
         // UInt16 - 2 bytes value, 10 bytes boxed
         mt = GetPrimitiveMT(8);
         InitPrimitiveMT(mt, 2, 10, uint16ToString, objectEquals, uint16GetHashCode);
         if (RegisterType(WellKnownTypes.UInt16, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.UInt16, mt);
 
         // UInt32 - 4 bytes value, 12 bytes boxed
         mt = GetPrimitiveMT(9);
         InitPrimitiveMT(mt, 4, 12, uint32ToString, objectEquals, uint32GetHashCode);
         if (RegisterType(WellKnownTypes.UInt32, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.UInt32, mt);
 
         // UInt64 - 8 bytes value, 16 bytes boxed
         mt = GetPrimitiveMT(10);
         InitPrimitiveMT(mt, 8, 16, uint64ToString, objectEquals, uint64GetHashCode);
         if (RegisterType(WellKnownTypes.UInt64, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.UInt64, mt);
 
         // IntPtr - 8 bytes value, 16 bytes boxed (64-bit)
         mt = GetPrimitiveMT(11);
         InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.IntPtr, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.IntPtr, mt);
 
         // UIntPtr - 8 bytes value, 16 bytes boxed (64-bit)
         mt = GetPrimitiveMT(12);
         InitPrimitiveMT(mt, 8, 16, objectToString, objectEquals, objectGetHashCode);
         if (RegisterType(WellKnownTypes.UIntPtr, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.UIntPtr, mt);
 
         // SByte - 1 byte value, 9 bytes boxed
         mt = GetPrimitiveMT(13);
         InitPrimitiveMT(mt, 1, 9, sbyteToString, objectEquals, sbyteGetHashCode);
         if (RegisterType(WellKnownTypes.SByte, mt)) count++;
+        Reflection.ReflectionRuntime.RegisterTypeInfo(0, WellKnownTypes.SByte, mt);
 
         return count;
     }
