@@ -122,10 +122,15 @@ public static unsafe class SystemApi
         // User space up to 128TB (typical for x64 Windows)
         lpSystemInfo.lpMaximumApplicationAddress = (nuint)0x00007FFFFFFFFFFF;
 
-        // Number of processors (single CPU for now)
-        // TODO: Get actual CPU count from ACPI/MADT when SMP is implemented
-        lpSystemInfo.dwNumberOfProcessors = 1;
-        lpSystemInfo.dwActiveProcessorMask = 1;  // CPU 0 is active
+        // Number of processors from ACPI/MADT
+        int cpuCount = CPUTopology.IsInitialized ? CPUTopology.CpuCount : 1;
+        lpSystemInfo.dwNumberOfProcessors = (uint)cpuCount;
+
+        // Active processor mask - one bit per CPU
+        ulong mask = 0;
+        for (int i = 0; i < cpuCount && i < 64; i++)
+            mask |= 1UL << i;
+        lpSystemInfo.dwActiveProcessorMask = (nuint)mask;
     }
 
     /// <summary>
@@ -194,12 +199,26 @@ public static unsafe class SystemApi
 
         lpSystemTime->wYear = (ushort)year;
         lpSystemTime->wMonth = (ushort)month;
-        lpSystemTime->wDayOfWeek = 0;  // TODO: Calculate day of week
+        lpSystemTime->wDayOfWeek = (ushort)CalculateDayOfWeek(year, month, day);
         lpSystemTime->wDay = (ushort)day;
         lpSystemTime->wHour = (ushort)hour;
         lpSystemTime->wMinute = (ushort)minute;
         lpSystemTime->wSecond = (ushort)second;
         lpSystemTime->wMilliseconds = (ushort)millisecond;
+    }
+
+    /// <summary>
+    /// Calculate day of week using Tomohiko Sakamoto's algorithm.
+    /// Returns 0=Sunday, 1=Monday, ..., 6=Saturday (Win32 convention).
+    /// </summary>
+    private static int CalculateDayOfWeek(int year, int month, int day)
+    {
+        // Tomohiko Sakamoto's algorithm
+        // Returns 0=Sunday through 6=Saturday
+        int[] t = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+        if (month < 3)
+            year--;
+        return (year + year / 4 - year / 100 + year / 400 + t[month - 1] + day) % 7;
     }
 }
 

@@ -312,6 +312,25 @@ int3:
     int3
     ret
 
+;; ==================== TSC and Flags ====================
+
+global rdtsc_native, read_flags
+
+; uint64_t rdtsc_native(void) - Read Time Stamp Counter
+; Returns 64-bit TSC value
+rdtsc_native:
+    rdtsc               ; Result in edx:eax
+    shl rdx, 32
+    or rax, rdx
+    ret
+
+; uint64_t read_flags(void) - Read RFLAGS register
+; Returns current RFLAGS value
+read_flags:
+    pushfq              ; Push RFLAGS onto stack
+    pop rax             ; Pop into return register
+    ret
+
 ;; ==================== Interrupt Stubs ====================
 ;; ISR stubs save all registers, call managed handler, restore, and iretq.
 ;; Some interrupts push an error code, others don't - we normalize by pushing 0.

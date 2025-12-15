@@ -62,20 +62,22 @@ public static class TimerExports
     [UnmanagedCallersOnly(EntryPoint = "Kernel_ReadTSC")]
     public static ulong ReadTSC()
     {
-        // TSC is read via RDTSC instruction
-        // For now, use HPET ticks as a fallback
-        // TODO: Add RDTSC native wrapper
-        return HPET.ReadCounter();
+        return CPU.ReadTsc();
     }
 
     /// <summary>
     /// Get the TSC frequency in Hz.
+    /// Returns calibrated TSC frequency, or HPET frequency as fallback.
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Kernel_GetTSCFrequency")]
     public static ulong GetTSCFrequency()
     {
-        // Return HPET frequency as fallback
-        // TODO: Calibrate and return actual TSC frequency
+        // Return calibrated TSC frequency if available
+        ulong tscFreq = HPET.TscFrequencyHz;
+        if (tscFreq != 0)
+            return tscFreq;
+
+        // Fallback to HPET frequency
         return HPET.FrequencyHz;
     }
 }

@@ -5,6 +5,7 @@
 extern alias korlib;
 using ProtonOS.DDK.Kernel;
 using KorlibReflection = korlib::System.Reflection;
+using KorlibInterlocked = korlib::System.Threading.Interlocked;
 
 namespace FullTest;
 
@@ -160,6 +161,9 @@ public static class TestRunner
         // Reflection type tests - tests FieldInfo.FieldType, PropertyInfo.PropertyType, GetParameters
         RunReflectionTypeTests();
 
+        // Interlocked tests - tests System.Threading.Interlocked atomic operations
+        RunInterlockedTests();
+
         // Note: Iterator tests (foreach on custom IEnumerable) disabled for now.
         // Requires IEnumerable/IEnumerator interfaces to be resolvable, which needs
         // either adding them to System.Runtime or implementing korlib type forwarding.
@@ -198,6 +202,18 @@ public static class TestRunner
 
         // Note: PropertyInfo.PropertyType tests disabled - requires Type.GetProperty which
         // needs Property metadata APIs (PropertyMap table) to be implemented.
+    }
+
+    private static void RunInterlockedTests()
+    {
+        RecordResult("InterlockedTests.TestIncrement", InterlockedTests.TestIncrement() == 1);
+        RecordResult("InterlockedTests.TestDecrement", InterlockedTests.TestDecrement() == 1);
+        RecordResult("InterlockedTests.TestExchange", InterlockedTests.TestExchange() == 1);
+        RecordResult("InterlockedTests.TestCompareExchangeSuccess", InterlockedTests.TestCompareExchangeSuccess() == 1);
+        RecordResult("InterlockedTests.TestCompareExchangeFail", InterlockedTests.TestCompareExchangeFail() == 1);
+        RecordResult("InterlockedTests.TestAdd", InterlockedTests.TestAdd() == 1);
+        RecordResult("InterlockedTests.TestIncrement64", InterlockedTests.TestIncrement64() == 1);
+        RecordResult("InterlockedTests.TestCompareExchange64", InterlockedTests.TestCompareExchange64() == 1);
     }
 
     private static void RunIteratorTests()
@@ -7788,6 +7804,104 @@ public static class NameofTests
         string name = nameof(value);
         // "value" should be 5 characters
         return name.Length;
+    }
+}
+
+// =============================================================================
+// Interlocked Tests (tests System.Threading.Interlocked atomic operations)
+// =============================================================================
+
+/// <summary>
+/// Tests for System.Threading.Interlocked atomic operations.
+/// </summary>
+public static class InterlockedTests
+{
+    /// <summary>
+    /// Test Interlocked.Increment on int.
+    /// </summary>
+    public static int TestIncrement()
+    {
+        int value = 10;
+        int result = KorlibInterlocked.Increment(ref value);
+        // result should be 11, value should be 11
+        return (result == 11 && value == 11) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.Decrement on int.
+    /// </summary>
+    public static int TestDecrement()
+    {
+        int value = 10;
+        int result = KorlibInterlocked.Decrement(ref value);
+        // result should be 9, value should be 9
+        return (result == 9 && value == 9) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.Exchange on int.
+    /// </summary>
+    public static int TestExchange()
+    {
+        int value = 10;
+        int original = KorlibInterlocked.Exchange(ref value, 20);
+        // original should be 10, value should be 20
+        return (original == 10 && value == 20) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.CompareExchange when comparand matches.
+    /// </summary>
+    public static int TestCompareExchangeSuccess()
+    {
+        int value = 10;
+        int original = KorlibInterlocked.CompareExchange(ref value, 20, 10);
+        // original should be 10, value should be 20 (exchange happened)
+        return (original == 10 && value == 20) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.CompareExchange when comparand doesn't match.
+    /// </summary>
+    public static int TestCompareExchangeFail()
+    {
+        int value = 10;
+        int original = KorlibInterlocked.CompareExchange(ref value, 20, 5);
+        // original should be 10, value should still be 10 (exchange did not happen)
+        return (original == 10 && value == 10) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.Add on int.
+    /// </summary>
+    public static int TestAdd()
+    {
+        int value = 10;
+        int result = KorlibInterlocked.Add(ref value, 5);
+        // result should be 15, value should be 15
+        return (result == 15 && value == 15) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.Increment on long.
+    /// </summary>
+    public static int TestIncrement64()
+    {
+        long value = 10L;
+        long result = KorlibInterlocked.Increment(ref value);
+        // result should be 11, value should be 11
+        return (result == 11L && value == 11L) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Interlocked.CompareExchange on long.
+    /// </summary>
+    public static int TestCompareExchange64()
+    {
+        long value = 100L;
+        long original = KorlibInterlocked.CompareExchange(ref value, 200L, 100L);
+        // original should be 100, value should be 200
+        return (original == 100L && value == 200L) ? 1 : 0;
     }
 }
 

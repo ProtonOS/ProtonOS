@@ -239,10 +239,11 @@ public unsafe struct Arch : ProtonOS.Arch.IArchitecture<Arch>
         // Initialize Local APIC
         if (APIC.Init())
         {
-            // Calibrate timer using HPET if available
+            // Calibrate timers using HPET if available
             if (HPET.IsInitialized)
             {
                 APIC.CalibrateTimer();
+                HPET.CalibrateTsc();
             }
 
             // Start periodic timer (1ms period = 1000Hz)

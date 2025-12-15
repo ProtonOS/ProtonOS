@@ -6,6 +6,8 @@ using ProtonOS.Exports.DDK;
 
 namespace ProtonOS.Runtime;
 
+using InterlockedExports = ProtonOS.Exports.DDK.InterlockedExports;
+
 /// <summary>
 /// Initializes kernel exports at startup.
 /// </summary>
@@ -29,6 +31,9 @@ public static unsafe class KernelExportInit
 
         // Register PCI exports
         RegisterPCIExports();
+
+        // Register Interlocked exports
+        RegisterInterlockedExports();
 
         KernelExportRegistry.DebugPrint();
     }
@@ -258,5 +263,75 @@ public static unsafe class KernelExportInit
         n[7]=0x50; n[8]=0x63; n[9]=0x69; n[10]=0x45; n[11]=0x6E; n[12]=0x61; n[13]=0x62; n[14]=0x6C; n[15]=0x65;
         n[16]=0x42; n[17]=0x75; n[18]=0x73; n[19]=0x4D; n[20]=0x61; n[21]=0x73; n[22]=0x74; n[23]=0x65; n[24]=0x72; n[25]=0; // BusMaster
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte, byte, byte, void>)&PCIExports.EnableBusMaster);
+    }
+
+    private static void RegisterInterlockedExports()
+    {
+        byte* n = stackalloc byte[48];
+
+        // Interlocked_Increment32
+        // 49 6E 74 65 72 6C 6F 63 6B 65 64 5F 49 6E 63 72 65 6D 65 6E 74 33 32
+        n[0]=0x49; n[1]=0x6E; n[2]=0x74; n[3]=0x65; n[4]=0x72; n[5]=0x6C; n[6]=0x6F; n[7]=0x63; n[8]=0x6B; n[9]=0x65; n[10]=0x64; n[11]=0x5F; // Interlocked_
+        n[12]=0x49; n[13]=0x6E; n[14]=0x63; n[15]=0x72; n[16]=0x65; n[17]=0x6D; n[18]=0x65; n[19]=0x6E; n[20]=0x74; // Increment
+        n[21]=0x33; n[22]=0x32; n[23]=0; // 32
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int>)&InterlockedExports.Increment32);
+
+        // Interlocked_Decrement32
+        n[12]=0x44; n[13]=0x65; n[14]=0x63; n[15]=0x72; n[16]=0x65; n[17]=0x6D; n[18]=0x65; n[19]=0x6E; n[20]=0x74; // Decrement
+        n[21]=0x33; n[22]=0x32; n[23]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int>)&InterlockedExports.Decrement32);
+
+        // Interlocked_Exchange32
+        n[12]=0x45; n[13]=0x78; n[14]=0x63; n[15]=0x68; n[16]=0x61; n[17]=0x6E; n[18]=0x67; n[19]=0x65; // Exchange
+        n[20]=0x33; n[21]=0x32; n[22]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int, int>)&InterlockedExports.Exchange32);
+
+        // Interlocked_CompareExchange32
+        n[12]=0x43; n[13]=0x6F; n[14]=0x6D; n[15]=0x70; n[16]=0x61; n[17]=0x72; n[18]=0x65; // Compare
+        n[19]=0x45; n[20]=0x78; n[21]=0x63; n[22]=0x68; n[23]=0x61; n[24]=0x6E; n[25]=0x67; n[26]=0x65; // Exchange
+        n[27]=0x33; n[28]=0x32; n[29]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int, int, int>)&InterlockedExports.CompareExchange32);
+
+        // Interlocked_Add32
+        n[12]=0x41; n[13]=0x64; n[14]=0x64; // Add
+        n[15]=0x33; n[16]=0x32; n[17]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int, int>)&InterlockedExports.Add32);
+
+        // Interlocked_Increment64
+        n[12]=0x49; n[13]=0x6E; n[14]=0x63; n[15]=0x72; n[16]=0x65; n[17]=0x6D; n[18]=0x65; n[19]=0x6E; n[20]=0x74; // Increment
+        n[21]=0x36; n[22]=0x34; n[23]=0; // 64
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<long*, long>)&InterlockedExports.Increment64);
+
+        // Interlocked_Decrement64
+        n[12]=0x44; n[13]=0x65; n[14]=0x63; n[15]=0x72; n[16]=0x65; n[17]=0x6D; n[18]=0x65; n[19]=0x6E; n[20]=0x74; // Decrement
+        n[21]=0x36; n[22]=0x34; n[23]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<long*, long>)&InterlockedExports.Decrement64);
+
+        // Interlocked_Exchange64
+        n[12]=0x45; n[13]=0x78; n[14]=0x63; n[15]=0x68; n[16]=0x61; n[17]=0x6E; n[18]=0x67; n[19]=0x65; // Exchange
+        n[20]=0x36; n[21]=0x34; n[22]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<long*, long, long>)&InterlockedExports.Exchange64);
+
+        // Interlocked_CompareExchange64
+        n[12]=0x43; n[13]=0x6F; n[14]=0x6D; n[15]=0x70; n[16]=0x61; n[17]=0x72; n[18]=0x65; // Compare
+        n[19]=0x45; n[20]=0x78; n[21]=0x63; n[22]=0x68; n[23]=0x61; n[24]=0x6E; n[25]=0x67; n[26]=0x65; // Exchange
+        n[27]=0x36; n[28]=0x34; n[29]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<long*, long, long, long>)&InterlockedExports.CompareExchange64);
+
+        // Interlocked_Add64
+        n[12]=0x41; n[13]=0x64; n[14]=0x64; // Add
+        n[15]=0x36; n[16]=0x34; n[17]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<long*, long, long>)&InterlockedExports.Add64);
+
+        // Interlocked_ExchangePointer
+        n[12]=0x45; n[13]=0x78; n[14]=0x63; n[15]=0x68; n[16]=0x61; n[17]=0x6E; n[18]=0x67; n[19]=0x65; // Exchange
+        n[20]=0x50; n[21]=0x6F; n[22]=0x69; n[23]=0x6E; n[24]=0x74; n[25]=0x65; n[26]=0x72; n[27]=0; // Pointer
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<void**, void*, void*>)&InterlockedExports.ExchangePointer);
+
+        // Interlocked_CompareExchangePointer
+        n[12]=0x43; n[13]=0x6F; n[14]=0x6D; n[15]=0x70; n[16]=0x61; n[17]=0x72; n[18]=0x65; // Compare
+        n[19]=0x45; n[20]=0x78; n[21]=0x63; n[22]=0x68; n[23]=0x61; n[24]=0x6E; n[25]=0x67; n[26]=0x65; // Exchange
+        n[27]=0x50; n[28]=0x6F; n[29]=0x69; n[30]=0x6E; n[31]=0x74; n[32]=0x65; n[33]=0x72; n[34]=0; // Pointer
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<void**, void*, void*, void*>)&InterlockedExports.CompareExchangePointer);
     }
 }

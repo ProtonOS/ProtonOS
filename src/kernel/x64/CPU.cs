@@ -127,6 +127,13 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void wrmsr(uint msr, ulong value);
 
+    // TSC and Flags (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong rdtsc_native();
+
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern ulong read_flags();
+
     // ISR Table (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern ulong* get_isr_table();
@@ -453,6 +460,31 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     /// IA32_FS_BASE MSR - FS segment base address
     /// </summary>
     public const uint MSR_FS_BASE = 0xC0000100;
+
+    // --- TSC (Time Stamp Counter) ---
+
+    /// <summary>
+    /// Read the Time Stamp Counter (RDTSC instruction).
+    /// Returns the number of CPU cycles since reset.
+    /// </summary>
+    public static ulong ReadTsc() => rdtsc_native();
+
+    // --- RFLAGS ---
+
+    /// <summary>
+    /// RFLAGS bit for Interrupt Flag (IF)
+    /// </summary>
+    public const ulong RFLAGS_IF = 1UL << 9;
+
+    /// <summary>
+    /// Read the RFLAGS register.
+    /// </summary>
+    public static ulong ReadFlags() => read_flags();
+
+    /// <summary>
+    /// Check if interrupts are currently enabled (IF flag set).
+    /// </summary>
+    public static bool AreInterruptsEnabled() => (read_flags() & RFLAGS_IF) != 0;
 
     // --- Per-CPU State Access (GS Base) ---
 

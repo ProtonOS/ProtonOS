@@ -70,9 +70,12 @@ These are C# features that should work but lack test coverage.
 
 ### 1.5 Synchronization (Lower Priority)
 
-- [ ] **Interlocked operations** - In PAL but not tested from JIT
-  - Test: `Interlocked.Increment(ref counter)`
-  - Test: `Interlocked.CompareExchange(ref value, newVal, oldVal)`
+- [x] **Interlocked operations** - Atomic operations via kernel exports ✅
+  - Tests: InterlockedTests.TestIncrement, TestDecrement, TestExchange,
+    TestCompareExchangeSuccess, TestCompareExchangeFail, TestAdd,
+    TestIncrement64, TestCompareExchange64 (466 tests)
+  - Implementation: korlib calls kernel exports via DllImport("*")
+  - Uses x86 lock prefix via CPU.AtomicAdd/AtomicExchange/AtomicCompareExchange
 
 ---
 
@@ -103,9 +106,9 @@ These are implementations that return stubs or have known limitations.
   - Added RuntimeParameterInfo class with ParameterType and Name
   - Parses method signature, creates ParameterInfo for each param
 
-- [ ] **ArgIterator.GetNextArg(RuntimeTypeHandle)** (ArgIterator.cs:70-72)
-  - Current: Ignores the type handle parameter
-  - Needed: Verify type matches expected
+- [x] **ArgIterator.GetNextArg(RuntimeTypeHandle)** ✅
+  - Implementation: Compares TypedReference._type with expected RuntimeTypeHandle
+  - Throws InvalidCastException if types don't match (excludes null types)
   - Impact: Type-safe varargs iteration
 
 ### 2.3 Reflection Testing Limitation
@@ -135,21 +138,21 @@ These are TODO comments found in kernel code that may need attention.
 |---------|--------|-------|
 | RuntimeHelpers.InitializeArray | Complete | JIT intrinsic with FieldRVA resolution via PEHelper.RvaToFilePointer |
 
-### 3.2 Platform/Drivers (can defer)
+### 3.2 Platform/Drivers
 
-| File | Line | TODO |
-|------|------|------|
-| Timer.cs | 67 | Add RDTSC native wrapper |
-| Timer.cs | 78 | Calibrate and return actual TSC frequency |
-| Interrupts.cs | 75 | Implement proper RFLAGS check |
-| Interrupts.cs | 86 | Implement IRQ allocation from pool |
-| Interrupts.cs | 97 | Implement IRQ deallocation |
-| Interrupts.cs | 106 | Configure I/O APIC redirection |
-| Thread.cs | 169 | Implement thread termination in scheduler |
-| Scheduler.cs | 374-376 | Free stack/thread memory, wake waiting threads |
-| System.cs | 126 | Get actual CPU count from ACPI/MADT |
-| System.cs | 197 | Calculate day of week |
-| Arch.cs | 188 | Send EOI to APIC/PIC |
+| File | Status | Notes |
+|------|--------|-------|
+| Timer.cs | ✅ Complete | RDTSC via native.asm rdtsc_native, CPU.ReadTsc() |
+| Timer.cs | ✅ Complete | TSC calibrated using HPET in HPET.CalibrateTsc() |
+| Interrupts.cs | ✅ Complete | RFLAGS check via native.asm read_flags, CPU.AreInterruptsEnabled() |
+| Interrupts.cs | ✅ Complete | IRQ pool allocation (vectors 48-79 with bitmap) |
+| Interrupts.cs | ✅ Complete | IRQ deallocation implemented |
+| Interrupts.cs | ✅ Complete | I/O APIC redirection via SetIRQAffinity → IOAPIC.SetIrqRoute() |
+| Thread.cs | Deferred | Thread termination - state set but memory not freed |
+| Scheduler.cs | Deferred | Resource cleanup deferred (works, just leaks on exit) |
+| System.cs | ✅ Complete | CPU count from CPUTopology.CpuCount in GetSystemInfo() |
+| System.cs | ✅ Complete | Day of week via Tomohiko Sakamoto's algorithm |
+| Arch.cs | ✅ Already done | APIC.SendEoi() already implemented |
 
 ---
 
@@ -222,18 +225,41 @@ public static class NameofTests { ... }
 
 | Category | Total | Done | Remaining |
 |----------|-------|------|-----------|
-| Missing Tests | 9 | 8 | 1 |
-| Incomplete Impl | 5 | 4 | 1 |
+| Missing Tests | 9 | 9 | 0 |
+| Incomplete Impl | 5 | 5 | 0 |
 | Code TODOs (JIT) | 2 | 2 | 0 (clarified) |
-| Code TODOs (Platform) | 11 | 0 | 11 |
+| Code TODOs (Platform) | 11 | 9 | 2 (deferred) |
 | **P0 Items** | **3** | **3** | **0** |
 | **P1 Items** | **3** | **3** | **0** |
 | **P2 Items** | **4** | **4** | **0** |
 
 Last updated: 2025-12-14
-Test count: 454
+Test count: 466
 
 ## Recent Changes
+
+### Platform DDK TODOs Complete (466 tests)
+- **Timer/TSC**: Added RDTSC instruction to native.asm, CPU.ReadTsc() wrapper
+- **TSC Calibration**: HPET.CalibrateTsc() calibrates TSC against HPET over 10ms
+- **RFLAGS**: Added read_flags to native.asm, CPU.AreInterruptsEnabled() checks IF flag
+- **IRQ Pool**: Implemented AllocateIRQ/FreeIRQ with atomic bitmap for vectors 48-79
+- **I/O APIC**: Wired SetIRQAffinity to IOAPIC.SetIrqRoute() for interrupt routing
+- **CPU Count**: PAL GetSystemInfo() now returns CPUTopology.CpuCount from ACPI/MADT
+- **Day of Week**: Implemented Tomohiko Sakamoto's algorithm in GetSystemTime()
+- **APIC EOI**: Already implemented in APIC.SendEoi()
+- Deferred: Thread/scheduler cleanup (works but leaks memory on thread exit)
+
+### Interlocked Operations Complete (466 tests)
+- Implemented System.Threading.Interlocked for atomic operations:
+  - korlib implementation calls kernel exports via DllImport("*")
+  - SystemRuntime stub mirrors korlib for proper compilation
+  - Kernel exports registered in KernelExportInit.cs
+- Exports: Interlocked_Increment32/64, Decrement32/64, Exchange32/64,
+  CompareExchange32/64, Add32/64, ExchangePointer, CompareExchangePointer
+- Uses CPU.AtomicAdd/AtomicExchange/AtomicCompareExchange with x86 lock prefix
+- Added 8 tests: TestIncrement, TestDecrement, TestExchange,
+  TestCompareExchangeSuccess, TestCompareExchangeFail, TestAdd,
+  TestIncrement64, TestCompareExchange64
 
 ### P2 Reflection APIs Complete (454 tests)
 - Implemented TypedReference.ToObject for value types:

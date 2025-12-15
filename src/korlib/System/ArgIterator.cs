@@ -61,15 +61,20 @@ namespace System
         /// </summary>
         /// <param name="rth">The expected RuntimeTypeHandle of the argument.</param>
         /// <returns>A TypedReference to the next argument.</returns>
+        /// <exception cref="InvalidCastException">Thrown if the argument type doesn't match the expected type.</exception>
         public TypedReference GetNextArg(RuntimeTypeHandle rth)
         {
             // Read the TypedReference at current position
             TypedReference* tr = (TypedReference*)_current;
             TypedReference result = *tr;
 
-            // Verify type matches (in a full implementation, throw if mismatch)
-            // For now, we just return the value regardless
-            _ = rth;
+            // Verify type matches expected
+            nint actualType = TypedReference.TargetTypeToken(result).Value;
+            nint expectedType = rth.Value;
+            if (actualType != expectedType && actualType != 0 && expectedType != 0)
+            {
+                throw new InvalidCastException();
+            }
 
             // Advance to next TypedReference (16 bytes)
             _current += 16;

@@ -42,6 +42,10 @@ public static unsafe class HPET
     private static ulong _periodFs;         // Counter period in femtoseconds
     private static bool _initialized;
 
+    // TSC calibration state
+    private static ulong _tscFrequencyHz;   // Calibrated TSC frequency in Hz
+    private static bool _tscCalibrated;
+
     /// <summary>
     /// Whether HPET is initialized and available
     /// </summary>
@@ -56,6 +60,12 @@ public static unsafe class HPET
     /// Counter period in femtoseconds (10^-15 seconds)
     /// </summary>
     public static ulong PeriodFemtoseconds => _periodFs;
+
+    /// <summary>
+    /// Calibrated TSC frequency in Hz.
+    /// Returns 0 if not yet calibrated.
+    /// </summary>
+    public static ulong TscFrequencyHz => _tscFrequencyHz;
 
     /// <summary>
     /// Initialize HPET using ACPI HPET table.
@@ -204,5 +214,44 @@ public static unsafe class HPET
     public static void BusyWaitMs(ulong milliseconds)
     {
         BusyWaitNs(milliseconds * 1_000_000);
+    }
+
+    /// <summary>
+    /// Calibrate the TSC using HPET as a reference.
+    /// Measures TSC cycles over a 10ms period.
+    /// </summary>
+    public static void CalibrateTsc()
+    {
+        if (!_initialized || _tscCalibrated)
+            return;
+
+        DebugConsole.Write("[HPET] Calibrating TSC...");
+
+        // Calibrate over 10ms for reasonable accuracy
+        const ulong calibrationMs = 10;
+
+        // Read initial TSC and HPET values
+        ulong tscStart = CPU.ReadTsc();
+        ulong hpetStart = ReadCounter();
+
+        // Wait 10ms using HPET
+        BusyWaitMs(calibrationMs);
+
+        // Read final TSC and HPET values
+        ulong tscEnd = CPU.ReadTsc();
+        ulong hpetEnd = ReadCounter();
+
+        // Calculate elapsed time in nanoseconds (using HPET)
+        ulong hpetTicks = hpetEnd - hpetStart;
+        ulong elapsedNs = TicksToNanoseconds(hpetTicks);
+
+        // Calculate TSC frequency: cycles / seconds = cycles * 1e9 / nanoseconds
+        ulong tscCycles = tscEnd - tscStart;
+        _tscFrequencyHz = tscCycles * 1_000_000_000 / elapsedNs;
+        _tscCalibrated = true;
+
+        DebugConsole.Write(" ");
+        DebugConsole.WriteDecimal((int)(_tscFrequencyHz / 1_000_000));
+        DebugConsole.WriteLine(" MHz");
     }
 }
