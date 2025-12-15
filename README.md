@@ -14,7 +14,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 - **Full Exception Handling** - try/catch/finally/filter with funclet-based unwinding
 - **SMP Support** - Multi-processor boot with per-CPU scheduling
 - **NUMA Awareness** - Topology detection and NUMA-aware memory allocation
-- **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues
+- **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues, thread cleanup
 - **Virtual Memory** - 4-level paging with higher-half kernel
 - **Tier 0 JIT** - Full IL compiler supporting generics, delegates, interfaces, reflection
 - **Cross-Assembly Loading** - Load and link multiple .NET assemblies at runtime
@@ -44,7 +44,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **358 tests passing**
+The JIT runs a comprehensive test suite on boot: **470 tests passing**
 
 ### Supported C# Features
 
@@ -61,7 +61,9 @@ The JIT runs a comprehensive test suite on boot: **358 tests passing**
 | **Value Types** | Structs (all sizes), Nullable<T> with lifted operators, explicit layout |
 | **Reflection** | typeof, GetType, GetMethods/Fields/Constructors, MethodInfo.Invoke |
 | **Unsafe Code** | Pointers, stackalloc, fixed buffers, calli, function pointers |
-| **Special** | Static constructors, overflow checking, varargs (__arglist) |
+| **Threading** | Interlocked operations, thread APIs (via kernel exports) |
+| **Resource Management** | IDisposable, using statement, foreach on arrays |
+| **Special** | Static constructors, overflow checking, varargs (__arglist), nameof |
 
 ## Building
 

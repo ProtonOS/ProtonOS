@@ -35,6 +35,10 @@ public static unsafe class Scheduler
     private static bool _schedulingEnabled;
     private static bool _smpEnabled;              // Using per-CPU queues
 
+    // Cleanup queue for terminated threads (processed during scheduling)
+    private static Thread* _cleanupQueueHead;
+    private static Thread* _cleanupQueueTail;
+
     /// <summary>
     /// Whether the scheduler is initialized
     /// </summary>
@@ -371,9 +375,25 @@ public static unsafe class Scheduler
         DebugConsole.WriteLine(string.Format("[Sched] Thread 0x{0} exited with code 0x{1}",
             thread->Id.ToString("X4", null), exitCode.ToString("X8", null)));
 
-        // TODO: Free stack memory
-        // TODO: Wake any threads waiting on this thread
-        // TODO: Free thread structure (need to defer until after context switch)
+        // Wake any threads waiting on this thread
+        WakeWaiters(thread);
+
+        // Free TLS slots if allocated
+        if (thread->TlsSlots != null)
+        {
+            HeapAllocator.Free(thread->TlsSlots);
+            thread->TlsSlots = null;
+            thread->TlsSlotCount = 0;
+        }
+
+        // Free any pending APCs
+        FreeApcQueue(thread);
+
+        // Add to cleanup queue (stack and thread structure freed after context switch)
+        AddToCleanupQueue(thread);
+
+        // Remove from all-threads list
+        RemoveFromAllThreadsList(thread);
 
         _threadCount--;
         _globalLock.Release();
@@ -562,28 +582,148 @@ public static unsafe class Scheduler
         {
             // CPU features not initialized yet or no SSE support
             thread->ExtendedState = null;
+            thread->ExtendedStateRaw = null;
             thread->ExtendedStateSize = 0;
             return;
         }
 
         // Allocate with 64-byte alignment (XSAVE requirement, also covers FXSAVE's 16-byte)
         // We allocate extra bytes to ensure alignment
-        ulong rawPtr = (ulong)HeapAllocator.AllocZeroed(size + 64);
-        if (rawPtr == 0)
+        byte* rawPtr = (byte*)HeapAllocator.AllocZeroed(size + 64);
+        if (rawPtr == null)
         {
             DebugConsole.WriteLine("[Sched] WARNING: Failed to allocate extended state area!");
             thread->ExtendedState = null;
+            thread->ExtendedStateRaw = null;
             thread->ExtendedStateSize = 0;
             return;
         }
 
+        // Save raw pointer for freeing later
+        thread->ExtendedStateRaw = rawPtr;
+
         // Align to 64-byte boundary
-        ulong alignedPtr = (rawPtr + 63) & ~63UL;
+        ulong alignedPtr = ((ulong)rawPtr + 63) & ~63UL;
         thread->ExtendedState = (byte*)alignedPtr;
         thread->ExtendedStateSize = size;
 
         // Initialize the XSAVE header for XRSTOR (all zeros is valid initial state)
         // The XSAVE area is already zeroed from AllocZeroed
+    }
+
+    /// <summary>
+    /// Wake all threads waiting on a terminated thread.
+    /// Called from ExitThread with _globalLock held.
+    /// </summary>
+    private static void WakeWaiters(Thread* exitingThread)
+    {
+        // Walk all threads and wake any waiting on this thread
+        for (var t = _allThreadsHead; t != null; t = t->NextAll)
+        {
+            if (t->State == ThreadState.Blocked && t->WaitObject == exitingThread)
+            {
+                t->WaitResult = WaitResult.Object0;
+                t->WaitObject = null;
+                t->State = ThreadState.Ready;
+                AddToReadyQueue(t);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Free all pending APCs in a thread's queue.
+    /// Called from ExitThread with _globalLock held.
+    /// </summary>
+    private static void FreeApcQueue(Thread* thread)
+    {
+        var apc = thread->APCQueueHead;
+        while (apc != null)
+        {
+            var next = apc->Next;
+            HeapAllocator.Free(apc);
+            apc = next;
+        }
+        thread->APCQueueHead = null;
+        thread->APCQueueTail = null;
+    }
+
+    /// <summary>
+    /// Add a terminated thread to the cleanup queue.
+    /// The thread's stack and structure will be freed after context switch.
+    /// Called from ExitThread with _globalLock held.
+    /// </summary>
+    private static void AddToCleanupQueue(Thread* thread)
+    {
+        thread->NextCleanup = null;
+        if (_cleanupQueueTail != null)
+        {
+            _cleanupQueueTail->NextCleanup = thread;
+            _cleanupQueueTail = thread;
+        }
+        else
+        {
+            _cleanupQueueHead = thread;
+            _cleanupQueueTail = thread;
+        }
+    }
+
+    /// <summary>
+    /// Remove a thread from the all-threads list.
+    /// Called from ExitThread with _globalLock held.
+    /// </summary>
+    private static void RemoveFromAllThreadsList(Thread* thread)
+    {
+        // Find and remove from singly-linked list
+        if (_allThreadsHead == thread)
+        {
+            _allThreadsHead = thread->NextAll;
+        }
+        else
+        {
+            for (var t = _allThreadsHead; t != null; t = t->NextAll)
+            {
+                if (t->NextAll == thread)
+                {
+                    t->NextAll = thread->NextAll;
+                    break;
+                }
+            }
+        }
+        thread->NextAll = null;
+    }
+
+    /// <summary>
+    /// Process the cleanup queue, freeing terminated thread resources.
+    /// Called from Schedule when safe to free memory.
+    /// Must be called with _globalLock held.
+    /// </summary>
+    private static void ProcessCleanupQueue()
+    {
+        while (_cleanupQueueHead != null)
+        {
+            var thread = _cleanupQueueHead;
+            _cleanupQueueHead = thread->NextCleanup;
+            if (_cleanupQueueHead == null)
+                _cleanupQueueTail = null;
+
+            // Free extended state (FPU/SSE/AVX area)
+            if (thread->ExtendedStateRaw != null)
+            {
+                HeapAllocator.Free(thread->ExtendedStateRaw);
+                thread->ExtendedState = null;
+                thread->ExtendedStateRaw = null;
+            }
+
+            // Free stack (skip if using boot stack - boot thread has StackLimit == 0)
+            if (thread->StackLimit != 0)
+            {
+                ulong numPages = (thread->StackSize + 4095) / 4096;
+                PageAllocator.FreePageRange(thread->StackLimit, numPages);
+            }
+
+            // Free thread structure
+            HeapAllocator.Free(thread);
+        }
     }
 
     /// <summary>
@@ -611,6 +751,9 @@ public static unsafe class Scheduler
     private static void ScheduleBsp()
     {
         _globalLock.Acquire();
+
+        // Process cleanup queue (free terminated thread resources)
+        ProcessCleanupQueue();
 
         var current = _bspCurrentThread;
 
@@ -700,6 +843,10 @@ public static unsafe class Scheduler
 
         // Wake up any sleeping threads whose time has come (check global list)
         _globalLock.Acquire();
+
+        // Process cleanup queue (free terminated thread resources)
+        ProcessCleanupQueue();
+
         ulong now = APIC.TickCount;
         for (var t = _allThreadsHead; t != null; t = t->NextAll)
         {

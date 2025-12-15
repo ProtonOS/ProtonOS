@@ -123,7 +123,11 @@ public unsafe struct Thread
     // Extended processor state (FPU/SSE/AVX)
     // Pointer to 64-byte aligned buffer for FXSAVE/XSAVE area
     public byte* ExtendedState;        // Pointer to FXSAVE/XSAVE area (64-byte aligned)
+    public byte* ExtendedStateRaw;     // Raw allocation pointer (for freeing)
     public uint ExtendedStateSize;     // Size of extended state area in bytes
+
+    // Cleanup tracking
+    public Thread* NextCleanup;        // Next thread in cleanup queue
 }
 
 /// <summary>

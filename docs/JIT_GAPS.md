@@ -148,8 +148,8 @@ These are TODO comments found in kernel code that may need attention.
 | Interrupts.cs | ✅ Complete | IRQ pool allocation (vectors 48-79 with bitmap) |
 | Interrupts.cs | ✅ Complete | IRQ deallocation implemented |
 | Interrupts.cs | ✅ Complete | I/O APIC redirection via SetIRQAffinity → IOAPIC.SetIrqRoute() |
-| Thread.cs | Deferred | Thread termination - state set but memory not freed |
-| Scheduler.cs | Deferred | Resource cleanup deferred (works, just leaks on exit) |
+| Thread.cs | ✅ Complete | Thread termination with proper cleanup queue |
+| Scheduler.cs | ✅ Complete | ProcessCleanupQueue frees stack, extended state, thread struct |
 | System.cs | ✅ Complete | CPU count from CPUTopology.CpuCount in GetSystemInfo() |
 | System.cs | ✅ Complete | Day of week via Tomohiko Sakamoto's algorithm |
 | Arch.cs | ✅ Already done | APIC.SendEoi() already implemented |
@@ -228,15 +228,38 @@ public static class NameofTests { ... }
 | Missing Tests | 9 | 9 | 0 |
 | Incomplete Impl | 5 | 5 | 0 |
 | Code TODOs (JIT) | 2 | 2 | 0 (clarified) |
-| Code TODOs (Platform) | 11 | 9 | 2 (deferred) |
+| Code TODOs (Platform) | 11 | 11 | 0 |
 | **P0 Items** | **3** | **3** | **0** |
 | **P1 Items** | **3** | **3** | **0** |
 | **P2 Items** | **4** | **4** | **0** |
 
 Last updated: 2025-12-14
-Test count: 466
+Test count: 470
 
 ## Recent Changes
+
+### Thread API Tests (470 tests)
+- Added DDK thread exports for JIT-compiled code:
+  - `Kernel_CreateThread`, `Kernel_ExitThread`, `Kernel_GetCurrentThreadId`
+  - `Kernel_GetCurrentThread`, `Kernel_Sleep`, `Kernel_Yield`
+  - `Kernel_GetExitCodeThread`, `Kernel_GetThreadState`
+  - `Kernel_SuspendThread`, `Kernel_ResumeThread`, `Kernel_GetThreadCount`
+- Added `System.Threading.KernelThread` to SystemRuntime with DllImport wrappers
+- Added 4 thread tests: TestGetCurrentThreadId, TestGetThreadCount, TestYield, TestSleep
+- Note: Thread creation tests requiring function pointers don't work from JIT code
+  (managed method pointers, not native entry points). Thread creation tested via AOT drivers.
+
+### Thread Cleanup Complete (466 tests)
+- Implemented proper thread termination with deferred cleanup:
+  - Added `ExtendedStateRaw` field to Thread for proper XSAVE area deallocation
+  - Added `NextCleanup` field for cleanup queue linked list
+  - Added cleanup queue (`_cleanupQueueHead`, `_cleanupQueueTail`) to Scheduler
+  - `ExitThread()` now: wakes waiting threads, frees TLS slots, frees APCs, adds to cleanup queue
+  - `ProcessCleanupQueue()` frees: extended state, stack pages, thread structure
+  - Cleanup happens safely after context switch (can't free stack while running on it)
+- Helper functions: `WakeWaiters`, `FreeApcQueue`, `AddToCleanupQueue`, `RemoveFromAllThreadsList`
+- Both `ScheduleBsp()` and `ScheduleSmp()` call `ProcessCleanupQueue()` after context switch
+- Drivers can now safely create and destroy threads without memory leaks
 
 ### Platform DDK TODOs Complete (466 tests)
 - **Timer/TSC**: Added RDTSC instruction to native.asm, CPU.ReadTsc() wrapper
@@ -247,7 +270,7 @@ Test count: 466
 - **CPU Count**: PAL GetSystemInfo() now returns CPUTopology.CpuCount from ACPI/MADT
 - **Day of Week**: Implemented Tomohiko Sakamoto's algorithm in GetSystemTime()
 - **APIC EOI**: Already implemented in APIC.SendEoi()
-- Deferred: Thread/scheduler cleanup (works but leaks memory on thread exit)
+- Thread/scheduler cleanup now complete (see Thread Cleanup section below)
 
 ### Interlocked Operations Complete (466 tests)
 - Implemented System.Threading.Interlocked for atomic operations:

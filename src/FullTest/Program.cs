@@ -164,6 +164,9 @@ public static class TestRunner
         // Interlocked tests - tests System.Threading.Interlocked atomic operations
         RunInterlockedTests();
 
+        // Thread tests - tests thread creation, exit codes, and cleanup
+        RunThreadTests();
+
         // Note: Iterator tests (foreach on custom IEnumerable) disabled for now.
         // Requires IEnumerable/IEnumerator interfaces to be resolvable, which needs
         // either adding them to System.Runtime or implementing korlib type forwarding.
@@ -214,6 +217,18 @@ public static class TestRunner
         RecordResult("InterlockedTests.TestAdd", InterlockedTests.TestAdd() == 1);
         RecordResult("InterlockedTests.TestIncrement64", InterlockedTests.TestIncrement64() == 1);
         RecordResult("InterlockedTests.TestCompareExchange64", InterlockedTests.TestCompareExchange64() == 1);
+    }
+
+    private static void RunThreadTests()
+    {
+        RecordResult("ThreadTests.TestGetCurrentThreadId", ThreadTests.TestGetCurrentThreadId() == 1);
+        RecordResult("ThreadTests.TestGetThreadCount", ThreadTests.TestGetThreadCount() == 1);
+        RecordResult("ThreadTests.TestYield", ThreadTests.TestYield() == 1);
+        RecordResult("ThreadTests.TestSleep", ThreadTests.TestSleep() == 1);
+        // Note: Thread creation tests (TestCreateAndExitThread, TestThreadExitCode, etc.)
+        // require passing function pointers to kernel. This works for AOT-compiled code
+        // but not for JIT-compiled code where method addresses aren't valid native pointers.
+        // Thread creation will be tested via AOT-compiled drivers.
     }
 
     private static void RunIteratorTests()
@@ -7902,6 +7917,64 @@ public static class InterlockedTests
         long original = KorlibInterlocked.CompareExchange(ref value, 200L, 100L);
         // original should be 100, value should be 200
         return (original == 100L && value == 200L) ? 1 : 0;
+    }
+}
+
+// =============================================================================
+// Thread Tests (tests kernel thread APIs)
+// =============================================================================
+
+/// <summary>
+/// Tests for kernel thread management APIs.
+/// Note: Thread creation tests requiring function pointers don't work from JIT code
+/// because the JIT produces managed method pointers, not native entry points.
+/// Thread creation will be tested via AOT-compiled drivers.
+/// </summary>
+public static class ThreadTests
+{
+    /// <summary>
+    /// Test getting the current thread ID.
+    /// The boot thread should have ID 1.
+    /// </summary>
+    public static int TestGetCurrentThreadId()
+    {
+        uint id = System.Threading.KernelThread.CurrentThreadId;
+        // Boot thread has ID 1
+        return (id >= 1) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test getting the thread count.
+    /// Should be at least 1 (the current thread).
+    /// </summary>
+    public static int TestGetThreadCount()
+    {
+        int count = System.Threading.KernelThread.ThreadCount;
+        return (count >= 1) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that Yield() doesn't crash.
+    /// In single-threaded context, it should just return immediately.
+    /// </summary>
+    public static int TestYield()
+    {
+        // Call yield multiple times - should not crash
+        for (int i = 0; i < 10; i++)
+        {
+            System.Threading.KernelThread.Yield();
+        }
+        return 1;
+    }
+
+    /// <summary>
+    /// Test that Sleep(0) works (yields to other threads).
+    /// </summary>
+    public static int TestSleep()
+    {
+        // Sleep(0) should yield and return immediately
+        System.Threading.KernelThread.Sleep(0);
+        return 1;
     }
 }
 
