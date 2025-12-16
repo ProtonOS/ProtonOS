@@ -48,6 +48,11 @@ namespace System.Runtime.CompilerServices
     public class CallConvThiscall { }
     public class CallConvMemberFunction { }
 
+    /// <summary>
+    /// Used by the C# compiler to mark volatile fields.
+    /// </summary>
+    public static class IsVolatile { }
+
     public sealed class InlineArrayAttribute : Attribute
     {
         public InlineArrayAttribute(int size) { }

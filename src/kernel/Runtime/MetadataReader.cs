@@ -4243,10 +4243,13 @@ public static unsafe class MetadataReader
         if (_cachedMetadataRoot == null)
             return false;
 
+        // Get current assembly ID for StringPool cache key
+        uint assemblyId = JIT.MetadataIntegration.GetCurrentAssemblyId();
+
         // Use StringPool for caching if initialized
         if (StringPool.IsInitialized)
         {
-            stringPtr = StringPool.GetOrCreateFromToken(token, ref *_cachedMetadataRoot);
+            stringPtr = StringPool.GetOrCreateFromToken(token, assemblyId, ref *_cachedMetadataRoot);
         }
         else
         {

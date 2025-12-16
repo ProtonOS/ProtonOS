@@ -185,12 +185,29 @@ public static unsafe class JitStubs
         if (methodTable == 0)
             return;
 
+        // Debug: trace ALL EnsureVtableSlotCompiled calls
+        DebugConsole.Write("[EnsureVT] slot=");
+        DebugConsole.WriteDecimal((uint)vtableSlot);
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)methodTable);
+        DebugConsole.WriteLine();
+
         // Get vtable from MethodTable
         // MethodTable layout: [ComponentSize (2)] [Flags (2)] [BaseSize (4)] [RelatedType (8)]
         //                     [NumVtableSlots (2)] [NumInterfaces (2)] [HashCode (4)] [VTable...]
         // MethodTable.HeaderSize = 24 bytes
         nint* vtable = (nint*)(methodTable + ProtonOS.Runtime.MethodTable.HeaderSize);
         nint currentSlotCode = vtable[vtableSlot];
+
+        // Debug: trace ALL virtual calls to Equals (slot 3) for debugging
+        if (vtableSlot == 3)
+        {
+            DebugConsole.Write("[VT3] MT=0x");
+            DebugConsole.WriteHex((ulong)methodTable);
+            DebugConsole.Write(" code=0x");
+            DebugConsole.WriteHex((ulong)currentSlotCode);
+            DebugConsole.WriteLine();
+        }
 
         // If slot already has code, we're done (fast path)
         // Note: AOT methods will already have their addresses in the vtable
@@ -200,6 +217,7 @@ public static unsafe class JitStubs
         // Slow path: Need to find and compile the method for this slot
         // Look up the method in the registry by MethodTable and vtable slot
         CompiledMethodInfo* info = CompiledMethodRegistry.LookupByVtableSlot((void*)methodTable, vtableSlot);
+        bool foundOnGenericDef = false;
 
         // If not found and this is an instantiated generic type, try the generic definition MT
         if (info == null)
@@ -208,20 +226,25 @@ public static unsafe class JitStubs
             if (genDefMT != null)
             {
                 info = CompiledMethodRegistry.LookupByVtableSlot(genDefMT, vtableSlot);
+                if (info != null)
+                    foundOnGenericDef = true;
             }
         }
 
         if (info != null)
         {
             // Found a registered method for this slot
-            if (info->IsCompiled && info->NativeCode != null)
+            // IMPORTANT: If we got this from the generic definition but we're on an instantiated type,
+            // we must NOT reuse already-compiled code - we need to recompile with the correct type context.
+            // Generic methods may reference type parameters (T) that resolve differently per instantiation.
+            if (info->IsCompiled && info->NativeCode != null && !foundOnGenericDef)
             {
-                // Method is compiled, populate the vtable slot
+                // Method is compiled for THIS specific type, populate the vtable slot
                 vtable[vtableSlot] = (nint)info->NativeCode;
                 return;
             }
 
-            // Method is registered but not compiled - compile it
+            // Method is registered but not compiled for this instantiation - compile it
             if (!info->IsBeingCompiled)
             {
                 // DebugConsole.Write("[JitStubs] Lazy compiling vtable slot ");
@@ -230,7 +253,30 @@ public static unsafe class JitStubs
                 // DebugConsole.WriteHex(info->Token);
                 // DebugConsole.WriteLine();
 
+                // Set up type context if this is an instantiated generic type
+                // This ensures that VAR type parameters (like T in ObjectEqualityComparer<T>)
+                // can be properly resolved during JIT compilation
+                MethodTable* instMT = (MethodTable*)methodTable;
+                MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(instMT);
+                bool hasTypeContext = false;
+
+                if (genDefMT != null && instMT->_relatedType != null)
+                {
+                    // This is a generic instantiation - set the type argument context
+                    // _relatedType contains the first (and often only) type argument MT
+                    MethodTable** typeArgs = stackalloc MethodTable*[1];
+                    typeArgs[0] = instMT->_relatedType;
+                    MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
+                    hasTypeContext = true;
+                }
+
                 var result = Tier0JIT.CompileMethod(info->AssemblyId, info->Token);
+
+                // Clear type context after compilation
+                if (hasTypeContext)
+                {
+                    MetadataIntegration.ClearTypeTypeArgs();
+                }
                 if (result.Success && result.CodeAddress != null)
                 {
                     // Update vtable slot with compiled code
@@ -366,7 +412,109 @@ public static unsafe class JitStubs
                 bool hasBody = MetadataIntegration.InterfaceMethodHasBody(interfaceAsmId, interfaceMethodToken);
                 if (!hasBody)
                 {
-                    DebugConsole.WriteLine("[JitStubs] Interface method is abstract, no default impl");
+                    DebugConsole.WriteLine("[JitStubs] Interface method is abstract, looking for impl in class");
+
+                    // Interface method is abstract - find the implementing method in the concrete class
+                    // Get the concrete class's type info
+                    Reflection.ReflectionRuntime.LookupTypeInfo(mt, out uint classAsmId, out uint classTypeToken);
+
+                    if (classAsmId == 0 || classTypeToken == 0)
+                    {
+                        DebugConsole.WriteLine("[JitStubs] Could not get concrete class type info");
+                        continue;
+                    }
+
+                    // Get the interface method name
+                    byte* interfaceMethodName = MetadataIntegration.GetMethodName(interfaceAsmId, interfaceMethodToken);
+                    if (interfaceMethodName == null)
+                    {
+                        DebugConsole.WriteLine("[JitStubs] Could not get interface method name");
+                        continue;
+                    }
+
+                    DebugConsole.Write("[JitStubs] Looking for '");
+                    byte* p = interfaceMethodName;
+                    while (*p != 0) { DebugConsole.WriteChar((char)*p++); }
+                    DebugConsole.Write("' in type 0x");
+                    DebugConsole.WriteHex(classTypeToken);
+                    DebugConsole.Write(" asm ");
+                    DebugConsole.WriteDecimal(classAsmId);
+                    DebugConsole.WriteLine();
+
+                    // Find the implementing method by name
+                    uint implMethodToken = MetadataIntegration.FindMethodByName(classAsmId, classTypeToken, interfaceMethodName);
+
+                    if (implMethodToken == 0)
+                    {
+                        DebugConsole.WriteLine("[JitStubs] Could not find implementing method, checking base class");
+                        // Try searching in parent classes (for inherited implementations)
+                        // Get the parent type from the MT's _relatedType
+                        MethodTable* parentMT = mt->_relatedType;
+                        while (parentMT != null && implMethodToken == 0)
+                        {
+                            Reflection.ReflectionRuntime.LookupTypeInfo(parentMT, out uint parentAsmId, out uint parentTypeToken);
+                            if (parentAsmId != 0 && parentTypeToken != 0)
+                            {
+                                implMethodToken = MetadataIntegration.FindMethodByName(parentAsmId, parentTypeToken, interfaceMethodName);
+                                if (implMethodToken != 0)
+                                {
+                                    classAsmId = parentAsmId;  // Update to use parent's assembly for compilation
+                                    DebugConsole.Write("[JitStubs] Found in base class, token=0x");
+                                    DebugConsole.WriteHex(implMethodToken);
+                                    DebugConsole.WriteLine();
+                                }
+                            }
+                            parentMT = parentMT->_relatedType;
+                        }
+                    }
+
+                    if (implMethodToken == 0)
+                    {
+                        DebugConsole.WriteLine("[JitStubs] No implementing method found in class hierarchy");
+                        continue;
+                    }
+
+                    DebugConsole.Write("[JitStubs] Found implementing method: 0x");
+                    DebugConsole.WriteHex(implMethodToken);
+                    DebugConsole.Write(" asm ");
+                    DebugConsole.WriteDecimal(classAsmId);
+                    DebugConsole.WriteLine();
+
+                    // Set type context for generic instantiation
+                    // For generic instantiated MTs, _relatedType holds the first type argument
+                    MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(mt);
+                    bool hasTypeContext = false;
+                    if (genDefMT != null && mt->_relatedType != null)
+                    {
+                        MethodTable** typeArgs = stackalloc MethodTable*[1];
+                        typeArgs[0] = mt->_relatedType;
+                        MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
+                        hasTypeContext = true;
+                        DebugConsole.Write("[JitStubs] Set type context: T=0x");
+                        DebugConsole.WriteHex((ulong)mt->_relatedType);
+                        DebugConsole.WriteLine();
+                    }
+
+                    // Compile the implementing method
+                    var implResult = Tier0JIT.CompileMethod(classAsmId, implMethodToken);
+
+                    // Clear type context after compilation
+                    if (hasTypeContext)
+                    {
+                        MetadataIntegration.ClearTypeTypeArgs();
+                    }
+
+                    if (implResult.Success && implResult.CodeAddress != null)
+                    {
+                        DebugConsole.Write("[JitStubs] Impl compiled at 0x");
+                        DebugConsole.WriteHex((ulong)implResult.CodeAddress);
+                        DebugConsole.WriteLine();
+                        return (nint)implResult.CodeAddress;
+                    }
+                    else
+                    {
+                        DebugConsole.WriteLine("[JitStubs] Failed to compile implementing method");
+                    }
                     continue;
                 }
 

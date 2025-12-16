@@ -19,8 +19,8 @@ public static unsafe class Kernel
     // then registered with AssemblyLoader after HeapAllocator.Init
     private static byte* _testAssemblyBytes;
     private static ulong _testAssemblySize;
-    private static byte* _systemRuntimeBytes;
-    private static ulong _systemRuntimeSize;
+    private static byte* _testSupportBytes;
+    private static ulong _testSupportSize;
     private static byte* _ddkBytes;
     private static ulong _ddkSize;
 
@@ -30,12 +30,17 @@ public static unsafe class Kernel
     private static byte* _virtioBlkDriverBytes;
     private static ulong _virtioBlkDriverSize;
 
+    // korlib IL assembly (for JIT generic instantiation and token-based AOT lookup)
+    private static byte* _korlibBytes;
+    private static ulong _korlibSize;
+
     // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
-    private static uint _systemRuntimeId;
+    private static uint _testSupportId;
     private static uint _ddkId;
     private static uint _virtioDriverId;
     private static uint _virtioBlkDriverId;
+    private static uint _korlibId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -182,19 +187,36 @@ public static unsafe class Kernel
         System.RuntimeType.ForceKeepVtableMethods();
         System.Reflection.ReflectionVtableKeeper.ForceKeepVtableMethods();
 
-        // Register System.Runtime.dll first (dependency for other assemblies)
-        if (_systemRuntimeBytes != null)
+        // Register korlib.dll as CoreLib (provides IL for generic instantiation)
+        if (_korlibBytes != null)
         {
-            _systemRuntimeId = AssemblyLoader.Load(_systemRuntimeBytes, _systemRuntimeSize);
+            _korlibId = AssemblyLoader.Load(_korlibBytes, _korlibSize, AssemblyFlags.CoreLib);
+            if (_korlibId != AssemblyLoader.InvalidAssemblyId)
+            {
+                // Build token-based AOT method registry from korlib metadata
+                BuildKorlibTokenRegistry();
+
+                // Build DDK token registry (maps korlib DDK methods to kernel exports)
+                BuildDDKTokenRegistry();
+
+                // Initialize critical interface types (IDisposable) from korlib
+                AssemblyLoader.InitializeKorlibInterfaces(_korlibId);
+            }
         }
 
-        // Register ProtonOS.DDK.dll (depends on System.Runtime)
+        // Register TestSupport.dll (dependency for test assembly)
+        if (_testSupportBytes != null)
+        {
+            _testSupportId = AssemblyLoader.Load(_testSupportBytes, _testSupportSize);
+        }
+
+        // Register ProtonOS.DDK.dll
         if (_ddkBytes != null)
         {
             _ddkId = AssemblyLoader.Load(_ddkBytes, _ddkSize);
         }
 
-        // Register driver assemblies (depend on System.Runtime and DDK)
+        // Register driver assemblies
         if (_virtioDriverBytes != null)
         {
             _virtioDriverId = AssemblyLoader.Load(_virtioDriverBytes, _virtioDriverSize);
@@ -205,7 +227,7 @@ public static unsafe class Kernel
             _virtioBlkDriverId = AssemblyLoader.Load(_virtioBlkDriverBytes, _virtioBlkDriverSize);
         }
 
-        // Register the test assembly with AssemblyLoader (PE bytes were loaded from UEFI FS)
+        // Register the test assembly with AssemblyLoader (depends on TestSupport and DDK)
         if (_testAssemblyBytes != null)
         {
             _testAssemblyId = AssemblyLoader.Load(_testAssemblyBytes, _testAssemblySize);
@@ -260,8 +282,8 @@ public static unsafe class Kernel
     /// </summary>
     private static void LoadTestAssembly()
     {
-        // Load System.Runtime.dll first (dependency for all assemblies)
-        _systemRuntimeBytes = UEFIFS.ReadFileAscii("\\System.Runtime.dll", out _systemRuntimeSize);
+        // Load TestSupport.dll (dependency for test assembly)
+        _testSupportBytes = UEFIFS.ReadFileAscii("\\TestSupport.dll", out _testSupportSize);
 
         // Load ProtonOS.DDK.dll (Driver Development Kit)
         _ddkBytes = UEFIFS.ReadFileAscii("\\ProtonOS.DDK.dll", out _ddkSize);
@@ -269,6 +291,9 @@ public static unsafe class Kernel
         // Load driver assemblies from /drivers/
         _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
         _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
+
+        // Load korlib.dll (IL assembly for JIT generic instantiation)
+        _korlibBytes = UEFIFS.ReadFileAscii("\\korlib.dll", out _korlibSize);
 
         // Load FullTest.dll
         _testAssemblyBytes = UEFIFS.ReadFileAscii("\\FullTest.dll", out _testAssemblySize);
@@ -517,6 +542,286 @@ public static unsafe class Kernel
         {
             DebugConsole.WriteLine("[FullTest] ERROR: JIT compilation failed");
         }
+    }
+
+    /// <summary>
+    /// Build the token-based AOT method registry from korlib.dll metadata.
+    /// Maps korlib method tokens to native code addresses.
+    /// </summary>
+    private static void BuildKorlibTokenRegistry()
+    {
+        DebugConsole.WriteLine("[Kernel] Building korlib token registry...");
+
+        // Get korlib assembly
+        LoadedAssembly* korlib = AssemblyLoader.GetAssembly(_korlibId);
+        if (korlib == null)
+        {
+            DebugConsole.WriteLine("[Kernel] ERROR: korlib assembly not found");
+            return;
+        }
+
+        // Initialize the token registry
+        AotMethodRegistry.InitTokenRegistry();
+
+        // Get MethodDef table row count
+        uint methodDefCount = korlib->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        int registered = 0;
+        int matched = 0;
+
+        // Iterate through all MethodDef entries
+        for (uint row = 1; row <= methodDefCount; row++)
+        {
+            // Get method name
+            uint nameIdx = MetadataReader.GetMethodDefName(ref korlib->Tables, ref korlib->Sizes, row);
+            byte* methodName = MetadataReader.GetString(ref korlib->Metadata, nameIdx);
+
+            // Get declaring type for this method
+            uint typeDefRow = FindOwningTypeDef(korlib, row);
+            if (typeDefRow == 0)
+                continue;
+
+            // Get type name and namespace
+            uint typeNameIdx = MetadataReader.GetTypeDefName(ref korlib->Tables, ref korlib->Sizes, typeDefRow);
+            uint typeNsIdx = MetadataReader.GetTypeDefNamespace(ref korlib->Tables, ref korlib->Sizes, typeDefRow);
+            byte* typeName = MetadataReader.GetString(ref korlib->Metadata, typeNameIdx);
+            byte* typeNs = MetadataReader.GetString(ref korlib->Metadata, typeNsIdx);
+
+            // Build full type name (namespace.typename)
+            byte* fullTypeName = stackalloc byte[256];
+            int pos = 0;
+
+            // Copy namespace
+            if (typeNs != null && typeNs[0] != 0)
+            {
+                for (int i = 0; typeNs[i] != 0 && pos < 254; i++)
+                    fullTypeName[pos++] = typeNs[i];
+                fullTypeName[pos++] = (byte)'.';
+            }
+
+            // Copy type name
+            if (typeName != null)
+            {
+                for (int i = 0; typeName[i] != 0 && pos < 255; i++)
+                    fullTypeName[pos++] = typeName[i];
+            }
+            fullTypeName[pos] = 0;
+
+            // Try to find this method in the hash-based AOT registry
+            // Get method flags to determine if static
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref korlib->Tables, ref korlib->Sizes, row);
+            bool isStatic = (methodFlags & 0x0010) != 0; // Static flag
+
+            // Try lookup in hash-based registry
+            AotMethodEntry hashEntry;
+            if (AotMethodRegistry.TryLookup(fullTypeName, methodName, 0, out hashEntry, false))
+            {
+                // Found! Register in token registry
+                uint methodToken = 0x06000000 | row;
+                AotMethodFlags flags = hashEntry.Flags;
+
+                AotMethodRegistry.RegisterByToken(_korlibId, methodToken, hashEntry.NativeCode, flags);
+                registered++;
+                matched++;
+            }
+        }
+
+        DebugConsole.Write("[Kernel] Scanned ");
+        DebugConsole.WriteDecimal((int)methodDefCount);
+        DebugConsole.Write(" methods, registered ");
+        DebugConsole.WriteDecimal(registered);
+        DebugConsole.WriteLine(" in token registry");
+    }
+
+    /// <summary>
+    /// Find the TypeDef row that owns a MethodDef.
+    /// Uses the MethodList field to determine ownership.
+    /// </summary>
+    private static uint FindOwningTypeDef(LoadedAssembly* asm, uint methodRid)
+    {
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+
+        for (uint row = 1; row <= typeDefCount; row++)
+        {
+            uint methodListStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, row);
+            uint methodListEnd;
+
+            if (row < typeDefCount)
+                methodListEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, row + 1);
+            else
+                methodListEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+            if (methodRid >= methodListStart && methodRid < methodListEnd)
+                return row;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Build token registry entries for korlib DDK types.
+    /// Maps korlib DDK method tokens to kernel export addresses.
+    /// This enables JIT code to call korlib DDK methods directly.
+    /// </summary>
+    private static void BuildDDKTokenRegistry()
+    {
+        if (_korlibId == AssemblyLoader.InvalidAssemblyId)
+            return;
+
+        LoadedAssembly* korlib = AssemblyLoader.GetAssembly(_korlibId);
+        if (korlib == null)
+            return;
+
+        int registered = 0;
+
+        // Register Memory API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "AllocatePage",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.MemoryExports.AllocatePage);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "AllocatePages",
+            (void*)(delegate* unmanaged<ulong, ulong>)&Exports.DDK.MemoryExports.AllocatePages);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "FreePage",
+            (void*)(delegate* unmanaged<ulong, void>)&Exports.DDK.MemoryExports.FreePage);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "FreePages",
+            (void*)(delegate* unmanaged<ulong, ulong, void>)&Exports.DDK.MemoryExports.FreePages);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "PhysToVirt",
+            (void*)(delegate* unmanaged<ulong, ulong>)&Exports.DDK.MemoryExports.PhysToVirt);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "VirtToPhys",
+            (void*)(delegate* unmanaged<ulong, ulong>)&Exports.DDK.MemoryExports.VirtToPhys);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "MapMMIO",
+            (void*)(delegate* unmanaged<ulong, ulong, ulong>)&Exports.DDK.MemoryExports.MapMMIO);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "UnmapMMIO",
+            (void*)(delegate* unmanaged<ulong, ulong, void>)&Exports.DDK.MemoryExports.UnmapMMIO);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "GetTotalMemory",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.MemoryExports.GetTotalMemory);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "GetFreeMemory",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.MemoryExports.GetFreeMemory);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Memory", "GetPageSize",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.MemoryExports.GetPageSize);
+
+        // Register Debug API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWrite",
+            (void*)(delegate* unmanaged<char*, int, void>)&Exports.DDK.DebugExports.DebugWrite);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteLine",
+            (void*)(delegate* unmanaged<char*, int, void>)&Exports.DDK.DebugExports.DebugWriteLine);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteHex64",
+            (void*)(delegate* unmanaged<ulong, void>)&Exports.DDK.DebugExports.DebugWriteHex64);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteHex32",
+            (void*)(delegate* unmanaged<uint, void>)&Exports.DDK.DebugExports.DebugWriteHex32);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteHex16",
+            (void*)(delegate* unmanaged<ushort, void>)&Exports.DDK.DebugExports.DebugWriteHex16);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteHex8",
+            (void*)(delegate* unmanaged<byte, void>)&Exports.DDK.DebugExports.DebugWriteHex8);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteDecimal",
+            (void*)(delegate* unmanaged<int, void>)&Exports.DDK.DebugExports.DebugWriteDecimal);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteDecimalU",
+            (void*)(delegate* unmanaged<uint, void>)&Exports.DDK.DebugExports.DebugWriteDecimalU);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Debug", "Kernel_DebugWriteDecimal64",
+            (void*)(delegate* unmanaged<ulong, void>)&Exports.DDK.DebugExports.DebugWriteDecimal64);
+
+        // Register PortIO API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "InByte",
+            (void*)(delegate* unmanaged<ushort, byte>)&Exports.DDK.PortIOExports.InByte);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "OutByte",
+            (void*)(delegate* unmanaged<ushort, byte, void>)&Exports.DDK.PortIOExports.OutByte);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "InWord",
+            (void*)(delegate* unmanaged<ushort, ushort>)&Exports.DDK.PortIOExports.InWord);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "OutWord",
+            (void*)(delegate* unmanaged<ushort, ushort, void>)&Exports.DDK.PortIOExports.OutWord);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "InDword",
+            (void*)(delegate* unmanaged<ushort, uint>)&Exports.DDK.PortIOExports.InDword);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PortIO", "OutDword",
+            (void*)(delegate* unmanaged<ushort, uint, void>)&Exports.DDK.PortIOExports.OutDword);
+
+        // Register CPU API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetCpuCount",
+            (void*)(delegate* unmanaged<int>)&Exports.DDK.CPUExports.GetCpuCount);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetCurrentCpu",
+            (void*)(delegate* unmanaged<int>)&Exports.DDK.CPUExports.GetCurrentCpu);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetCpuInfo",
+            (void*)(delegate* unmanaged<int, Platform.CpuInfo*, bool>)&Exports.DDK.CPUExports.GetCpuInfo);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "SetThreadAffinity",
+            (void*)(delegate* unmanaged<ulong, ulong>)&Exports.DDK.CPUExports.SetThreadAffinity);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetThreadAffinity",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.CPUExports.GetThreadAffinity);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "IsCpuOnline",
+            (void*)(delegate* unmanaged<int, bool>)&Exports.DDK.CPUExports.IsCpuOnline);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetBspIndex",
+            (void*)(delegate* unmanaged<int>)&Exports.DDK.CPUExports.GetBspIndex);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "CPU", "GetSystemAffinityMask",
+            (void*)(delegate* unmanaged<ulong>)&Exports.DDK.CPUExports.GetSystemAffinityMask);
+
+        // Register PCI API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "ReadConfig32",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, uint>)&Exports.DDK.PCIExports.ReadConfig32);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "ReadConfig16",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, ushort>)&Exports.DDK.PCIExports.ReadConfig16);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "ReadConfig8",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, byte>)&Exports.DDK.PCIExports.ReadConfig8);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "WriteConfig32",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, uint, void>)&Exports.DDK.PCIExports.WriteConfig32);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "WriteConfig16",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, ushort, void>)&Exports.DDK.PCIExports.WriteConfig16);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "WriteConfig8",
+            (void*)(delegate* unmanaged<byte, byte, byte, byte, byte, void>)&Exports.DDK.PCIExports.WriteConfig8);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "GetBar",
+            (void*)(delegate* unmanaged<byte, byte, byte, int, uint>)&Exports.DDK.PCIExports.GetBar);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "GetBarSize",
+            (void*)(delegate* unmanaged<byte, byte, byte, int, uint>)&Exports.DDK.PCIExports.GetBarSize);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "EnableMemorySpace",
+            (void*)(delegate* unmanaged<byte, byte, byte, void>)&Exports.DDK.PCIExports.EnableMemorySpace);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "PCI", "EnableBusMaster",
+            (void*)(delegate* unmanaged<byte, byte, byte, void>)&Exports.DDK.PCIExports.EnableBusMaster);
+
+        // Register Thread API
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "CreateThread",
+            (void*)(delegate* unmanaged<delegate* unmanaged<void*, uint>, void*, nuint, uint, uint*, Threading.Thread*>)&Exports.DDK.ThreadExports.CreateThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "ExitThread",
+            (void*)(delegate* unmanaged<uint, void>)&Exports.DDK.ThreadExports.ExitThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "GetCurrentThreadId",
+            (void*)(delegate* unmanaged<uint>)&Exports.DDK.ThreadExports.GetCurrentThreadId);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "GetCurrentThread",
+            (void*)(delegate* unmanaged<Threading.Thread*>)&Exports.DDK.ThreadExports.GetCurrentThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "Sleep",
+            (void*)(delegate* unmanaged<uint, void>)&Exports.DDK.ThreadExports.Sleep);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "Yield",
+            (void*)(delegate* unmanaged<void>)&Exports.DDK.ThreadExports.Yield);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "GetExitCodeThread",
+            (void*)(delegate* unmanaged<Threading.Thread*, uint*, bool>)&Exports.DDK.ThreadExports.GetExitCodeThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "GetThreadState",
+            (void*)(delegate* unmanaged<Threading.Thread*, int>)&Exports.DDK.ThreadExports.GetThreadState);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "SuspendThread",
+            (void*)(delegate* unmanaged<Threading.Thread*, int>)&Exports.DDK.ThreadExports.SuspendThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "ResumeThread",
+            (void*)(delegate* unmanaged<Threading.Thread*, int>)&Exports.DDK.ThreadExports.ResumeThread);
+        registered += RegisterDDKMethod(korlib, "ProtonOS.Kernel", "Thread", "GetThreadCount",
+            (void*)(delegate* unmanaged<int>)&Exports.DDK.ThreadExports.GetThreadCount);
+
+        if (registered > 0)
+        {
+            DebugConsole.Write("[Kernel] Registered ");
+            DebugConsole.WriteDecimal(registered);
+            DebugConsole.WriteLine(" DDK methods in token registry");
+        }
+    }
+
+    /// <summary>
+    /// Helper to register a single DDK method in the token registry.
+    /// </summary>
+    private static int RegisterDDKMethod(LoadedAssembly* korlib, string ns, string typeName, string methodName, void* nativeAddr)
+    {
+        // Find type in korlib
+        uint typeToken = AssemblyLoader.FindTypeDefByFullName(_korlibId, ns, typeName);
+        if (typeToken == 0)
+            return 0;
+
+        // Find method in type
+        uint methodToken = AssemblyLoader.FindMethodDefByName(_korlibId, typeToken, methodName);
+        if (methodToken == 0)
+            return 0;
+
+        // Register in token registry
+        AotMethodRegistry.RegisterByToken(_korlibId, methodToken, (nint)nativeAddr, AotMethodFlags.None);
+        return 1;
     }
 
     /// <summary>

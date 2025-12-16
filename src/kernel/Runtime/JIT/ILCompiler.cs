@@ -756,6 +756,7 @@ public unsafe struct ILCompiler
         // Debug helpers
         compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
         compiler._debugLdfld = RuntimeHelpers.GetDebugLdfldPtr();
+        compiler._debugLdfldInt = RuntimeHelpers.GetDebugLdfldIntPtr();
         compiler._debugStelemStack = RuntimeHelpers.GetDebugStelemStackPtr();
         compiler._debugVtableDispatch = RuntimeHelpers.GetDebugVtableDispatchPtr();
         compiler._debugAssemblyId = 0;
@@ -4914,14 +4915,14 @@ public unsafe struct ILCompiler
         if (method.NativeCode != null)
         {
             // Direct call - we already know the target address
-            // if (_debugAssemblyId == 3)
-            // {
-            //     DebugConsole.Write("[JIT call] direct tok=0x");
-            //     DebugConsole.WriteHex(token);
-            //     DebugConsole.Write(" native=0x");
-            //     DebugConsole.WriteHex((ulong)method.NativeCode);
-            //     DebugConsole.WriteLine();
-            // }
+            if (_debugAssemblyId == 1)  // korlib
+            {
+                DebugConsole.Write("[JIT call] direct tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" native=0x");
+                DebugConsole.WriteHex((ulong)method.NativeCode);
+                DebugConsole.WriteLine();
+            }
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
         }
         else if (method.RegistryEntry != null)
@@ -5327,32 +5328,152 @@ public unsafe struct ILCompiler
                 if (constraintMT->IsValueType)
                 {
                     // Value type with constrained prefix - need to box before virtual call
-                    // Stack currently has: [..., managed_ptr_to_value]
-                    // We need to transform it to: [..., boxed_object]
+                    // Stack currently has: [..., managed_ptr_to_value, arg1, arg2, ...]
+                    // where the managed pointer is at position (method.ArgCount) from top.
+                    //
+                    // We need to:
+                    // 1. First resolve the method to know how many args are on top of the managed ptr
+                    // 2. Save the args, box the managed ptr, restore the args
+                    // 3. Continue with virtual call
                     //
                     // After boxing, the vtable dispatch will work normally since primitive
                     // MethodTables now include proper vtable entries (ToString, Equals, GetHashCode).
 
-                    // The managed pointer is on top of stack
-                    // We need to:
-                    // 1. Pop the managed pointer
-                    // 2. Read the value from that pointer
-                    // 3. Box the value (allocate and copy)
-                    // 4. Push the boxed object
-                    // 5. Continue with DEVIRTUALIZED callvirt
+                    // We need to resolve the method FIRST to know the arg count
+                    // This is a bit ugly but necessary for correct stack manipulation
+                    if (!ResolveMethod(token, out ResolvedMethod tempMethod))
+                    {
+                        DebugConsole.Write("[JIT] ResolveMethod failed for constrained callvirt 0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.WriteLine();
+                        return false;
+                    }
+
+                    int numArgs = tempMethod.ArgCount;  // Args NOT including 'this'
 
                     // Get the value size from the MethodTable
                     uint baseSize = constraintMT->_uBaseSize;
                     int valueSize = (int)(baseSize - 8);  // Subtract MethodTable pointer (8 bytes)
                     if (valueSize <= 0) valueSize = 8;  // Minimum
 
-                    // Pop managed pointer to RAX
-                    X64Emitter.Pop(ref _code, VReg.R0);
-                    PopEntry();
+                    // OPTIMIZATION: For primitive types, inline Equals comparison instead of boxing
+                    // This avoids the boxing overhead and correctly implements value equality
+                    // (Object.Equals does reference equality which doesn't work for boxed primitives)
+                    if (numArgs == 1 && tempMethod.IsVirtual && tempMethod.VtableSlot == 1 &&
+                        MetadataIntegration.IsPrimitiveMT(constraintMT))
+                    {
+                        DebugConsole.Write("[JIT] Inline primitive Equals: MT=0x");
+                        DebugConsole.WriteHex((ulong)constraintMT);
+                        DebugConsole.Write(" valueSize=");
+                        DebugConsole.WriteDecimal((uint)valueSize);
+                        DebugConsole.WriteLine();
+
+                        // Stack has: [managed_ptr_to_value, arg0_object_ref]
+                        // Pop arg0 (other object) and managed_ptr
+                        X64Emitter.Pop(ref _code, VReg.R5);   // R10 = other (object ref)
+                        X64Emitter.Pop(ref _code, VReg.R0);   // RAX = managed_ptr
+                        PopEntry(); PopEntry();
+
+                        // Load "this" value from managed_ptr into RCX
+                        if (valueSize <= 4)
+                            X64Emitter.MovRM32(ref _code, VReg.R1, VReg.R0, 0);  // ECX = *managed_ptr
+                        else
+                            X64Emitter.MovRM(ref _code, VReg.R1, VReg.R0, 0);    // RCX = *managed_ptr
+
+                        // Check if other is null -> return false
+                        X64Emitter.TestRR(ref _code, VReg.R5, VReg.R5);
+                        int nullCheckPatch = X64Emitter.JccRel32(ref _code, X64Emitter.CC_E);  // JE return_false
+
+                        // Check if other's MT matches our primitive MT -> if not, return false
+                        X64Emitter.MovRM(ref _code, VReg.R2, VReg.R5, 0);  // RDX = [other] = other's MT
+                        X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)constraintMT);  // RAX = expected MT
+                        X64Emitter.CmpRR(ref _code, VReg.R2, VReg.R0);
+                        int mtCheckPatch = X64Emitter.JccRel32(ref _code, X64Emitter.CC_NE);  // JNE return_false
+
+                        // Unbox other: value is at [other + 8]
+                        if (valueSize <= 4)
+                            X64Emitter.MovRM32(ref _code, VReg.R2, VReg.R5, 8);  // EDX = [other + 8]
+                        else
+                            X64Emitter.MovRM(ref _code, VReg.R2, VReg.R5, 8);    // RDX = [other + 8]
+
+                        // Compare values
+                        if (valueSize <= 4)
+                            X64Emitter.CmpRR32(ref _code, VReg.R1, VReg.R2);
+                        else
+                            X64Emitter.CmpRR(ref _code, VReg.R1, VReg.R2);
+
+                        // Set result: AL = 1 if equal, 0 otherwise
+                        // SETE AL: 0F 94 C0
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0x94);
+                        _code.EmitByte(0xC0);
+
+                        // Zero-extend AL to RAX: MOVZX RAX, AL (REX.W + 0F B6 /r)
+                        _code.EmitByte(0x48);  // REX.W
+                        _code.EmitByte(0x0F);
+                        _code.EmitByte(0xB6);
+                        _code.EmitByte(0xC0);  // ModRM: mod=11, reg=RAX, r/m=AL
+
+                        // Jump to done
+                        int donePatch = X64Emitter.JmpRel32(ref _code);
+
+                        // return_false:
+                        int returnFalseOffset = _code.Position;
+                        X64Emitter.XorRR(ref _code, VReg.R0, VReg.R0);  // RAX = 0 (false)
+
+                        // done:
+                        int doneOffset = _code.Position;
+
+                        // Patch jump targets
+                        X64Emitter.PatchJump(ref _code, nullCheckPatch, returnFalseOffset);
+                        X64Emitter.PatchJump(ref _code, mtCheckPatch, returnFalseOffset);
+                        X64Emitter.PatchJump(ref _code, donePatch, doneOffset);
+
+                        // Push result
+                        X64Emitter.Push(ref _code, VReg.R0);
+                        PushEntry(EvalStackEntry.Int32);
+
+                        return true;  // Don't fall through to normal callvirt
+                    }
+
+                    // The managed pointer is at stack position [numArgs] (0-indexed from top)
+                    // We need to save the args, get the managed ptr, box it, then restore args
+
+                    if (numArgs == 0)
+                    {
+                        // No args on top - managed ptr is on top
+                        // Pop managed pointer to RAX
+                        X64Emitter.Pop(ref _code, VReg.R0);
+                        PopEntry();
+                    }
+                    else if (numArgs == 1)
+                    {
+                        // One arg on top: [managed_ptr, arg0]
+                        // Save arg0, get managed_ptr
+                        X64Emitter.Pop(ref _code, VReg.R5);   // R10 = arg0
+                        X64Emitter.Pop(ref _code, VReg.R0);   // RAX = managed_ptr
+                        PopEntry(); PopEntry();
+                    }
+                    else if (numArgs == 2)
+                    {
+                        // Two args on top: [managed_ptr, arg0, arg1]
+                        X64Emitter.Pop(ref _code, VReg.R6);   // R11 = arg1
+                        X64Emitter.Pop(ref _code, VReg.R5);   // R10 = arg0
+                        X64Emitter.Pop(ref _code, VReg.R0);   // RAX = managed_ptr
+                        PopEntry(); PopEntry(); PopEntry();
+                    }
+                    else
+                    {
+                        // Three+ args on top: [managed_ptr, arg0, arg1, arg2]
+                        X64Emitter.Pop(ref _code, VReg.R7);   // R12 = arg2
+                        X64Emitter.Pop(ref _code, VReg.R6);   // R11 = arg1
+                        X64Emitter.Pop(ref _code, VReg.R5);   // R10 = arg0
+                        X64Emitter.Pop(ref _code, VReg.R0);   // RAX = managed_ptr
+                        PopEntry(); PopEntry(); PopEntry(); PopEntry();
+                    }
 
                     // Read the value from the pointer
                     // For small values (<=8 bytes), we can read directly
-                    // For now, assume 4-byte or 8-byte values (most common)
                     if (valueSize <= 4)
                     {
                         // mov eax, [rax] - read 4 bytes
@@ -5368,8 +5489,11 @@ public unsafe struct ILCompiler
                     // Need to allocate: baseSize bytes
                     // Layout: [MethodTable*][value]
 
-                    // Save value on the stack (R10 is caller-saved and gets clobbered by calls!)
+                    // Save value on the stack and the args we saved in registers
                     X64Emitter.Push(ref _code, VReg.R0);  // Save value on stack
+                    if (numArgs >= 1) X64Emitter.Push(ref _code, VReg.R5);   // Save arg0
+                    if (numArgs >= 2) X64Emitter.Push(ref _code, VReg.R6);   // Save arg1
+                    if (numArgs >= 3) X64Emitter.Push(ref _code, VReg.R7);   // Save arg2
 
                     // Call RhpNewFast(MT*) - returns pointer in RAX
                     X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)constraintMT);  // RCX = MT*
@@ -5379,7 +5503,10 @@ public unsafe struct ILCompiler
                     X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
                     // RAX = allocated object pointer (MT* is already set by RhpNewFast)
-                    // Pop saved value from stack into R2 (RDX)
+                    // Restore saved args and value
+                    if (numArgs >= 3) X64Emitter.Pop(ref _code, VReg.R7);   // Restore arg2
+                    if (numArgs >= 2) X64Emitter.Pop(ref _code, VReg.R6);   // Restore arg1
+                    if (numArgs >= 1) X64Emitter.Pop(ref _code, VReg.R5);   // Restore arg0
                     X64Emitter.Pop(ref _code, VReg.R2);  // RDX = saved value
 
                     // Store value at [RAX + 8]
@@ -5392,11 +5519,27 @@ public unsafe struct ILCompiler
                         X64Emitter.MovMR(ref _code, VReg.R0, 8, VReg.R2);  // [RAX+8] = value (64-bit)
                     }
 
-                    // Push boxed object back on stack
-                    X64Emitter.Push(ref _code, VReg.R0);
+                    // Now push args back in correct order, then the boxed object
+                    // Stack should end up as: [..., boxed_object, arg0, arg1, ...]
+                    X64Emitter.Push(ref _code, VReg.R0);  // Push boxed object
                     PushEntry(EvalStackEntry.NativeInt);  // Object reference
+                    if (numArgs >= 1)
+                    {
+                        X64Emitter.Push(ref _code, VReg.R5);  // Push arg0
+                        PushEntry(EvalStackEntry.NativeInt);
+                    }
+                    if (numArgs >= 2)
+                    {
+                        X64Emitter.Push(ref _code, VReg.R6);  // Push arg1
+                        PushEntry(EvalStackEntry.NativeInt);
+                    }
+                    if (numArgs >= 3)
+                    {
+                        X64Emitter.Push(ref _code, VReg.R7);  // Push arg2
+                        PushEntry(EvalStackEntry.NativeInt);
+                    }
 
-                    // Now fall through to callvirt handling with boxed object on stack
+                    // Now fall through to callvirt handling with correct stack order
                     // Virtual dispatch will work via the vtable entries in the MethodTable
                 }
                 else
@@ -5558,11 +5701,39 @@ public unsafe struct ILCompiler
             for (int i = 0; i < totalArgs; i++) PopEntry();
         }
 
+        // Check if we need a hidden return buffer for large struct returns
+        bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
+        int hiddenBufferSize = needsHiddenBuffer ? (int)((method.ReturnStructSize + 7) & ~7) : 0;
+
         // Allocate shadow space (x64 ABI ALWAYS requires 32 bytes)
         // x64 ABI requires 32 bytes for the callee to home register arguments
+        // For large struct returns, also allocate buffer space
         if (needsShadowSpace)
         {
-            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            if (needsHiddenBuffer)
+            {
+                // Allocate shadow space + buffer space (aligned to 16 bytes)
+                int totalAlloc = 32 + ((hiddenBufferSize + 15) & ~15);
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // For callvirt, 'this' is already in RCX, we need to shift args
+                // Hidden buffer pointer becomes RCX, this goes to RDX, etc.
+                // Save current args first
+                if (totalArgs >= 4)
+                    X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);  // Save R9
+                if (totalArgs >= 3)
+                    X64Emitter.MovRR(ref _code, VReg.R4, VReg.R3);   // R9 = R8 (arg2)
+                if (totalArgs >= 2)
+                    X64Emitter.MovRR(ref _code, VReg.R3, VReg.R2);   // R8 = RDX (arg1)
+                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R1);       // RDX = RCX (this)
+
+                // Set RCX = buffer address (RSP + 32, after shadow space)
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+            }
+            else
+            {
+                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            }
         }
 
         // Load target address and call
@@ -5637,9 +5808,20 @@ public unsafe struct ILCompiler
             // If not, it triggers compilation and updates the vtable slot
             if (_ensureVtableSlotCompiled != null)
             {
-                // Save RCX to callee-saved R12 (we'll restore after stub call)
+                // Save ALL argument registers that will be clobbered by the stub call
+                // RCX (R1) = this, RDX (R2) = arg1, R8 (R3) = arg2, R9 (R4) = arg3
+                // We use callee-saved registers R12-R15 (VReg.R8-R11)
                 X64Emitter.Push(ref _code, VReg.R8);  // Save R12
-                X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);  // R12 = RCX (this)
+                X64Emitter.Push(ref _code, VReg.R9);  // Save R13
+                X64Emitter.Push(ref _code, VReg.R10); // Save R14
+                X64Emitter.Push(ref _code, VReg.R11); // Save R15
+                X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);   // R12 = RCX (this)
+                if (totalArgs >= 2)
+                    X64Emitter.MovRR(ref _code, VReg.R9, VReg.R2);   // R13 = RDX (arg1)
+                if (totalArgs >= 3)
+                    X64Emitter.MovRR(ref _code, VReg.R10, VReg.R3);  // R14 = R8 (arg2)
+                if (totalArgs >= 4)
+                    X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);  // R15 = R9 (arg3)
 
                 // RCX already has 'this' (objPtr), just need RDX = slot (short)
                 X64Emitter.MovRI32(ref _code, VReg.R2, method.VtableSlot);
@@ -5650,9 +5832,18 @@ public unsafe struct ILCompiler
                 X64Emitter.CallR(ref _code, VReg.R0);
                 X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
-                // Restore RCX from R12
-                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // RCX = R12 (this)
-                X64Emitter.Pop(ref _code, VReg.R8);  // Restore R12
+                // Restore ALL argument registers
+                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);   // RCX = R12 (this)
+                if (totalArgs >= 2)
+                    X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);   // RDX = R13 (arg1)
+                if (totalArgs >= 3)
+                    X64Emitter.MovRR(ref _code, VReg.R3, VReg.R10);  // R8 = R14 (arg2)
+                if (totalArgs >= 4)
+                    X64Emitter.MovRR(ref _code, VReg.R4, VReg.R11);  // R9 = R15 (arg3)
+                X64Emitter.Pop(ref _code, VReg.R11);  // Restore R15
+                X64Emitter.Pop(ref _code, VReg.R10);  // Restore R14
+                X64Emitter.Pop(ref _code, VReg.R9);   // Restore R13
+                X64Emitter.Pop(ref _code, VReg.R8);   // Restore R12
             }
 
             // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
@@ -5678,8 +5869,16 @@ public unsafe struct ILCompiler
         // Clean up stack space if we allocated any
         if (needsShadowSpace)
         {
-            // Deallocate the 32-byte shadow space we allocated for 0-4 args
-            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            if (needsHiddenBuffer)
+            {
+                // Only deallocate shadow space, keep the buffer on stack for struct return
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            }
+            else
+            {
+                // Deallocate the 32-byte shadow space we allocated for 0-4 args
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            }
         }
         else if (stackArgs > 0)
         {
@@ -5722,8 +5921,28 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Struct:
-                X64Emitter.Push(ref _code, VReg.R0);
-                PushEntry(EvalStackEntry.Struct(8));
+                // Handle struct returns based on size
+                if (method.ReturnStructSize <= 8)
+                {
+                    // Small struct (1-8 bytes): value in RAX, push directly
+                    X64Emitter.Push(ref _code, VReg.R0);
+                    PushEntry(EvalStackEntry.Struct(8));
+                }
+                else if (method.ReturnStructSize <= 16)
+                {
+                    // Medium struct (9-16 bytes): RAX has first 8 bytes, RDX has second
+                    X64Emitter.Push(ref _code, VReg.R2);  // RDX = bytes 8-15
+                    X64Emitter.Push(ref _code, VReg.R0);  // RAX = bytes 0-7
+                    PushEntry(EvalStackEntry.Struct(16));
+                }
+                else
+                {
+                    // Large struct (>16 bytes): caller passed hidden buffer, address in RAX
+                    // The buffer contains the struct value at RSP (after shadow space was cleaned up)
+                    int bufferSize8 = (method.ReturnStructSize + 7) & ~7;
+                    int allocatedBuffer = (bufferSize8 + 15) & ~15;
+                    PushEntry(EvalStackEntry.Struct(allocatedBuffer));
+                }
                 break;
         }
 
@@ -6904,6 +7123,8 @@ public unsafe struct ILCompiler
         X64Emitter.Pop(ref _code, VReg.R0);
         PopEntry();
 
+        // Removed verbose ldfld debug output - bug was in callvirt argument preservation
+
         // Save struct pointer for debug tracing (only for ref fields from value types)
         bool needDebugLdfld = _debugLdfld != null && isValueType && !fieldTypeIsValueType && size == 8;
         if (needDebugLdfld)
@@ -7049,6 +7270,8 @@ public unsafe struct ILCompiler
                 DebugConsole.WriteLine();
             }
 
+            // Removed verbose ldfld offset 16 debug tracing
+
             if (size == 1)
             {
                 if (signed)
@@ -7101,6 +7324,7 @@ public unsafe struct ILCompiler
                 // Restore R0
                 X64Emitter.Pop(ref _code, VReg.R0);
             }
+
         }
 
         // Push result
@@ -8130,6 +8354,13 @@ public unsafe struct ILCompiler
         // Resolve the element size from the type token using metadata
         uint elemSize = MetadataIntegration.GetTypeSize(token);
 
+        // Debug: trace ldelema element size
+        DebugConsole.Write("[ldelema] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.Write(" elemSize=");
+        DebugConsole.WriteDecimal(elemSize);
+        DebugConsole.WriteLine();
+
         // Pop index and array
         X64Emitter.Pop(ref _code, VReg.R1);  // index
         X64Emitter.Pop(ref _code, VReg.R0);  // array
@@ -8907,9 +9138,37 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileNullableBox(ulong innerMtAddress, uint innerValueSize, uint nullableSize, bool isMultiSlotStruct, int structByteSize)
     {
-        // R3 has the address of the Nullable<T> struct
-        // Layout: [hasValue: 1 byte] [padding: 7 bytes] [value: T]
+        // The value offset depends on the nullable size on the eval stack:
+        // - For large Nullable (>8 bytes on stack): uses 8-byte aligned layout, value at offset 8
+        // - For small Nullable (<=8 bytes on stack): uses struct alignment, value at alignment offset
+        int valueOffset;
+        if (nullableSize > 8)
+        {
+            // Large Nullable uses uniform 8-byte aligned layout
+            valueOffset = 8;
+        }
+        else
+        {
+            // Small Nullable uses natural struct alignment
+            if (innerValueSize <= 1) valueOffset = 1;
+            else if (innerValueSize <= 2) valueOffset = 2;
+            else if (innerValueSize <= 4) valueOffset = 4;
+            else valueOffset = 8;
+        }
 
+        // For small Nullable<T> (<=8 bytes on stack), R3 contains the VALUE, not an address
+        // We need to push it to stack to get a memory address
+        bool pushedToStack = false;
+        if (!isMultiSlotStruct)
+        {
+            // Push R3 value to stack so we can access it by address
+            X64Emitter.Push(ref _code, VReg.R3);
+            // Now RSP points to the Nullable struct data
+            X64Emitter.MovRR(ref _code, VReg.R3, VReg.SP);
+            pushedToStack = true;
+        }
+
+        // Now R3 points to the Nullable<T> struct in memory
         // Load hasValue byte into R2 (RDX): movzx edx, byte [R3]
         X64Emitter.MovRM8(ref _code, VReg.R2, VReg.R3, 0);
 
@@ -8921,11 +9180,10 @@ public unsafe struct ILCompiler
         int jzPatchOffset = X64Emitter.Je(ref _code);
 
         // hasValue is true - box the inner value
-        // Inner value is at offset 8 in the Nullable struct
+        // Inner value is at calculated valueOffset in the Nullable struct
 
-        // Save address of inner value (R3 + 8) for after allocation
-        // lea R3, [R3 + 8]  - point R3 at the actual value
-        X64Emitter.Lea(ref _code, VReg.R3, VReg.R3, 8);
+        // Save address of inner value (R3 + valueOffset) for after allocation
+        X64Emitter.Lea(ref _code, VReg.R3, VReg.R3, valueOffset);
 
         // Save R3 on stack (inner value address)
         X64Emitter.Push(ref _code, VReg.R3);
@@ -9019,10 +9277,16 @@ public unsafe struct ILCompiler
         int endOffset = _code.Position;
         X64Emitter.PatchJump(ref _code, jmpPatchOffset, endOffset);
 
-        // Clean up the struct data from the stack if it was multi-slot
+        // Clean up the struct data from the stack
         if (isMultiSlotStruct && structByteSize > 0)
         {
+            // Multi-slot struct data was on stack
             X64Emitter.AddRI(ref _code, VReg.SP, structByteSize);
+        }
+        else if (pushedToStack)
+        {
+            // We pushed R3 (8 bytes) for small Nullable<T>
+            X64Emitter.AddRI(ref _code, VReg.SP, 8);
         }
 
         // Push result (RAX = boxed object or null) onto stack
@@ -9040,14 +9304,27 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileNullableUnbox(ulong innerMtAddress, uint innerValueSize, uint nullableSize)
     {
-        // Nullable<T> layout: [hasValue: 1 byte] [padding: 7 bytes] [value: T (aligned to 8)]
-        // Total size for Nullable<int>: 16 bytes (1 + 7 padding + 4 + 4 padding = 16, but 8+8 aligned)
-        // Actually Nullable<int> is 8 bytes aligned: hasValue(1) + padding(3) + int(4) = 8 bytes
-        // For larger T, it's 8 + sizeof(T) rounded up
+        // The value offset depends on the nullable size on the eval stack:
+        // - For large Nullable (>8 bytes): uses 8-byte aligned layout, value at offset 8
+        // - For small Nullable (<=8 bytes): uses struct alignment, value at alignment offset
+        int valueOffset;
+        if (nullableSize > 8)
+        {
+            // Large Nullable uses uniform 8-byte aligned layout
+            valueOffset = 8;
+        }
+        else
+        {
+            // Small Nullable uses natural struct alignment
+            if (innerValueSize <= 1) valueOffset = 1;
+            else if (innerValueSize <= 2) valueOffset = 2;
+            else if (innerValueSize <= 4) valueOffset = 4;
+            else valueOffset = 8;
+        }
 
         int alignedNullableSize = ((int)nullableSize + 7) & ~7;
-        if (alignedNullableSize < 16)
-            alignedNullableSize = 16;  // Minimum 16 bytes for Nullable<T> on stack
+        if (alignedNullableSize < 8)
+            alignedNullableSize = 8;  // Minimum 8 bytes for Nullable<T> on stack
 
         // Allocate space on stack for the Nullable<T> result
         X64Emitter.SubRI(ref _code, VReg.SP, alignedNullableSize);
@@ -9059,40 +9336,45 @@ public unsafe struct ILCompiler
         int jzPatchOffset = X64Emitter.Je(ref _code);
 
         // Non-null path: create Nullable with HasValue=true and copy the value
-        // Set hasValue = 1 at [RSP]
+        // Zero the entire struct first
+        X64Emitter.MovRI64(ref _code, VReg.R0, 0);
+        X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R0);  // Zero bytes 0-7
+        if (alignedNullableSize > 8)
+        {
+            // Zero remaining bytes for larger Nullable types
+            for (int i = 8; i < alignedNullableSize; i += 8)
+            {
+                X64Emitter.MovMR(ref _code, VReg.SP, i, VReg.R0);
+            }
+        }
+
+        // Set hasValue = 1 at [RSP + 0]
         X64Emitter.MovRI64(ref _code, VReg.R0, 1);
         X64Emitter.MovMR8(ref _code, VReg.SP, 0, VReg.R0);
 
-        // Zero the padding bytes (bytes 1-7)
-        X64Emitter.MovRI64(ref _code, VReg.R0, 0);
-        // Write 0 to bytes 1-7 via overlapping writes
-        // Actually, just zero the entire first 8 bytes then set byte 0 to 1
-        X64Emitter.MovMR(ref _code, VReg.SP, 0, VReg.R0);  // Zero bytes 0-7
-        X64Emitter.MovRI64(ref _code, VReg.R0, 1);
-        X64Emitter.MovMR8(ref _code, VReg.SP, 0, VReg.R0);  // Set hasValue = 1
-
-        // Copy the inner value from [R3 + 8] to [RSP + 8]
+        // Copy the inner value from boxed object [R3 + 8] to Nullable [RSP + valueOffset]
+        // Source is always at offset 8 (after MT pointer in boxed object)
         if (innerValueSize <= 8)
         {
             if (innerValueSize == 8)
             {
                 X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8);
-                X64Emitter.MovMR(ref _code, VReg.SP, 8, VReg.R0);
+                X64Emitter.MovMR(ref _code, VReg.SP, valueOffset, VReg.R0);
             }
             else if (innerValueSize == 4)
             {
                 X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R3, 8);
-                X64Emitter.MovMR32(ref _code, VReg.SP, 8, VReg.R0);
+                X64Emitter.MovMR32(ref _code, VReg.SP, valueOffset, VReg.R0);
             }
             else if (innerValueSize == 2)
             {
                 X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R3, 8);
-                X64Emitter.MovMR16(ref _code, VReg.SP, 8, VReg.R0);
+                X64Emitter.MovMR16(ref _code, VReg.SP, valueOffset, VReg.R0);
             }
             else if (innerValueSize == 1)
             {
                 X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R3, 8);
-                X64Emitter.MovMR8(ref _code, VReg.SP, 8, VReg.R0);
+                X64Emitter.MovMR8(ref _code, VReg.SP, valueOffset, VReg.R0);
             }
         }
         else
@@ -9102,25 +9384,25 @@ public unsafe struct ILCompiler
             while (copyOffset + 8 <= (int)innerValueSize)
             {
                 X64Emitter.MovRM(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
-                X64Emitter.MovMR(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                X64Emitter.MovMR(ref _code, VReg.SP, valueOffset + copyOffset, VReg.R0);
                 copyOffset += 8;
             }
             if (copyOffset + 4 <= (int)innerValueSize)
             {
                 X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
-                X64Emitter.MovMR32(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                X64Emitter.MovMR32(ref _code, VReg.SP, valueOffset + copyOffset, VReg.R0);
                 copyOffset += 4;
             }
             if (copyOffset + 2 <= (int)innerValueSize)
             {
                 X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
-                X64Emitter.MovMR16(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                X64Emitter.MovMR16(ref _code, VReg.SP, valueOffset + copyOffset, VReg.R0);
                 copyOffset += 2;
             }
             if (copyOffset < (int)innerValueSize)
             {
                 X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R3, 8 + copyOffset);
-                X64Emitter.MovMR8(ref _code, VReg.SP, 8 + copyOffset, VReg.R0);
+                X64Emitter.MovMR8(ref _code, VReg.SP, valueOffset + copyOffset, VReg.R0);
             }
         }
 
@@ -9231,14 +9513,27 @@ public unsafe struct ILCompiler
                 if (mt->IsNullable)
                 {
                     isNullable = true;
-                    nullableSize = baseSize - 8;  // Nullable struct size (without MT pointer overhead)
+
+                    // Get the Nullable struct size - must match how boxing determines size
+                    // For AOT types: ComponentSize is raw size
+                    // For JIT types: BaseSize IS the raw size (no overhead)
+                    ushort componentSize = mt->_usComponentSize;
+                    if (componentSize > 0)
+                        nullableSize = componentSize;
+                    else
+                        nullableSize = baseSize;
 
                     // Get the inner type's MethodTable from _relatedType
                     MethodTable* innerMt = mt->_relatedType;
                     if (innerMt != null)
                     {
                         innerMtAddress = (ulong)innerMt;
-                        innerValueSize = innerMt->BaseSize - 8;  // Inner value size
+                        // Inner value size - also depends on type source
+                        ushort innerComponentSize = innerMt->_usComponentSize;
+                        if (innerComponentSize > 0)
+                            innerValueSize = innerComponentSize;
+                        else
+                            innerValueSize = innerMt->BaseSize;
                     }
                 }
 
@@ -10624,6 +10919,7 @@ public unsafe struct ILCompiler
     private void* _getInterfaceMethod;
     private void* _debugStfld;
     private void* _debugLdfld;
+    private void* _debugLdfldInt;
     private void* _debugStelemStack;
     private void* _debugVtableDispatch;
     private void* _ensureVtableSlotCompiled;  // JIT stub for lazy vtable slot compilation

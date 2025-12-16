@@ -162,6 +162,10 @@ namespace System.Reflection
         /// </summary>
         public static MethodBase? GetMethodFromHandle(RuntimeMethodHandle handle)
         {
+#if KORLIB_IL
+            // Stub for IL build - should be resolved to AOT implementation
+            return null;
+#else
             if (handle.Value == IntPtr.Zero)
                 return null;
             // Decode: high 32 bits = assemblyId, low 32 bits = token
@@ -172,6 +176,7 @@ namespace System.Reflection
                 return null;
             // Create RuntimeMethodInfo - declaringType will be resolved later if needed
             return new RuntimeMethodInfo(assemblyId, token, null!);
+#endif
         }
 
         public abstract RuntimeMethodHandle MethodHandle { get; }
@@ -194,6 +199,23 @@ namespace System.Reflection
         {
             return Invoke(obj, BindingFlags.Default, null, parameters, null);
         }
+
+        public static bool operator ==(MethodBase? left, MethodBase? right)
+        {
+            if ((object?)left == null)
+                return (object?)right == null;
+            if ((object?)right == null)
+                return false;
+            return ReferenceEquals(left, right);
+        }
+
+        public static bool operator !=(MethodBase? left, MethodBase? right)
+        {
+            return !(left == right);
+        }
+
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj);
+        public override int GetHashCode() => base.GetHashCode();
     }
 
     /// <summary>
@@ -266,6 +288,10 @@ namespace System.Reflection
         /// </summary>
         public static FieldInfo? GetFieldFromHandle(RuntimeFieldHandle handle)
         {
+#if KORLIB_IL
+            // Stub for IL build - should be resolved to AOT implementation
+            return null;
+#else
             if (handle.Value == IntPtr.Zero)
                 return null;
             // Decode: high 32 bits = assemblyId, low 32 bits = token
@@ -276,6 +302,7 @@ namespace System.Reflection
                 return null;
             // Create RuntimeFieldInfo - field details will be resolved via reflection exports
             return new RuntimeFieldInfo(assemblyId, token, null!, 0, 0, false);
+#endif
         }
 
         public override MemberTypes MemberType => MemberTypes.Field;
@@ -481,6 +508,7 @@ namespace System.Reflection
         public override string ToString() => FullName;
     }
 
+#if !KORLIB_IL
     /// <summary>
     /// Helper class to force bflat to keep virtual method vtable entries.
     /// This prevents dead code elimination from removing vtable slots that JIT code needs.
@@ -520,4 +548,5 @@ namespace System.Reflection
             }
         }
     }
+#endif
 }

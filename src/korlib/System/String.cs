@@ -538,6 +538,23 @@ namespace System
             return ref _firstChar;
         }
 
+        /// <summary>
+        /// Copies a specified number of characters from a specified position in this string
+        /// to a specified position in a destination character array.
+        /// </summary>
+        public void CopyTo(int sourceIndex, char[] destination, int destinationIndex, int count)
+        {
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            if (sourceIndex < 0) throw new ArgumentOutOfRangeException(nameof(sourceIndex));
+            if (destinationIndex < 0) throw new ArgumentOutOfRangeException(nameof(destinationIndex));
+            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+            if (sourceIndex > _length - count) throw new ArgumentOutOfRangeException(nameof(sourceIndex));
+            if (destinationIndex > destination.Length - count) throw new ArgumentOutOfRangeException(nameof(destinationIndex));
+
+            for (int i = 0; i < count; i++)
+                destination[destinationIndex + i] = this[sourceIndex + i];
+        }
+
         public char[] ToCharArray()
         {
             if (_length == 0) return new char[0];

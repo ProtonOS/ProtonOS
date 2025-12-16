@@ -547,6 +547,7 @@ public static unsafe class TypeHelpers
 
         MethodTable* objectMT = *(MethodTable**)obj;
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
+
         if (slot < 0)
         {
             // Debug: interface not found

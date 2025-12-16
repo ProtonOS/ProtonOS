@@ -164,17 +164,49 @@ public static unsafe class SignatureEncoder
 }
 
 /// <summary>
+/// Token-based AOT method entry for reliable lookup by (assemblyId, methodToken).
+/// Used alongside hash-based lookup for backwards compatibility.
+/// </summary>
+public unsafe struct AotTokenEntry
+{
+    /// <summary>Assembly ID (1 = korlib/CoreLib).</summary>
+    public uint AssemblyId;
+
+    /// <summary>MethodDef token (0x06xxxxxx).</summary>
+    public uint MethodToken;
+
+    /// <summary>Native code address.</summary>
+    public nint NativeCode;
+
+    /// <summary>Method flags (HasThis, IsVirtual, etc.).</summary>
+    public AotMethodFlags Flags;
+
+    /// <summary>Reserved padding.</summary>
+    public byte Reserved1;
+    public byte Reserved2;
+    public byte Reserved3;
+}
+
+/// <summary>
 /// Registry for AOT-compiled korlib methods that JIT code can call.
 /// This allows JIT-compiled assemblies to call methods like String.get_Length
 /// which are AOT-compiled into the kernel without JIT metadata.
 /// Now uses BlockChain for unlimited growth.
+/// Supports both hash-based (legacy) and token-based (new) lookup.
 /// </summary>
 public static unsafe class AotMethodRegistry
 {
     private const int EntryBlockSize = 32;
+    private const int TokenEntryBlockSize = 64;
 
+    // Hash-based entries (legacy)
     private static BlockChain _entryChain;
+
+    // Token-based entries (new, more reliable)
+    private static BlockChain _tokenChain;
+
     private static bool _initialized;
+    private static bool _tokenRegistryInitialized;
 
     /// <summary>
     /// Initialize the AOT method registry.
@@ -230,6 +262,113 @@ public static unsafe class AotMethodRegistry
         fixed (BlockChain* chain = &_entryChain)
             count = chain->TotalCount;
         DebugConsole.WriteLine(string.Format("[AotRegistry] Initialized with {0} methods", count));
+    }
+
+    /// <summary>
+    /// Initialize the token-based registry after korlib.dll is loaded.
+    /// Called from Kernel when korlib.dll is available.
+    /// </summary>
+    public static void InitTokenRegistry()
+    {
+        if (_tokenRegistryInitialized)
+            return;
+
+        fixed (BlockChain* chain = &_tokenChain)
+        {
+            if (!BlockAllocator.Init(chain, sizeof(AotTokenEntry), TokenEntryBlockSize))
+            {
+                DebugConsole.WriteLine("[AotRegistry] Failed to init token chain");
+                return;
+            }
+        }
+
+        _tokenRegistryInitialized = true;
+        DebugConsole.WriteLine("[AotRegistry] Token registry initialized");
+    }
+
+    /// <summary>
+    /// Register an AOT method by token for direct token-based lookup.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID (1 = korlib).</param>
+    /// <param name="methodToken">MethodDef token (0x06xxxxxx).</param>
+    /// <param name="nativeCode">Native code address.</param>
+    /// <param name="flags">Method flags.</param>
+    public static void RegisterByToken(uint assemblyId, uint methodToken, nint nativeCode, AotMethodFlags flags = AotMethodFlags.None)
+    {
+        if (!_tokenRegistryInitialized)
+        {
+            InitTokenRegistry();
+        }
+
+        AotTokenEntry entry;
+        entry.AssemblyId = assemblyId;
+        entry.MethodToken = methodToken;
+        entry.NativeCode = nativeCode;
+        entry.Flags = flags;
+        entry.Reserved1 = 0;
+        entry.Reserved2 = 0;
+        entry.Reserved3 = 0;
+
+        fixed (BlockChain* chain = &_tokenChain)
+        {
+            if (BlockAllocator.Add(chain, &entry) == null)
+            {
+                DebugConsole.WriteLine("[AotRegistry] Failed to add token entry");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Look up an AOT method by (assemblyId, methodToken).
+    /// This is the preferred lookup method - more reliable than hash-based lookup.
+    /// </summary>
+    /// <param name="assemblyId">Assembly ID to search.</param>
+    /// <param name="methodToken">MethodDef token (0x06xxxxxx).</param>
+    /// <param name="entry">Output: the found entry.</param>
+    /// <returns>True if found, false otherwise.</returns>
+    public static bool TryLookupByToken(uint assemblyId, uint methodToken, out AotTokenEntry entry)
+    {
+        entry = default;
+
+        if (!_tokenRegistryInitialized)
+            return false;
+
+        fixed (BlockChain* chain = &_tokenChain)
+        {
+            var block = chain->First;
+            while (block != null)
+            {
+                for (int i = 0; i < block->Used; i++)
+                {
+                    var e = (AotTokenEntry*)block->GetEntry(i);
+                    if (e->AssemblyId == assemblyId && e->MethodToken == methodToken)
+                    {
+                        entry = *e;
+                        return true;
+                    }
+                }
+                block = block->Next;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Get the count of token-based entries.
+    /// </summary>
+    public static int TokenEntryCount
+    {
+        get
+        {
+            if (!_tokenRegistryInitialized)
+                return 0;
+
+            fixed (BlockChain* chain = &_tokenChain)
+            {
+                return chain->TotalCount;
+            }
+        }
     }
 
     /// <summary>
@@ -363,6 +502,17 @@ public static unsafe class AotMethodRegistry
             "System.Object", "Equals",
             (nint)(delegate*<object, object?, bool>)&ObjectHelpers.Equals,
             1, ReturnKind.Int32, true, true);
+
+        // Object.Equals(object, object) - static method, 2 parameters, returns bool
+        // This is used by ObjectEqualityComparer<T>.Equals for value type comparison
+        nint staticEqualsAddr = (nint)(delegate*<object?, object?, bool>)&ObjectHelpers.StaticEquals;
+        DebugConsole.Write("[AOT Reg] Object.Equals(2) at 0x");
+        DebugConsole.WriteHex((ulong)staticEqualsAddr);
+        DebugConsole.WriteLine();
+        Register(
+            "System.Object", "Equals",
+            staticEqualsAddr,
+            2, ReturnKind.Int32, false, false);
 
         // Object.ToString() - instance method, returns string
         Register(
@@ -742,6 +892,30 @@ public static unsafe class AotMethodRegistry
             "System.Array", "get_Rank",
             (nint)(delegate*<Array, int>)&ArrayHelpers.GetRank,
             0, ReturnKind.Int32, true, false);
+
+        // Array.Copy(Array, Array, int) - static method, 3 parameters
+        Register(
+            "System.Array", "Copy",
+            (nint)(delegate*<Array, Array, int, void>)&ArrayHelpers.Copy3,
+            3, ReturnKind.Void, false, false);
+
+        // Array.Copy(Array, int, Array, int, int) - static method, 5 parameters
+        Register(
+            "System.Array", "Copy",
+            (nint)(delegate*<Array, int, Array, int, int, void>)&ArrayHelpers.Copy5,
+            5, ReturnKind.Void, false, false);
+
+        // Array.Clear(Array, int, int) - static method, 3 parameters
+        Register(
+            "System.Array", "Clear",
+            (nint)(delegate*<Array, int, int, void>)&ArrayHelpers.Clear3,
+            3, ReturnKind.Void, false, false);
+
+        // Array.Clear(Array) - static method, 1 parameter
+        Register(
+            "System.Array", "Clear",
+            (nint)(delegate*<Array, void>)&ArrayHelpers.Clear1,
+            1, ReturnKind.Void, false, false);
     }
 
     /// <summary>
@@ -1417,6 +1591,65 @@ public static unsafe class ObjectHelpers
     {
         // Base Object.Equals uses reference equality
         return ReferenceEquals(obj, other);
+    }
+
+    /// <summary>
+    /// Wrapper for static Object.Equals(object, object).
+    /// This is the static helper that properly handles value type comparison.
+    /// Avoids virtual dispatch since AOT vtable layout may differ from JIT types.
+    /// </summary>
+    public static bool StaticEquals(object? objA, object? objB)
+    {
+        // Reference equality first
+        if (ReferenceEquals(objA, objB))
+            return true;
+        // Null checks
+        if (objA == null || objB == null)
+            return false;
+
+        // Get MethodTables using the m_pMethodTable field (works for AOT objects)
+        System.Runtime.MethodTable* mtA = objA.m_pMethodTable;
+        System.Runtime.MethodTable* mtB = objB.m_pMethodTable;
+
+        // Must be same type to be equal
+        if (mtA != mtB)
+            return false;
+
+        // For value types, compare the actual boxed values
+        // Also check if base size is small (12-32 bytes) which indicates a boxed primitive
+        // AOT MTs for primitives may not have IsValueType flag set correctly,
+        // so we use size-based heuristic as fallback.
+        // Base size = MT ptr (8) + value bytes:
+        //   - int/float: 8 + 4 = 12
+        //   - long/double: 8 + 8 = 16
+        //   - decimal/Guid: 8 + 16 = 24
+        //   - structs up to ~24 bytes data = 32
+        bool isSmallBoxedValue = (mtA->_uBaseSize >= 12 && mtA->_uBaseSize <= 32);
+        bool likelyValueType = mtA->IsValueType || isSmallBoxedValue;
+        if (likelyValueType)
+        {
+            // Get object addresses by dereferencing the object references
+            void* ptrA = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref objA);
+            void* ptrB = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref objB);
+
+            // Value data starts at offset 8 (after the MT pointer)
+            byte* dataA = (byte*)ptrA + 8;
+            byte* dataB = (byte*)ptrB + 8;
+
+            // Calculate value size: BaseSize - 8 (MT pointer)
+            // Use ValueTypeSize if IsValueType flag is set, otherwise calculate from BaseSize
+            uint valueSize = mtA->IsValueType ? mtA->ValueTypeSize : (mtA->_uBaseSize - 8);
+
+            for (uint i = 0; i < valueSize; i++)
+            {
+                if (dataA[i] != dataB[i])
+                    return false;
+            }
+            return true;
+        }
+
+        // For reference types with same MT but different references, they're not equal
+        return false;
     }
 
     /// <summary>
@@ -2246,6 +2479,50 @@ public static unsafe class ArrayHelpers
         // BaseSize = 16 + 8 * rank
         int rank = (baseSize - 16) / 8;
         return rank > 0 ? rank : 1;  // 1D arrays return 1
+    }
+
+    /// <summary>
+    /// Copy elements from source array to destination array.
+    /// This is the 3-argument overload (copies from start of both arrays).
+    /// </summary>
+    public static void Copy3(Array sourceArray, Array destinationArray, int length)
+    {
+        System.Array.Copy(sourceArray, 0, destinationArray, 0, length);
+    }
+
+    /// <summary>
+    /// Copy elements from source array to destination array with indices.
+    /// This is the 5-argument overload.
+    /// </summary>
+    public static void Copy5(Array sourceArray, int sourceIndex, Array destinationArray, int destinationIndex, int length)
+    {
+        System.Array.Copy(sourceArray, sourceIndex, destinationArray, destinationIndex, length);
+    }
+
+    /// <summary>
+    /// Copy elements (64-bit indices).
+    /// </summary>
+    public static void Copy5Long(Array sourceArray, long sourceIndex, Array destinationArray, long destinationIndex, long length)
+    {
+        System.Array.Copy(sourceArray, sourceIndex, destinationArray, destinationIndex, length);
+    }
+
+    /// <summary>
+    /// Clear elements in an array (set to default values).
+    /// This is the 3-argument overload (array, index, length).
+    /// </summary>
+    public static void Clear3(Array array, int index, int length)
+    {
+        System.Array.Clear(array, index, length);
+    }
+
+    /// <summary>
+    /// Clear all elements in an array (set to default values).
+    /// This is the 1-argument overload (clear entire array).
+    /// </summary>
+    public static void Clear1(Array array)
+    {
+        System.Array.Clear(array);
     }
 }
 

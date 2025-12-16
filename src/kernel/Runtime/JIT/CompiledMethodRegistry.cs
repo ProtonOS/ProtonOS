@@ -84,6 +84,9 @@ public unsafe struct CompiledMethodInfo
     /// <summary>Assembly ID that owns this method (for unloading).</summary>
     public uint AssemblyId;
 
+    /// <summary>Hash of type arguments for generic instantiations (0 if not generic).</summary>
+    public ulong TypeArgHash;
+
     /// <summary>
     /// MethodTable pointer for the interface (only valid if IsInterfaceMethod).
     /// Used for interface dispatch to look up the correct vtable slot.
@@ -274,8 +277,11 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return false;
 
+        // Get type arg hash for generic instantiation support
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
         // Check if already registered with this assembly ID - update if so
-        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        CompiledMethodInfo* existing = Lookup(token, assemblyId, typeArgHash);
         if (existing != null)
         {
             existing->NativeCode = code;
@@ -283,6 +289,7 @@ public static unsafe class CompiledMethodRegistry
             existing->ReturnKind = returnKind;
             existing->HasThis = hasThis;
             existing->IsCompiled = true;
+            existing->TypeArgHash = typeArgHash;
             return true;
         }
 
@@ -312,6 +319,7 @@ public static unsafe class CompiledMethodRegistry
         entry->IsVirtual = false;
         entry->VtableSlot = -1;
         entry->AssemblyId = assemblyId;  // Critical: set assembly ID
+        entry->TypeArgHash = typeArgHash;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -344,7 +352,10 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return false;  // Token 0 is reserved as "unused"
 
-        // Check if already registered - update if so
+        // Get type arg hash for generic instantiation support
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
+        // Check if already registered - update if so (Lookup already uses TypeArgHash)
         CompiledMethodInfo* existing = Lookup(token);
         if (existing != null)
         {
@@ -355,6 +366,7 @@ public static unsafe class CompiledMethodRegistry
             existing->IsCompiled = true;
             existing->IsVirtual = isVirtual;
             existing->VtableSlot = (short)vtableSlot;
+            existing->TypeArgHash = typeArgHash;
             return true;
         }
 
@@ -384,6 +396,7 @@ public static unsafe class CompiledMethodRegistry
         entry->IsCompiled = true;
         entry->IsVirtual = isVirtual;
         entry->VtableSlot = (short)vtableSlot;
+        entry->TypeArgHash = typeArgHash;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -410,8 +423,11 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return false;
 
+        // Get type arg hash for generic instantiation support
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
         // Check if already registered - update if so
-        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        CompiledMethodInfo* existing = Lookup(token, assemblyId, typeArgHash);
         if (existing != null)
         {
             existing->NativeCode = code;
@@ -422,6 +438,7 @@ public static unsafe class CompiledMethodRegistry
             existing->IsVirtual = isVirtual;
             existing->VtableSlot = (short)vtableSlot;
             existing->AssemblyId = assemblyId;
+            existing->TypeArgHash = typeArgHash;
             return true;
         }
 
@@ -451,6 +468,7 @@ public static unsafe class CompiledMethodRegistry
         entry->IsVirtual = isVirtual;
         entry->VtableSlot = (short)vtableSlot;
         entry->AssemblyId = assemblyId;
+        entry->TypeArgHash = typeArgHash;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -477,14 +495,18 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0 || methodTable == null || vtableSlot < 0)
             return false;
 
+        // Get type arg hash for generic instantiation support
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
         // Check if already registered - update if so
-        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        CompiledMethodInfo* existing = Lookup(token, assemblyId, typeArgHash);
         if (existing != null)
         {
             // Update with vtable info
             existing->MethodTable = methodTable;
             existing->VtableSlot = vtableSlot;
             existing->IsVirtual = true;
+            existing->TypeArgHash = typeArgHash;
             return true;
         }
 
@@ -516,6 +538,7 @@ public static unsafe class CompiledMethodRegistry
         entry->VtableSlot = vtableSlot;
         entry->MethodTable = methodTable;
         entry->AssemblyId = assemblyId;
+        entry->TypeArgHash = typeArgHash;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -559,15 +582,22 @@ public static unsafe class CompiledMethodRegistry
             if (existing->IsBeingCompiled)
             {
                 // Already being compiled - this is a recursive call
-                DebugConsole.Write("[CMR] Token 0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" asm ");
-                DebugConsole.WriteDecimal(assemblyId);
-                DebugConsole.Write(" found existing: token=0x");
-                DebugConsole.WriteHex(existing->Token);
-                DebugConsole.Write(" asm=");
-                DebugConsole.WriteDecimal(existing->AssemblyId);
-                DebugConsole.WriteLine(" IsBeingCompiled=true");
+                // Pre-allocate code buffer if needed for recursive call target
+                if (existing->NativeCode == null)
+                {
+                    void* codeBuffer = CodeHeap.Alloc(4096);
+                    if (codeBuffer != null)
+                    {
+                        existing->NativeCode = codeBuffer;
+                        DebugConsole.Write("[CMR] Recursive call 0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.Write(" pre-allocated buffer at 0x");
+                        DebugConsole.WriteHex((ulong)codeBuffer);
+                        DebugConsole.WriteLine();
+                    }
+                }
+                // Return null to signal this is a recursive call - caller should use
+                // GetCodeAddressForRecursiveCall to get the target address
                 return null;
             }
             if (existing->IsCompiled)
@@ -632,6 +662,7 @@ public static unsafe class CompiledMethodRegistry
         entry->VtableSlot = -1;
         entry->MethodTable = null;
         entry->AssemblyId = assemblyId;  // Store assembly ID for lookup
+        entry->TypeArgHash = MetadataIntegration.GetTypeTypeArgHash();  // Store type arg hash for generic lookup
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -648,14 +679,33 @@ public static unsafe class CompiledMethodRegistry
     /// <summary>
     /// Complete a reserved method compilation.
     /// Sets the native code pointer and marks as compiled.
+    /// If a buffer was pre-allocated for recursive calls, copies code there.
     /// </summary>
-    public static bool CompleteCompilation(uint token, void* code, uint assemblyId = 0)
+    public static bool CompleteCompilation(uint token, void* code, uint assemblyId = 0, uint codeSize = 0)
     {
         CompiledMethodInfo* entry = Lookup(token, assemblyId);
         if (entry == null)
             return false;
 
-        entry->NativeCode = code;
+        // Check if a buffer was pre-allocated for recursive calls
+        if (entry->NativeCode != null && entry->NativeCode != code && codeSize > 0)
+        {
+            // Copy compiled code to pre-allocated buffer
+            byte* src = (byte*)code;
+            byte* dst = (byte*)entry->NativeCode;
+            for (uint i = 0; i < codeSize; i++)
+                dst[i] = src[i];
+            DebugConsole.Write("[CMR] Recursive method 0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" copied ");
+            DebugConsole.WriteDecimal(codeSize);
+            DebugConsole.WriteLine(" bytes to pre-allocated buffer");
+            // Note: entry->NativeCode already points to the pre-allocated buffer
+        }
+        else
+        {
+            entry->NativeCode = code;
+        }
         entry->IsCompiled = true;
         entry->IsBeingCompiled = false;
         return true;
@@ -676,6 +726,20 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
+    /// Get the code address for a recursive call (method currently being compiled).
+    /// Returns the pre-allocated buffer address if available.
+    /// </summary>
+    public static void* GetRecursiveCallTarget(uint token, uint assemblyId)
+    {
+        CompiledMethodInfo* entry = Lookup(token, assemblyId);
+        if (entry != null && entry->IsBeingCompiled && entry->NativeCode != null)
+        {
+            return entry->NativeCode;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Register a constructor method with its MethodTable.
     /// Used by newobj to allocate the correct type then call the constructor.
     /// </summary>
@@ -691,7 +755,10 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return false;
 
-        // Check if already registered - update if so
+        // Get type arg hash for generic instantiation support
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
+        // Check if already registered - update if so (Lookup already uses TypeArgHash)
         CompiledMethodInfo* existing = Lookup(token);
         if (existing != null)
         {
@@ -703,6 +770,7 @@ public static unsafe class CompiledMethodRegistry
             existing->IsVirtual = false;
             existing->VtableSlot = -1;
             existing->MethodTable = methodTable;
+            existing->TypeArgHash = typeArgHash;
             return true;
         }
 
@@ -732,6 +800,7 @@ public static unsafe class CompiledMethodRegistry
         entry->IsVirtual = false;
         entry->VtableSlot = -1;
         entry->MethodTable = methodTable;
+        entry->TypeArgHash = typeArgHash;
 
         // Clear arg types
         for (int i = 0; i < 4; i++)
@@ -865,7 +934,7 @@ public static unsafe class CompiledMethodRegistry
     }
 
     /// <summary>
-    /// Look up a method by token (legacy - matches first entry with this token).
+    /// Look up a method by token (uses current type arg context for generic instantiation matching).
     /// Prefer using Lookup(uint token, uint assemblyId) to avoid cross-assembly token collisions.
     /// </summary>
     public static CompiledMethodInfo* Lookup(uint token)
@@ -873,7 +942,10 @@ public static unsafe class CompiledMethodRegistry
         if (!_initialized || token == 0)
             return null;
 
-        // Scan all blocks for the token
+        // Get current type arg hash for generic instantiation lookup
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+
+        // Scan all blocks for the token + typeArgHash combination
         for (int b = 0; b < _blockCount; b++)
         {
             MethodBlock* block = _blocks[b];
@@ -883,7 +955,7 @@ public static unsafe class CompiledMethodRegistry
             CompiledMethodInfo* entries = block->GetEntries();
             for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
             {
-                if (entries[i].Token == token)
+                if (entries[i].Token == token && entries[i].TypeArgHash == typeArgHash)
                     return &entries[i];
             }
         }
@@ -895,13 +967,27 @@ public static unsafe class CompiledMethodRegistry
     /// Look up a method by token and assembly ID.
     /// This avoids cross-assembly token collisions where the same token refers to
     /// different methods in different assemblies.
+    /// For generic types, use the overload with typeArgHash parameter.
     /// </summary>
     public static CompiledMethodInfo* Lookup(uint token, uint assemblyId)
+    {
+        // Get current type arg hash for generic instantiation lookup
+        ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
+        return Lookup(token, assemblyId, typeArgHash);
+    }
+
+    /// <summary>
+    /// Look up a method by token, assembly ID, and type argument hash.
+    /// For generic types, different instantiations have different compiled code.
+    /// Falls back to TypeArgHash=0 for abstract/virtual method definitions that are
+    /// registered without type args but called with type args in context.
+    /// </summary>
+    public static CompiledMethodInfo* Lookup(uint token, uint assemblyId, ulong typeArgHash)
     {
         if (!_initialized || token == 0)
             return null;
 
-        // Scan all blocks for the token + assemblyId combination
+        // Scan all blocks for the token + assemblyId + typeArgHash combination
         for (int b = 0; b < _blockCount; b++)
         {
             MethodBlock* block = _blocks[b];
@@ -911,8 +997,53 @@ public static unsafe class CompiledMethodRegistry
             CompiledMethodInfo* entries = block->GetEntries();
             for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
             {
-                if (entries[i].Token == token && entries[i].AssemblyId == assemblyId)
+                if (entries[i].Token == token &&
+                    entries[i].AssemblyId == assemblyId &&
+                    entries[i].TypeArgHash == typeArgHash)
                     return &entries[i];
+            }
+        }
+
+        // Fallback: if we have type args but didn't find a match, try with TypeArgHash=0
+        // This handles abstract/virtual method definitions that are registered without type args
+        // (e.g., EqualityComparer<T>.Equals) but looked up with type args in context
+        // (e.g., calling on EqualityComparer<int>)
+        if (typeArgHash != 0)
+        {
+            // Debug: trace fallback lookup attempts
+            // DebugConsole.Write("[RegFallbackTry] token=0x");
+            // DebugConsole.WriteHex(token);
+            // DebugConsole.Write(" asm=");
+            // DebugConsole.WriteDecimal(assemblyId);
+            // DebugConsole.Write(" hash=");
+            // DebugConsole.WriteHex(typeArgHash);
+            // DebugConsole.WriteLine();
+            for (int b = 0; b < _blockCount; b++)
+            {
+                MethodBlock* block = _blocks[b];
+                if (block == null || block->IsEmpty)
+                    continue;
+
+                CompiledMethodInfo* entries = block->GetEntries();
+                for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
+                {
+                    if (entries[i].Token == token &&
+                        entries[i].AssemblyId == assemblyId &&
+                        entries[i].TypeArgHash == 0)
+                    {
+                        DebugConsole.Write("[RegFallback] token=0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.Write(" asm=");
+                        DebugConsole.WriteDecimal(assemblyId);
+                        DebugConsole.Write(" isVirt=");
+                        DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
+                        DebugConsole.Write(" slot=");
+                        DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
+                        if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
+                        DebugConsole.WriteLine();
+                        return &entries[i];
+                    }
+                }
             }
         }
 

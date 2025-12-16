@@ -85,6 +85,57 @@ namespace System.Runtime
             return *(object*)&result;
         }
 
+        /// <summary>
+        /// Unbox a nullable value type. Used when unboxing object to Nullable&lt;T&gt;.
+        /// The compiler generates calls to this when checking if an object is Nullable&lt;T&gt;.
+        /// </summary>
+        /// <param name="pEEType">The MethodTable* for the Nullable&lt;T&gt; type</param>
+        /// <param name="obj">The object to unbox</param>
+        /// <param name="result">Reference to where the result should be stored</param>
+        public static void RhUnboxNullable(MethodTable* pEEType, object? obj, ref byte result)
+        {
+            // Get the size of the Nullable<T> structure
+            uint size = pEEType->ValueTypeSize;
+
+            if (obj == null)
+            {
+                // Null object - set hasValue to false, zero the rest
+                // Nullable<T> layout: bool hasValue, T value
+                result = 0; // hasValue = false
+                // Zero the rest of the structure
+                for (uint i = 1; i < size; i++)
+                {
+                    Unsafe.Add(ref result, (int)i) = 0;
+                }
+            }
+            else
+            {
+                // Get the underlying value type's MethodTable from the Nullable<T> MT
+                // For simplicity, we just copy the boxed value
+                MethodTable* pObjType = obj.m_pMethodTable;
+                byte* src = (byte*)Unsafe.AsPointer(ref obj);
+                src += sizeof(MethodTable*); // Skip MethodTable pointer to get to value
+
+                // Set hasValue to true
+                result = 1;
+
+                // Copy the value (Nullable<T>.Value starts at offset 1 for alignment, but
+                // for value types like int it's at the natural alignment)
+                // The actual layout depends on T - for int it's: bool hasValue (1 byte),
+                // 3 bytes padding, int value (4 bytes)
+                uint valueOffset = 1;
+                // Align to value type's natural alignment (simplified: assume 4-byte alignment for now)
+                if (size > 2)
+                    valueOffset = 4; // Skip to aligned position
+
+                uint valueSize = pObjType->ValueTypeSize;
+                for (uint i = 0; i < valueSize && valueOffset + i < size; i++)
+                {
+                    Unsafe.Add(ref result, (int)(valueOffset + i)) = src[i];
+                }
+            }
+        }
+
         // Import allocation from kernel PAL (same as StartupCodeHelpers)
         [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
         private static extern MethodTable** PalAllocObject(uint size);

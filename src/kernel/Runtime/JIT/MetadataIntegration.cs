@@ -37,6 +37,9 @@ public unsafe struct StaticFieldEntry
     /// <summary>Containing type's metadata token.</summary>
     public uint TypeToken;
 
+    /// <summary>Hash of type arguments for generic instantiations (0 if not generic).</summary>
+    public ulong TypeArgHash;
+
     /// <summary>Pointer to the allocated static storage.</summary>
     public void* Address;
 
@@ -78,6 +81,9 @@ public unsafe struct FieldLayoutEntry
 
     /// <summary>Assembly ID this field belongs to.</summary>
     public uint AssemblyId;
+
+    /// <summary>Hash of type arguments for generic instantiations (0 if not generic).</summary>
+    public ulong TypeArgHash;
 
     /// <summary>Byte offset within the object (for instance fields) or 0 for statics.</summary>
     public int Offset;
@@ -311,6 +317,10 @@ public static unsafe class MetadataIntegration
             _metadataRoot = &asm->Metadata;
             _tablesHeader = &asm->Tables;
             _tableSizes = &asm->Sizes;
+
+            // Also update MetadataReader's cached root for ldstr resolution
+            // This ensures string tokens are resolved from the correct assembly's #US heap
+            MetadataReader.SetMetadataRoot(&asm->Metadata);
         }
     }
 
@@ -360,6 +370,9 @@ public static unsafe class MetadataIntegration
         public const uint NullReferenceException = 0xF0000028;
         public const uint InvalidCastException = 0xF0000029;
         public const uint FormatException = 0xF000002A;
+        public const uint DivideByZeroException = 0xF000002B;
+        public const uint OverflowException = 0xF000002C;
+        public const uint StackOverflowException = 0xF000002D;
 
         // Reflection types - for GetType() support
         public const uint Type = 0xF0000030;
@@ -397,6 +410,10 @@ public static unsafe class MetadataIntegration
             return;  // Already registered or invalid
 
         _iDisposableMT = mt;
+
+        // Also register in the type chain so LookupType can find it
+        RegisterType(WellKnownTypes.IDisposable, mt);
+
         DebugConsole.Write("[MetaInt] Registered IDisposable MT: 0x");
         DebugConsole.WriteHex((ulong)mt);
         DebugConsole.WriteLine();
@@ -509,6 +526,22 @@ public static unsafe class MetadataIntegration
     private static MethodTable* GetPrimitiveMT(int index)
     {
         return (MethodTable*)(_primitiveMethodTableBuffer + (index * MethodTableWithVtableSize));
+    }
+
+    /// <summary>
+    /// Check if a MethodTable pointer is one of the primitive types.
+    /// Used by JIT to optimize constrained callvirt on primitives.
+    /// </summary>
+    public static bool IsPrimitiveMT(MethodTable* mt)
+    {
+        if (_primitiveMethodTableBuffer == null || mt == null)
+            return false;
+
+        byte* mtAddr = (byte*)mt;
+        byte* bufferStart = _primitiveMethodTableBuffer;
+        byte* bufferEnd = _primitiveMethodTableBuffer + (NumPrimitiveTypes * MethodTableWithVtableSize);
+
+        return mtAddr >= bufferStart && mtAddr < bufferEnd;
     }
 
     /// <summary>
@@ -821,6 +854,24 @@ public static unsafe class MetadataIntegration
         var formatEx = new FormatException();
         MethodTable* formatExMT = (MethodTable*)formatEx.m_pMethodTable;
         if (formatExMT != null && RegisterType(WellKnownTypes.FormatException, formatExMT))
+            count++;
+
+        // DivideByZeroException
+        var divByZeroEx = new DivideByZeroException();
+        MethodTable* divByZeroExMT = (MethodTable*)divByZeroEx.m_pMethodTable;
+        if (divByZeroExMT != null && RegisterType(WellKnownTypes.DivideByZeroException, divByZeroExMT))
+            count++;
+
+        // OverflowException
+        var overflowEx = new OverflowException();
+        MethodTable* overflowExMT = (MethodTable*)overflowEx.m_pMethodTable;
+        if (overflowExMT != null && RegisterType(WellKnownTypes.OverflowException, overflowExMT))
+            count++;
+
+        // StackOverflowException
+        var stackOverflowEx = new StackOverflowException();
+        MethodTable* stackOverflowExMT = (MethodTable*)stackOverflowEx.m_pMethodTable;
+        if (stackOverflowExMT != null && RegisterType(WellKnownTypes.StackOverflowException, stackOverflowExMT))
             count++;
 
         return count;
@@ -1211,11 +1262,15 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Register a static field and allocate storage for it.
+    /// For generic types, each instantiation gets its own storage.
     /// </summary>
     public static void* RegisterStaticField(uint fieldToken, uint typeToken, int size, bool isGCRef)
     {
         if (!_initialized)
             Initialize();
+
+        // Get type arg hash to distinguish generic instantiations
+        ulong typeArgHash = GetTypeTypeArgHash();
 
         // Check if already registered - iterate through blocks
         fixed (BlockChain* chain = &_staticFieldChain)
@@ -1226,7 +1281,8 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var entry = (StaticFieldEntry*)block->GetEntry(i);
-                    if (entry->Token == fieldToken)
+                    // For generic statics, must match both token AND type arg hash
+                    if (entry->Token == fieldToken && entry->TypeArgHash == typeArgHash)
                         return entry->Address;  // Return existing
                 }
                 block = block->Next;
@@ -1241,6 +1297,7 @@ public static unsafe class MetadataIntegration
             StaticFieldEntry newEntry;
             newEntry.Token = fieldToken;
             newEntry.TypeToken = typeToken;
+            newEntry.TypeArgHash = typeArgHash;
             newEntry.Address = addr;
             newEntry.Size = size;
             newEntry.IsGCRef = isGCRef;
@@ -1252,6 +1309,11 @@ public static unsafe class MetadataIntegration
 
             DebugConsole.Write("[MetaInt] Registered static field 0x");
             DebugConsole.WriteHex(fieldToken);
+            if (typeArgHash != 0)
+            {
+                DebugConsole.Write(" typeArgHash=0x");
+                DebugConsole.WriteHex(typeArgHash);
+            }
             DebugConsole.Write(" at 0x");
             DebugConsole.WriteHex((ulong)addr);
             DebugConsole.Write(" size ");
@@ -1264,9 +1326,13 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Look up a static field's storage address.
+    /// For generic types, uses the current type arg context to find the right instantiation.
     /// </summary>
     public static void* LookupStaticField(uint fieldToken)
     {
+        // Get type arg hash to distinguish generic instantiations
+        ulong typeArgHash = GetTypeTypeArgHash();
+
         fixed (BlockChain* chain = &_staticFieldChain)
         {
             var block = chain->First;
@@ -1275,7 +1341,8 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var entry = (StaticFieldEntry*)block->GetEntry(i);
-                    if (entry->Token == fieldToken)
+                    // For generic statics, must match both token AND type arg hash
+                    if (entry->Token == fieldToken && entry->TypeArgHash == typeArgHash)
                         return entry->Address;
                 }
                 block = block->Next;
@@ -1286,7 +1353,7 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Cache a field's layout information for faster subsequent lookups.
-    /// Cache key is (token, assemblyId) pair.
+    /// Cache key is (token, assemblyId, typeArgHash) to handle generic statics.
     /// </summary>
     public static void CacheFieldLayout(uint token, int offset, byte size, bool isSigned,
                                          bool isStatic, bool isGCRef, void* staticAddress,
@@ -1298,6 +1365,8 @@ public static unsafe class MetadataIntegration
             Initialize();
 
         uint asmId = _currentAssemblyId;
+        // Get type arg hash for generic statics - each instantiation has its own static storage
+        ulong typeArgHash = isStatic ? GetTypeTypeArgHash() : 0;
 
         // Check if already cached - iterate through blocks
         fixed (BlockChain* chain = &_fieldLayoutChain)
@@ -1308,7 +1377,8 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var entry = (FieldLayoutEntry*)block->GetEntry(i);
-                    if (entry->Token == token && entry->AssemblyId == asmId)
+                    // For statics, must also match type arg hash
+                    if (entry->Token == token && entry->AssemblyId == asmId && entry->TypeArgHash == typeArgHash)
                     {
                         // Update existing entry
                         entry->Offset = offset;
@@ -1332,6 +1402,7 @@ public static unsafe class MetadataIntegration
             FieldLayoutEntry newEntry;
             newEntry.Token = token;
             newEntry.AssemblyId = asmId;
+            newEntry.TypeArgHash = typeArgHash;
             newEntry.Offset = offset;
             newEntry.Size = size;
             newEntry.IsSigned = isSigned;
@@ -1352,13 +1423,17 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Look up cached field layout.
+    /// For static fields, also matches type arg hash for generic statics.
     /// </summary>
     public static bool LookupFieldLayout(uint token, out FieldLayoutEntry entry)
     {
         entry = default;
 
-        // Cache key is (token, assemblyId) pair - same token in different assemblies
-        // refers to different fields
+        // Get type arg hash for potential generic static field lookup
+        ulong typeArgHash = GetTypeTypeArgHash();
+
+        // Cache key is (token, assemblyId, typeArgHash) - same token in different assemblies
+        // or different generic instantiations refers to different fields
         fixed (BlockChain* chain = &_fieldLayoutChain)
         {
             var block = chain->First;
@@ -1367,13 +1442,36 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var e = (FieldLayoutEntry*)block->GetEntry(i);
-                    if (e->Token == token && e->AssemblyId == _currentAssemblyId)
+                    // For statics, must also match type arg hash
+                    // For instance fields, TypeArgHash is 0 so this still works
+                    if (e->Token == token && e->AssemblyId == _currentAssemblyId && e->TypeArgHash == typeArgHash)
                     {
                         entry = *e;
                         return true;
                     }
                 }
                 block = block->Next;
+            }
+
+            // If not found and we have a non-zero type arg hash, try again with hash=0
+            // This handles instance fields being looked up from within a generic context
+            // Instance fields are always cached with TypeArgHash=0
+            if (typeArgHash != 0)
+            {
+                block = chain->First;
+                while (block != null)
+                {
+                    for (int i = 0; i < block->Used; i++)
+                    {
+                        var e = (FieldLayoutEntry*)block->GetEntry(i);
+                        if (e->Token == token && e->AssemblyId == _currentAssemblyId && e->TypeArgHash == 0)
+                        {
+                            entry = *e;
+                            return true;
+                        }
+                    }
+                    block = block->Next;
+                }
             }
         }
         return false;
@@ -1684,9 +1782,6 @@ public static unsafe class MetadataIntegration
         // Now resolve the FieldDef in the target assembly context
         // Save current context
         uint savedAsmId = _currentAssemblyId;
-        MetadataRoot* savedMdRoot = _metadataRoot;
-        TablesHeader* savedTables = _tablesHeader;
-        TableSizes* savedSizes = _tableSizes;
 
         // Switch to target assembly context
         SetCurrentAssembly(targetAsmId);
@@ -1696,10 +1791,8 @@ public static unsafe class MetadataIntegration
         bool success = ResolveFieldDef(fieldRowId, fieldToken, out result);
 
         // Restore original context
-        _currentAssemblyId = savedAsmId;
-        _metadataRoot = savedMdRoot;
-        _tablesHeader = savedTables;
-        _tableSizes = savedSizes;
+        // Must use SetCurrentAssembly to also update MetadataReader's cached root
+        SetCurrentAssembly(savedAsmId);
 
         // Debug: Log MemberRef field resolution
         // if (success)
@@ -2120,6 +2213,114 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Try to resolve a korlib MethodDef token to AOT native code.
+    /// When JIT compiling a korlib.dll method that calls another korlib method,
+    /// the target method is AOT-compiled and needs to be resolved via the AOT registry
+    /// instead of being JIT compiled.
+    /// </summary>
+    private static bool TryResolveKorlibAotMethodDef(uint token, out ResolvedMethod result)
+    {
+        result = default;
+
+        // Only applies to korlib assembly
+        LoadedAssembly* asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
+        if (asm == null || !asm->IsCoreLib)
+            return false;
+
+        uint methodRow = token & 0x00FFFFFF;
+        if (methodRow == 0)
+            return false;
+
+        // Find which TypeDef owns this MethodDef
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint ownerTypeRow = 0;
+
+        for (uint t = 1; t <= typeDefCount; t++)
+        {
+            uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t);
+            uint methodEnd;
+            if (t < typeDefCount)
+                methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, t + 1);
+            else
+                methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+            if (methodRow >= methodStart && methodRow < methodEnd)
+            {
+                ownerTypeRow = t;
+                break;
+            }
+        }
+
+        if (ownerTypeRow == 0)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, ownerTypeRow);
+        uint typeNsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, ownerTypeRow);
+        byte* typeName = MetadataReader.GetString(ref asm->Metadata, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref asm->Metadata, typeNsIdx);
+
+        // Build full type name
+        byte* fullTypeName = BuildFullTypeName(typeNs, typeName);
+        if (fullTypeName == null)
+            return false;
+
+        // Check if this is a well-known AOT type
+        if (!AotMethodRegistry.IsWellKnownAotType(fullTypeName))
+            return false;
+
+        // Get method name
+        uint methodNameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, methodNameIdx);
+        if (methodName == null)
+            return false;
+
+        // Get method signature to determine parameter count
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 2)
+            return false;
+
+        // Parse param count from signature
+        int sigPos = 1;  // Skip calling convention byte
+        byte paramCount = 0;
+        byte b = sig[sigPos];
+        if ((b & 0x80) == 0)
+            paramCount = b;
+        else if ((b & 0xC0) == 0x80)
+            paramCount = (byte)(((b & 0x3F) << 8) | sig[sigPos + 1]);
+
+        // Try to look up in AOT registry
+        if (AotMethodRegistry.TryLookup(fullTypeName, methodName, paramCount, out AotMethodEntry entry))
+        {
+            DebugConsole.Write("[KorlibMethodDef] AOT resolved: ");
+            WriteByteString(fullTypeName);
+            DebugConsole.Write(".");
+            WriteByteString(methodName);
+            DebugConsole.Write(" -> 0x");
+            DebugConsole.WriteHex((ulong)entry.NativeCode);
+            DebugConsole.WriteLine();
+
+            result.NativeCode = (void*)entry.NativeCode;
+            result.ArgCount = (byte)entry.ArgCount;
+            result.ReturnKind = entry.ReturnKind;
+            result.ReturnStructSize = entry.ReturnStructSize;
+            result.HasThis = entry.HasThis;
+            result.IsValid = true;
+            result.IsVirtual = entry.IsVirtual;
+            result.VtableSlot = -1;
+            result.MethodTable = null;
+            result.IsInterfaceMethod = false;
+            result.InterfaceMT = null;
+            result.InterfaceMethodSlot = 0;
+            result.RegistryEntry = null;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Compare a null-terminated byte string to a literal.
     /// </summary>
     private static bool ByteStringEquals(byte* str, string literal)
@@ -2399,9 +2600,72 @@ public static unsafe class MetadataIntegration
         }
         else
         {
-            // Method not compiled - need to JIT it
-            // First, get method signature info from metadata
-            if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+            // Method not compiled - check if it's abstract (can't be JIT compiled)
+            // Abstract methods need vtable dispatch - calculate the slot from metadata
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref *_tablesHeader, ref *_tableSizes, methodRowId);
+            bool isAbstract = (methodFlags & MethodDefFlags.Abstract) != 0;
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+
+            if (isAbstract && isVirtual)
+            {
+                // Abstract virtual method - calculate vtable slot for runtime dispatch
+                short vtableSlot = CalculateVtableSlotForMethod(targetAsmId, methodRowId);
+                if (vtableSlot >= 0)
+                {
+                    // Get signature info for the abstract method
+                    uint sigIdx = MetadataReader.GetMethodDefSignature(ref *_tablesHeader, ref *_tableSizes, methodRowId);
+                    byte* sigBlob = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
+
+                    byte argCount = 0;
+                    bool hasThis = true;  // Instance method
+                    ReturnKind retKind = ReturnKind.IntPtr;  // Default
+
+                    if (sigBlob != null && sigLen > 0)
+                    {
+                        int sigPos = 0;
+                        byte callConv = sigBlob[sigPos++];
+                        hasThis = (callConv & 0x20) != 0;
+
+                        // Read generic param count if present
+                        if ((callConv & 0x10) != 0)
+                        {
+                            byte* sigPtr = sigBlob + sigPos;
+                            MetadataReader.ReadCompressedUInt(ref sigPtr);
+                            sigPos = (int)(sigPtr - sigBlob);
+                        }
+
+                        // Decode parameter count
+                        uint paramCount = 0;
+                        byte b = sigBlob[sigPos++];
+                        if ((b & 0x80) == 0)
+                            paramCount = b;
+                        else if ((b & 0xC0) == 0x80)
+                            paramCount = (uint)(((b & 0x3F) << 8) | sigBlob[sigPos++]);
+                        argCount = (byte)paramCount;
+
+                        byte retType = sigBlob[sigPos];
+                        retKind = (retType == 0x01) ? ReturnKind.Void : ReturnKind.IntPtr;
+                    }
+
+                    result.NativeCode = null;  // No code - will be resolved via vtable dispatch
+                    result.ArgCount = argCount;
+                    result.ReturnKind = retKind;
+                    result.HasThis = hasThis;
+                    result.IsValid = true;
+                    result.IsVirtual = true;
+                    result.VtableSlot = vtableSlot;
+                    result.MethodTable = genericInstMT;  // Use the instantiated MT if available
+                    result.IsInterfaceMethod = false;
+                    result.InterfaceMT = null;
+                    result.InterfaceMethodSlot = -1;
+                    result.RegistryEntry = null;
+
+                    success = true;
+                }
+            }
+
+            // If not abstract or slot calculation failed, try to JIT it
+            if (!success && _tablesHeader != null && _tableSizes != null && _metadataRoot != null)
             {
                 uint sigIdx = MetadataReader.GetMethodDefSignature(ref *_tablesHeader, ref *_tableSizes, methodRowId);
                 byte* sigBlob = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
@@ -2481,10 +2745,8 @@ public static unsafe class MetadataIntegration
         }
 
         // Restore original context
-        _currentAssemblyId = savedAsmId;
-        _metadataRoot = savedMdRoot;
-        _tablesHeader = savedTables;
-        _tableSizes = savedSizes;
+        // Must use SetCurrentAssembly to also update MetadataReader's cached root
+        SetCurrentAssembly(savedAsmId);
 
         // If this MemberRef is on a generic instantiation (e.g., Container<string>),
         // override the MethodTable with the instantiated type's MT.
@@ -2718,6 +2980,51 @@ public static unsafe class MetadataIntegration
                     ptr++;
                     SkipTypeSig(ref ptr, end);
                     break;
+                case 0x13: // VAR - type type parameter from enclosing generic type
+                    ptr++;
+                    {
+                        uint varIndex = MetadataReader.ReadCompressedUInt(ref ptr);
+                        DebugConsole.Write("[MetaInt] VAR(");
+                        DebugConsole.WriteDecimal(varIndex);
+                        DebugConsole.Write(") typeArgCount=");
+                        DebugConsole.WriteDecimal((uint)_typeTypeArgCount);
+                        if (_typeTypeArgCount > 0)
+                        {
+                            DebugConsole.Write(" typeMT[0]=0x");
+                            DebugConsole.WriteHex((ulong)_typeTypeArgMTs[0]);
+                        }
+                        DebugConsole.WriteLine();
+                        if ((int)varIndex < _typeTypeArgCount && _typeTypeArgMTs[varIndex] != null)
+                        {
+                            // Substitute with the actual type from enclosing type's context
+                            MethodTable* mt = _typeTypeArgMTs[varIndex];
+                            _methodTypeArgMTs[i] = mt;
+                            // Determine element type and size from MethodTable properties
+                            if (mt->IsValueType)
+                            {
+                                // Value type - get size from BaseSize - object header (16)
+                                _methodTypeArgs[i] = 0x11; // ValueType
+                                _methodTypeArgSizes[i] = (ushort)(mt->BaseSize > 16 ? mt->BaseSize - 16 : 4);
+                            }
+                            else
+                            {
+                                // Reference type
+                                _methodTypeArgs[i] = 0x12; // Class
+                                _methodTypeArgSizes[i] = 8;
+                            }
+                            DebugConsole.Write("[MetaInt] VAR resolved to MT=0x");
+                            DebugConsole.WriteHex((ulong)_methodTypeArgMTs[i]);
+                            DebugConsole.WriteLine();
+                        }
+                        else
+                        {
+                            // No type context - treat as pointer-sized reference
+                            DebugConsole.WriteLine("[MetaInt] VAR fallback - treating as ptr");
+                            _methodTypeArgs[i] = elemType;
+                            _methodTypeArgSizes[i] = 8;
+                        }
+                    }
+                    break;
                 case 0x1E: // MVAR - method type parameter, resolve from saved outer context
                     ptr++;
                     {
@@ -2933,6 +3240,39 @@ public static unsafe class MetadataIntegration
         _typeTypeArgCount = 0;
         for (int i = 0; i < MaxTypeTypeArgs; i++)
             _typeTypeArgMTs[i] = null;
+    }
+
+    /// <summary>
+    /// Get the current type type argument count.
+    /// </summary>
+    public static int GetTypeTypeArgCount()
+    {
+        return _typeTypeArgCount;
+    }
+
+    /// <summary>
+    /// Compute a hash of the current type type arguments.
+    /// Returns 0 if there are no type arguments (non-generic context).
+    /// This is used to distinguish static fields in different generic instantiations.
+    /// </summary>
+    public static ulong GetTypeTypeArgHash()
+    {
+        if (_typeTypeArgCount == 0)
+            return 0;
+
+        // XOR all type argument MTs together for a simple hash
+        ulong hash = 0;
+        for (int i = 0; i < _typeTypeArgCount; i++)
+        {
+            if (_typeTypeArgMTs[i] != null)
+            {
+                // Mix in each MT pointer with rotation to spread bits
+                ulong mtVal = (ulong)_typeTypeArgMTs[i];
+                hash ^= mtVal;
+                hash = (hash << 13) | (hash >> 51);  // Rotate
+            }
+        }
+        return hash;
     }
 
     /// <summary>
@@ -4302,6 +4642,15 @@ public static unsafe class MetadataIntegration
                 return true;
             }
 
+            // Check if this is a korlib MethodDef that can be resolved to AOT native code.
+            // When JIT compiling korlib.dll methods (e.g., List<T>.ctor), internal calls to
+            // other korlib methods (e.g., Exception.ctor) need to be resolved to AOT code
+            // instead of being JIT compiled.
+            if (TryResolveKorlibAotMethodDef(token, out result))
+            {
+                return true;
+            }
+
             var jitResult = Tier0JIT.CompileMethod(_currentAssemblyId, token);
             if (!jitResult.Success)
             {
@@ -5400,5 +5749,186 @@ public static unsafe class MetadataIntegration
         uint rva = MetadataReader.GetMethodDefRva(ref asm->Tables, ref asm->Sizes, methodRid);
 
         return rva != 0;
+    }
+
+    /// <summary>
+    /// Find a method in a type by name (first match with a body).
+    /// Used to find implementing methods for interface calls.
+    /// </summary>
+    /// <param name="assemblyId">The assembly ID containing the type.</param>
+    /// <param name="typeToken">The TypeDef token of the type to search.</param>
+    /// <param name="methodName">The name of the method to find.</param>
+    /// <returns>The MethodDef token, or 0 if not found.</returns>
+    public static uint FindMethodByName(uint assemblyId, uint typeToken, byte* methodName)
+    {
+        if (methodName == null)
+            return 0;
+
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return 0;
+
+        // Get type RID from token
+        uint typeRid = typeToken & 0x00FFFFFF;
+
+        // Get the method list start for this type
+        uint methodListStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRid);
+
+        // Get method count by looking at next type's method list
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint totalMethodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+        uint nextMethodList;
+
+        if (typeRid < typeDefCount)
+        {
+            nextMethodList = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRid + 1);
+        }
+        else
+        {
+            nextMethodList = totalMethodCount + 1;
+        }
+
+        // Search through methods for a match
+        for (uint methodRid = methodListStart; methodRid < nextMethodList; methodRid++)
+        {
+            uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRid);
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+            if (MetadataReader.StringEquals(name, methodName))
+            {
+                // Check if this method has a body (not abstract)
+                uint rva = MetadataReader.GetMethodDefRva(ref asm->Tables, ref asm->Sizes, methodRid);
+                if (rva != 0)
+                {
+                    return 0x06000000 | methodRid;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Get the name of a method from its token.
+    /// </summary>
+    public static byte* GetMethodName(uint assemblyId, uint methodToken)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return null;
+
+        uint methodRid = methodToken & 0x00FFFFFF;
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRid);
+        return MetadataReader.GetString(ref asm->Metadata, nameIdx);
+    }
+
+    /// <summary>
+    /// Calculate the vtable slot for an abstract/virtual method.
+    /// Abstract methods don't have CompiledMethodInfo, so we calculate the slot from metadata.
+    /// Returns -1 if the method is not virtual or slot cannot be determined.
+    /// </summary>
+    public static short CalculateVtableSlotForMethod(uint assemblyId, uint methodRowId)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return -1;
+
+        // Get method flags
+        ushort flags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRowId);
+        bool isVirtual = (flags & MethodDefFlags.Virtual) != 0;
+        bool isNewSlot = (flags & MethodDefFlags.NewSlot) != 0;
+        bool isStatic = (flags & MethodDefFlags.Static) != 0;
+
+        if (!isVirtual || isStatic)
+            return -1;  // Not a virtual method
+
+        // Find the declaring TypeDef for this method
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint declaringTypeRow = 0;
+
+        for (uint typeRow = 1; typeRow <= typeDefCount; typeRow++)
+        {
+            uint typeMethodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+            uint typeMethodEnd;
+            if (typeRow < typeDefCount)
+                typeMethodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+            else
+                typeMethodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+            if (methodRowId >= typeMethodStart && methodRowId < typeMethodEnd)
+            {
+                declaringTypeRow = typeRow;
+                break;
+            }
+        }
+
+        if (declaringTypeRow == 0)
+            return -1;
+
+        // Calculate base vtable slots from parent type
+        short baseVtableSlots = 3;  // Default: Object has 3 slots (ToString, Equals, GetHashCode)
+
+        // Check extends to determine base slot count
+        CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, declaringTypeRow);
+        if (extendsIdx.RowId > 0 && extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            // Check if base is ValueType or Enum (value types don't inherit Object vtable)
+            uint typeRefNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            byte* baseName = MetadataReader.GetString(ref asm->Metadata, typeRefNameIdx);
+            // Check for "ValueType" or "Enum"
+            if (baseName != null)
+            {
+                if ((baseName[0] == 'V' && baseName[1] == 'a' && baseName[2] == 'l' && baseName[3] == 'u' &&
+                     baseName[4] == 'e' && baseName[5] == 'T' && baseName[6] == 'y' && baseName[7] == 'p' &&
+                     baseName[8] == 'e' && baseName[9] == 0) ||
+                    (baseName[0] == 'E' && baseName[1] == 'n' && baseName[2] == 'u' && baseName[3] == 'm' && baseName[4] == 0))
+                {
+                    baseVtableSlots = 0;
+                }
+            }
+        }
+        else if (extendsIdx.RowId > 0 && extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            // Extending another type in the same assembly
+            MethodTable* baseMT = asm->Types.Lookup(0x02000000 | extendsIdx.RowId);
+            if (baseMT != null)
+            {
+                baseVtableSlots = (short)baseMT->_usNumVtableSlots;
+            }
+        }
+        else if (extendsIdx.RowId > 0 && extendsIdx.Table == MetadataTableId.TypeSpec)
+        {
+            // Base is a generic type - try to get its MT from cache
+            // Note: Cannot call ResolveTypeSpec directly as it's private
+            // For now, assume Object base (3 slots) unless we can find the MT
+            // This is a simplification but works for common cases like EqualityComparer<T>
+            // where the base is Object
+            baseVtableSlots = 3;
+        }
+
+        // Count newslot virtual methods before this method to get its slot
+        uint methodListStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, declaringTypeRow);
+        short currentSlot = baseVtableSlots;
+
+        for (uint methodRow = methodListStart; methodRow < methodRowId; methodRow++)
+        {
+            ushort mFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+            bool mVirtual = (mFlags & MethodDefFlags.Virtual) != 0;
+            bool mNewSlot = (mFlags & MethodDefFlags.NewSlot) != 0;
+            bool mStatic = (mFlags & MethodDefFlags.Static) != 0;
+
+            if (mVirtual && mNewSlot && !mStatic)
+            {
+                currentSlot++;
+            }
+        }
+
+        // If the target method is a newslot virtual, it has slot = currentSlot
+        if (isNewSlot)
+            return currentSlot;
+
+        // Not a newslot - it's an override, need to find slot in base class
+        // For now, return -1 (overrides should already be in registry)
+        return -1;
     }
 }

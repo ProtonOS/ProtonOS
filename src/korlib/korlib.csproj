@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>korlib</AssemblyName>
+    <RootNamespace>System</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- Suppress warnings for shadowing BCL types -->
+    <NoWarn>$(NoWarn);CS0436;CS0809;CS8500;CS0649;CS0108;CS0114</NoWarn>
+    <!-- Disable default items so we can control what's compiled -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Define X64 architecture for conditional compilation -->
+    <DefineConstants>$(DefineConstants);X64;KORLIB_IL</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Include all C# files in korlib -->
+    <Compile Include="**/*.cs" />
+    <!-- Exclude platform-specific files -->
+    <Compile Remove="Internal/Startup.Efi.cs" />
+    <Compile Remove="System/Object.Efi.cs" />
+    <!-- Exclude core types that conflict with BCL or have special handling -->
+    <Compile Remove="System/Object.cs" />
+    <Compile Remove="System/String.cs" />
+    <Compile Remove="System/Primitives.cs" />
+    <Compile Remove="System/Array.cs" />
+    <Compile Remove="System/Delegate.cs" />
+    <Compile Remove="System/ValueType.cs" />
+    <Compile Remove="System/Enum.cs" />
+    <Compile Remove="System/Type.cs" />
+    <Compile Remove="System/Attribute.cs" />
+    <!-- Exception.cs included - provides PlatformNotSupportedException for stubs -->
+    <!-- Environment.cs included with KORLIB_IL stubs for FailFast -->
+    <Compile Remove="Internal/Stubs.cs" />
+    <Compile Remove="System/Reflection/RuntimeReflection.cs" />
+    <Compile Remove="System/Reflection/RuntimeAssembly.cs" />
+    <!-- MemberInfo.cs included - contains MethodBase, MethodInfo, etc. needed for JIT type resolution -->
+    <Compile Remove="System/Reflection/ReflectionAttributes.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/RuntimeHelpers.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/ClassConstructorRunner.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/Unsafe.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/CompilerAttributes.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/NullableAttribute.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/CallerAttributes.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/IsExternalInit.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/AsyncStateMachineAttribute.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/TupleElementNamesAttribute.cs" />
+    <Compile Remove="System/Runtime/CompilerServices/RuntimeFeature.cs" />
+    <Compile Remove="System/Runtime/InteropServices/InteropAttributes.cs" />
+    <Compile Remove="System/Runtime/InteropServices/MemoryMarshal.cs" />
+    <!-- Interlocked.cs included with KORLIB_IL stubs -->
+    <Compile Remove="System/RuntimeHandles.cs" />
+    <Compile Remove="System/TypedReference.cs" />
+    <Compile Remove="System/ArgIterator.cs" />
+    <Compile Remove="System/RuntimeArgumentHandle.cs" />
+    <Compile Remove="System/Globalization/CultureInfo.cs" />
+    <Compile Remove="System/Buffer.cs" />
+    <Compile Remove="Internal/Runtime/CompilerHelpers/InteropHelpers.cs" />
+    <!-- Files using bflat-specific attributes -->
+    <Compile Remove="System/Span.cs" />
+    <Compile Remove="System/ReadOnlySpan.cs" />
+    <Compile Remove="System/SpanHelpers.cs" />
+    <Compile Remove="System/Math.cs" />
+  </ItemGroup>
+</Project>

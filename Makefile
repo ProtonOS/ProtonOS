@@ -8,7 +8,7 @@ BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
 TEST_DIR := src/FullTest
-SYSTEMRUNTIME_DIR := src/SystemRuntime
+# SystemRuntime removed - BCL types provided by korlib, test types in TestSupport
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -52,7 +52,8 @@ rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(su
 
 # Source files
 NATIVE_SRC := $(wildcard $(KERNEL_DIR)/$(ARCH)/*.asm)
-KORLIB_SRC := $(call rwildcard,$(KORLIB_DIR),*.cs)
+# Filter out obj/ and bin/ directories from korlib (dotnet build artifacts)
+KORLIB_SRC := $(filter-out %/obj/% %/bin/%,$(call rwildcard,$(KORLIB_DIR),*.cs))
 KERNEL_SRC := $(call rwildcard,$(KERNEL_DIR),*.cs)
 
 # Object files
@@ -62,8 +63,12 @@ KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 # Test assembly output
 TEST_DLL := $(BUILD_DIR)/FullTest.dll
 
-# System.Runtime assembly (JIT library)
-SYSTEM_RUNTIME_DLL := $(BUILD_DIR)/System.Runtime.dll
+# korlib IL assembly (for JIT generic instantiation)
+KORLIB_DLL := $(BUILD_DIR)/korlib.dll
+
+# TestSupport assembly (cross-assembly test helpers)
+TESTSUPPORT_DIR := src/TestSupport
+TESTSUPPORT_DLL := $(BUILD_DIR)/TestSupport.dll
 
 # DDK assembly (JIT library)
 DDK_DIR := src/ddk
@@ -79,7 +84,7 @@ VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
 VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
 
 # Targets
-.PHONY: all clean native kernel test systemruntime ddk drivers image run
+.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -108,17 +113,24 @@ $(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/FullTest.csproj | $(BUILD_DIR)
 
 test: $(TEST_DLL)
 
-# Build System.Runtime library (JIT-compiled at runtime)
-SYSTEMRUNTIME_SRC := $(call rwildcard,$(SYSTEMRUNTIME_DIR),*.cs)
-$(SYSTEM_RUNTIME_DLL): $(SYSTEMRUNTIME_SRC) $(SYSTEMRUNTIME_DIR)/System.Runtime.csproj | $(BUILD_DIR)
-	@echo "DOTNET build System.Runtime"
-	dotnet build $(SYSTEMRUNTIME_DIR)/System.Runtime.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+# Build korlib IL assembly (for JIT generic instantiation)
+$(KORLIB_DLL): $(KORLIB_SRC) $(KORLIB_DIR)/korlib.csproj | $(BUILD_DIR)
+	@echo "DOTNET build korlib (IL assembly)"
+	dotnet build $(KORLIB_DIR)/korlib.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
-systemruntime: $(SYSTEM_RUNTIME_DLL)
+korlibdll: $(KORLIB_DLL)
+
+# Build TestSupport library (cross-assembly test helpers)
+TESTSUPPORT_SRC := $(call rwildcard,$(TESTSUPPORT_DIR),*.cs)
+$(TESTSUPPORT_DLL): $(TESTSUPPORT_SRC) $(TESTSUPPORT_DIR)/TestSupport.csproj | $(BUILD_DIR)
+	@echo "DOTNET build TestSupport"
+	dotnet build $(TESTSUPPORT_DIR)/TestSupport.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+testsupport: $(TESTSUPPORT_DLL)
 
 # Build DDK library (JIT-compiled at runtime)
 DDK_SRC := $(call rwildcard,$(DDK_DIR),*.cs)
-$(DDK_DLL): $(DDK_SRC) $(DDK_DIR)/DDK.csproj $(SYSTEM_RUNTIME_DLL) | $(BUILD_DIR)
+$(DDK_DLL): $(DDK_SRC) $(DDK_DIR)/DDK.csproj | $(BUILD_DIR)
 	@echo "DOTNET build ProtonOS.DDK"
 	dotnet build $(DDK_DIR)/DDK.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
@@ -145,7 +157,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -154,7 +166,8 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(SYSTEM_RUNTIME_DLL) $(DDK_DLL) $(V
 	mmd -i $(BUILD_DIR)/boot.img ::/drivers
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
-	mcopy -i $(BUILD_DIR)/boot.img $(SYSTEM_RUNTIME_DLL) ::/System.Runtime.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(KORLIB_DLL) ::/korlib.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/

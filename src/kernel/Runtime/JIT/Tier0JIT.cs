@@ -1,6 +1,7 @@
 // ProtonOS JIT - Tier 0 JIT Entry Point
 // High-level interface for JIT compiling methods from metadata tokens.
 
+using ProtonOS.Memory;
 using ProtonOS.Platform;
 using ProtonOS.Runtime;
 
@@ -41,6 +42,14 @@ public static unsafe class Tier0JIT
     /// <returns>JIT compilation result.</returns>
     public static JitResult CompileMethod(uint assemblyId, uint methodToken)
     {
+        // Try token-based AOT registry first (fast path for korlib methods)
+        AotTokenEntry tokenEntry;
+        if (AotMethodRegistry.TryLookupByToken(assemblyId, methodToken, out tokenEntry))
+        {
+            // Found in AOT registry - return native code directly
+            return JitResult.Ok((void*)tokenEntry.NativeCode, 0);
+        }
+
         // Save previous context for nested JIT compilation
         uint savedAsmId = MetadataIntegration.GetCurrentAssemblyId();
 
@@ -340,11 +349,23 @@ public static unsafe class Tier0JIT
             methodToken, (byte)paramCount, returnKind, returnStructSize, hasThis, assemblyId);
         if (reserved == null)
         {
-            // Already being compiled - this is a recursive call
-            // The outer compilation will complete eventually
+            // ReserveForCompilation returns null for recursive calls (method already being compiled)
+            // Get the pre-allocated code buffer for the recursive call target
+            void* recursiveTarget = CompiledMethodRegistry.GetRecursiveCallTarget(methodToken, assemblyId);
+            if (recursiveTarget != null)
+            {
+                DebugConsole.Write("[Tier0JIT] Recursive call 0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.Write(" -> 0x");
+                DebugConsole.WriteHex((ulong)recursiveTarget);
+                DebugConsole.WriteLine();
+                RestoreContext(savedAsmId);
+                return JitResult.Ok(recursiveTarget, 0);
+            }
+            // Failed to get recursive target - this shouldn't happen
             DebugConsole.Write("[Tier0JIT] Method 0x");
             DebugConsole.WriteHex(methodToken);
-            DebugConsole.WriteLine(" already being compiled (recursive)");
+            DebugConsole.WriteLine(" recursive call failed");
             RestoreContext(savedAsmId);
             return JitResult.Fail();
         }
@@ -590,7 +611,8 @@ public static unsafe class Tier0JIT
         }
 
         // Complete the compilation (sets native code and clears IsBeingCompiled)
-        CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId);
+        // Pass codeSize so recursive methods can have their code copied to pre-allocated buffers
+        CompiledMethodRegistry.CompleteCompilation(methodToken, code, assemblyId, (uint)codeSize);
 
         // Debug: Track TestConstraintNew completion
         if (NameEquals(dbgMethodName, "TestConstraintNew"))
@@ -805,17 +827,17 @@ public static unsafe class Tier0JIT
             byte elemType = *ptr++;
 
             // Debug: trace parsing
-            // DebugConsole.Write("[ParseLocal] i=");
-            // DebugConsole.WriteHex((ulong)i);
-            // DebugConsole.Write(" elem=");
-            // DebugConsole.WriteHex(elemType);
+            DebugConsole.Write("[ParseLocal] i=");
+            DebugConsole.WriteHex((ulong)i);
+            DebugConsole.Write(" elem=0x");
+            DebugConsole.WriteHex(elemType);
 
             // ValueType (0x11) or struct-like types are value types
             // Note: byref to a value type is a pointer, not a value type itself
             if (!isByRef && (elemType == 0x11 || elemType == 0x12)) // ValueType or Class that's actually a struct
             {
-                // DebugConsole.Write(" VALUETYPE");
                 isValueType[i] = (elemType == 0x11); // Only ValueType is truly a value type
+                DebugConsole.Write(isValueType[i] ? " VT" : " CLASS");
                 // Read the TypeDefOrRef token and compute size
                 uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
                 // Convert TypeDefOrRef encoded token to full token
@@ -901,10 +923,57 @@ public static unsafe class Tier0JIT
                 if (ptr < end)
                 {
                     byte genKind = *ptr++;
-                    isValueType[i] = (genKind == 0x11); // ValueType generic
+                    // Don't trust genKind marker for cross-assembly references - will verify with actual type
+                    bool signatureSaysVT = (genKind == 0x11);
+                    isValueType[i] = signatureSaysVT;
+
                     if (ptr < end)
                     {
                         uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+
+                        // Convert TypeDefOrRef to full token for type lookup
+                        uint tag = typeDefOrRef & 0x03;
+                        uint typeRid = typeDefOrRef >> 2;
+                        uint fullToken = 0;
+                        if (tag == 0)
+                            fullToken = 0x02000000 | typeRid;  // TypeDef
+                        else if (tag == 1)
+                            fullToken = 0x01000000 | typeRid;  // TypeRef
+                        else if (tag == 2)
+                            fullToken = 0x1B000000 | typeRid;  // TypeSpec
+
+                        // Try to resolve the type to check if it's actually a value type
+                        // This handles cross-assembly references where the signature says CLASS
+                        // but the actual type in korlib is a struct
+                        void* resolvedMT;
+                        uint resolvedBaseSize = 0;
+                        bool resolved = MetadataIntegration.ResolveType(fullToken, out resolvedMT);
+                        if (resolved && resolvedMT != null)
+                        {
+                            MethodTable* mt = (MethodTable*)resolvedMT;
+                            isValueType[i] = mt->IsValueType;
+                            // Get size directly from resolved MethodTable
+                            if (mt->IsValueType)
+                            {
+                                if (mt->_usComponentSize > 0)
+                                    resolvedBaseSize = mt->_usComponentSize;
+                                else
+                                    resolvedBaseSize = mt->_uBaseSize;
+                            }
+                        }
+
+                        DebugConsole.Write(" GENINST kind=0x");
+                        DebugConsole.WriteHex(genKind);
+                        DebugConsole.Write(" tok=0x");
+                        DebugConsole.WriteHex(fullToken);
+                        DebugConsole.Write(resolved ? " RES" : " NORES");
+                        DebugConsole.Write(isValueType[i] ? " VT" : " CLASS");
+                        if (resolvedBaseSize > 0)
+                        {
+                            DebugConsole.Write(" sz=");
+                            DebugConsole.WriteDecimal(resolvedBaseSize);
+                        }
+
                         // Get size of first type argument (for Nullable<T> calculation)
                         ushort firstTypeArgSize = 0;
                         if (ptr < end)
@@ -927,18 +996,8 @@ public static unsafe class Tier0JIT
                             // Compute size for generic value type
                             if (isValueType[i] && typeSize != null)
                             {
-                                // Convert TypeDefOrRef to full token
-                                uint tag = typeDefOrRef & 0x03;
-                                uint typeRid = typeDefOrRef >> 2;
-                                uint fullToken = 0;
-                                if (tag == 0)
-                                    fullToken = 0x02000000 | typeRid;  // TypeDef
-                                else if (tag == 1)
-                                    fullToken = 0x01000000 | typeRid;  // TypeRef
-                                else if (tag == 2)
-                                    fullToken = 0x1B000000 | typeRid;  // TypeSpec
-
-                                uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                                // Use resolved size if available, otherwise fall back to GetTypeSize
+                                uint baseSize = resolvedBaseSize > 0 ? resolvedBaseSize : MetadataIntegration.GetTypeSize(fullToken);
                                 // Nullable<T> pattern: base size <= 8, single type arg
                                 if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
                                 {
@@ -964,10 +1023,9 @@ public static unsafe class Tier0JIT
                 if (elemType == 0x12) // Class
                     MetadataReader.ReadCompressedUInt(ref ptr);
             }
-            // DebugConsole.WriteLine(); // End of this local's debug line
+            DebugConsole.WriteLine(); // End of this local's debug line
         }
 
-        // DebugConsole.WriteLine();
         return numLocals;
     }
 
@@ -1806,12 +1864,49 @@ public static unsafe class Tier0JIT
         if (methodName != null)
         {
             // Check for well-known Object override methods
+            // For Equals and GetHashCode, we need to check the signature to distinguish
+            // Object.Equals(object) from EqualityComparer<T>.Equals(T?, T?)
             if (NameEquals(methodName, "ToString"))
                 return 0;
             if (NameEquals(methodName, "Equals"))
-                return 1;
-            if (NameEquals(methodName, "GetHashCode"))
-                return 2;
+            {
+                // Only return slot 1 if this is Object.Equals (1 parameter), not
+                // EqualityComparer<T>.Equals (2 parameters)
+                uint sigIdx = MetadataReader.GetMethodDefSignature(ref assembly->Tables, ref assembly->Sizes, targetMethodRid);
+                byte* sig = MetadataReader.GetBlob(ref assembly->Metadata, sigIdx, out uint sigLen);
+                if (sig != null && sigLen >= 2)
+                {
+                    // Signature format: CallingConvention ParamCount RetType Param1 ...
+                    // Byte 1 is ParamCount (for non-generic methods)
+                    // For generic methods: CallingConvention GenParamCount ParamCount RetType ...
+                    int pos = 0;
+                    byte callConv = sig[pos++];
+                    if ((callConv & 0x10) != 0)  // Generic method?
+                        pos++;  // Skip GenParamCount
+                    byte paramCount = sig[pos];
+                    if (paramCount == 1)  // Object.Equals has 1 parameter
+                        return 1;
+                }
+                // More than 1 parameter - not Object.Equals, fall through to counting
+            }
+            else if (NameEquals(methodName, "GetHashCode"))
+            {
+                // Only return slot 2 if this is Object.GetHashCode (0 parameters), not
+                // EqualityComparer<T>.GetHashCode (1 parameter)
+                uint sigIdx = MetadataReader.GetMethodDefSignature(ref assembly->Tables, ref assembly->Sizes, targetMethodRid);
+                byte* sig = MetadataReader.GetBlob(ref assembly->Metadata, sigIdx, out uint sigLen);
+                if (sig != null && sigLen >= 2)
+                {
+                    int pos = 0;
+                    byte callConv = sig[pos++];
+                    if ((callConv & 0x10) != 0)  // Generic method?
+                        pos++;  // Skip GenParamCount
+                    byte paramCount = sig[pos];
+                    if (paramCount == 0)  // Object.GetHashCode has 0 parameters
+                        return 2;
+                }
+                // Has parameters - not Object.GetHashCode, fall through to counting
+            }
         }
 
         // For other overrides, fall back to counting virtuals in this type
@@ -1868,6 +1963,33 @@ public static unsafe class Tier0JIT
         // Check if MT has vtable slots
         if (mt->_usNumVtableSlots == 0)
             return;
+
+        // First check if this method was pre-registered with a known vtable slot
+        // (e.g., by RegisterOverrideMethodsForLazyJit)
+        CompiledMethodInfo* existingEntry = CompiledMethodRegistry.Lookup(methodToken, assemblyId);
+        if (existingEntry != null && existingEntry->VtableSlot >= 0)
+        {
+            // Use the pre-registered slot
+            int registeredSlot = existingEntry->VtableSlot;
+            if (registeredSlot < mt->_usNumVtableSlots)
+            {
+                nint* vtablePtr = mt->GetVtablePtr();
+                vtablePtr[registeredSlot] = nativeCode;
+                AssemblyLoader.PropagateVtableSlotToInstantiations(assemblyId, typeRow, registeredSlot, nativeCode);
+                DebugConsole.Write("[PopulateVT] token=0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.Write(" type=0x");
+                DebugConsole.WriteHex(typeToken);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)mt);
+                DebugConsole.Write(" slot=");
+                DebugConsole.WriteDecimal((uint)registeredSlot);
+                DebugConsole.Write(" (registered) code=0x");
+                DebugConsole.WriteHex((ulong)nativeCode);
+                DebugConsole.WriteLine();
+                return;
+            }
+        }
 
         // Compute the vtable slot for this method
         // For overrides (ReuseSlot), we need to find which base slot is being overridden

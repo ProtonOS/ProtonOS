@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>TestSupport</AssemblyName>
+    <RootNamespace>TestSupport</RootNamespace>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

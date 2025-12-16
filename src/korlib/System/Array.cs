@@ -61,7 +61,12 @@ namespace System
                 Environment.FailFast("Array.Copy: destination overflow");
 
             // Get element size from source array's MethodTable
-            void* srcMT = *(void**)Unsafe.AsPointer(ref Unsafe.As<Array, byte>(ref sourceArray));
+            // Object layout: [MT*][Length][Padding][Data...]
+            // First, get pointer to the object (dereference local variable holding the reference)
+            void* objPtr = *(void**)Unsafe.AsPointer(ref Unsafe.As<Array, byte>(ref sourceArray));
+            // Then, dereference to get the MethodTable pointer (first 8 bytes of object)
+            void* srcMT = *(void**)objPtr;
+            // Now read ComponentSize from offset 0 of the MethodTable
             ushort elementSize = *(ushort*)srcMT;
 
             // Get raw data pointers using Unsafe.AsPointer
@@ -75,10 +80,24 @@ namespace System
             int dstByteOffset = destinationIndex * elementSize;
             int byteCount = length * elementSize;
 
-            // Copy bytes
-            for (int i = 0; i < byteCount; i++)
+            // Handle overlapping copies correctly
+            // When copying within the same array and destination > source, we need to copy backwards
+            // to avoid overwriting source data before it's read
+            if (src == dst && dstByteOffset > srcByteOffset && srcByteOffset + byteCount > dstByteOffset)
             {
-                dst[dstByteOffset + i] = src[srcByteOffset + i];
+                // Overlapping region with destination after source - copy backwards
+                for (int i = byteCount - 1; i >= 0; i--)
+                {
+                    dst[dstByteOffset + i] = src[srcByteOffset + i];
+                }
+            }
+            else
+            {
+                // No overlap or destination before source - copy forwards
+                for (int i = 0; i < byteCount; i++)
+                {
+                    dst[dstByteOffset + i] = src[srcByteOffset + i];
+                }
             }
         }
 
@@ -111,7 +130,10 @@ namespace System
                 Environment.FailFast("Array.Clear: overflow");
 
             // Get element size from array's MethodTable
-            void* pMT = *(void**)Unsafe.AsPointer(ref Unsafe.As<Array, byte>(ref array));
+            // First, get pointer to the object
+            void* objPtr = *(void**)Unsafe.AsPointer(ref Unsafe.As<Array, byte>(ref array));
+            // Then, dereference to get the MethodTable pointer
+            void* pMT = *(void**)objPtr;
             ushort elementSize = *(ushort*)pMT;
 
             // Get raw data pointer using Unsafe.AsPointer
@@ -363,6 +385,139 @@ namespace System
                 i++;
                 j--;
             }
+        }
+
+        /// <summary>
+        /// Sorts the elements in an entire array using the IComparable implementation of each element.
+        /// </summary>
+        public static void Sort<T>(T[] array)
+        {
+            if (array == null)
+                Environment.FailFast("Array.Sort: array is null");
+            Sort(array, 0, array.Length, null);
+        }
+
+        /// <summary>
+        /// Sorts the elements in an array using the specified comparer.
+        /// </summary>
+        public static void Sort<T>(T[] array, System.Collections.Generic.IComparer<T>? comparer)
+        {
+            if (array == null)
+                Environment.FailFast("Array.Sort: array is null");
+            Sort(array, 0, array.Length, comparer);
+        }
+
+        /// <summary>
+        /// Sorts a range of elements in an array using the specified comparer.
+        /// </summary>
+        public static void Sort<T>(T[] array, int index, int length, System.Collections.Generic.IComparer<T>? comparer)
+        {
+            if (array == null)
+                Environment.FailFast("Array.Sort: array is null");
+            if (index < 0 || length < 0)
+                Environment.FailFast("Array.Sort: negative index or length");
+            if (index + length > array.Length)
+                Environment.FailFast("Array.Sort: overflow");
+
+            if (length <= 1)
+                return;
+
+            // Use insertion sort for small arrays, quicksort for larger
+            if (length <= 16)
+            {
+                InsertionSort(array, index, length, comparer);
+            }
+            else
+            {
+                QuickSort(array, index, index + length - 1, comparer);
+            }
+        }
+
+        private static void InsertionSort<T>(T[] array, int index, int length, System.Collections.Generic.IComparer<T>? comparer)
+        {
+            for (int i = index + 1; i < index + length; i++)
+            {
+                T key = array[i];
+                int j = i - 1;
+
+                while (j >= index && CompareElements(array[j], key, comparer) > 0)
+                {
+                    array[j + 1] = array[j];
+                    j--;
+                }
+                array[j + 1] = key;
+            }
+        }
+
+        private static void QuickSort<T>(T[] array, int left, int right, System.Collections.Generic.IComparer<T>? comparer)
+        {
+            if (left >= right)
+                return;
+
+            // Use median-of-three pivot selection
+            int mid = left + (right - left) / 2;
+            if (CompareElements(array[mid], array[left], comparer) < 0)
+                Swap(ref array[left], ref array[mid]);
+            if (CompareElements(array[right], array[left], comparer) < 0)
+                Swap(ref array[left], ref array[right]);
+            if (CompareElements(array[right], array[mid], comparer) < 0)
+                Swap(ref array[mid], ref array[right]);
+
+            T pivot = array[mid];
+            Swap(ref array[mid], ref array[right - 1]);
+
+            int i = left;
+            int j = right - 1;
+
+            while (true)
+            {
+                while (CompareElements(array[++i], pivot, comparer) < 0) { }
+                while (CompareElements(array[--j], pivot, comparer) > 0) { }
+                if (i >= j)
+                    break;
+                Swap(ref array[i], ref array[j]);
+            }
+
+            Swap(ref array[i], ref array[right - 1]);
+
+            // Use insertion sort for small partitions
+            if (i - left <= 16)
+                InsertionSort(array, left, i - left, comparer);
+            else
+                QuickSort(array, left, i - 1, comparer);
+
+            if (right - i <= 16)
+                InsertionSort(array, i + 1, right - i, comparer);
+            else
+                QuickSort(array, i + 1, right, comparer);
+        }
+
+        private static void Swap<T>(ref T a, ref T b)
+        {
+            T temp = a;
+            a = b;
+            b = temp;
+        }
+
+        private static int CompareElements<T>(T x, T y, System.Collections.Generic.IComparer<T>? comparer)
+        {
+            if (comparer != null)
+                return comparer.Compare(x, y);
+
+            // Use default comparison
+            if (x == null)
+                return y == null ? 0 : -1;
+            if (y == null)
+                return 1;
+
+            if (x is IComparable<T> comparableT)
+                return comparableT.CompareTo(y);
+
+            if (x is IComparable comparable)
+                return comparable.CompareTo(y);
+
+            Environment.FailFast("Array.Sort: type does not implement IComparable");
+            return 0;
         }
 
         /// <summary>

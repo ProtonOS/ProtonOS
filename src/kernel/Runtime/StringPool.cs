@@ -62,11 +62,12 @@ public static unsafe class StringPool
 
     /// <summary>
     /// Entry in the token cache for ldstr.
-    /// Maps user string token to cached String object.
+    /// Maps (assemblyId, token) to cached String object.
     /// </summary>
     private struct TokenCacheEntry
     {
         public uint Token;          // User string token (0x70xxxxxx)
+        public uint AssemblyId;     // Assembly ID to distinguish tokens from different assemblies
         public void* StringObj;     // Cached String object pointer
     }
 
@@ -115,9 +116,10 @@ public static unsafe class StringPool
     /// Uses token-based cache for O(1) lookup.
     /// </summary>
     /// <param name="token">User string token (0x70xxxxxx)</param>
+    /// <param name="assemblyId">Assembly ID for the token (different assemblies can have same token)</param>
     /// <param name="root">Metadata root for string resolution</param>
     /// <returns>Pointer to cached String object, or null on failure</returns>
-    public static void* GetOrCreateFromToken(uint token, ref MetadataRoot root)
+    public static void* GetOrCreateFromToken(uint token, uint assemblyId, ref MetadataRoot root)
     {
         if (!_initialized)
             return null;
@@ -125,10 +127,13 @@ public static unsafe class StringPool
         _lookups++;
 
         // Check token cache first (fast path)
-        int cacheIndex = (int)(token & _tokenCacheMask);
+        // Include assembly ID in the cache index to avoid collisions between assemblies
+        int cacheIndex = (int)((token ^ (assemblyId << 16)) & _tokenCacheMask);
         _lock.Acquire();
 
-        if (_tokenCache[cacheIndex].Token == token && _tokenCache[cacheIndex].StringObj != null)
+        if (_tokenCache[cacheIndex].Token == token &&
+            _tokenCache[cacheIndex].AssemblyId == assemblyId &&
+            _tokenCache[cacheIndex].StringObj != null)
         {
             void* cached = _tokenCache[cacheIndex].StringObj;
             _lock.Release();
@@ -146,6 +151,7 @@ public static unsafe class StringPool
         // Add to token cache
         _lock.Acquire();
         _tokenCache[cacheIndex].Token = token;
+        _tokenCache[cacheIndex].AssemblyId = assemblyId;
         _tokenCache[cacheIndex].StringObj = stringObj;
         _interned++;
         _lock.Release();

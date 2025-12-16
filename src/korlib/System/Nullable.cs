@@ -39,6 +39,28 @@ namespace System
 
         public readonly T GetValueOrDefault(T defaultValue) => _hasValue ? _value : defaultValue;
 
+        /// <summary>
+        /// Indicates whether this instance and a specified object are equal.
+        /// Handles the special case where boxing Nullable&lt;T&gt; produces boxed T.
+        /// </summary>
+        public override bool Equals(object? other)
+        {
+            if (!_hasValue) return other == null;
+            if (other == null) return false;
+            // Boxing a Nullable<T> with HasValue=true produces boxed T, not boxed Nullable<T>
+            // Compare by boxing our value and using the inner type's Equals
+            object boxedValue = _value;
+            return boxedValue.Equals(other);
+        }
+
+        /// <summary>
+        /// Returns the hash code for this instance.
+        /// </summary>
+        public override int GetHashCode()
+        {
+            return _hasValue ? _value.GetHashCode() : 0;
+        }
+
         public static implicit operator Nullable<T>(T value) => new Nullable<T>(value);
 
         public static explicit operator T(Nullable<T> value) => value.Value;

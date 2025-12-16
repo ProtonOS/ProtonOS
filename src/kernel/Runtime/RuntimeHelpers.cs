@@ -99,6 +99,7 @@ public static unsafe class RuntimeHelpers
         // Cache debug helper pointers
         _debugStfldPtr = (void*)(delegate*<void*, int, void>)&DebugStfld;
         _debugLdfldPtr = (void*)(delegate*<void*, int, void*, void>)&DebugLdfld;
+        _debugLdfldIntPtr = (void*)(delegate*<void*, int, int, void>)&DebugLdfldInt;
         _debugStelemStackPtr = (void*)(delegate*<void*, ulong, void*, int, void>)&DebugStelemStack;
         _debugVtableDispatchPtr = (void*)(delegate*<void*, int, void>)&DebugVtableDispatch;
 
@@ -256,11 +257,12 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void DebugStfld(void* objPtr, int offset)
     {
-        DebugConsole.Write("[stfld RT] obj=0x");
-        DebugConsole.WriteHex((ulong)objPtr);
-        DebugConsole.Write(" off=");
-        DebugConsole.WriteDecimal((uint)offset);
-        DebugConsole.WriteLine();
+        // Disabled - too verbose
+        // DebugConsole.Write("[stfld RT] obj=0x");
+        // DebugConsole.WriteHex((ulong)objPtr);
+        // DebugConsole.Write(" off=");
+        // DebugConsole.WriteDecimal((uint)offset);
+        // DebugConsole.WriteLine();
     }
 
     // Debug helper pointer for ldfld
@@ -278,6 +280,8 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void DebugLdfld(void* objPtr, int offset, void* value)
     {
+        // Disabled - too verbose
+        return;
         DebugConsole.Write("[ldfld RT] ptr=0x");
         DebugConsole.WriteHex((ulong)objPtr);
         DebugConsole.Write(" off=");
@@ -291,6 +295,30 @@ public static unsafe class RuntimeHelpers
             DebugConsole.Write(" MT=0x");
             DebugConsole.WriteHex((ulong)mt);
         }
+        DebugConsole.WriteLine();
+    }
+
+    // Debug helper pointer for ldfld with int value
+    private static void* _debugLdfldIntPtr;
+
+    /// <summary>
+    /// Get the debug ldfld int function pointer for tracing.
+    /// Signature: void DebugLdfldInt(void* objPtr, int offset, int value)
+    /// </summary>
+    public static void* GetDebugLdfldIntPtr() => _debugLdfldIntPtr;
+
+    /// <summary>
+    /// Debug helper called from JIT code to trace ldfld operations for int fields.
+    /// Shows the actual runtime object pointer, offset, and loaded value.
+    /// </summary>
+    public static void DebugLdfldInt(void* objPtr, int offset, int value)
+    {
+        DebugConsole.Write("[ldfld RT] obj=0x");
+        DebugConsole.WriteHex((ulong)objPtr);
+        DebugConsole.Write(" off=");
+        DebugConsole.WriteDecimal((uint)offset);
+        DebugConsole.Write(" val=");
+        DebugConsole.WriteDecimal((uint)value);
         DebugConsole.WriteLine();
     }
 
@@ -378,11 +406,23 @@ public static unsafe class RuntimeHelpers
         byte* result = (byte*)GCHeap.Alloc(allocSize);
         if (result == null)
         {
-            // DebugConsole.WriteLine(" ALLOC FAILED!");
+            DebugConsole.Write("[RhpNewFast] ALLOC FAILED! MT=0x");
+            DebugConsole.WriteHex((ulong)pMT);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(allocSize);
+            DebugConsole.WriteLine();
             return null;
         }
 
         *(MethodTable**)result = pMT;
+
+        // Debug: trace allocation success for 4-slot types (potential issue)
+        if (pMT->NumVtableSlots == 4)
+        {
+            DebugConsole.Write("[RhpNewFast] OK obj=0x");
+            DebugConsole.WriteHex((ulong)result);
+            DebugConsole.WriteLine();
+        }
 
         // Debug: verify the MT pointer was stored correctly
         if (pMT->IsValueType)
@@ -420,6 +460,8 @@ public static unsafe class RuntimeHelpers
     {
         // DebugConsole.Write("[RhpNewArray] MT=0x");
         // DebugConsole.WriteHex((ulong)pMT);
+        // DebugConsole.Write(" compSz=");
+        // DebugConsole.WriteDecimal(pMT != null ? pMT->ComponentSize : 0);
         // DebugConsole.Write(" count=");
         // DebugConsole.WriteDecimal((uint)numElements);
 

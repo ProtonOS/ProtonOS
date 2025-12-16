@@ -11,6 +11,21 @@ namespace System.Threading;
 /// </summary>
 public static unsafe class Interlocked
 {
+#if KORLIB_IL
+    // Stubs for IL build - actual implementation is in AOT kernel
+    public static int Increment(ref int location) => ++location;
+    public static long Increment(ref long location) => ++location;
+    public static int Decrement(ref int location) => --location;
+    public static long Decrement(ref long location) => --location;
+    public static int Exchange(ref int location, int value) { var old = location; location = value; return old; }
+    public static long Exchange(ref long location, long value) { var old = location; location = value; return old; }
+    public static int CompareExchange(ref int location, int value, int comparand) { var old = location; if (old == comparand) location = value; return old; }
+    public static long CompareExchange(ref long location, long value, long comparand) { var old = location; if (old == comparand) location = value; return old; }
+    public static int Add(ref int location, int value) { location += value; return location; }
+    public static long Add(ref long location, long value) { location += value; return location; }
+    public static IntPtr Exchange(ref IntPtr location, IntPtr value) { var old = location; location = value; return old; }
+    public static IntPtr CompareExchange(ref IntPtr location, IntPtr value, IntPtr comparand) { var old = location; if (old == comparand) location = value; return old; }
+#else
     /// <summary>
     /// Increments a specified variable and stores the result, as an atomic operation.
     /// </summary>
@@ -219,4 +234,5 @@ public static unsafe class Interlocked
 
     [DllImport("*", EntryPoint = "Interlocked_CompareExchangePointer", CallingConvention = CallingConvention.Cdecl)]
     private static extern void* Interlocked_CompareExchangePointer(void** location, void* value, void* comparand);
+#endif
 }
