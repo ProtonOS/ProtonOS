@@ -23,7 +23,7 @@ High-value types commonly needed for general programming.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `List<T>` | ~650 | **Migrated** | Full implementation with Add, Remove, Sort, etc. |
-| `Dictionary<TKey,TValue>` | ~690 | **Migrated** | Full implementation with KeyCollection, ValueCollection |
+| `Dictionary<TKey,TValue>` | ~690 | **Partial** | Skeleton exists, tests disabled pending generic type fixes |
 | `HashSet<T>` | 595 | Not Started | Commonly used |
 | `Queue<T>` | 286 | Not Started | |
 | `Stack<T>` | 254 | Not Started | |
@@ -173,20 +173,21 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 
 ## Migration Priority
 
-### High Priority (commonly needed)
-1. `List<T>`, `Dictionary<TKey,TValue>` - Most commonly used collections
-2. `StringBuilder` - Essential for string manipulation
-3. `EqualityComparer<T>`, `Comparer<T>` - Required by collections
+### High Priority (commonly needed) ✅ COMPLETE
+1. ~~`List<T>`, `Dictionary<TKey,TValue>`~~ - List complete, Dictionary partial
+2. ~~`StringBuilder`~~ - Full implementation
+3. ~~`EqualityComparer<T>`, `Comparer<T>`~~ - Complete with value type support
 
 ### Medium Priority
 4. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections
 5. `DateTime`, `TimeSpan` - Time handling
 6. `Guid` - Unique identifiers
+7. `Dictionary<TKey,TValue>` - Complete remaining functionality
 
 ### Lower Priority (migrate when needed)
-7. Async/Tasks infrastructure - Only when async/await support is required
-8. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
-9. Reflection types - Only for advanced scenarios
+8. Async/Tasks infrastructure - Only when async/await support is required
+9. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
+10. Reflection types - Only for advanced scenarios
 
 ---
 
@@ -202,7 +203,33 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 
 ---
 
+## JIT Fixes Required for Collections
+
+During migration of generic collections, several JIT/runtime fixes were required:
+
+### Abstract Method Vtable Dispatch
+`EqualityComparer<T>.Equals(T, T)` is abstract - concrete implementations like `ObjectEqualityComparer<T>` override it. The JIT wasn't setting `VtableSlot` for abstract methods because they have no `CompiledMethodInfo` entry.
+
+**Fix**: Added `CalculateVtableSlotForMethod()` in `MetadataIntegration.cs` to compute vtable slot from metadata for abstract/virtual methods, enabling proper vtable dispatch at runtime.
+
+### Value Type Equality Comparison
+`Object.Equals(object, object)` for boxed value types was returning false because:
+1. AOT-compiled MethodTables don't have the `IsValueType` flag set consistently
+2. The comparison was using reference equality instead of value comparison
+
+**Fix**: Updated `StaticEquals()` in `AotMethodRegistry.cs` to use a size-based heuristic (12-32 bytes base size) to detect boxed primitives and compare their value bytes directly.
+
+### Nullable<T> Boxing/Unboxing
+The value offset calculation for Nullable<T> was incorrect, causing wrong values after unboxing.
+
+**Fix**: Corrected offset calculation in boxing/unboxing paths.
+
+---
+
 ## History
 
 - **2024-12**: System.Runtime.dll deprecated, virtual assembly mapping implemented
 - **2024-12**: All 470+ tests passing without System.Runtime.dll on boot image
+- **2024-12**: Added List<T>, StringBuilder, EqualityComparer<T>, Comparer<T> (492 tests)
+- **2024-12**: Fixed abstract method vtable dispatch for generic collection methods
+- **2024-12**: Fixed value type equality comparison in Object.Equals for boxed primitives
