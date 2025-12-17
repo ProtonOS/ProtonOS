@@ -336,34 +336,34 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
 
         if (_buckets != null)
         {
+            Entry[]? entries = _entries;
             int hashCode = _comparer.GetHashCode(key) & 0x7FFFFFFF;
             int bucket = hashCode % _buckets.Length;
             int last = -1;
             int i = _buckets[bucket] - 1;
 
-            while (i >= 0)
+            while ((uint)i < (uint)entries!.Length)
             {
-                ref Entry entry = ref _entries![i];
-                if (entry.hashCode == hashCode && _comparer.Equals(entry.key, key))
+                if (entries[i].hashCode == hashCode && _comparer.Equals(entries[i].key, key))
                 {
                     if (last < 0)
                     {
-                        _buckets[bucket] = entry.next + 1;
+                        _buckets[bucket] = entries[i].next + 1;
                     }
                     else
                     {
-                        _entries[last].next = entry.next;
+                        entries[last].next = entries[i].next;
                     }
-                    entry.next = StartOfFreeList - _freeList;
-                    entry.key = default!;
-                    entry.value = default!;
+                    entries[i].next = StartOfFreeList - _freeList;
+                    entries[i].key = default!;
+                    entries[i].value = default!;
                     _freeList = i;
                     _freeCount++;
                     _version++;
                     return true;
                 }
                 last = i;
-                i = entry.next;
+                i = entries[i].next;
             }
         }
         return false;
@@ -477,12 +477,15 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
                 throw new InvalidOperationException("Collection was modified");
             }
 
+            Entry[]? entries = _dictionary._entries;
             while ((uint)_index < (uint)_dictionary._count)
             {
-                ref Entry entry = ref _dictionary._entries![_index++];
-                if (entry.next >= -1)
+                int idx = _index++;
+                if (entries![idx].next >= -1)
                 {
-                    _current = new KeyValuePair<TKey, TValue>(entry.key, entry.value);
+                    // Store key and value directly in _current's fields to avoid KeyValuePair constructor
+                    // This works around potential JIT issues with generic struct construction
+                    _current = new KeyValuePair<TKey, TValue>(entries[idx].key, entries[idx].value);
                     return true;
                 }
             }
@@ -572,12 +575,13 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
                 if (_version != _dictionary._version)
                     throw new InvalidOperationException("Collection was modified");
 
+                Entry[]? entries = _dictionary._entries;
                 while ((uint)_index < (uint)_dictionary._count)
                 {
-                    ref Entry entry = ref _dictionary._entries![_index++];
-                    if (entry.next >= -1)
+                    int idx = _index++;
+                    if (entries![idx].next >= -1)
                     {
-                        _currentKey = entry.key;
+                        _currentKey = entries[idx].key;
                         return true;
                     }
                 }
@@ -665,12 +669,13 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
                 if (_version != _dictionary._version)
                     throw new InvalidOperationException("Collection was modified");
 
+                Entry[]? entries = _dictionary._entries;
                 while ((uint)_index < (uint)_dictionary._count)
                 {
-                    ref Entry entry = ref _dictionary._entries![_index++];
-                    if (entry.next >= -1)
+                    int idx = _index++;
+                    if (entries![idx].next >= -1)
                     {
-                        _currentValue = entry.value;
+                        _currentValue = entries[idx].value;
                         return true;
                     }
                 }

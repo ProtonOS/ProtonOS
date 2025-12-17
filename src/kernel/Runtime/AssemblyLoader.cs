@@ -6859,9 +6859,12 @@ public static unsafe class AssemblyLoader
 
     // Cache for generic instantiation MethodTables
     private const int MaxGenericInstCache = 64;
+    private const int MaxTypeArgsPerInst = 4;  // Support up to 4 type args per generic type
     private static uint* _genericInstCacheDefTokens;
     private static ulong* _genericInstCacheArgHashes;  // Hash of type arg MTs
     private static MethodTable** _genericInstCacheInstMTs;
+    private static byte* _genericInstCacheTypeArgCounts;  // Number of type args per entry
+    private static MethodTable** _genericInstCacheTypeArgs;  // Flat array: [entry0_arg0, entry0_arg1, ..., entry1_arg0, ...]
     private static int _genericInstCacheCount;
 
     /// <summary>
@@ -6882,9 +6885,12 @@ public static unsafe class AssemblyLoader
             _genericInstCacheDefTokens = (uint*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(uint)));
             _genericInstCacheArgHashes = (ulong*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(ulong)));
             _genericInstCacheInstMTs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(MethodTable*)));
+            _genericInstCacheTypeArgCounts = (byte*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(byte)));
+            _genericInstCacheTypeArgs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * MaxTypeArgsPerInst * sizeof(MethodTable*)));
             _genericInstCacheCount = 0;
 
-            if (_genericInstCacheDefTokens == null || _genericInstCacheArgHashes == null || _genericInstCacheInstMTs == null)
+            if (_genericInstCacheDefTokens == null || _genericInstCacheArgHashes == null || _genericInstCacheInstMTs == null ||
+                _genericInstCacheTypeArgCounts == null || _genericInstCacheTypeArgs == null)
             {
                 DebugConsole.WriteLine("[AsmLoader] Failed to allocate generic inst cache");
                 return null;
@@ -7291,6 +7297,16 @@ public static unsafe class AssemblyLoader
             _genericInstCacheDefTokens[_genericInstCacheCount] = genDefToken;
             _genericInstCacheArgHashes[_genericInstCacheCount] = argHash;
             _genericInstCacheInstMTs[_genericInstCacheCount] = instMT;
+
+            // Store type arguments (up to MaxTypeArgsPerInst)
+            int argsToStore = typeArgCount < MaxTypeArgsPerInst ? typeArgCount : MaxTypeArgsPerInst;
+            _genericInstCacheTypeArgCounts[_genericInstCacheCount] = (byte)argsToStore;
+            int baseIdx = _genericInstCacheCount * MaxTypeArgsPerInst;
+            for (int i = 0; i < argsToStore; i++)
+            {
+                _genericInstCacheTypeArgs[baseIdx + i] = typeArgMTs[i];
+            }
+
             _genericInstCacheCount++;
         }
 
@@ -7311,6 +7327,13 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteDecimal((uint)typeArgCount);
         DebugConsole.Write(" type args, isVT=");
         DebugConsole.Write(isValueType ? "Y" : "N");
+        DebugConsole.Write(" [args:");
+        for (int i = 0; i < typeArgCount && i < 4; i++)
+        {
+            DebugConsole.Write(" 0x");
+            DebugConsole.WriteHex((ulong)typeArgMTs[i]);
+        }
+        DebugConsole.Write("]");
         DebugConsole.WriteLine();
 
         return instMT;
@@ -7390,6 +7413,39 @@ public static unsafe class AssemblyLoader
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Get the type arguments for an instantiated generic type.
+    /// Returns true if the MT is a generic instantiation and type args were retrieved.
+    /// </summary>
+    /// <param name="instMT">The instantiated MethodTable to look up</param>
+    /// <param name="typeArgMTs">Output buffer for type argument MTs (should have at least MaxTypeArgsPerInst slots)</param>
+    /// <param name="typeArgCount">Output: number of type arguments</param>
+    public static bool GetGenericInstTypeArgs(MethodTable* instMT, MethodTable** typeArgMTs, out int typeArgCount)
+    {
+        typeArgCount = 0;
+
+        if (instMT == null || _genericInstCacheCount == 0 || typeArgMTs == null)
+            return false;
+
+        // Search the cache for this instantiated MT
+        for (int i = 0; i < _genericInstCacheCount; i++)
+        {
+            if (_genericInstCacheInstMTs[i] == instMT)
+            {
+                // Found it - copy type arguments
+                typeArgCount = _genericInstCacheTypeArgCounts[i];
+                int baseIdx = i * MaxTypeArgsPerInst;
+                for (int j = 0; j < typeArgCount; j++)
+                {
+                    typeArgMTs[j] = _genericInstCacheTypeArgs[baseIdx + j];
+                }
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ============================================================================

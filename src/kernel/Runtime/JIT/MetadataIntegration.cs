@@ -2458,23 +2458,41 @@ public static unsafe class MetadataIntegration
         // If so, get the instantiated MethodTable which has the type argument info
         MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);
         bool hasGenericContext = false;
-        MethodTable* savedTypeArg = null;
+        int savedTypeArgCount = _typeTypeArgCount;
+        MethodTable** savedTypeArgs = stackalloc MethodTable*[4];
+        for (int i = 0; i < 4 && i < savedTypeArgCount; i++)
+            savedTypeArgs[i] = _typeTypeArgMTs[i];
 
-        if (genericInstMT != null && genericInstMT->_relatedType != null)
+        if (genericInstMT != null)
         {
-            // Set up the type type argument context using the first type argument
-            // stored in _relatedType of the GenericInst MethodTable
-            savedTypeArg = _typeTypeArgMTs[0];
-            MethodTable** typeArgs = stackalloc MethodTable*[1];
-            typeArgs[0] = genericInstMT->_relatedType;
-            SetTypeTypeArgs(typeArgs, 1);
-            hasGenericContext = true;
+            // Set up the type argument context using all type arguments from the cache
+            MethodTable** typeArgs = stackalloc MethodTable*[4];
+            int typeArgCount;
 
-            DebugConsole.Write("[MetaInt] Set type arg context: MT=0x");
-            DebugConsole.WriteHex((ulong)genericInstMT->_relatedType);
-            DebugConsole.Write(" for MemberRef 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.WriteLine();
+            if (AssemblyLoader.GetGenericInstTypeArgs(genericInstMT, typeArgs, out typeArgCount) && typeArgCount > 0)
+            {
+                SetTypeTypeArgs(typeArgs, typeArgCount);
+                hasGenericContext = true;
+
+                DebugConsole.Write("[MetaInt] Set type arg context: ");
+                DebugConsole.WriteDecimal((uint)typeArgCount);
+                DebugConsole.Write(" args for MemberRef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine();
+            }
+            else if (genericInstMT->_relatedType != null)
+            {
+                // Fallback: use _relatedType for single type argument (legacy path)
+                typeArgs[0] = genericInstMT->_relatedType;
+                SetTypeTypeArgs(typeArgs, 1);
+                hasGenericContext = true;
+
+                DebugConsole.Write("[MetaInt] Set type arg context (legacy): MT=0x");
+                DebugConsole.WriteHex((ulong)genericInstMT->_relatedType);
+                DebugConsole.Write(" for MemberRef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine();
+            }
         }
 
         // Fall back to JIT assembly resolution
@@ -2487,8 +2505,9 @@ public static unsafe class MetadataIntegration
             if (hasGenericContext)
             {
                 // Restore type arg context on failure
-                _typeTypeArgMTs[0] = savedTypeArg;
-                _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+                for (int i = 0; i < savedTypeArgCount; i++)
+                    _typeTypeArgMTs[i] = savedTypeArgs[i];
+                _typeTypeArgCount = savedTypeArgCount;
             }
             return false;
         }
@@ -2548,8 +2567,9 @@ public static unsafe class MetadataIntegration
 
                         if (hasGenericContext)
                         {
-                            _typeTypeArgMTs[0] = savedTypeArg;
-                            _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+                            for (int i = 0; i < savedTypeArgCount; i++)
+                                _typeTypeArgMTs[i] = savedTypeArgs[i];
+                            _typeTypeArgCount = savedTypeArgCount;
                         }
                         return true;
                     }
@@ -2558,8 +2578,9 @@ public static unsafe class MetadataIntegration
             // AOT lookup failed
             if (hasGenericContext)
             {
-                _typeTypeArgMTs[0] = savedTypeArg;
-                _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+                for (int i = 0; i < savedTypeArgCount; i++)
+                    _typeTypeArgMTs[i] = savedTypeArgs[i];
+                _typeTypeArgCount = savedTypeArgCount;
             }
             return false;
         }
@@ -2760,8 +2781,9 @@ public static unsafe class MetadataIntegration
         // Restore type argument context if we set it up
         if (hasGenericContext)
         {
-            _typeTypeArgMTs[0] = savedTypeArg;
-            _typeTypeArgCount = savedTypeArg != null ? 1 : 0;
+            for (int i = 0; i < savedTypeArgCount; i++)
+                _typeTypeArgMTs[i] = savedTypeArgs[i];
+            _typeTypeArgCount = savedTypeArgCount;
         }
 
         // Parse vararg info from the MemberRef signature if this is a vararg call

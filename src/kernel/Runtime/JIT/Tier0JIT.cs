@@ -899,21 +899,22 @@ public static unsafe class Tier0JIT
                 if (typeSize != null)
                     typeSize[i] = 16;
             }
+            else if (elemType == 0x18 || elemType == 0x19) // ELEMENT_TYPE_I / ELEMENT_TYPE_U
+            {
+                // Native int (IntPtr) / Native uint (UIntPtr) - 8 bytes on x64
+                isValueType[i] = true;
+                if (typeSize != null)
+                    typeSize[i] = 8;
+            }
             else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
             {
                 // DebugConsole.Write(" SZARRAY");
                 // Single-dimension array - skip element type
                 isValueType[i] = false;
                 typeSize[i] = 8; // Arrays are references (8 bytes on x64)
-                // Skip the element type
-                if (ptr < end)
-                {
-                    byte arrElemType = *ptr++;
-                    // DebugConsole.Write(" arrElem=");
-                    // DebugConsole.WriteHex(arrElemType);
-                    if (arrElemType == 0x11 || arrElemType == 0x12) // ValueType or Class
-                        MetadataReader.ReadCompressedUInt(ref ptr);
-                }
+                // Skip the element type - use SkipTypeSig to handle all element types
+                // including GENERICINST (e.g. Entry<TKey,TValue>[] in Dictionary)
+                SkipTypeSig(ref ptr, end);
             }
             else if (elemType == 0x15) // ELEMENT_TYPE_GENERICINST
             {
@@ -1973,18 +1974,37 @@ public static unsafe class Tier0JIT
             int registeredSlot = existingEntry->VtableSlot;
             if (registeredSlot < mt->_usNumVtableSlots)
             {
-                nint* vtablePtr = mt->GetVtablePtr();
-                vtablePtr[registeredSlot] = nativeCode;
+                // Check if we're compiling this for a specific generic instantiation (type context is set)
+                // If so, this code is specific to that instantiation and should NOT be stored on
+                // the generic definition's MT. The instantiation will get its code via either:
+                // - The caller (AssemblyLoader eager compilation) storing on dstVtable directly
+                // - PropagateVtableSlotToInstantiations for existing instantiations
+                // - JitStubs.EnsureMethodIsCompiled for lazy compilation
+                int typeArgCount = MetadataIntegration.GetTypeTypeArgCount();
+                bool compilingForInstantiation = (typeArgCount > 0);
+
+                // Get the generic definition MT to check if 'mt' is the generic definition
+                MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(mt);
+                bool mtIsGenericDefinition = (genDefMT == null) && compilingForInstantiation;
+
+                // Only store on the MT if this is NOT a generic definition
+                if (!mtIsGenericDefinition)
+                {
+                    nint* vtablePtr = mt->GetVtablePtr();
+                    vtablePtr[registeredSlot] = nativeCode;
+                }
+
+                // Always propagate to existing instantiations
                 AssemblyLoader.PropagateVtableSlotToInstantiations(assemblyId, typeRow, registeredSlot, nativeCode);
+
                 DebugConsole.Write("[PopulateVT] token=0x");
                 DebugConsole.WriteHex(methodToken);
-                DebugConsole.Write(" type=0x");
-                DebugConsole.WriteHex(typeToken);
                 DebugConsole.Write(" MT=0x");
                 DebugConsole.WriteHex((ulong)mt);
                 DebugConsole.Write(" slot=");
                 DebugConsole.WriteDecimal((uint)registeredSlot);
-                DebugConsole.Write(" (registered) code=0x");
+                DebugConsole.Write(mtIsGenericDefinition ? " (gen-def-skip)" : " (stored)");
+                DebugConsole.Write(" code=0x");
                 DebugConsole.WriteHex((ulong)nativeCode);
                 DebugConsole.WriteLine();
                 return;

@@ -31,7 +31,7 @@ public static unsafe class JitStubs
         // Get function pointer addresses for direct calls from JIT code
         _ensureCompiledAddress = (nint)(delegate*<uint, uint, void>)&EnsureCompiled;
         _ensureVirtualCompiledAddress = (nint)(delegate*<uint, uint, nint, short, void>)&EnsureVirtualCompiled;
-        _ensureVtableSlotCompiledAddress = (nint)(delegate*<nint, short, void>)&EnsureVtableSlotCompiled;
+        _ensureVtableSlotCompiledAddress = (nint)(delegate*<nint, short, nint>)&EnsureVtableSlotCompiled;
 
         _initialized = true;
         DebugConsole.WriteLine("[JitStubs] Initialized");
@@ -171,19 +171,23 @@ public static unsafe class JitStubs
     ///
     /// Fast path: If vtable slot already has code, returns immediately.
     /// Slow path: Looks up the method token for this slot and compiles it.
+    ///
+    /// Returns the method address to call (the JIT codegen uses this directly instead
+    /// of loading from vtable, which handles out-of-bounds slots correctly).
     /// </summary>
     /// <param name="objPtr">Pointer to the object (not MethodTable).</param>
     /// <param name="vtableSlot">The vtable slot index to check/compile.</param>
-    public static void EnsureVtableSlotCompiled(nint objPtr, short vtableSlot)
+    /// <returns>The native method address to call.</returns>
+    public static nint EnsureVtableSlotCompiled(nint objPtr, short vtableSlot)
     {
         if (objPtr == 0 || vtableSlot < 0)
-            return;
+            return 0;
 
         // Get the MethodTable pointer from the object
         // Object layout: [MethodTable* at offset 0]
         nint methodTable = *(nint*)objPtr;
         if (methodTable == 0)
-            return;
+            return 0;
 
         // Debug: trace ALL EnsureVtableSlotCompiled calls
         DebugConsole.Write("[EnsureVT] slot=");
@@ -209,10 +213,91 @@ public static unsafe class JitStubs
             DebugConsole.WriteLine();
         }
 
+        // Check if vtable slot is within bounds
+        // NativeAOT may optimize away vtable slots for sealed types (e.g., String.GetHashCode)
+        // In such cases, we need to look up the method from the AOT registry instead
+        MethodTable* mt = (MethodTable*)methodTable;
+        if (vtableSlot >= mt->_usNumVtableSlots)
+        {
+            // Slot is out of bounds - try to find the method from AOT registry
+            // This handles sealed types where NativeAOT devirtualized the vtable
+            DebugConsole.Write("[VTbounds] slot=");
+            DebugConsole.WriteDecimal((uint)vtableSlot);
+            DebugConsole.Write(" > numSlots=");
+            DebugConsole.WriteDecimal(mt->_usNumVtableSlots);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)methodTable);
+            DebugConsole.WriteLine();
+
+            // Look up the method by name from AOT registry for common Object virtuals
+            // For sealed types like String, look up the type-specific override first
+            nint aotMethod = 0;
+            bool isString = MetadataReader.IsStringMethodTable((void*)methodTable);
+
+            if (isString)
+            {
+                DebugConsole.WriteLine("[VTbounds] Type is String - looking for String-specific method");
+            }
+
+            if (vtableSlot == 0)
+            {
+                // ToString - try type-specific first
+                if (isString)
+                    aotMethod = AotMethodRegistry.LookupByName("System.String", "ToString");
+                if (aotMethod == 0)
+                    aotMethod = AotMethodRegistry.LookupByName("System.Object", "ToString");
+            }
+            else if (vtableSlot == 1)
+            {
+                // Equals - try type-specific first
+                if (isString)
+                    aotMethod = AotMethodRegistry.LookupByName("System.String", "Equals");
+                if (aotMethod == 0)
+                    aotMethod = AotMethodRegistry.LookupByName("System.Object", "Equals");
+            }
+            else if (vtableSlot == 2)
+            {
+                // GetHashCode - try type-specific first
+                if (isString)
+                {
+                    aotMethod = AotMethodRegistry.LookupByName("System.String", "GetHashCode");
+                    DebugConsole.Write("[VTbounds] String.GetHashCode lookup: 0x");
+                    DebugConsole.WriteHex((ulong)aotMethod);
+                    DebugConsole.WriteLine();
+                }
+                if (aotMethod == 0)
+                    aotMethod = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+            }
+
+            if (aotMethod != 0)
+            {
+                // DON'T write to vtable[slot] - that's past the end of the MT and would corrupt memory!
+                // Just return the AOT method directly - the JIT codegen will use our return value
+                DebugConsole.Write("[VTbounds] Using AOT fallback: 0x");
+                DebugConsole.WriteHex((ulong)aotMethod);
+                DebugConsole.Write(" objPtr=0x");
+                DebugConsole.WriteHex((ulong)objPtr);
+                DebugConsole.WriteLine();
+
+                // Return the AOT method address - JIT will call it with the correct 'this' pointer
+                return aotMethod;
+            }
+
+            // No AOT fallback available - report error
+            DebugConsole.Write("[VTbounds] FATAL: No AOT fallback for slot ");
+            DebugConsole.WriteDecimal((uint)vtableSlot);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)methodTable);
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("!!! SYSTEM HALTED - vtable slot out of bounds");
+            CPU.HaltForever();
+            return 0;  // Never reached
+        }
+
         // If slot already has code, we're done (fast path)
         // Note: AOT methods will already have their addresses in the vtable
         if (currentSlotCode != 0)
-            return;
+            return currentSlotCode;
 
         // Slow path: Need to find and compile the method for this slot
         // Look up the method in the registry by MethodTable and vtable slot
@@ -241,7 +326,7 @@ public static unsafe class JitStubs
             {
                 // Method is compiled for THIS specific type, populate the vtable slot
                 vtable[vtableSlot] = (nint)info->NativeCode;
-                return;
+                return (nint)info->NativeCode;
             }
 
             // Method is registered but not compiled for this instantiation - compile it
@@ -260,14 +345,43 @@ public static unsafe class JitStubs
                 MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(instMT);
                 bool hasTypeContext = false;
 
-                if (genDefMT != null && instMT->_relatedType != null)
+                if (genDefMT != null)
                 {
-                    // This is a generic instantiation - set the type argument context
-                    // _relatedType contains the first (and often only) type argument MT
-                    MethodTable** typeArgs = stackalloc MethodTable*[1];
-                    typeArgs[0] = instMT->_relatedType;
-                    MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
-                    hasTypeContext = true;
+                    // This is a generic instantiation - get all type arguments from cache
+                    MethodTable** typeArgs = stackalloc MethodTable*[4];  // Support up to 4 type args
+                    int typeArgCount;
+
+                    if (AssemblyLoader.GetGenericInstTypeArgs(instMT, typeArgs, out typeArgCount) && typeArgCount > 0)
+                    {
+                        // Got full type argument list from cache
+                        DebugConsole.Write("[JitStubs] VT cache hit: ");
+                        DebugConsole.WriteDecimal((uint)typeArgCount);
+                        DebugConsole.Write(" args MT=0x");
+                        DebugConsole.WriteHex((ulong)instMT);
+                        DebugConsole.Write(" arg0=0x");
+                        DebugConsole.WriteHex((ulong)typeArgs[0]);
+                        DebugConsole.WriteLine();
+                        MetadataIntegration.SetTypeTypeArgs(typeArgs, typeArgCount);
+                        hasTypeContext = true;
+                    }
+                    else if (instMT->_relatedType != null)
+                    {
+                        // Fallback: use _relatedType for single type argument (legacy path)
+                        DebugConsole.Write("[JitStubs] VT legacy fallback MT=0x");
+                        DebugConsole.WriteHex((ulong)instMT);
+                        DebugConsole.Write(" _relatedType=0x");
+                        DebugConsole.WriteHex((ulong)instMT->_relatedType);
+                        DebugConsole.WriteLine();
+                        typeArgs[0] = instMT->_relatedType;
+                        MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
+                        hasTypeContext = true;
+                    }
+                    else
+                    {
+                        DebugConsole.Write("[JitStubs] WARNING: No type context for MT=0x");
+                        DebugConsole.WriteHex((ulong)instMT);
+                        DebugConsole.WriteLine();
+                    }
                 }
 
                 var result = Tier0JIT.CompileMethod(info->AssemblyId, info->Token);
@@ -281,6 +395,7 @@ public static unsafe class JitStubs
                 {
                     // Update vtable slot with compiled code
                     vtable[vtableSlot] = (nint)result.CodeAddress;
+                    return (nint)result.CodeAddress;
                 }
                 else
                 {
@@ -293,13 +408,15 @@ public static unsafe class JitStubs
                     DebugConsole.WriteLine();
                     DebugConsole.WriteLine("!!! SYSTEM HALTED - JIT compilation failure");
                     CPU.HaltForever();
+                    return 0;  // Never reached
                 }
             }
-            return;
+            // Being compiled by another thread, return current slot value (may be stale but will retry)
+            return vtable[vtableSlot];
         }
 
         // No method registered for this vtable slot - check for default interface method
-        MethodTable* mt = (MethodTable*)methodTable;
+        // Note: mt is already declared above at the bounds check
 
         // Try to find a default interface implementation for this slot
         nint defaultImplCode = TryResolveDefaultInterfaceMethod(mt, vtableSlot);
@@ -307,7 +424,7 @@ public static unsafe class JitStubs
         {
             // Found a default implementation, populate the vtable
             vtable[vtableSlot] = defaultImplCode;
-            return;
+            return defaultImplCode;
         }
 
         // Still not found - this is a gap in our metadata
@@ -339,6 +456,7 @@ public static unsafe class JitStubs
 
         DebugConsole.WriteLine("!!! SYSTEM HALTED - Missing vtable method registration");
         CPU.HaltForever();
+        return 0;  // Never reached
     }
 
     /// <summary>
@@ -481,18 +599,33 @@ public static unsafe class JitStubs
                     DebugConsole.WriteLine();
 
                     // Set type context for generic instantiation
-                    // For generic instantiated MTs, _relatedType holds the first type argument
+                    // Get all type arguments from cache for proper multi-arg generic support
                     MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(mt);
                     bool hasTypeContext = false;
-                    if (genDefMT != null && mt->_relatedType != null)
+                    if (genDefMT != null)
                     {
-                        MethodTable** typeArgs = stackalloc MethodTable*[1];
-                        typeArgs[0] = mt->_relatedType;
-                        MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
-                        hasTypeContext = true;
-                        DebugConsole.Write("[JitStubs] Set type context: T=0x");
-                        DebugConsole.WriteHex((ulong)mt->_relatedType);
-                        DebugConsole.WriteLine();
+                        MethodTable** typeArgs = stackalloc MethodTable*[4];  // Support up to 4 type args
+                        int typeArgCount;
+
+                        if (AssemblyLoader.GetGenericInstTypeArgs(mt, typeArgs, out typeArgCount) && typeArgCount > 0)
+                        {
+                            MetadataIntegration.SetTypeTypeArgs(typeArgs, typeArgCount);
+                            hasTypeContext = true;
+                            DebugConsole.Write("[JitStubs] Set type context: ");
+                            DebugConsole.WriteDecimal((uint)typeArgCount);
+                            DebugConsole.Write(" args");
+                            DebugConsole.WriteLine();
+                        }
+                        else if (mt->_relatedType != null)
+                        {
+                            // Fallback for legacy path
+                            typeArgs[0] = mt->_relatedType;
+                            MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
+                            hasTypeContext = true;
+                            DebugConsole.Write("[JitStubs] Set type context (legacy): T=0x");
+                            DebugConsole.WriteHex((ulong)mt->_relatedType);
+                            DebugConsole.WriteLine();
+                        }
                     }
 
                     // Compile the implementing method

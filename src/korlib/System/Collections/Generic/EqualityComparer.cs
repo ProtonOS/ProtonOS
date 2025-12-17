@@ -65,6 +65,24 @@ internal sealed class ObjectEqualityComparer<T> : EqualityComparer<T>
 {
     public override bool Equals(T? x, T? y)
     {
+        // Special case for strings: compare directly without virtual dispatch
+        // Cast to object first to avoid JIT issues with pattern matching on T
+        object? ox = x;
+        object? oy = y;
+        if (ox is string sx && oy is string sy)
+        {
+            if (ReferenceEquals(sx, sy)) return true;
+            if (sx.Length != sy.Length) return false;
+            for (int i = 0; i < sx.Length; i++)
+            {
+                if (sx[i] != sy[i]) return false;
+            }
+            return true;
+        }
+        // Handle string null comparison
+        if (ox is string && oy == null) return false;
+        if (oy is string && ox == null) return false;
+
         // For value types, we can't use virtual dispatch (JIT doesn't support it yet).
         // Instead, use the static Object.Equals(object, object) which our AOT
         // implementation handles correctly by comparing boxed value bytes.
@@ -73,6 +91,24 @@ internal sealed class ObjectEqualityComparer<T> : EqualityComparer<T>
 
     public override int GetHashCode(T obj)
     {
-        return obj?.GetHashCode() ?? 0;
+        if (obj == null) return 0;
+
+        // Special case for strings: call String.GetHashCode directly
+        // because virtual dispatch to String.GetHashCode doesn't work yet
+        // (String's vtable doesn't have the correct slots populated)
+        // Cast to object first to avoid JIT issues
+        object o = obj;
+        if (o is string s)
+        {
+            // Call String's GetHashCode implementation directly
+            int hash = 5381;
+            for (int i = 0; i < s.Length; i++)
+            {
+                hash = ((hash << 5) + hash) ^ s[i];
+            }
+            return hash;
+        }
+
+        return obj.GetHashCode();
     }
 }

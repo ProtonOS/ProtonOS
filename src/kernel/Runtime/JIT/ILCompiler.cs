@@ -753,12 +753,13 @@ public unsafe struct ILCompiler
         // Use default type helpers from RuntimeHelpers
         compiler._isAssignableTo = RuntimeHelpers.GetIsAssignableToPtr();
         compiler._getInterfaceMethod = RuntimeHelpers.GetInterfaceMethodPtr();
-        // Debug helpers
-        compiler._debugStfld = RuntimeHelpers.GetDebugStfldPtr();
-        compiler._debugLdfld = RuntimeHelpers.GetDebugLdfldPtr();
-        compiler._debugLdfldInt = RuntimeHelpers.GetDebugLdfldIntPtr();
-        compiler._debugStelemStack = RuntimeHelpers.GetDebugStelemStackPtr();
-        compiler._debugVtableDispatch = RuntimeHelpers.GetDebugVtableDispatchPtr();
+        // Debug helpers - DISABLED due to function pointer bug (addresses off by 16 bytes)
+        // The function pointers obtained via &Method point to padding before the actual code
+        compiler._debugStfld = null;  // RuntimeHelpers.GetDebugStfldPtr();
+        compiler._debugLdfld = null;  // RuntimeHelpers.GetDebugLdfldPtr();
+        compiler._debugLdfldInt = null;  // RuntimeHelpers.GetDebugLdfldIntPtr();
+        compiler._debugStelemStack = null;  // RuntimeHelpers.GetDebugStelemStackPtr();
+        compiler._debugVtableDispatch = null;  // RuntimeHelpers.GetDebugVtableDispatchPtr();
         compiler._debugAssemblyId = 0;
         compiler._debugMethodToken = 0;
         // JIT stub helpers
@@ -5316,7 +5317,12 @@ public unsafe struct ILCompiler
 
             // Resolve the constraint type to get its MethodTable
             void* resolvedPtr;
-            if (_typeResolver(constrainedToken, out resolvedPtr) && resolvedPtr != null)
+            bool resolveResult = _typeResolver(constrainedToken, out resolvedPtr);
+            DebugConsole.Write(" res=");
+            DebugConsole.Write(resolveResult ? "T" : "F");
+            DebugConsole.Write(" ptr=0x");
+            DebugConsole.WriteHex((ulong)resolvedPtr);
+            if (resolveResult && resolvedPtr != null)
             {
                 MethodTable* constraintMT = (MethodTable*)resolvedPtr;
                 DebugConsole.Write(" mt=0x");
@@ -5566,6 +5572,28 @@ public unsafe struct ILCompiler
                     // Now fall through to callvirt handling with the reference on stack
                 }
             }
+            else
+            {
+                // Type resolution failed for constrained token
+                // This can happen for generic type parameters (T) when we can't resolve them.
+                // We assume it's a reference type and dereference the managed pointer.
+                // This is safe because:
+                // 1. Value types would crash anyway without proper boxing
+                // 2. Generic parameters used with constrained callvirt are usually reference types
+                //    when the constraint cannot be resolved at JIT time
+                DebugConsole.WriteLine(" [FALLBACK] assuming ref type");
+
+                // Pop managed pointer to RAX
+                X64Emitter.Pop(ref _code, VReg.R0);
+                PopEntry();
+
+                // Dereference: RAX = [RAX] - read the object reference from the pointer
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);
+
+                // Push the actual object reference back on stack
+                X64Emitter.Push(ref _code, VReg.R0);
+                PushEntry(EvalStackEntry.NativeInt);
+            }
         }
 
         // For now, callvirt behaves like call but always has 'this'.
@@ -5804,57 +5832,66 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
 
             // Call EnsureVtableSlotCompiled(objPtr, vtableSlot) to ensure the method is compiled
-            // This is the lazy JIT stub - if method is already compiled, it returns immediately
-            // If not, it triggers compilation and updates the vtable slot
+            // This stub returns the method address to call, which handles out-of-bounds vtable slots
+            // (e.g., for sealed types like String where NativeAOT optimized away vtable slots)
             if (_ensureVtableSlotCompiled != null)
             {
-                // Save ALL argument registers that will be clobbered by the stub call
-                // RCX (R1) = this, RDX (R2) = arg1, R8 (R3) = arg2, R9 (R4) = arg3
-                // We use callee-saved registers R12-R15 (VReg.R8-R11)
-                X64Emitter.Push(ref _code, VReg.R8);  // Save R12
-                X64Emitter.Push(ref _code, VReg.R9);  // Save R13
-                X64Emitter.Push(ref _code, VReg.R10); // Save R14
-                X64Emitter.Push(ref _code, VReg.R11); // Save R15
-                X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);   // R12 = RCX (this)
-                if (totalArgs >= 2)
-                    X64Emitter.MovRR(ref _code, VReg.R9, VReg.R2);   // R13 = RDX (arg1)
-                if (totalArgs >= 3)
-                    X64Emitter.MovRR(ref _code, VReg.R10, VReg.R3);  // R14 = R8 (arg2)
-                if (totalArgs >= 4)
-                    X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);  // R15 = R9 (arg3)
+                // Save RBX first (we'll use it to hold the method address)
+                X64Emitter.Push(ref _code, VReg.R7);  // Save original RBX
 
-                // RCX already has 'this' (objPtr), just need RDX = slot (short)
+                // Save args to stack (we need them after the stub call)
+                // Stack layout: [RBX_orig][arg3][arg2][arg1][this] <- RSP points to this
+                if (totalArgs >= 4)
+                    X64Emitter.Push(ref _code, VReg.R4);  // Push R9 (arg3)
+                if (totalArgs >= 3)
+                    X64Emitter.Push(ref _code, VReg.R3);  // Push R8 (arg2)
+                if (totalArgs >= 2)
+                    X64Emitter.Push(ref _code, VReg.R2);  // Push RDX (arg1)
+                X64Emitter.Push(ref _code, VReg.R1);      // Push RCX (this)
+
+                // RCX still has 'this' (objPtr), just need RDX = slot
                 X64Emitter.MovRI32(ref _code, VReg.R2, method.VtableSlot);
 
-                // Call stub helper: EnsureVtableSlotCompiled(nint objPtr, short vtableSlot)
+                // Call stub helper: nint EnsureVtableSlotCompiled(nint objPtr, short vtableSlot)
                 X64Emitter.SubRI(ref _code, VReg.SP, 32);  // Shadow space
                 X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)_ensureVtableSlotCompiled);
                 X64Emitter.CallR(ref _code, VReg.R0);
-                X64Emitter.AddRI(ref _code, VReg.SP, 32);
+                X64Emitter.AddRI(ref _code, VReg.SP, 32);  // Remove shadow space
 
-                // Restore ALL argument registers
-                X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);   // RCX = R12 (this)
+                // Save method address to RBX
+                X64Emitter.MovRR(ref _code, VReg.R7, VReg.R0);  // RBX = RAX (method address)
+
+                // Pop args from stack (reverse order)
+                X64Emitter.Pop(ref _code, VReg.R1);       // Pop RCX (this)
                 if (totalArgs >= 2)
-                    X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);   // RDX = R13 (arg1)
+                    X64Emitter.Pop(ref _code, VReg.R2);   // Pop RDX (arg1)
                 if (totalArgs >= 3)
-                    X64Emitter.MovRR(ref _code, VReg.R3, VReg.R10);  // R8 = R14 (arg2)
+                    X64Emitter.Pop(ref _code, VReg.R3);   // Pop R8 (arg2)
                 if (totalArgs >= 4)
-                    X64Emitter.MovRR(ref _code, VReg.R4, VReg.R11);  // R9 = R15 (arg3)
-                X64Emitter.Pop(ref _code, VReg.R11);  // Restore R15
-                X64Emitter.Pop(ref _code, VReg.R10);  // Restore R14
-                X64Emitter.Pop(ref _code, VReg.R9);   // Restore R13
-                X64Emitter.Pop(ref _code, VReg.R8);   // Restore R12
+                    X64Emitter.Pop(ref _code, VReg.R4);   // Pop R9 (arg3)
+
+                // Move method address to RAX
+                X64Emitter.MovRR(ref _code, VReg.R0, VReg.R7);  // RAX = RBX (method address)
+
+                // Restore original RBX
+                X64Emitter.Pop(ref _code, VReg.R7);  // Restore RBX
+
+                // Call through the method address (now in RAX)
+                X64Emitter.CallR(ref _code, VReg.R0);  // call RAX
             }
+            else
+            {
+                // Fallback: load from vtable directly (used when stub is not available)
+                // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = *this = MethodTable*
 
-            // 1. Load MethodTable* from [RCX] (object header is the MT pointer)
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = *this = MethodTable*
+                // 2. Load vtable slot at offset HeaderSize + slot*8
+                // MethodTable.HeaderSize = 24 bytes, each vtable slot is 8 bytes
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, vtableOffset);  // RAX = vtable[slot]
 
-            // 2. Load vtable slot at offset HeaderSize + slot*8
-            // MethodTable.HeaderSize = 24 bytes, each vtable slot is 8 bytes
-            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, vtableOffset);  // RAX = vtable[slot]
-
-            // 3. Call through the vtable slot
-            X64Emitter.CallR(ref _code, VReg.R0);
+                // 3. Call through the vtable slot
+                X64Emitter.CallR(ref _code, VReg.R0);
+            }
         }
         else
         {

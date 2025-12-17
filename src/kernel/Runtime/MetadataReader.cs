@@ -4160,6 +4160,54 @@ public static unsafe class MetadataReader
         DebugConsole.Write("[MetadataReader] String MethodTable cached at 0x");
         DebugConsole.WriteHex((ulong)_stringMethodTable);
         DebugConsole.WriteLine();
+
+        // Debug: dump raw bytes of string MT
+        byte* raw = (byte*)_stringMethodTable;
+        DebugConsole.Write("[StringMT] raw bytes:");
+        for (int i = 0; i < 48; i++)
+        {
+            if (i % 8 == 0)
+            {
+                DebugConsole.Write(" [");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write("]");
+            }
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex(raw[i]);
+        }
+        DebugConsole.WriteLine();
+
+        // Also show the parsed fields
+        MethodTable* strMT = (MethodTable*)_stringMethodTable;
+        DebugConsole.Write("[StringMT] compSize=");
+        DebugConsole.WriteDecimal(strMT->_usComponentSize);
+        DebugConsole.Write(" flags=0x");
+        DebugConsole.WriteHex(strMT->_usFlags);
+        DebugConsole.Write(" baseSize=");
+        DebugConsole.WriteDecimal(strMT->_uBaseSize);
+        DebugConsole.Write(" numSlots=");
+        DebugConsole.WriteDecimal(strMT->_usNumVtableSlots);
+        DebugConsole.Write(" numIfaces=");
+        DebugConsole.WriteDecimal(strMT->_usNumInterfaces);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Check if a given MethodTable is the String MethodTable.
+    /// Used to detect sealed types where NativeAOT devirtualized vtable calls.
+    /// </summary>
+    public static bool IsStringMethodTable(void* mt)
+    {
+        return mt != null && mt == _stringMethodTable;
+    }
+
+    /// <summary>
+    /// Get the String MethodTable pointer.
+    /// Used for type checking when handling out-of-bounds vtable slots.
+    /// </summary>
+    public static void* GetStringMethodTable()
+    {
+        return _stringMethodTable;
     }
 
     /// <summary>

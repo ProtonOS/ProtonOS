@@ -580,8 +580,15 @@ public static unsafe class TypeHelpers
         }
 
         // Ensure the vtable slot is compiled (may be lazy-compiled)
-        JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);
+        // Use the return value which handles out-of-bounds vtable slots (e.g., for sealed types like String)
+        nint methodCode = JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);
 
-        return (void*)objectMT->GetVtableSlot(slot);
+        DebugConsole.Write("[GetInterfaceMethod] slot=");
+        DebugConsole.WriteDecimal((uint)slot);
+        DebugConsole.Write(" code=0x");
+        DebugConsole.WriteHex((ulong)methodCode);
+        DebugConsole.WriteLine();
+
+        return (void*)methodCode;
     }
 }
