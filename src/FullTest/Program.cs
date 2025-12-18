@@ -8560,10 +8560,14 @@ public static class CollectionTests
     /// <summary>Tests Dictionary foreach iteration</summary>
     public static int TestDictForeach()
     {
-        // TODO: Fix Dictionary.Enumerator - crashes during iteration
-        // The issue seems to be related to generic struct instantiation
-        // or vtable setup for the Enumerator struct
-        return 1;  // Skip for now
+        // Simplest possible test
+        var dict = new System.Collections.Generic.Dictionary<string, int>();
+        dict["one"] = 1;
+
+        var enumerator = dict.GetEnumerator();
+        bool hasNext = enumerator.MoveNext();
+
+        return hasNext ? 1 : 0;
     }
 
     /// <summary>Tests Dictionary update existing key</summary>

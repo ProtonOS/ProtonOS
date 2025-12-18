@@ -925,9 +925,14 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
 
     public static int GetLocalOffset(int localIndex)
     {
-        // Locals are at [rbp-64], [rbp-128], etc.
-        // Use 64 bytes per local to support value type locals up to 64 bytes
-        return -((localIndex + 1) * 64);
+        // Locals must be below the callee-save area (RBP-8 to RBP-40).
+        // Callee-saved registers occupy 40 bytes (5 * 8), so locals start at RBP-48 or lower.
+        // Each local gets 64 bytes to support value types up to 64 bytes.
+        // Structs are stored growing UPWARD from the base offset, so we need to ensure
+        // the entire 64-byte slot is below the callee-save area.
+        // Local 0 starts at -(CalleeSaveSize + 64) = -(40 + 64) = -104
+        // Local 1 starts at -(CalleeSaveSize + 128) = -168, etc.
+        return -(CalleeSaveSize + (localIndex + 1) * 64);
     }
 
     public static void LoadArg(ref CodeBuffer code, VReg dst, int argIndex)

@@ -3376,9 +3376,118 @@ public static unsafe class AssemblyLoader
         }
 
         // VALUETYPE (0x11) or CLASS (0x12) - followed by TypeDefOrRef token
-        // GenericInst (0x15) - more complex, skip for now
+        // GenericInst (0x15) - GENERICINST <genKind> <TypeDefOrRef> <argCount> <args...>
         if (elementType == 0x15)
+        {
+            if (sigLen < 3)
+                return 8;
+
+            byte genKind = typeSig[1];
+
+            // CLASS generic instantiation (0x12) - always a reference (8 bytes)
+            if (genKind == 0x12)
+                return 8;
+
+            // VALUETYPE generic instantiation (0x11) - need to compute size
+            if (genKind == 0x11)
+            {
+                // Parse the TypeDefOrRef token after genKind
+                byte* ptr = typeSig + 2;
+                byte* end = typeSig + sigLen;
+
+                uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
+                uint genTag = typeDefOrRef & 0x03;
+                uint genRow = typeDefOrRef >> 2;
+
+                if (genRow == 0)
+                    return 8;
+
+                // Get base type size
+                uint baseSize = 0;
+                if (genTag == 0)  // TypeDef in same assembly
+                {
+                    baseSize = ComputeInstanceSize(asm, genRow, true);
+                }
+                else if (genTag == 1)  // TypeRef in another assembly
+                {
+                    LoadedAssembly* targetAsm;
+                    uint typeDefToken;
+                    if (ResolveTypeRefToTypeDef(asm, genRow, out targetAsm, out typeDefToken))
+                    {
+                        uint typeDefRow = typeDefToken & 0x00FFFFFF;
+                        if (targetAsm != null && typeDefRow > 0)
+                        {
+                            baseSize = ComputeInstanceSize(targetAsm, typeDefRow, true);
+                        }
+                    }
+                }
+
+                if (baseSize == 0)
+                    baseSize = 8;
+
+                // Parse type arguments and add their sizes
+                if (ptr < end)
+                {
+                    uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                    uint typeArgTotal = 0;
+
+                    for (uint i = 0; i < argCount && ptr < end; i++)
+                    {
+                        // Get size of each type argument
+                        uint argStartLen = (uint)(end - ptr);
+                        uint argSize = GetFieldTypeSize(asm, ptr, argStartLen);
+
+                        // Skip past this type argument in the signature
+                        // Simple skip for common cases
+                        if (ptr < end)
+                        {
+                            byte argElemType = *ptr++;
+                            if (argElemType == 0x11 || argElemType == 0x12)
+                            {
+                                // VALUETYPE or CLASS - skip compressed token
+                                if (ptr < end) MetadataReader.ReadCompressedUInt(ref ptr);
+                            }
+                            else if (argElemType == 0x15)
+                            {
+                                // Nested GENERICINST - skip genKind, token, argcount, args
+                                if (ptr < end) ptr++;  // genKind
+                                if (ptr < end) MetadataReader.ReadCompressedUInt(ref ptr);  // token
+                                if (ptr < end)
+                                {
+                                    uint nestedArgCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                                    // Skip nested args (simplified - may need recursive skip)
+                                    for (uint j = 0; j < nestedArgCount && ptr < end; j++)
+                                    {
+                                        byte nestedElemType = *ptr++;
+                                        if (nestedElemType == 0x11 || nestedElemType == 0x12)
+                                        {
+                                            if (ptr < end) MetadataReader.ReadCompressedUInt(ref ptr);
+                                        }
+                                    }
+                                }
+                            }
+                            // Primitive types are single byte, already skipped
+                        }
+
+                        typeArgTotal += argSize;
+                    }
+
+                    // Add type argument sizes to base size
+                    // For generic structs, type args contribute to the instance size
+                    if (typeArgTotal > 0)
+                    {
+                        uint instantiatedSize = baseSize + typeArgTotal;
+                        instantiatedSize = (instantiatedSize + 7) & ~7u;  // Align to 8
+                        return instantiatedSize;
+                    }
+                }
+
+                return baseSize;
+            }
+
+            // Unknown gen kind
             return 8;
+        }
 
         if (sigLen < 2)
             return 8;

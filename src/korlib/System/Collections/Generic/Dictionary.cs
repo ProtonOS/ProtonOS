@@ -483,8 +483,6 @@ public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>, IReadOnlyDict
                 int idx = _index++;
                 if (entries![idx].next >= -1)
                 {
-                    // Store key and value directly in _current's fields to avoid KeyValuePair constructor
-                    // This works around potential JIT issues with generic struct construction
                     _current = new KeyValuePair<TKey, TValue>(entries[idx].key, entries[idx].value);
                     return true;
                 }

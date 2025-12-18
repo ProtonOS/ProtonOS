@@ -1551,6 +1551,10 @@ public static unsafe class MetadataIntegration
                 // Caller needs to determine from type definition
                 size = 0;  // Unknown - needs type lookup
                 break;
+            case 0x15:  // GENERICINST - generic type instantiation
+                // GENERICINST needs type lookup to determine if value/ref type and size
+                size = 0;  // Unknown - needs type lookup
+                break;
             default:
                 size = 8;  // Assume pointer size for unknown types
                 break;
@@ -1649,14 +1653,24 @@ public static unsafe class MetadataIntegration
 
         // Check if the field type itself is a value type
         // ElementType.ValueType = 0x11, plus primitives (0x02-0x0D) are also value types
+        // GENERICINST (0x15) can be either value type or ref type - check the gen kind
         bool fieldIsValueType = (elementType == 0x11) ||
                                  (elementType >= 0x02 && elementType <= 0x0D);
+
+        // For GENERICINST (0x15), check if it's a value type instantiation
+        // Signature: 0x15 <genKind> <typeDefOrRef> <argCount> <args...>
+        // genKind: 0x11 = VALUETYPE, 0x12 = CLASS
+        if (elementType == 0x15 && sigLen >= 3)
+        {
+            byte genKind = sig[2];
+            fieldIsValueType = (genKind == 0x11);  // VALUETYPE
+        }
         result.IsFieldTypeValueType = fieldIsValueType;
 
         if (size == 0)
         {
-            // ValueType - need to look up actual size from metadata
-            if (elementType == 0x11 && sigLen >= 3)
+            // ValueType or GENERICINST - need to look up actual size from metadata
+            if ((elementType == 0x11 || elementType == 0x15) && sigLen >= 3)
             {
                 // Parse the TypeDefOrRef token to get the actual size
                 uint fieldTypeSize = AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);

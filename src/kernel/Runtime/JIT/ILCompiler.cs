@@ -2393,6 +2393,21 @@ public unsafe struct ILCompiler
     {
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
+
+        // Debug: trace stloc.0 in TestDictForeach
+        if (_debugAssemblyId == 6 && _debugMethodToken == 0x060002E7 && index == 0)
+        {
+            EvalStackEntry dbgTos = PeekEntry();
+            DebugConsole.Write("[DF-stloc0] isVT=");
+            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+            DebugConsole.Write(" typeSz=");
+            DebugConsole.WriteDecimal(typeSize);
+            DebugConsole.Write(" tosByteSz=");
+            DebugConsole.WriteDecimal((uint)dbgTos.ByteSize);
+            DebugConsole.Write(" tosKind=");
+            DebugConsole.WriteDecimal((uint)dbgTos.Kind);
+            DebugConsole.WriteLine();
+        }
         // bool debugBind = IsDebugBindMethod();
         //
         // // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
@@ -3870,8 +3885,58 @@ public unsafe struct ILCompiler
     {
         // Load address of local variable
         int offset = X64Emitter.GetLocalOffset(index);
+
+        // Debug: trace ldloca in TestDictForeach (token 0x060002E7)
+        bool isDebugMethod = _debugAssemblyId == 6 && _debugMethodToken == 0x060002E7;
+        if (isDebugMethod)
+        {
+            DebugConsole.Write("[DF-ldloca] idx=");
+            DebugConsole.WriteDecimal((uint)index);
+            DebugConsole.Write(" off=");
+            DebugConsole.WriteDecimal((uint)(offset < 0 ? -offset : offset));
+            DebugConsole.Write(offset < 0 ? "(-)" : "(+)");
+            DebugConsole.Write(" codePos=");
+            DebugConsole.WriteHex((ulong)_code.Position);
+            DebugConsole.WriteLine();
+        }
+
+        // Capture position before LEA
+        int leaStart = _code.Position;
         X64Emitter.Lea(ref _code, VReg.R0, VReg.FP, offset);
-        PushR0(EvalStackEntry.NativeInt);  // Address is treated as integer
+        int leaEnd = _code.Position;
+
+        // Debug: dump LEA bytes for TestDictForeach
+        if (isDebugMethod)
+        {
+            DebugConsole.Write("[DF-LEA] bytes: ");
+            byte* codePtr = _code.Code;
+            for (int i = leaStart; i < leaEnd; i++)
+            {
+                DebugConsole.WriteHex((ulong)codePtr[i]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+        }
+
+        // Capture position before PUSH
+        int pushStart = _code.Position;
+        X64Emitter.Push(ref _code, VReg.R0);
+        int pushEnd = _code.Position;
+
+        // Debug: dump PUSH bytes for TestDictForeach
+        if (isDebugMethod)
+        {
+            DebugConsole.Write("[DF-PUSH] bytes: ");
+            byte* codePtr = _code.Code;
+            for (int i = pushStart; i < pushEnd; i++)
+            {
+                DebugConsole.WriteHex((ulong)codePtr[i]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+        }
+
+        PushEntry(EvalStackEntry.NativeInt);  // Address is treated as integer
         return true;
     }
 
@@ -4577,6 +4642,44 @@ public unsafe struct ILCompiler
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg
 
+        // Debug: trace ALL calls from TestDictForeach method (token 0x060002E7)
+        if (_debugAssemblyId == 6 && _debugMethodToken == 0x060002E7)
+        {
+            DebugConsole.Write("[DF-Call] il=0x");
+            DebugConsole.WriteHex((ulong)(_ilOffset - 5));  // approx IL offset
+            DebugConsole.Write(" tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" hasThis=");
+            DebugConsole.Write(method.HasThis ? "Y" : "N");
+            DebugConsole.Write(" argc=");
+            DebugConsole.WriteDecimal((uint)method.ArgCount);
+            DebugConsole.Write(" total=");
+            DebugConsole.WriteDecimal((uint)totalArgs);
+            DebugConsole.Write(" ret=");
+            DebugConsole.WriteDecimal((uint)method.ReturnKind);
+            DebugConsole.Write(" depth=");
+            DebugConsole.WriteDecimal((uint)_evalStackDepth);
+            DebugConsole.WriteLine();
+
+            // DEBUG: trace struct returns (like GetEnumerator)
+            if (method.ReturnKind == ReturnKind.Struct)
+            {
+                DebugConsole.Write("[DF-StructRet] size=");
+                DebugConsole.WriteDecimal((uint)method.ReturnStructSize);
+                DebugConsole.Write(" needsHidden=");
+                DebugConsole.Write(method.ReturnStructSize > 16 ? "Y" : "N");
+                DebugConsole.WriteLine();
+            }
+
+            // DEBUG: For MoveNext call (hasThis=Y, argc=0, ret=Int32 for bool), trace the call
+            if (method.HasThis && method.ArgCount == 0 && method.ReturnKind == ReturnKind.Int32)
+            {
+                DebugConsole.Write("[DF] MoveNext call at code offset 0x");
+                DebugConsole.WriteHex((ulong)_code.Position);
+                DebugConsole.WriteLine();
+            }
+        }
+
         // Check if method returns a large struct (>16 bytes) - needs hidden buffer parameter
         bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
         int hiddenBufferSize = 0;
@@ -4643,6 +4746,21 @@ public unsafe struct ILCompiler
         {
             // Single arg: check if it's a multi-slot value type using new type system
             EvalStackEntry argEntry = PeekEntry();
+
+            // Debug: trace single-arg call in TestDictForeach
+            bool isDebugDFMoveNext = _debugAssemblyId == 6 && _debugMethodToken == 0x060002E7 &&
+                                     method.HasThis && method.ArgCount == 0;
+            if (isDebugDFMoveNext)
+            {
+                DebugConsole.Write("[DF-Call1] argEntry.ByteSize=");
+                DebugConsole.WriteDecimal((uint)argEntry.ByteSize);
+                DebugConsole.Write(" kind=");
+                DebugConsole.WriteDecimal((uint)argEntry.Kind);
+                DebugConsole.Write(" codePos=");
+                DebugConsole.WriteHex((ulong)_code.Position);
+                DebugConsole.WriteLine();
+            }
+
             if (argEntry.ByteSize > 8)
             {
                 // Large struct: pass pointer to stack data in RCX
@@ -4658,7 +4776,23 @@ public unsafe struct ILCompiler
             else
             {
                 // Single slot: pop to RCX
+                int popStart = _code.Position;
                 X64Emitter.Pop(ref _code, VReg.R1);
+                int popEnd = _code.Position;
+
+                // Debug: dump POP RCX bytes for TestDictForeach
+                if (isDebugDFMoveNext)
+                {
+                    DebugConsole.Write("[DF-POP] bytes: ");
+                    byte* codePtr = _code.Code;
+                    for (int i = popStart; i < popEnd; i++)
+                    {
+                        DebugConsole.WriteHex((ulong)codePtr[i]);
+                        DebugConsole.Write(" ");
+                    }
+                    DebugConsole.WriteLine();
+                }
+
                 PopEntry();
             }
         }
@@ -5732,6 +5866,22 @@ public unsafe struct ILCompiler
         // Check if we need a hidden return buffer for large struct returns
         bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
         int hiddenBufferSize = needsHiddenBuffer ? (int)((method.ReturnStructSize + 7) & ~7) : 0;
+
+        // Debug: trace callvirt in TestDictForeach
+        if (_debugAssemblyId == 6 && _debugMethodToken == 0x060002E7)
+        {
+            DebugConsole.Write("[DF-CVirt] tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" ret=");
+            DebugConsole.WriteDecimal((uint)method.ReturnKind);
+            DebugConsole.Write(" retSz=");
+            DebugConsole.WriteDecimal((uint)method.ReturnStructSize);
+            DebugConsole.Write(" hidden=");
+            DebugConsole.Write(needsHiddenBuffer ? "Y" : "N");
+            DebugConsole.Write(" bufSz=");
+            DebugConsole.WriteDecimal((uint)hiddenBufferSize);
+            DebugConsole.WriteLine();
+        }
 
         // Allocate shadow space (x64 ABI ALWAYS requires 32 bytes)
         // x64 ABI requires 32 bytes for the callee to home register arguments

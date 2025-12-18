@@ -332,6 +332,36 @@ public static unsafe class Tier0JIT
             DebugConsole.WriteLine();
         }
 
+        // Debug: Track TestDictForeach and MoveNext compilation
+        if (NameEquals(dbgMethodName, "TestDictForeach"))
+        {
+            DebugConsole.Write("[Tier0JIT] TestDictForeach token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" hasThis=");
+            DebugConsole.Write(hasThis ? "Y" : "N");
+            DebugConsole.Write(" args=");
+            DebugConsole.WriteDecimal((uint)jitArgCount);
+            DebugConsole.Write(" locals=");
+            DebugConsole.WriteDecimal((uint)localCount);
+            DebugConsole.WriteLine();
+        }
+        if (NameEquals(dbgMethodName, "MoveNext"))
+        {
+            DebugConsole.Write("[Tier0JIT] MoveNext token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" hasThis=");
+            DebugConsole.Write(hasThis ? "Y" : "N");
+            DebugConsole.Write(" args=");
+            DebugConsole.WriteDecimal((uint)jitArgCount);
+            DebugConsole.Write(" locals=");
+            DebugConsole.WriteDecimal((uint)localCount);
+            DebugConsole.WriteLine();
+        }
+
         // Targeted debug: inspect VirtioDevice.Initialize (asm 3, token 0x06000015)
         if (assemblyId == 3 && methodToken == 0x06000015)
         {
@@ -386,6 +416,22 @@ public static unsafe class Tier0JIT
         // Create IL compiler with jitArgCount (includes 'this' for instance methods)
         var compiler = ILCompiler.Create(body.ILCode, (int)body.CodeSize, jitArgCount, localCount);
         compiler.SetDebugContext(assemblyId, methodToken);
+
+        // Debug: trace argCount for methods that might be MoveNext
+        if (hasThis && paramCount == 0 && localCount > 0)
+        {
+            DebugConsole.Write("[JIT] Method asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" tok=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" hasThis=");
+            DebugConsole.Write(hasThis ? "Y" : "N");
+            DebugConsole.Write(" jitArgCnt=");
+            DebugConsole.WriteDecimal((uint)jitArgCount);
+            DebugConsole.Write(" locals=");
+            DebugConsole.WriteDecimal((uint)localCount);
+            DebugConsole.WriteLine();
+        }
 
         // Wire up resolvers
         MetadataIntegration.WireCompiler(ref compiler);
@@ -975,36 +1021,78 @@ public static unsafe class Tier0JIT
                             DebugConsole.WriteDecimal(resolvedBaseSize);
                         }
 
-                        // Get size of first type argument (for Nullable<T> calculation)
-                        ushort firstTypeArgSize = 0;
+                        // Get sizes of all type arguments for proper instantiated size calculation
+                        ushort* typeArgSizes = stackalloc ushort[4];
+                        uint argCount = 0;
                         if (ptr < end)
                         {
-                            uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
-                            // Parse type arguments
-                            for (uint j = 0; j < argCount && ptr < end; j++)
+                            argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                            DebugConsole.Write(" argc=");
+                            DebugConsole.WriteDecimal(argCount);
+                            // Parse type arguments and get their sizes
+                            for (uint j = 0; j < argCount && j < 4 && ptr < end; j++)
                             {
-                                if (j == 0)
-                                {
-                                    // Get the size of the first type argument
-                                    bool argIsVT;
-                                    GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out firstTypeArgSize);
-                                }
-                                else
-                                {
-                                    SkipTypeSig(ref ptr, end);
-                                }
+                                bool argIsVT;
+                                GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out typeArgSizes[j]);
+                                // Reference types still take 8 bytes as pointers
+                                if (!argIsVT && typeArgSizes[j] == 0)
+                                    typeArgSizes[j] = 8;
+                                DebugConsole.Write(" arg");
+                                DebugConsole.WriteDecimal(j);
+                                DebugConsole.Write("=");
+                                DebugConsole.WriteDecimal(typeArgSizes[j]);
                             }
+                            // Skip remaining args if more than 4
+                            for (uint j = 4; j < argCount && ptr < end; j++)
+                            {
+                                SkipTypeSig(ref ptr, end);
+                            }
+
                             // Compute size for generic value type
                             if (isValueType[i] && typeSize != null)
                             {
                                 // Use resolved size if available, otherwise fall back to GetTypeSize
                                 uint baseSize = resolvedBaseSize > 0 ? resolvedBaseSize : MetadataIntegration.GetTypeSize(fullToken);
+
                                 // Nullable<T> pattern: base size <= 8, single type arg
-                                if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                                if (baseSize <= 8 && argCount == 1 && typeArgSizes[0] > 0)
                                 {
                                     // Nullable<T>: size = 8 (hasValue + padding) + sizeof(T), aligned to 8
-                                    int alignedTSize = (firstTypeArgSize + 7) & ~7;
+                                    int alignedTSize = (typeArgSizes[0] + 7) & ~7;
                                     typeSize[i] = (ushort)(8 + alignedTSize);
+                                }
+                                // Generic struct with embedded generic fields (like Dictionary.Enumerator)
+                                // The base size from the generic definition doesn't include space for instantiated fields.
+                                // Add the total size of all type arguments to account for embedded generic fields.
+                                // Note: For nested generic types, the argCount might not reflect all type parameters.
+                                // Be conservative and add extra space.
+                                else if (argCount >= 1)
+                                {
+                                    // Calculate total type argument contribution
+                                    // Each type arg may be embedded as a field in the struct
+                                    uint typeArgTotal = 0;
+                                    for (uint j = 0; j < argCount && j < 4; j++)
+                                    {
+                                        typeArgTotal += typeArgSizes[j];
+                                    }
+
+                                    // For nested generic types (like Dictionary.Enumerator), the signature
+                                    // may not include all type arguments. Be conservative and add extra
+                                    // space: assume at least 2 reference type args (16 bytes) for complex
+                                    // generic structs where base size suggests nested generics.
+                                    // Dictionary.Enumerator has base=24, contains KeyValuePair<TKey,TValue>
+                                    if (baseSize >= 16 && typeArgTotal < 16)
+                                    {
+                                        typeArgTotal = 16; // At least 2 pointer-sized args
+                                    }
+
+                                    // Add type arg sizes to base size, align to 8
+                                    uint instantiatedSize = baseSize + typeArgTotal;
+                                    instantiatedSize = (instantiatedSize + 7) & ~7u;
+                                    typeSize[i] = (ushort)instantiatedSize;
+
+                                    DebugConsole.Write(" instSz=");
+                                    DebugConsole.WriteDecimal(instantiatedSize);
                                 }
                                 else
                                 {
@@ -1239,18 +1327,22 @@ public static unsafe class Tier0JIT
                 if (ptr < end)
                 {
                     uint typeDefOrRef = MetadataReader.ReadCompressedUInt(ref ptr);
-                    // Get size of first type argument (for Nullable<T> calculation)
-                    ushort firstTypeArgSize = 0;
+                    // Get sizes of ALL type arguments (for proper generic struct size)
+                    ushort* typeArgSizes = stackalloc ushort[4];
+                    uint argCount = 0;
                     if (ptr < end)
                     {
-                        uint argCount = MetadataReader.ReadCompressedUInt(ref ptr);
-                        // Parse type arguments
+                        argCount = MetadataReader.ReadCompressedUInt(ref ptr);
+                        // Parse type arguments and get their sizes
                         for (uint j = 0; j < argCount && ptr < end; j++)
                         {
-                            if (j == 0)
+                            if (j < 4)
                             {
                                 bool argIsVT;
-                                GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out firstTypeArgSize);
+                                GetValueTypeSigWithSize(ref ptr, end, out argIsVT, out typeArgSizes[j]);
+                                // Reference types still take 8 bytes as pointers
+                                if (!argIsVT && typeArgSizes[j] == 0)
+                                    typeArgSizes[j] = 8;
                             }
                             else
                             {
@@ -1273,10 +1365,32 @@ public static unsafe class Tier0JIT
 
                             uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
                             // Nullable<T> pattern: base size <= 8, single type arg
-                            if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                            if (baseSize <= 8 && argCount == 1 && typeArgSizes[0] > 0)
                             {
-                                int alignedTSize = (firstTypeArgSize + 7) & ~7;
+                                int alignedTSize = (typeArgSizes[0] + 7) & ~7;
                                 typeSize = (ushort)(8 + alignedTSize);
+                            }
+                            // Generic struct with embedded generic fields (like Dictionary.Enumerator)
+                            // Add type argument sizes to base size to account for instantiated fields
+                            else if (argCount >= 1)
+                            {
+                                // Calculate total type argument contribution
+                                uint typeArgTotal = 0;
+                                for (uint j = 0; j < argCount && j < 4; j++)
+                                {
+                                    typeArgTotal += typeArgSizes[j];
+                                }
+
+                                // For nested generic types, ensure minimum space
+                                if (baseSize >= 16 && typeArgTotal < 16)
+                                {
+                                    typeArgTotal = 16;
+                                }
+
+                                // Add type arg sizes to base size, align to 8
+                                uint instantiatedSize = baseSize + typeArgTotal;
+                                instantiatedSize = (instantiatedSize + 7) & ~7u;
+                                typeSize = (ushort)instantiatedSize;
                             }
                             else
                             {
