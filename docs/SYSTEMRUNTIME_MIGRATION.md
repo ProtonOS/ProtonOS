@@ -23,7 +23,7 @@ High-value types commonly needed for general programming.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `List<T>` | ~650 | **Migrated** | Full implementation with Add, Remove, Sort, etc. |
-| `Dictionary<TKey,TValue>` | ~690 | **Partial** | Skeleton exists, tests disabled pending generic type fixes |
+| `Dictionary<TKey,TValue>` | ~690 | **Migrated** | Full implementation including foreach iteration |
 | `HashSet<T>` | 595 | Not Started | Commonly used |
 | `Queue<T>` | 286 | Not Started | |
 | `Stack<T>` | 254 | Not Started | |
@@ -32,6 +32,30 @@ High-value types commonly needed for general programming.
 | `EqualityComparer<T>` | ~80 | **Migrated** | Foundation for Dictionary and collections |
 | `Comparer<T>` | ~100 | **Migrated** | Foundation for sorting |
 | `KeyNotFoundException` | ~25 | **Migrated** | Exception for Dictionary indexer |
+| `KeyValuePair<TKey,TValue>` | ~30 | **Migrated** | Used by Dictionary |
+| `IEnumerable<T>` | ~20 | **Migrated** | Generic enumeration interface |
+| `IEnumerator<T>` | ~25 | **Migrated** | Generic enumerator interface |
+| `ICollection<T>` | ~30 | **Migrated** | Collection interface |
+| `IList<T>` | ~25 | **Migrated** | List interface |
+| `IDictionary<TKey,TValue>` | ~30 | **Migrated** | Dictionary interface |
+| `IReadOnlyCollection<T>` | ~15 | **Migrated** | Read-only collection interface |
+| `IReadOnlyList<T>` | ~15 | **Migrated** | Read-only list interface |
+| `IReadOnlyDictionary<TKey,TValue>` | ~20 | **Migrated** | Read-only dictionary interface |
+| `ISet<T>` | ~25 | **Migrated** | Set interface (for future HashSet) |
+| `IComparer<T>` | ~15 | **Migrated** | Comparer interface |
+| `IEqualityComparer<T>` | ~15 | **Migrated** | Equality comparer interface |
+
+### Non-Generic Collections (`System.Collections`)
+
+| Type | Lines | Status | Notes |
+|------|-------|--------|-------|
+| `IEnumerable` | ~15 | **Migrated** | Non-generic enumeration interface |
+| `IEnumerator` | ~20 | **Migrated** | Non-generic enumerator interface |
+| `ICollection` | ~25 | **Migrated** | Non-generic collection interface |
+| `IList` | ~20 | **Migrated** | Non-generic list interface |
+| `IDictionary` | ~25 | **Migrated** | Non-generic dictionary interface |
+| `IComparer` | ~15 | **Migrated** | Non-generic comparer interface |
+| `IEqualityComparer` | ~15 | **Migrated** | Non-generic equality comparer interface |
 
 ### Object Model (`System.Collections.ObjectModel`)
 
@@ -174,15 +198,15 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 ## Migration Priority
 
 ### High Priority (commonly needed) ✅ COMPLETE
-1. ~~`List<T>`, `Dictionary<TKey,TValue>`~~ - List complete, Dictionary partial
+1. ~~`List<T>`, `Dictionary<TKey,TValue>`~~ - Both fully working with foreach
 2. ~~`StringBuilder`~~ - Full implementation
 3. ~~`EqualityComparer<T>`, `Comparer<T>`~~ - Complete with value type support
+4. ~~All collection interfaces~~ - IEnumerable, IEnumerator, ICollection, IList, etc.
 
 ### Medium Priority
-4. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections
-5. `DateTime`, `TimeSpan` - Time handling
-6. `Guid` - Unique identifiers
-7. `Dictionary<TKey,TValue>` - Complete remaining functionality
+5. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections
+6. `DateTime`, `TimeSpan` - Time handling
+7. `Guid` - Unique identifiers
 
 ### Lower Priority (migrate when needed)
 8. Async/Tasks infrastructure - Only when async/await support is required
@@ -222,7 +246,17 @@ During migration of generic collections, several JIT/runtime fixes were required
 ### Nullable<T> Boxing/Unboxing
 The value offset calculation for Nullable<T> was incorrect, causing wrong values after unboxing.
 
-**Fix**: Corrected offset calculation in boxing/unboxing paths.
+**Fix**: Corrected offset calculation in boxing/unboxing paths. Added ELEMENT_TYPE_VAR (0x13) handling in MetadataIntegration for generic type parameters in field resolution.
+
+### Newobj Temp Slot Overlap
+The `newobjTempOffset` calculation for value type constructors was using the wrong formula, causing it to overlap with local variable V_0. This caused lifted arithmetic operations on Nullable<T> to fail because the first local was corrupted.
+
+**Fix**: Changed formula from `-(_localCount * 8 + 64)` to `-(CalleeSaveSize + (_localCount + 1) * 64)` to place the temp slot after all 64-byte local slots.
+
+### Box/Unbox TypeSpec vs TypeDef
+The valueSize calculation for box/unbox was not distinguishing between TypeSpec (generic instantiations) and TypeDef (user structs), leading to incorrect sizes.
+
+**Fix**: Added token table check - TypeSpec (0x1B) generic instances have baseSize including +8, while TypeDef (0x02) user structs have baseSize = raw size.
 
 ---
 
@@ -233,3 +267,7 @@ The value offset calculation for Nullable<T> was incorrect, causing wrong values
 - **2024-12**: Added List<T>, StringBuilder, EqualityComparer<T>, Comparer<T> (492 tests)
 - **2024-12**: Fixed abstract method vtable dispatch for generic collection methods
 - **2024-12**: Fixed value type equality comparison in Object.Equals for boxed primitives
+- **2024-12**: Fixed Dictionary<TKey,TValue> - SZARRAY parsing, string hashing, ref locals (502 tests)
+- **2024-12**: Fixed Nullable<T> boxing/unboxing and ELEMENT_TYPE_VAR field resolution
+- **2024-12**: Fixed newobj temp slot overlap with local V_0 (lifted arithmetic tests)
+- **2024-12**: Enabled Iterator tests - IEnumerable/IEnumerator now resolvable (506 tests)

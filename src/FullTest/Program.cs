@@ -169,11 +169,8 @@ public static class TestRunner
         // Collection tests - tests List<T>, Dictionary<K,V>, StringBuilder from korlib
         RunCollectionTests();
 
-        // Note: Iterator tests (foreach on custom IEnumerable) disabled for now.
-        // Requires IEnumerable/IEnumerator interfaces to be resolvable, which needs
-        // either adding them to System.Runtime or implementing korlib type forwarding.
-        // This is tracked as a P2 item in JIT_GAPS.md.
-        // RunIteratorTests();
+        // Iterator tests - custom IEnumerable/IEnumerator implementations
+        RunIteratorTests();
 
         return (_passCount << 16) | _failCount;
     }
