@@ -272,6 +272,19 @@ public static class TestRunner
         RecordResult("CollectionTests.TestStringBuilderCapacity", CollectionTests.TestStringBuilderCapacity() == 1);
         RecordResult("CollectionTests.TestStringBuilderIndexer", CollectionTests.TestStringBuilderIndexer() == 1);
         RecordResult("CollectionTests.TestStringBuilderChaining", CollectionTests.TestStringBuilderChaining() == 1);
+
+        // HashSet<T> tests
+        RecordResult("CollectionTests.TestHashSetAddAndCount", CollectionTests.TestHashSetAddAndCount() == 1);
+        RecordResult("CollectionTests.TestHashSetContains", CollectionTests.TestHashSetContains() == 1);
+        RecordResult("CollectionTests.TestHashSetRemove", CollectionTests.TestHashSetRemove() == 1);
+        RecordResult("CollectionTests.TestHashSetClear", CollectionTests.TestHashSetClear() == 1);
+        RecordResult("CollectionTests.TestHashSetDuplicates", CollectionTests.TestHashSetDuplicates() == 1);
+        RecordResult("CollectionTests.TestHashSetForeach", CollectionTests.TestHashSetForeach() == 1);
+        // Set operations tests
+        RecordResult("CollectionTests.TestHashSetUnionWith", CollectionTests.TestHashSetUnionWith() == 1);
+        RecordResult("CollectionTests.TestHashSetIntersectWith", CollectionTests.TestHashSetIntersectWith() == 1);
+        RecordResult("CollectionTests.TestHashSetExceptWith", CollectionTests.TestHashSetExceptWith() == 1);
+        RecordResult("CollectionTests.TestHashSetOverlaps", CollectionTests.TestHashSetOverlaps() == 1);
     }
 
     private static void RunIteratorTests()
@@ -355,6 +368,9 @@ public static class TestRunner
         // Critical: Cross-assembly large struct return (hidden buffer convention)
         RecordResult("InstanceTests.TestCrossAssemblyLargeStructReturn", InstanceTests.TestCrossAssemblyLargeStructReturn() == 42);
         RecordResult("InstanceTests.TestCrossAssemblyLargeStructToClassField", InstanceTests.TestCrossAssemblyLargeStructToClassField() == 42);
+
+        // Regression: Virtqueue field access pattern
+        RecordResult("InstanceTests.TestVirtqueuePattern", InstanceTests.TestVirtqueuePattern() == 42);
     }
 
     private static void RunExceptionTests()
@@ -9191,6 +9207,197 @@ public static class CollectionTests
             .ToString();
 
         return result == "Hello Everyone" ? 1 : 0;
+    }
+
+    // HashSet<T> Tests
+    // =========================================================================
+
+    /// <summary>Tests HashSet Add and Count</summary>
+    public static int TestHashSetAddAndCount()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        set.Add(10);
+        set.Add(20);
+        set.Add(30);
+        return set.Count == 3 ? 1 : 0;
+    }
+
+    /// <summary>Tests HashSet Contains</summary>
+    public static int TestHashSetContains()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        set.Add(10);
+        set.Add(20);
+        set.Add(30);
+
+        if (!set.Contains(10)) return 0;
+        if (!set.Contains(20)) return 0;
+        if (set.Contains(99)) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet Remove</summary>
+    public static int TestHashSetRemove()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        set.Add(10);
+        set.Add(20);
+        set.Add(30);
+
+        if (!set.Remove(20)) return 0;
+        if (set.Count != 2) return 0;
+        if (set.Contains(20)) return 0;
+        if (!set.Contains(10)) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet Clear</summary>
+    public static int TestHashSetClear()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        set.Add(10);
+        set.Add(20);
+        set.Clear();
+        return set.Count == 0 ? 1 : 0;
+    }
+
+    /// <summary>Tests HashSet UnionWith</summary>
+    public static int TestHashSetUnionWith()
+    {
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] Creating set1...");
+        var set1 = new System.Collections.Generic.HashSet<int>();
+        set1.Add(1);
+        set1.Add(2);
+        ProtonOS.DDK.Kernel.Debug.Write("[UnionWith] set1.Count=");
+        ProtonOS.DDK.Kernel.Debug.WriteDecimal(set1.Count);
+        ProtonOS.DDK.Kernel.Debug.WriteLine("");
+
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] Creating set2...");
+        var set2 = new System.Collections.Generic.HashSet<int>();
+        set2.Add(2);
+        set2.Add(3);
+        ProtonOS.DDK.Kernel.Debug.Write("[UnionWith] set2.Count=");
+        ProtonOS.DDK.Kernel.Debug.WriteDecimal(set2.Count);
+        ProtonOS.DDK.Kernel.Debug.WriteLine("");
+
+        // Manual iteration to debug the issue
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] Getting enumerator directly...");
+        var enumerator = set2.GetEnumerator();
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] Got enumerator, calling MoveNext directly...");
+        bool result = enumerator.MoveNext();
+        ProtonOS.DDK.Kernel.Debug.Write("[UnionWith] MoveNext returned: ");
+        ProtonOS.DDK.Kernel.Debug.WriteDecimal(result ? 1U : 0U);
+        ProtonOS.DDK.Kernel.Debug.WriteLine("");
+
+        if (result)
+        {
+            ProtonOS.DDK.Kernel.Debug.Write("[UnionWith] Current: ");
+            ProtonOS.DDK.Kernel.Debug.WriteDecimal((uint)enumerator.Current);
+            ProtonOS.DDK.Kernel.Debug.WriteLine("");
+        }
+
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] About to call UnionWith...");
+        set1.UnionWith(set2);
+        ProtonOS.DDK.Kernel.Debug.WriteLine("[UnionWith] UnionWith returned!");
+
+        if (set1.Count != 3) return 0;
+        if (!set1.Contains(1)) return 0;
+        if (!set1.Contains(2)) return 0;
+        if (!set1.Contains(3)) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet IntersectWith</summary>
+    public static int TestHashSetIntersectWith()
+    {
+        var set1 = new System.Collections.Generic.HashSet<int>();
+        set1.Add(1);
+        set1.Add(2);
+        set1.Add(3);
+
+        var set2 = new System.Collections.Generic.HashSet<int>();
+        set2.Add(2);
+        set2.Add(3);
+        set2.Add(4);
+
+        set1.IntersectWith(set2);
+
+        if (set1.Count != 2) return 0;
+        if (set1.Contains(1)) return 0;
+        if (!set1.Contains(2)) return 0;
+        if (!set1.Contains(3)) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet ExceptWith</summary>
+    public static int TestHashSetExceptWith()
+    {
+        var set1 = new System.Collections.Generic.HashSet<int>();
+        set1.Add(1);
+        set1.Add(2);
+        set1.Add(3);
+
+        var set2 = new System.Collections.Generic.HashSet<int>();
+        set2.Add(2);
+
+        set1.ExceptWith(set2);
+
+        if (set1.Count != 2) return 0;
+        if (!set1.Contains(1)) return 0;
+        if (set1.Contains(2)) return 0;
+        if (!set1.Contains(3)) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet foreach iteration</summary>
+    public static int TestHashSetForeach()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        set.Add(10);
+        set.Add(20);
+        set.Add(30);
+
+        int sum = 0;
+        foreach (int item in set)
+        {
+            sum += item;
+        }
+        return sum == 60 ? 1 : 0;
+    }
+
+    /// <summary>Tests HashSet rejects duplicates</summary>
+    public static int TestHashSetDuplicates()
+    {
+        var set = new System.Collections.Generic.HashSet<int>();
+        bool added1 = set.Add(10);
+        bool added2 = set.Add(10);  // Duplicate
+        bool added3 = set.Add(20);
+
+        if (!added1) return 0;  // First add should succeed
+        if (added2) return 0;   // Duplicate should return false
+        if (!added3) return 0;  // New value should succeed
+        if (set.Count != 2) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests HashSet Overlaps</summary>
+    public static int TestHashSetOverlaps()
+    {
+        var set1 = new System.Collections.Generic.HashSet<int>();
+        set1.Add(1);
+        set1.Add(2);
+
+        var set2 = new System.Collections.Generic.HashSet<int>();
+        set2.Add(2);
+        set2.Add(3);
+
+        var set3 = new System.Collections.Generic.HashSet<int>();
+        set3.Add(4);
+        set3.Add(5);
+
+        if (!set1.Overlaps(set2)) return 0;  // Should overlap (share 2)
+        if (set1.Overlaps(set3)) return 0;   // Should not overlap
+        return 1;
     }
 }
 

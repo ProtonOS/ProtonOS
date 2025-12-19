@@ -24,9 +24,9 @@ High-value types commonly needed for general programming.
 |------|-------|--------|-------|
 | `List<T>` | ~650 | **Migrated** | Full implementation with Add, Remove, Sort, etc. |
 | `Dictionary<TKey,TValue>` | ~690 | **Migrated** | Full implementation including foreach iteration |
-| `HashSet<T>` | 595 | Not Started | Commonly used |
-| `Queue<T>` | 286 | **Migrated** | FIFO collection - basic ops work, foreach disabled (enumerator JIT issue) |
-| `Stack<T>` | 254 | **Migrated** | LIFO collection - basic ops work, foreach disabled (enumerator JIT issue) |
+| `HashSet<T>` | ~595 | **Migrated** | Full implementation with set operations (UnionWith, IntersectWith, ExceptWith, Overlaps) |
+| `Queue<T>` | 286 | **Migrated** | FIFO collection with full foreach support |
+| `Stack<T>` | 254 | **Migrated** | LIFO collection with full foreach support |
 | `LinkedList<T>` | 549 | Not Started | Less commonly used |
 | `SortedList<TKey,TValue>` | 773 | Not Started | Less commonly used |
 | `EqualityComparer<T>` | ~80 | **Migrated** | Foundation for Dictionary and collections |
@@ -209,7 +209,7 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 6. ~~`Queue<T>`, `Stack<T>`~~ - Basic operations work (Enqueue/Dequeue, Push/Pop, Contains, Clear), foreach disabled
 7. ~~`TimeSpan`~~ - Fully working
 8. ~~`Guid`~~ - Fully working (parsing, equality, comparison)
-9. `HashSet<T>` - Useful collection (not started)
+9. ~~`HashSet<T>`~~ - Basic operations work (Add, Remove, Contains, Clear), foreach disabled
 10. `DateTime` - Time handling (not started)
 
 ### Lower Priority (migrate when needed)
@@ -279,15 +279,24 @@ This caused `Int32.GetHashCode()` to read the wrong memory location, returning g
 
 **Fix**: Added inline handling for primitive `GetHashCode` (vtable slot 2) in the constrained callvirt code path. Instead of calling the AOT method, the JIT now directly loads the value from `[managed_ptr+0]` using correct byref semantics.
 
-### Generic Interface Resolution Loop (PENDING)
-Types implementing `IComparable<T>` and `IEquatable<T>` (TimeSpan, Guid) cause the JIT to enter a slow/infinite loop when resolving generic type instantiations. Similarly, `Queue<T>.Enumerator` and `Stack<T>.Enumerator` structs implementing `IEnumerator<T>` cause the same issue.
+### Direct Instance Call on Primitives (call instance)
+When calling `int.GetHashCode()` directly via `ldloca; call instance` (not through constrained callvirt), the AOT registry's `Int32Helpers.GetHashCode` was being called with a byref pointer. The original implementation expected a boxed object (value at `[this+8]`), but received a byref (value at `[this+0]`).
 
-The symptoms are repeated log messages like:
-- `[CreateMT] token=0x02000056 base=0 new=3 iface=3 total=3`
-- `[GenInst] LookupByVtableSlot failed for slot 3`
-- `[AsmLoader] TypeSpec unhandled elementType 0x00000000`
+**Fix**: Modified `Int32Helpers.GetHashCode` to detect the calling convention by checking if the first 8 bytes at `thisPtr` look like a MethodTable pointer (> 0x100000) or an actual int value. This allows the same method to handle both boxed objects and byref calls.
 
-**Status**: Investigation needed. The types are migrated to korlib but tests are disabled until this JIT issue is resolved. Basic operations (Push, Pop, Enqueue, Dequeue) without iteration should work.
+### Ref Locals to Array Elements
+Using `ref Entry entry = ref entries[i]` in loops can cause incorrect behavior. The JIT's handling of ref locals pointing to array elements appears to have issues with the address calculation or tracking.
+
+**Workaround**: Use direct array indexing (`entries[i].field`) instead of ref locals. This issue affected:
+- `HashSet<T>.Remove` - fixed by using direct array indexing
+- `HashSet<T>.Enumerator.MoveNext` - fixed by using direct array indexing
+
+### Generic Interface Resolution (Partially Resolved)
+Previous concern about types implementing generic interfaces (`IComparable<T>`, `IEquatable<T>`, `IEnumerator<T>`) causing infinite loops has been partially resolved. All collection enumerators (List, Dictionary, HashSet, Queue, Stack) now work correctly with **direct foreach** on the collection.
+
+**Remaining Issue**: Calling `GetEnumerator()` through the `IEnumerable<T>` interface (as opposed to directly on the collection type) causes a page fault crash. This affects methods like `HashSet<T>.UnionWith(IEnumerable<T>)` which iterate over the `other` parameter via interface dispatch.
+
+Note: Some repeated type resolution log messages may appear during JIT compilation, but they don't affect functionality for direct foreach.
 
 ---
 
@@ -309,3 +318,8 @@ The symptoms are repeated log messages like:
 - **2024-12**: Fixed TimeSpan by removing generic interfaces (IEquatable<T>, IComparable<T>), inlined constructor bodies (520 tests)
 - **2024-12**: Fixed Queue<T>, Stack<T> by replacing Array.Empty<T>(), Array.IndexOf<T>() with inline implementations
 - **2024-12**: Fixed constrained callvirt on primitives - inline GetHashCode to handle byref vs boxed object calling convention mismatch (525 tests)
+- **2024-12**: Fixed Int32.GetHashCode AOT wrapper to handle both byref and boxed object calling conventions
+- **2024-12**: Migrated HashSet<T> to korlib with full Add, Remove, Contains, Clear operations
+- **2024-12**: Fixed HashSet ref local JIT issue by using direct array indexing instead of ref locals (530 tests)
+- **2024-12**: Fixed HashSet Enumerator ref local issue, enabled foreach iteration (531 tests)
+- **2024-12**: Enabled TestVirtqueuePattern regression test (532 tests)

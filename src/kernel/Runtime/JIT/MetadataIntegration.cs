@@ -4516,10 +4516,17 @@ public static unsafe class MetadataIntegration
                     MethodTable* typeArgMT = GetTypeTypeArgMethodTable((int)varIndex);
                     if (typeArgMT != null)
                     {
-                        // For value types: _uBaseSize includes MT pointer (8 bytes)
+                        // For value types: _uBaseSize IS the raw struct size (no MT pointer)
+                        // This is consistent with ComputeInstanceSize(isValueType=true)
                         // For reference types: always 8 bytes (pointer size)
                         if (typeArgMT->IsValueType)
-                            size = (int)(typeArgMT->_uBaseSize > 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize);
+                        {
+                            // For AOT primitives, use ComponentSize if set
+                            if (typeArgMT->_usComponentSize > 0)
+                                size = typeArgMT->_usComponentSize;
+                            else
+                                size = (int)typeArgMT->_uBaseSize;
+                        }
                         else
                             size = 8;
                     }

@@ -4648,6 +4648,39 @@ public unsafe struct ILCompiler
             // (full tail call optimization would require more complex stack manipulation)
         }
 
+        // OPTIMIZATION: For primitive types, inline GetHashCode instead of calling AOT method
+        // When calling e.g. `10.GetHashCode()` via `ldloca; call instance`, the this pointer
+        // is a byref to the value (value at [this+0]). But the AOT-compiled method expects
+        // a boxed object (value at [this+8]). So we inline it to use correct byref semantics.
+        // Note: This optimization only triggers when VtableSlot and MethodTable are set,
+        // which doesn't happen for all call paths. The AOT registry's Int32Helpers.GetHashCode
+        // handles both byref and boxed cases as a fallback.
+        if (method.HasThis && method.ArgCount == 0 && method.VtableSlot == 2 &&
+            method.MethodTable != null && MetadataIntegration.IsPrimitiveMT((MethodTable*)method.MethodTable))
+        {
+            // Stack has: [byref_to_value]
+            // Pop the byref
+            X64Emitter.Pop(ref _code, VReg.R0);   // RAX = byref to value
+            PopEntry();
+
+            // Load value from byref - this is the hash code for primitives
+            // Check the size based on the MethodTable to handle different primitive sizes
+            MethodTable* mt = (MethodTable*)method.MethodTable;
+            int valueSize = (int)(mt->BaseSize - 8);  // BaseSize includes 8-byte header
+            if (valueSize <= 0) valueSize = 4;  // Default to 4 bytes for int32
+
+            if (valueSize <= 4)
+                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);  // EAX = *byref (sign-extended to RAX)
+            else
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);    // RAX = *byref
+
+            // Push result
+            X64Emitter.Push(ref _code, VReg.R0);
+            PushEntry(EvalStackEntry.Int32);
+
+            return true;  // Don't proceed with normal call
+        }
+
         int totalArgs = method.ArgCount;
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg
@@ -5518,8 +5551,20 @@ public unsafe struct ILCompiler
                     int numArgs = tempMethod.ArgCount;  // Args NOT including 'this'
 
                     // Get the value size from the MethodTable
+                    // For value types, baseSize IS the raw struct size (no MT pointer included)
                     uint baseSize = constraintMT->_uBaseSize;
-                    int valueSize = (int)(baseSize - 8);  // Subtract MethodTable pointer (8 bytes)
+                    int valueSize;
+                    ushort componentSize = constraintMT->_usComponentSize;
+                    if (componentSize > 0)
+                    {
+                        // AOT primitive: ComponentSize is the raw value size
+                        valueSize = componentSize;
+                    }
+                    else
+                    {
+                        // JIT value type: baseSize is the raw struct size
+                        valueSize = (int)baseSize;
+                    }
                     if (valueSize <= 0) valueSize = 8;  // Minimum
 
                     // ECMA-335 III.2.1: If the value type implements the method, call directly
@@ -6112,6 +6157,23 @@ public unsafe struct ILCompiler
 
             // Restore args from callee-saved registers
             X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // Restore this
+
+            // For boxed value types, adjust 'this' to point to value data (offset 8)
+            // The boxed object layout is: [MT pointer (8 bytes)][value data...]
+            // Value type methods expect 'this' to point to value data, not the MT pointer
+            // Load MT pointer from [this]
+            X64Emitter.MovRM(ref _code, VReg.R0, VReg.R1, 0);  // RAX = [RCX] = MethodTable*
+            // Load _usFlags from [MT + 2] (16-bit at offset 2 in MethodTable)
+            X64Emitter.MovRM16(ref _code, VReg.R0, VReg.R0, 2);  // RAX = MT->_usFlags (zero-extended)
+            // Test IsValueType flag (bit 5 = 0x0020 in _usFlags)
+            X64Emitter.AndImm(ref _code, VReg.R0, 0x0020);  // ZF=1 if not value type
+            // Skip adjustment if not value type (ZF=1 means AND result was zero)
+            int skipValueTypeAdjust = X64Emitter.Je(ref _code);
+            // Add 8 to 'this' to skip MT pointer and point to value data
+            X64Emitter.AddRI(ref _code, VReg.R1, 8);
+            // Patch the jump target to here
+            X64Emitter.PatchJump(ref _code, skipValueTypeAdjust, _code.Position);
+
             if (totalArgs >= 2)
                 X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);  // Restore arg1
             if (totalArgs >= 3)
@@ -7318,23 +7380,23 @@ public unsafe struct ILCompiler
             isValueType = field.IsDeclaringTypeValueType;
             declaringTypeSize = field.DeclaringTypeSize;
             fieldTypeIsValueType = field.IsFieldTypeValueType;
-            // ldfld field resolver debug (verbose - commented out)
-            // if (isDebugMapBars)
-            // {
-            //     DebugConsole.Write("[LdfldDbg] tok=0x");
-            //     DebugConsole.WriteHex(token);
-            //     DebugConsole.Write(" off=");
-            //     DebugConsole.WriteDecimal((uint)offset);
-            //     DebugConsole.Write(" size=");
-            //     DebugConsole.WriteDecimal((uint)size);
-            //     DebugConsole.Write(" declVT=");
-            //     DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-            //     DebugConsole.Write(" declSize=");
-            //     DebugConsole.WriteDecimal((uint)declaringTypeSize);
-            //     DebugConsole.Write(" fieldVT=");
-            //     DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-            //     DebugConsole.WriteLine();
-            // }
+            // ldfld field resolver debug - enabled for Enumerator debugging
+            if (declaringTypeSize == 24 && isValueType)  // HashSet.Enumerator or similar
+            {
+                DebugConsole.Write("[LdfldDbg] tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" off=");
+                DebugConsole.WriteDecimal((uint)offset);
+                DebugConsole.Write(" size=");
+                DebugConsole.WriteDecimal((uint)size);
+                DebugConsole.Write(" declVT=");
+                DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
+                DebugConsole.Write(" declSize=");
+                DebugConsole.WriteDecimal((uint)declaringTypeSize);
+                DebugConsole.Write(" fieldVT=");
+                DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
+                DebugConsole.WriteLine();
+            }
         }
         else
         {
@@ -9313,9 +9375,10 @@ public unsafe struct ILCompiler
                 }
 
                 // For value types, we need the raw value size (bytes to copy when boxing).
-                // - AOT primitives: ComponentSize is raw size, BaseSize is boxed size (includes +8)
-                // - TypeSpec (0x1B) generic instances: ComponentSize is 0, BaseSize is boxed size (includes +8)
-                // - TypeDef (0x02) user structs: ComponentSize is 0, BaseSize IS raw size (no +8)
+                // - AOT primitives: ComponentSize is raw size, BaseSize may differ
+                // - JIT value types (TypeSpec or TypeDef): BaseSize IS the raw struct size (no +8)
+                //   This was corrected in GetOrCreateGenericInstMethodTable to use ComputeInstanceSize
+                //   with isValueType=true, which returns the raw struct size without MT pointer.
                 // For reference types (boxing a ref type is a no-op), just return - leave value on stack.
                 if (mt->IsValueType)
                 {
@@ -9327,16 +9390,8 @@ public unsafe struct ILCompiler
                     }
                     else
                     {
-                        // Check token table to determine if baseSize includes +8 or not
-                        uint tokenTable = token >> 24;
-                        if (tokenTable == 0x1B)  // TypeSpec - generic instantiation, baseSize includes +8
-                        {
-                            valueSize = baseSize > 8 ? baseSize - 8 : baseSize;
-                        }
-                        else  // TypeDef (0x02) or other - baseSize IS the raw value size
-                        {
-                            valueSize = baseSize;
-                        }
+                        // For JIT-resolved value types, baseSize is the raw struct size
+                        valueSize = baseSize;
                     }
                     DebugConsole.Write(" valueSize=");
                     DebugConsole.WriteHex(valueSize);
@@ -9898,20 +9953,16 @@ public unsafe struct ILCompiler
 
                     // Get the Nullable struct size - must match how boxing determines size
                     // For AOT types: ComponentSize is raw size
-                    // For TypeSpec (0x1B) generic instances: BaseSize includes +8
-                    // For TypeDef (0x02) local types: BaseSize IS the raw size
-                    ushort componentSize = mt->_usComponentSize;
-                    if (componentSize > 0)
+                    // For JIT types: BaseSize IS the raw struct size (no +8)
+                    ushort nullableComponentSize = mt->_usComponentSize;
+                    if (nullableComponentSize > 0)
                     {
-                        nullableSize = componentSize;
+                        nullableSize = nullableComponentSize;
                     }
                     else
                     {
-                        uint tokenTable = token >> 24;
-                        if (tokenTable == 0x1B)  // TypeSpec - generic instantiation
-                            nullableSize = baseSize > 8 ? baseSize - 8 : baseSize;
-                        else
-                            nullableSize = baseSize;
+                        // JIT value types: baseSize is the raw struct size
+                        nullableSize = baseSize;
                     }
 
                     // Get the inner type's MethodTable from _relatedType
@@ -9928,20 +9979,18 @@ public unsafe struct ILCompiler
                     }
                 }
 
-                // Token table is in high byte:
-                // 0x01 = TypeRef (external type, like System.Int32 from System.Runtime)
-                // 0x02 = TypeDef (local type defined in the user assembly)
-                // External types have BaseSize that includes 8-byte MT pointer overhead
-                // Local types have BaseSize = actual value size (no overhead)
-                bool isExternalType = (token >> 24) == 0x01;
-                if (isExternalType)
+                // For value types, we need the raw value size (bytes to copy when unboxing).
+                // - AOT primitives: ComponentSize is raw size
+                // - JIT value types: BaseSize IS the raw struct size (no +8)
+                ushort componentSize = mt->_usComponentSize;
+                if (componentSize > 0)
                 {
-                    // External type: BaseSize includes MT pointer overhead
-                    valueSize = baseSize - 8;
+                    // AOT primitive: ComponentSize is the raw value size
+                    valueSize = componentSize;
                 }
                 else
                 {
-                    // Local type: BaseSize IS the value size
+                    // JIT value type: baseSize is the raw struct size
                     valueSize = baseSize;
                 }
             }

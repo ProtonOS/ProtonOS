@@ -1964,16 +1964,9 @@ public static unsafe class AssemblyLoader
         // (not just Object methods tracked in overriddenSlots)
         RegisterOverrideMethodsForLazyJit(asm, rowId, mt, overriddenSlots);
 
-        // Register new virtual methods (newslot) for lazy JIT compilation
-        // These are methods introduced by this type (like interface implementations)
-        if (newVirtualSlots > 0)
-        {
-            RegisterNewVirtualMethodsForLazyJit(asm, rowId, mt, baseVtableSlots);
-        }
-
-        // Populate interface map if this type implements interfaces
-        // The interface method implementations start after inherited and new virtual slots.
-        // For simple cases, interface methods are the "newslot virtual" methods.
+        // Populate interface map BEFORE registering new virtual methods
+        // This is needed so that FindExplicitInterfaceSlot can look up interface slots
+        // for explicit interface implementations
         if (numInterfaces > 0)
         {
             // Interface methods start at baseVtableSlots (after Object methods)
@@ -1982,7 +1975,346 @@ public static unsafe class AssemblyLoader
             PopulateInterfaceMap(asm, rowId, mt, baseVtableSlots, baseMT);
         }
 
+        // Register new virtual methods (newslot) for lazy JIT compilation
+        // These are methods introduced by this type (like interface implementations)
+        // Now that interface map is populated, explicit interface implementations
+        // can be registered at the correct interface slots
+        if (newVirtualSlots > 0)
+        {
+            RegisterNewVirtualMethodsForLazyJit(asm, rowId, mt, baseVtableSlots);
+        }
+
         return mt;
+    }
+
+    /// <summary>
+    /// Find the interface slot for an explicit interface implementation method.
+    /// Detects explicit implementations by method name (containing interface prefix, e.g. "IEnumerable.GetEnumerator")
+    /// or via MethodImpl table entries.
+    /// Returns the vtable slot if this method implements an interface method, or -1 if not.
+    /// </summary>
+    /// <param name="asm">The assembly containing the type</param>
+    /// <param name="typeDefRow">The TypeDef row ID</param>
+    /// <param name="methodRow">The MethodDef row ID to check</param>
+    /// <param name="mt">The MethodTable to look up interface slots from</param>
+    /// <returns>The vtable slot for the interface method, or -1 if not an explicit implementation</returns>
+    private static short FindExplicitInterfaceSlot(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt)
+    {
+        // Get the method name
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        if (methodName == null)
+            return -1;
+
+        // Check if this is an explicit interface implementation by name pattern
+        // Explicit implementations have names like "System.Collections.Generic.IEnumerable<T>.GetEnumerator"
+        // We detect this by looking for '.' followed by interface method name at the end
+        // Find the last '.' to extract the method name part
+        int len = 0;
+        int lastDot = -1;
+        for (int i = 0; methodName[i] != 0; i++)
+        {
+            if (methodName[i] == '.')
+                lastDot = i;
+            len++;
+        }
+
+        // If no dot or dot at start/end, not an explicit implementation
+        if (lastDot <= 0 || lastDot >= len - 1)
+        {
+            // Also try MethodImpl table as fallback
+            return FindExplicitInterfaceSlotViaMethodImpl(asm, typeDefRow, methodRow, mt);
+        }
+
+        // Extract the interface prefix (everything before the last dot)
+        byte* interfacePrefix = methodName;
+        int prefixLen = lastDot;
+
+        // Extract the simple method name (everything after the last dot)
+        byte* simpleMethodName = methodName + lastDot + 1;
+
+        // Search through the type's interface map to find a matching interface
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int numInterfaces = mt->_usNumInterfaces;
+
+        for (int i = 0; i < numInterfaces; i++)
+        {
+            MethodTable* interfaceMT = map[i].InterfaceMT;
+            if (interfaceMT == null)
+                continue;
+
+            // Get the interface type name to compare with the prefix
+            uint ifAsmId, ifTypeToken;
+            Reflection.ReflectionRuntime.LookupTypeInfo(interfaceMT, out ifAsmId, out ifTypeToken);
+            if (ifAsmId == 0 || ifTypeToken == 0)
+                continue;
+
+            LoadedAssembly* ifAsm = GetAssembly(ifAsmId);
+            if (ifAsm == null)
+                continue;
+
+            uint ifTypeDefRow = ifTypeToken & 0x00FFFFFF;
+            uint ifNameIdx = MetadataReader.GetTypeDefName(ref ifAsm->Tables, ref ifAsm->Sizes, ifTypeDefRow);
+            uint ifNsIdx = MetadataReader.GetTypeDefNamespace(ref ifAsm->Tables, ref ifAsm->Sizes, ifTypeDefRow);
+            byte* ifName = MetadataReader.GetString(ref ifAsm->Metadata, ifNameIdx);
+            byte* ifNs = MetadataReader.GetString(ref ifAsm->Metadata, ifNsIdx);
+
+            // Build the full interface name to compare
+            // For generic interfaces, the name in the method might include type params like "IEnumerable<T>"
+            // But the TypeDef name is "IEnumerable`1"
+            // We need to match flexibly
+            if (InterfaceNameMatchesPrefix(ifNs, ifName, interfacePrefix, prefixLen))
+            {
+                // Found matching interface - now find the method index
+                short methodIndex = FindMethodIndexInInterface(interfaceMT, simpleMethodName, asm);
+                if (methodIndex >= 0)
+                {
+                    return (short)(map[i].StartSlot + methodIndex);
+                }
+            }
+        }
+
+        // Fallback to MethodImpl table
+        return FindExplicitInterfaceSlotViaMethodImpl(asm, typeDefRow, methodRow, mt);
+    }
+
+    /// <summary>
+    /// Check if an interface name matches a method name prefix.
+    /// Handles generic types where the prefix might be "IEnumerable<T>" but the type name is "IEnumerable`1".
+    /// </summary>
+    private static bool InterfaceNameMatchesPrefix(byte* ifNs, byte* ifName, byte* prefix, int prefixLen)
+    {
+        // Build expected prefix from namespace and name
+        // Format: "Namespace.TypeName" or for generics "Namespace.TypeName<T>"
+
+        // First, match the namespace part
+        int pos = 0;
+        if (ifNs != null && ifNs[0] != 0)
+        {
+            for (int i = 0; ifNs[i] != 0; i++)
+            {
+                if (pos >= prefixLen || ifNs[i] != prefix[pos])
+                    return false;
+                pos++;
+            }
+            // Expect a dot after namespace
+            if (pos >= prefixLen || prefix[pos] != '.')
+                return false;
+            pos++;
+        }
+
+        // Now match the type name part
+        // For generic types, ifName might be "IEnumerable`1" but prefix might be "IEnumerable<T>"
+        int namePos = 0;
+        while (ifName[namePos] != 0 && ifName[namePos] != '`')
+        {
+            if (pos >= prefixLen || ifName[namePos] != prefix[pos])
+                return false;
+            pos++;
+            namePos++;
+        }
+
+        // If we're at a backtick, the prefix might have <...> instead
+        if (ifName[namePos] == '`')
+        {
+            // Skip the generic arity in the type name
+            // The prefix should have < at this point
+            if (pos < prefixLen && prefix[pos] == '<')
+            {
+                // Skip to the end of the prefix (we don't validate the generic args)
+                return true;
+            }
+            // Or the prefix might just end here (no generic args in name)
+            return pos >= prefixLen;
+        }
+
+        // Both should be at the end
+        return pos >= prefixLen;
+    }
+
+    /// <summary>
+    /// Find the interface slot via MethodImpl table (fallback for assemblies that use MethodImpl).
+    /// </summary>
+    private static short FindExplicitInterfaceSlotViaMethodImpl(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt)
+    {
+        uint methodImplCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodImpl];
+        if (methodImplCount == 0)
+            return -1;
+
+        for (uint i = 1; i <= methodImplCount; i++)
+        {
+            uint implClass = MetadataReader.GetMethodImplClass(ref asm->Tables, ref asm->Sizes, i);
+            if (implClass != typeDefRow)
+                continue;
+
+            // Get MethodBody - the implementing method
+            uint methodBody = MetadataReader.GetMethodImplMethodBody(ref asm->Tables, ref asm->Sizes, i, ref asm->Tables);
+
+            // MethodDefOrRef coded index: MethodDef=0, MemberRef=1
+            uint bodyTag = methodBody & 0x01;
+            uint bodyRow = methodBody >> 1;
+
+            // We're looking for MethodDef entries matching our method row
+            if (bodyTag == 0 && bodyRow == methodRow)
+            {
+                // Found a MethodImpl entry for this method
+                // Now get the MethodDeclaration (interface method being implemented)
+                uint methodDecl = MetadataReader.GetMethodImplMethodDeclaration(ref asm->Tables, ref asm->Sizes, i, ref asm->Tables);
+                uint declTag = methodDecl & 0x01;
+                uint declRow = methodDecl >> 1;
+
+                // MethodDeclaration is usually a MemberRef pointing to the interface method
+                if (declTag == 1)  // MemberRef
+                {
+                    // Get the interface type from the MemberRef parent
+                    CodedIndex classRef = MetadataReader.GetMemberRefClass(
+                        ref asm->Tables, ref asm->Sizes, declRow);
+
+                    MethodTable* interfaceMT = null;
+
+                    if (classRef.Table == MetadataTableId.TypeRef)
+                    {
+                        // Resolve TypeRef to get interface MT
+                        LoadedAssembly* targetAsm;
+                        uint targetToken;
+                        if (ResolveTypeRefToTypeDef(asm, classRef.RowId, out targetAsm, out targetToken) && targetAsm != null)
+                        {
+                            interfaceMT = targetAsm->Types.Lookup(targetToken);
+                        }
+                    }
+                    else if (classRef.Table == MetadataTableId.TypeSpec)
+                    {
+                        // Generic interface instantiation
+                        uint typeSpecToken = 0x1B000000 | classRef.RowId;
+                        interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+                    }
+                    else if (classRef.Table == MetadataTableId.TypeDef)
+                    {
+                        uint ifaceToken = 0x02000000 | classRef.RowId;
+                        interfaceMT = asm->Types.Lookup(ifaceToken);
+                    }
+
+                    if (interfaceMT != null)
+                    {
+                        // Find this interface in the MT's interface map and get the slot
+                        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+                        int numInterfaces = mt->_usNumInterfaces;
+
+                        for (int j = 0; j < numInterfaces; j++)
+                        {
+                            if (map[j].InterfaceMT == interfaceMT)
+                            {
+                                // Found the interface - now find which method within the interface
+                                // Get the method name from the MemberRef
+                                uint nameIdx = MetadataReader.GetMemberRefName(ref asm->Tables, ref asm->Sizes, declRow);
+                                byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+
+                                // Find this method's index in the interface's method list
+                                // For now, use a simple name-based lookup in the interface
+                                short methodIndex = FindMethodIndexInInterface(interfaceMT, methodName, asm);
+                                if (methodIndex >= 0)
+                                {
+                                    return (short)(map[j].StartSlot + methodIndex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Find the index of a method by name in an interface's method list.
+    /// </summary>
+    private static short FindMethodIndexInInterface(MethodTable* interfaceMT, byte* methodName, LoadedAssembly* contextAsm)
+    {
+        // Look up the interface type info to find its methods
+        uint asmId, typeToken;
+        Reflection.ReflectionRuntime.LookupTypeInfo(interfaceMT, out asmId, out typeToken);
+
+        if (asmId == 0 || typeToken == 0)
+            return -1;
+
+        LoadedAssembly* ifaceAsm = GetAssembly(asmId);
+        if (ifaceAsm == null)
+            return -1;
+
+        uint typeDefRow = typeToken & 0x00FFFFFF;
+
+        // Get method range for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, typeDefRow);
+        uint typeDefCount = ifaceAsm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = ifaceAsm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        uint methodEnd;
+        if (typeDefRow < typeDefCount)
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = methodCount + 1;
+
+        short index = 0;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            uint nameIdx = MetadataReader.GetMethodDefName(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, methodRow);
+            byte* ifaceMethodName = MetadataReader.GetString(ref ifaceAsm->Metadata, nameIdx);
+
+            if (ifaceMethodName != null && NameEquals(methodName, ifaceMethodName))
+            {
+                return index;
+            }
+
+            // Only count virtual methods (interface methods are always virtual)
+            ushort flags = MetadataReader.GetMethodDefFlags(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, methodRow);
+            if ((flags & MethodDefFlags.Virtual) != 0)
+            {
+                index++;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Find the interface slot for an implicit interface implementation.
+    /// An implicit implementation is a public method with the same name as an interface method.
+    /// Returns -1 if not an implicit interface implementation.
+    /// </summary>
+    private static short FindImplicitInterfaceSlot(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt)
+    {
+        // Get the method name
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        if (methodName == null)
+            return -1;
+
+        // Check if the method is public (implicit implementations must be public)
+        ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+        if ((methodFlags & MethodDefFlags.MemberAccessMask) != MethodDefFlags.Public)
+            return -1;
+
+        // Search through the type's interface map to find a matching interface method
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int numInterfaces = mt->_usNumInterfaces;
+
+        for (int i = 0; i < numInterfaces; i++)
+        {
+            MethodTable* interfaceMT = map[i].InterfaceMT;
+            if (interfaceMT == null)
+                continue;
+
+            // Find the method index in this interface
+            short methodIndex = FindMethodIndexInInterface(interfaceMT, methodName, asm);
+            if (methodIndex >= 0)
+            {
+                // Found a match - return the interface slot
+                return (short)(map[i].StartSlot + methodIndex);
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -2015,11 +2347,37 @@ public static unsafe class AssemblyLoader
 
             if (isVirtual && isNewSlot && !isStatic && !isAbstract)
             {
-                // Register this new virtual method for lazy JIT
                 uint methodToken = 0x06000000 | methodRow;
-                JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
-                    methodToken, asm->AssemblyId, mt, currentSlot);
-                currentSlot++;
+
+                // Check if this is an explicit interface implementation
+                // If so, register at the interface slot instead of sequential slot
+                short interfaceSlot = FindExplicitInterfaceSlot(asm, typeDefRow, methodRow, mt);
+                if (interfaceSlot >= 0)
+                {
+                    // Explicit interface implementation - register at interface slot
+                    JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                        methodToken, asm->AssemblyId, mt, interfaceSlot);
+                    // Don't increment currentSlot - this uses an interface slot
+                }
+                else
+                {
+                    // Not an explicit implementation - check for implicit interface implementation
+                    short implicitSlot = FindImplicitInterfaceSlot(asm, typeDefRow, methodRow, mt);
+                    if (implicitSlot >= 0)
+                    {
+                        // Implicit interface implementation - register at interface slot
+                        JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                            methodToken, asm->AssemblyId, mt, implicitSlot);
+                        // Don't increment currentSlot - this uses an interface slot
+                    }
+                    else
+                    {
+                        // Regular new virtual method - register at sequential slot
+                        JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                            methodToken, asm->AssemblyId, mt, currentSlot);
+                        currentSlot++;
+                    }
+                }
             }
             else if (isVirtual && isNewSlot && !isStatic && isAbstract)
             {
@@ -3426,6 +3784,38 @@ public static unsafe class AssemblyLoader
             return 8;
 
         byte elementType = typeSig[0];
+
+        // Handle type variable (ELEMENT_TYPE_VAR = 0x13) - look up from type context
+        if (elementType == 0x13)
+        {
+            if (sigLen >= 2)
+            {
+                // Get the type variable index
+                uint varIndex = typeSig[1];
+                int typeArgCount = JIT.MetadataIntegration.GetTypeTypeArgCount();
+                if (varIndex < (uint)typeArgCount)
+                {
+                    MethodTable* typeArgMT = JIT.MetadataIntegration.GetTypeTypeArgMethodTable((int)varIndex);
+                    if (typeArgMT != null)
+                    {
+                        // For value types, use the actual size; for reference types, it's 8
+                        if (typeArgMT->IsValueType)
+                        {
+                            // For AOT primitives, ComponentSize is the raw value size
+                            if (typeArgMT->_usComponentSize > 0)
+                                return typeArgMT->_usComponentSize;
+                            // For JIT value types, BaseSize IS the raw struct size
+                            return typeArgMT->_uBaseSize;
+                        }
+                        else
+                        {
+                            return 8;  // Reference type
+                        }
+                    }
+                }
+            }
+            return 8;  // Default to pointer size if context not available
+        }
 
         // For primitive types, use simple lookup
         if (elementType != 0x11 && elementType != 0x12 && elementType != 0x15)
@@ -7027,7 +7417,7 @@ public static unsafe class AssemblyLoader
     }
 
     // Cache for generic instantiation MethodTables
-    private const int MaxGenericInstCache = 64;
+    private const int MaxGenericInstCache = 512;
     private const int MaxTypeArgsPerInst = 4;  // Support up to 4 type args per generic type
     private static uint* _genericInstCacheDefTokens;
     private static ulong* _genericInstCacheArgHashes;  // Hash of type arg MTs
@@ -7214,10 +7604,45 @@ public static unsafe class AssemblyLoader
         // Copy base info from generic definition if available
         if (genDefMT != null)
         {
-            instMT->_uBaseSize = genDefMT->_uBaseSize;
             instMT->_usFlags = genDefMT->_usFlags;
             instMT->_usNumVtableSlots = genDefMT->_usNumVtableSlots;
             instMT->_usNumInterfaces = genDefMT->_usNumInterfaces;
+
+            // For value types, recalculate the base size with type context
+            // This is critical for generic value types like HashSet<T>.Enumerator where
+            // fields of type T need to use the actual type argument size, not 8 bytes
+            if (isValueType && defAsm != null && defTypeDefToken != 0)
+            {
+                uint typeDefRow = defTypeDefToken & 0x00FFFFFF;
+
+                // Set type context before computing size
+                int savedContextCnt = JIT.MetadataIntegration.GetTypeTypeArgCount();
+                MethodTable** savedCtxArgs = stackalloc MethodTable*[savedContextCnt > 0 ? savedContextCnt : 1];
+                for (int ctx = 0; ctx < savedContextCnt; ctx++)
+                    savedCtxArgs[ctx] = JIT.MetadataIntegration.GetTypeTypeArgMethodTable(ctx);
+
+                JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
+
+                // Recalculate the instance size with type context set
+                uint computedSize = ComputeInstanceSize(defAsm, typeDefRow, true);
+                instMT->_uBaseSize = computedSize;
+
+                DebugConsole.Write("[GenInst] ValueType recalculated size: ");
+                DebugConsole.WriteDecimal(computedSize);
+                DebugConsole.Write(" (was ");
+                DebugConsole.WriteDecimal(genDefMT->_uBaseSize);
+                DebugConsole.WriteLine(")");
+
+                // Restore context
+                if (savedContextCnt > 0)
+                    JIT.MetadataIntegration.SetTypeTypeArgs(savedCtxArgs, savedContextCnt);
+                else
+                    JIT.MetadataIntegration.ClearTypeTypeArgs();
+            }
+            else
+            {
+                instMT->_uBaseSize = genDefMT->_uBaseSize;
+            }
 
             // Copy vtable entries from the generic definition
             if (numVtableSlots > 0)
