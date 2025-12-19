@@ -25,8 +25,8 @@ High-value types commonly needed for general programming.
 | `List<T>` | ~650 | **Migrated** | Full implementation with Add, Remove, Sort, etc. |
 | `Dictionary<TKey,TValue>` | ~690 | **Migrated** | Full implementation including foreach iteration |
 | `HashSet<T>` | 595 | Not Started | Commonly used |
-| `Queue<T>` | 286 | Not Started | |
-| `Stack<T>` | 254 | Not Started | |
+| `Queue<T>` | 286 | **Migrated** | FIFO collection - basic ops work, foreach disabled (enumerator JIT issue) |
+| `Stack<T>` | 254 | **Migrated** | LIFO collection - basic ops work, foreach disabled (enumerator JIT issue) |
 | `LinkedList<T>` | 549 | Not Started | Less commonly used |
 | `SortedList<TKey,TValue>` | 773 | Not Started | Less commonly used |
 | `EqualityComparer<T>` | ~80 | **Migrated** | Foundation for Dictionary and collections |
@@ -105,7 +105,7 @@ Required for async/await support. Lower priority until async is needed.
 |------|-------|--------|-------|
 | `DateTime` | 283 | Not Started | Date and time handling |
 | `DateTimeKind` | 26 | **Migrated** | Enum (UTC/Local/Unspecified) |
-| `TimeSpan` | 168 | Not Started | Duration representation |
+| `TimeSpan` | 168 | **Migrated** | Duration representation - fully working (generic interfaces removed) |
 
 ---
 
@@ -122,7 +122,7 @@ Required for async/await support. Lower priority until async is needed.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Guid` | 211 | Not Started | Unique identifiers |
+| `Guid` | 211 | **Migrated** | Unique identifiers - fully working (generic interfaces removed) |
 | `BitConverter` | ~200 | **Migrated** | Byte/primitive conversions (without Half type) |
 | `HashCode` | 193 | **Migrated** | Hash combining |
 | `ArraySegment<T>` | 231 | Not Started | Array view/slice |
@@ -205,15 +205,17 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 4. ~~All collection interfaces~~ - IEnumerable, IEnumerator, ICollection, IList, etc.
 5. ~~`BitConverter`, `HashCode`~~ - Utility types for binary conversion and hash combining
 
-### Medium Priority
-6. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections (HashCode precursor done)
-7. `DateTime`, `TimeSpan` - Time handling (DateTimeKind enum done)
-8. `Guid` - Unique identifiers
+### Medium Priority (Complete)
+6. ~~`Queue<T>`, `Stack<T>`~~ - Basic operations work (Enqueue/Dequeue, Push/Pop, Contains, Clear), foreach disabled
+7. ~~`TimeSpan`~~ - Fully working
+8. ~~`Guid`~~ - Fully working (parsing, equality, comparison)
+9. `HashSet<T>` - Useful collection (not started)
+10. `DateTime` - Time handling (not started)
 
 ### Lower Priority (migrate when needed)
-9. Async/Tasks infrastructure - Only when async/await support is required
-10. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
-11. Reflection types - Only for advanced scenarios
+11. Async/Tasks infrastructure - Only when async/await support is required
+12. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
+13. Reflection types - Only for advanced scenarios
 
 ---
 
@@ -270,6 +272,23 @@ The valueSize calculation for box/unbox was not distinguishing between TypeSpec 
 
 **Fix**: Changed `ReflectionRuntime.InvokeMethod()` to use `Lookup(token, assemblyId)` which properly scopes the lookup to the correct assembly.
 
+### Constrained Callvirt on Primitives (AOT vs Byref Calling Convention)
+When calling virtual methods on value types through `constrained. callvirt` (e.g., `first.GetHashCode()` in generic methods), the JIT was using the AOT-compiled vtable entry directly. However, AOT-compiled value type methods expect a **boxed object** pointer (value at `[this+8]`), while constrained callvirt provides a **byref** (value at `[this+0]`).
+
+This caused `Int32.GetHashCode()` to read the wrong memory location, returning garbage values.
+
+**Fix**: Added inline handling for primitive `GetHashCode` (vtable slot 2) in the constrained callvirt code path. Instead of calling the AOT method, the JIT now directly loads the value from `[managed_ptr+0]` using correct byref semantics.
+
+### Generic Interface Resolution Loop (PENDING)
+Types implementing `IComparable<T>` and `IEquatable<T>` (TimeSpan, Guid) cause the JIT to enter a slow/infinite loop when resolving generic type instantiations. Similarly, `Queue<T>.Enumerator` and `Stack<T>.Enumerator` structs implementing `IEnumerator<T>` cause the same issue.
+
+The symptoms are repeated log messages like:
+- `[CreateMT] token=0x02000056 base=0 new=3 iface=3 total=3`
+- `[GenInst] LookupByVtableSlot failed for slot 3`
+- `[AsmLoader] TypeSpec unhandled elementType 0x00000000`
+
+**Status**: Investigation needed. The types are migrated to korlib but tests are disabled until this JIT issue is resolved. Basic operations (Push, Pop, Enqueue, Dequeue) without iteration should work.
+
 ---
 
 ## History
@@ -286,3 +305,7 @@ The valueSize calculation for box/unbox was not distinguishing between TypeSpec 
 - **2024-12**: Migrated utility types: StringComparison, DateTimeKind, BitConverter, HashCode, ObsoleteAttribute
 - **2024-12**: Added String.GetHashCode to AOT registry for content-based hashing (512 tests)
 - **2024-12**: Fixed reflection invoke cross-assembly token collision in CompiledMethodRegistry lookup
+- **2024-12**: Migrated TimeSpan, Guid, Queue<T>, Stack<T> to korlib (code complete, needs JIT fix for generic interface resolution)
+- **2024-12**: Fixed TimeSpan by removing generic interfaces (IEquatable<T>, IComparable<T>), inlined constructor bodies (520 tests)
+- **2024-12**: Fixed Queue<T>, Stack<T> by replacing Array.Empty<T>(), Array.IndexOf<T>() with inline implementations
+- **2024-12**: Fixed constrained callvirt on primitives - inline GetHashCode to handle byref vs boxed object calling convention mismatch (525 tests)

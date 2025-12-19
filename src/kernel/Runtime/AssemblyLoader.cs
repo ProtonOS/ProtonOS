@@ -699,6 +699,22 @@ public static unsafe class AssemblyLoader
             DebugConsole.WriteLine("[AsmLoader] Failed to parse metadata streams");
             return InvalidAssemblyId;
         }
+        // Debug: log blob heap for each assembly
+        DebugConsole.Write("[AsmLoader] Assembly ID ");
+        DebugConsole.WriteDecimal(assemblyId);
+        DebugConsole.Write(" blob heap at 0x");
+        DebugConsole.WriteHex((ulong)asm->Metadata.BlobHeap);
+        DebugConsole.Write(" size=");
+        DebugConsole.WriteDecimal(asm->Metadata.BlobHeapSize);
+        // Check bytes at indices 0x44 and 0x4D for size=8480 (korlib)
+        if (asm->Metadata.BlobHeapSize == 8480)
+        {
+            DebugConsole.Write(" [0x44]=0x");
+            DebugConsole.WriteHex(asm->Metadata.BlobHeap[0x44]);
+            DebugConsole.Write(" [0x4D]=0x");
+            DebugConsole.WriteHex(asm->Metadata.BlobHeap[0x4D]);
+        }
+        DebugConsole.WriteLine("");
 
         // Parse tables header
         if (!MetadataReader.ParseTablesHeader(ref asm->Metadata, out asm->Tables))
@@ -886,20 +902,21 @@ public static unsafe class AssemblyLoader
 
         // Get the TypeSpec signature blob
         uint sigIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
-        // TypeSpec debug (verbose - commented out)
-        // DebugConsole.Write("[AsmLoader] TypeSpec 0x");
-        // DebugConsole.WriteHex(token);
-        // DebugConsole.Write(" asm=");
-        // DebugConsole.WriteDecimal(asm->AssemblyId);
-        // DebugConsole.Write(" blobIdx=");
-        // DebugConsole.WriteHex(sigIdx);
-        // DebugConsole.WriteLine("");
-
         byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
         if (sig == null || sigLen == 0)
         {
             DebugConsole.Write("[AsmLoader] TypeSpec 0x");
             DebugConsole.WriteHex(token);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(asm->AssemblyId);
+            DebugConsole.Write(" row=");
+            DebugConsole.WriteDecimal(rowId);
+            DebugConsole.Write(" blobIdx=");
+            DebugConsole.WriteHex(sigIdx);
+            DebugConsole.Write(" blobHeap=");
+            DebugConsole.WriteHex((ulong)asm->Metadata.BlobHeap);
+            DebugConsole.Write(" blobSize=");
+            DebugConsole.WriteDecimal(asm->Metadata.BlobHeapSize);
             DebugConsole.WriteLine(" no signature");
             return null;
         }
@@ -2639,8 +2656,49 @@ public static unsafe class AssemblyLoader
             }
             else if (tag == 2)  // TypeSpec - generic interface
             {
-                uint typeSpecToken = 0x1B000000 | rowId;
-                interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+                // DON'T resolve TypeSpec here - it can cause infinite recursion!
+                // When counting interface slots for type T that implements IEquatable<T>,
+                // resolving IEquatable<T> would try to get T's MethodTable which isn't
+                // registered yet (we're in the middle of creating it).
+                //
+                // Instead, we parse the TypeSpec signature to find the generic interface
+                // definition and count its methods directly (without resolving type args).
+
+                // Get the TypeSpec signature
+                uint sigIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, rowId);
+                byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+                if (sig != null && sigLen > 2 && sig[0] == 0x15)  // GENERICINST
+                {
+                    // Parse: 0x15 CLASS/VALUETYPE TypeDefOrRef ArgCount ...
+                    byte* ptr = sig + 1;  // skip GENERICINST byte
+                    ptr++;  // skip CLASS/VALUETYPE byte
+
+                    // Decode the generic interface definition token
+                    uint genDefEncoded = MetadataReader.ReadCompressedUInt(ref ptr);
+                    uint genDefTag = genDefEncoded & 0x03;
+                    uint genDefRow = genDefEncoded >> 2;
+
+                    // Try to resolve just the interface definition (not the instantiation)
+                    if (genDefTag == 0)  // TypeDef
+                    {
+                        uint interfaceDefToken = 0x02000000 | genDefRow;
+                        interfaceMT = asm->Types.Lookup(interfaceDefToken);
+                        if (interfaceMT == null)
+                            interfaceMT = CreateTypeDefMethodTable(asm, interfaceDefToken);
+                    }
+                    else if (genDefTag == 1)  // TypeRef
+                    {
+                        LoadedAssembly* targetAsm = null;
+                        uint targetToken = 0;
+                        if (ResolveTypeRefToTypeDef(asm, genDefRow, out targetAsm, out targetToken) && targetAsm != null)
+                        {
+                            interfaceMT = targetAsm->Types.Lookup(targetToken);
+                            if (interfaceMT == null)
+                                interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                        }
+                    }
+                }
             }
 
             if (interfaceMT != null)

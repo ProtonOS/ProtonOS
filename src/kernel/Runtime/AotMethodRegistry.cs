@@ -394,6 +394,12 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<string?, string?, string?, string>)&StringHelpers.Concat3,
             3, ReturnKind.IntPtr, false, false);
 
+        // String.Concat(params string?[] values) (static method) - 1 array parameter
+        Register(
+            "System.String", "Concat",
+            (nint)(delegate*<string?[]?, string>)&StringHelpers.ConcatArray,
+            1, ReturnKind.IntPtr, false, false);
+
         // String.get_Chars (indexer getter) - 1 int parameter, HasThis=true
         Register(
             "System.String", "get_Chars",
@@ -483,6 +489,20 @@ public static unsafe class AotMethodRegistry
             "System.String", "Format",
             (nint)(delegate*<string, object?, object?, object?, string>)&StringHelpers.Format3,
             4, ReturnKind.IntPtr, false, false);
+
+        // String.Replace(string, string) - 2 parameters (oldValue, newValue), HasThis=true
+        // NOTE: This is registered FIRST so it's found before Replace(char, char) in arg-count lookup.
+        // The Guid(string) constructor uses Replace(string, string) to remove dashes.
+        Register(
+            "System.String", "Replace",
+            (nint)(delegate*<string, string, string?, string>)&StringHelpers.ReplaceString,
+            2, ReturnKind.IntPtr, true, false);
+
+        // String.Replace(char, char) - 2 parameters (oldChar, newChar), HasThis=true
+        Register(
+            "System.String", "Replace",
+            (nint)(delegate*<string, char, char, string>)&StringHelpers.ReplaceChar,
+            2, ReturnKind.IntPtr, true, false);
     }
 
     /// <summary>
@@ -1403,6 +1423,25 @@ public static unsafe class StringHelpers
     }
 
     /// <summary>
+    /// Wrapper for String.Concat(params string?[] values).
+    /// </summary>
+    public static string ConcatArray(string?[]? values)
+    {
+        if (values == null || values.Length == 0) return string.Empty;
+        if (values.Length == 1) return values[0] ?? string.Empty;
+        if (values.Length == 2) return string.Concat(values[0], values[1]);
+        if (values.Length == 3) return string.Concat(values[0], values[1], values[2]);
+
+        // For longer arrays, chain the concatenations
+        string result = values[0] ?? string.Empty;
+        for (int i = 1; i < values.Length; i++)
+        {
+            result = string.Concat(result, values[i]);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Wrapper for String indexer (get_Chars).
     /// </summary>
     public static char GetChars(string s, int index)
@@ -1576,6 +1615,119 @@ public static unsafe class StringHelpers
     public static string Format3(string format, object? arg0, object? arg1, object? arg2)
     {
         return string.Format(format, arg0, arg1, arg2);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Replace(char, char).
+    /// Replaces all occurrences of oldChar with newChar.
+    /// </summary>
+    public static string ReplaceChar(string s, char oldChar, char newChar)
+    {
+        if (s == null || s.Length == 0)
+            return s ?? string.Empty;
+
+        // Check if oldChar exists
+        bool found = false;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == oldChar)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return s;
+
+        // Create new string with replacements
+        char[] chars = new char[s.Length];
+        for (int i = 0; i < s.Length; i++)
+        {
+            chars[i] = s[i] == oldChar ? newChar : s[i];
+        }
+        return new string(chars);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Replace(string, string).
+    /// Replaces all occurrences of oldValue with newValue.
+    /// </summary>
+    public static string ReplaceString(string s, string oldValue, string? newValue)
+    {
+        if (s == null)
+            return string.Empty;
+        if (oldValue == null || oldValue.Length == 0)
+            return s;  // Can't replace empty string
+        newValue ??= string.Empty;
+
+        // Count occurrences
+        int count = 0;
+        int pos = 0;
+        while ((pos = IndexOf(s, oldValue, pos)) >= 0)
+        {
+            count++;
+            pos += oldValue.Length;
+        }
+
+        if (count == 0) return s;
+
+        // Calculate new length
+        int newLength = s.Length + (newValue.Length - oldValue.Length) * count;
+        if (newLength == 0) return string.Empty;
+
+        // Build result
+        char[] chars = new char[newLength];
+        int srcPos = 0;
+        int dstPos = 0;
+
+        while ((pos = IndexOf(s, oldValue, srcPos)) >= 0)
+        {
+            // Copy characters before the match
+            int copyLen = pos - srcPos;
+            for (int i = 0; i < copyLen; i++)
+                chars[dstPos++] = s[srcPos + i];
+
+            // Copy replacement
+            for (int i = 0; i < newValue.Length; i++)
+                chars[dstPos++] = newValue[i];
+
+            srcPos = pos + oldValue.Length;
+        }
+
+        // Copy remaining characters
+        while (srcPos < s.Length)
+            chars[dstPos++] = s[srcPos++];
+
+        return new string(chars);
+    }
+
+    /// <summary>
+    /// Helper method to find substring in string.
+    /// </summary>
+    private static int IndexOf(string s, string value, int startIndex)
+    {
+        if (s == null || value == null)
+            return -1;
+        if (startIndex < 0)
+            startIndex = 0;
+        if (value.Length == 0)
+            return startIndex;
+        if (startIndex + value.Length > s.Length)
+            return -1;
+
+        for (int i = startIndex; i <= s.Length - value.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < value.Length; j++)
+            {
+                if (s[i + j] != value[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return i;
+        }
+        return -1;
     }
 }
 

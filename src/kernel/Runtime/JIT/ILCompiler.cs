@@ -1175,6 +1175,13 @@ public unsafe struct ILCompiler
         int physicalArgCount = _argCount;
         if (_returnIsValueType && _returnTypeSize > 16)
             physicalArgCount = _argCount + 1;
+
+        // DebugConsole.Write("[JIT-Home] argCnt=");
+        // DebugConsole.WriteDecimal((uint)_argCount);
+        // DebugConsole.Write(" physArgCnt=");
+        // DebugConsole.WriteDecimal((uint)physicalArgCount);
+        // DebugConsole.WriteLine();
+
         if (physicalArgCount > 0)
             X64Emitter.HomeArguments(ref _code, physicalArgCount);
 
@@ -3869,6 +3876,7 @@ public unsafe struct ILCompiler
         }
 
         int offset = 16 + physicalArgIndex * 8;
+
         if (isLargeVT)
         {
             // Large VT: arg slot contains pointer to struct - load the pointer value
@@ -4732,6 +4740,9 @@ public unsafe struct ILCompiler
         bool needsLargeStructPtrInRcx = false;
         bool needsLargeStructPtrInRdx = false;
 
+        // Track offset of arg0 from start of struct data area (used when both args are large structs)
+        int largeStructArg0Offset = 0;
+
         // Track special allocation for 4-args + hidden buffer case
         int fourArgsHiddenBufferCleanup = 0;
 
@@ -4806,28 +4817,38 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 2 && !needsHiddenBuffer)
         {
-            // Two args: check if arg1 (TOS) is a large struct
+            // Two args: check if either or both are large structs
             EvalStackEntry arg1Entry = PeekEntryAt(0);  // TOS = arg1
             EvalStackEntry arg0Entry = PeekEntryAt(1);  // TOS-1 = arg0
 
-            if (arg1Entry.ByteSize > 8)
+            if (arg0Entry.ByteSize > 8 && arg1Entry.ByteSize > 8)
             {
-                // arg1 is a large struct: pass by pointer
-                // Stack layout: [RSP] = struct (24 bytes), [RSP+structSize] = arg0 (8 bytes)
+                // BOTH arguments are large structs - pass BOTH by pointer
+                // Stack layout: [RSP] = arg1 (arg1Size bytes), [RSP + arg1Size] = arg0 (arg0Size bytes)
+                // After shadow space allocation:
+                //   RDX = pointer to arg1 = RSP + 32
+                //   RCX = pointer to arg0 = RSP + 32 + arg1Size
+
+                largeStructArgBytes = arg0Entry.ByteSize + arg1Entry.ByteSize;
+                needsLargeStructPtrInRcx = true;
+                needsLargeStructPtrInRdx = true;
+                largeStructArg0Offset = arg1Entry.ByteSize;  // arg0 starts after arg1
+
+                // Don't remove anything from physical stack yet
+                PopEntry(); PopEntry();
+            }
+            else if (arg1Entry.ByteSize > 8)
+            {
+                // Only arg1 is a large struct: pass by pointer
+                // Stack layout: [RSP] = struct (arg1Size bytes), [RSP+structSize] = arg0 (8 bytes)
                 // After shadow space: RCX = arg0, RDX = pointer to struct
 
                 // Load arg0 from [RSP + structSize] into R1 (RCX)
                 X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, arg1Entry.ByteSize);
 
-                // Now move the struct data down by 8 bytes to close the gap left by arg0
-                // This way, after removing 8 bytes from stack, struct is at correct position
-                // Actually, easier: keep struct in place, remove arg0, point RDX to struct after shadow
-                //
-                // Layout now: [RSP]=struct, [RSP+structSize]=arg0
-                // We want to remove arg0 but it's at the bottom. Instead:
-                // - Keep everything, track total size as structSize + 8
-                // - After shadow space allocation, RCX is already set, LEA RDX to struct
-                // - Clean up structSize + 8 after call
+                // Keep everything on stack, track total size as structSize + 8
+                // After shadow space allocation, RCX is already set, LEA RDX to struct
+                // Clean up structSize + 8 after call
 
                 largeStructArgBytes = arg1Entry.ByteSize + 8;  // struct + arg0
                 needsLargeStructPtrInRdx = true;
@@ -4965,49 +4986,47 @@ public unsafe struct ILCompiler
             // DebugConsole.WriteDecimal((uint)extraStackSpace);
             // DebugConsole.WriteLine();
 
-            // Step 1: Save stack args to scratch registers (R10, R11)
-            // Stack args are at [RSP+0], [RSP+8], ... (top of eval stack)
-            // VReg.R5 = R10 (scratch), VReg.R6 = R11 (scratch)
-            // For now, support up to 6 total args (2 on stack).
-            if (stackArgs >= 1)
-            {
-                // arg4 is at [RSP+0] (top of stack)
-                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, 0);  // R10 = arg4 (VReg.R5 = R10)
-                // DebugConsole.WriteLine("[JIT]   arg4 saved to R10 from [RSP+0]");
-            }
-            if (stackArgs >= 2)
-            {
-                // arg5 is at [RSP+8]
-                X64Emitter.MovRM(ref _code, VReg.R6, VReg.SP, 8);  // R11 = arg5 (VReg.R6 = R11)
-                // DebugConsole.WriteLine("[JIT]   arg5 saved to R11 from [RSP+8]");
-            }
-
-            // Step 2: Load register args from eval stack
-            // arg0 at [RSP + (totalArgs-1)*8], arg1 at [RSP + (totalArgs-2)*8], etc.
-            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);  // RCX = arg0
-            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);  // RDX = arg1
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);  // R8 = arg2
-            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);  // R9 = arg3
-
-            // Step 3: Pop eval stack
-            X64Emitter.AddRI(ref _code, VReg.SP, totalArgs * 8);
-
-            // Step 4: Allocate call frame (shadow space + extra for stack args)
+            // Step 1: Allocate call frame first (shadow space + stack args)
+            // This way we can copy args directly from eval stack to call frame
             int callFrameSize = 32 + extraStackSpace;
             X64Emitter.SubRI(ref _code, VReg.SP, callFrameSize);
 
-            // Step 5: Store stack args to their proper locations
-            // arg4 at [RSP+32], arg5 at [RSP+40], etc.
-            if (stackArgs >= 1)
+            // Now the layout is:
+            //   [RSP+0..31]               = shadow space (for callee to home regs)
+            //   [RSP+32]                  = slot for arg4
+            //   [RSP+40]                  = slot for arg5
+            //   ... etc for more stack args
+            //   [RSP+callFrameSize+0]     = argN-1 (top of old eval stack)
+            //   [RSP+callFrameSize+8]     = argN-2
+            //   ...
+            //   [RSP+callFrameSize+(N-1)*8] = arg0 (bottom)
+
+            // Step 2: Copy stack args from eval stack to their proper call frame positions
+            // Stack args are arg4, arg5, ... argN-1
+            // They need to go to [RSP+32], [RSP+40], ...
+            // On the eval stack (now offset by callFrameSize):
+            //   argN-1 at [RSP+callFrameSize+0]
+            //   argN-2 at [RSP+callFrameSize+8]
+            //   ...
+            //   arg4 at [RSP+callFrameSize+(stackArgs-1)*8]
+            for (int i = 0; i < stackArgs; i++)
             {
-                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R5);  // [RSP+32] = R10 (arg4)
-                // DebugConsole.WriteLine("[JIT]   arg4 stored to [RSP+32] from R10");
+                // arg(4+i) is at eval stack position (stackArgs - 1 - i) from top
+                int srcOffset = callFrameSize + (stackArgs - 1 - i) * 8;
+                int dstOffset = 32 + i * 8;  // [RSP+32], [RSP+40], etc.
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);  // R10 = temp
+                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);  // store to dest
             }
-            if (stackArgs >= 2)
-            {
-                X64Emitter.MovMR(ref _code, VReg.SP, 40, VReg.R6);  // [RSP+40] = R11 (arg5)
-                // DebugConsole.WriteLine("[JIT]   arg5 stored to [RSP+40] from R11");
-            }
+
+            // Step 3: Load register args from eval stack (offset by callFrameSize)
+            // arg0 at [RSP + callFrameSize + (totalArgs-1)*8]
+            // arg1 at [RSP + callFrameSize + (totalArgs-2)*8]
+            // arg2 at [RSP + callFrameSize + (totalArgs-3)*8]
+            // arg3 at [RSP + callFrameSize + (totalArgs-4)*8]
+            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, callFrameSize + (totalArgs - 1) * 8);  // RCX = arg0
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, callFrameSize + (totalArgs - 2) * 8);  // RDX = arg1
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, callFrameSize + (totalArgs - 3) * 8);  // R8 = arg2
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, callFrameSize + (totalArgs - 4) * 8);  // R9 = arg3
 
             for (int i = 0; i < totalArgs; i++) PopEntry();
             // For >4 args, we already allocated shadow space as part of callFrameSize
@@ -5035,11 +5054,13 @@ public unsafe struct ILCompiler
 
                 // If we deferred setting up RCX for a large struct pointer, do it now
                 // The struct data is at [RSP + 32] (just after shadow space)
+                // When both args are large structs, arg0 is at RSP + 32 + largeStructArg0Offset
                 if (needsLargeStructPtrInRcx)
                 {
-                    X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+                    X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32 + largeStructArg0Offset);
                 }
                 // If we deferred setting up RDX for a large struct pointer (2-arg case), do it now
+                // arg1 is always at RSP + 32 (start of struct data area)
                 if (needsLargeStructPtrInRdx)
                 {
                     X64Emitter.Lea(ref _code, VReg.R2, VReg.SP, 32);
@@ -5151,9 +5172,12 @@ public unsafe struct ILCompiler
         else if (stackArgs > 0)
         {
             // Deallocate the full call frame (shadow space + extra stack args space)
+            // PLUS the eval stack args that were left in place above the call frame
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
             int callFrameSize = 32 + extraStackSpace + largeStructArgBytes;
-            X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);
+            // We didn't pop the eval stack before the call - the args are still at [RSP+callFrameSize]
+            // Clean up both: call frame + eval stack args
+            X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize + totalArgs * 8);
         }
         else if (largeStructArgBytes > 0)
         {
@@ -5497,6 +5521,132 @@ public unsafe struct ILCompiler
                     uint baseSize = constraintMT->_uBaseSize;
                     int valueSize = (int)(baseSize - 8);  // Subtract MethodTable pointer (8 bytes)
                     if (valueSize <= 0) valueSize = 8;  // Minimum
+
+                    // ECMA-335 III.2.1: If the value type implements the method, call directly
+                    // without boxing. Check if the constraint type's vtable has an entry for this slot.
+                    // DebugConsole.Write("[JIT] Constrained VT: isVirt=");
+                    // DebugConsole.Write(tempMethod.IsVirtual ? "Y" : "N");
+                    // DebugConsole.Write(" slot=");
+                    // DebugConsole.WriteDecimal((uint)(ushort)tempMethod.VtableSlot);
+                    // DebugConsole.Write(" numSlots=");
+                    // DebugConsole.WriteDecimal(constraintMT->_usNumVtableSlots);
+                    // DebugConsole.Write(" MT=0x");
+                    // DebugConsole.WriteHex((ulong)constraintMT);
+                    // DebugConsole.WriteLine();
+
+                    if (tempMethod.IsVirtual && tempMethod.VtableSlot >= 0 &&
+                        tempMethod.VtableSlot < constraintMT->_usNumVtableSlots)
+                    {
+                        nint vtableEntry = constraintMT->GetVtableSlot(tempMethod.VtableSlot);
+                        // DebugConsole.Write("[JIT] VT entry: vtable[");
+                        // DebugConsole.WriteDecimal((uint)tempMethod.VtableSlot);
+                        // DebugConsole.Write("]=0x");
+                        // DebugConsole.WriteHex((ulong)vtableEntry);
+                        // DebugConsole.WriteLine();
+
+                        // If vtable entry is null, check if there's a registered override we can compile
+                        if (vtableEntry == 0)
+                        {
+                            var overrideInfo = CompiledMethodRegistry.LookupByVtableSlot(constraintMT, (short)tempMethod.VtableSlot);
+                            if (overrideInfo != null && overrideInfo->Token != 0)
+                            {
+                                // Trigger JIT compilation of the override method
+                                JitStubs.EnsureCompiled(overrideInfo->Token, overrideInfo->AssemblyId);
+
+                                // Check if compilation succeeded and vtable is now populated
+                                vtableEntry = constraintMT->GetVtableSlot(tempMethod.VtableSlot);
+                                if (vtableEntry == 0 && overrideInfo->NativeCode != null)
+                                {
+                                    vtableEntry = (nint)overrideInfo->NativeCode;
+                                }
+                            }
+                        }
+
+                        // OPTIMIZATION: For primitive types, inline GetHashCode instead of calling AOT method
+                        // AOT-compiled GetHashCode expects boxed object (reads [this+8]), but we have byref (reads [this+0])
+                        // So we must inline it to use correct byref semantics
+                        // Check BEFORE direct call path to intercept primitives
+                        if (numArgs == 0 && tempMethod.IsVirtual && tempMethod.VtableSlot == 2 &&
+                            MetadataIntegration.IsPrimitiveMT(constraintMT))
+                        {
+                            // Stack has: [managed_ptr_to_value]
+                            // Pop managed_ptr
+                            X64Emitter.Pop(ref _code, VReg.R0);   // RAX = managed_ptr
+                            PopEntry();
+
+                            // Load value from managed_ptr - this is the hash code for primitives
+                            // (Int32, UInt32, Int16, etc. all return 'this' as the hash code)
+                            if (valueSize <= 4)
+                                X64Emitter.MovRM32(ref _code, VReg.R0, VReg.R0, 0);  // EAX = *managed_ptr (sign-extended to RAX)
+                            else
+                                X64Emitter.MovRM(ref _code, VReg.R0, VReg.R0, 0);    // RAX = *managed_ptr
+
+                            // Push result
+                            X64Emitter.Push(ref _code, VReg.R0);
+                            PushEntry(EvalStackEntry.Int32);
+
+                            return true;  // Don't fall through to direct call or boxing
+                        }
+
+                        if (vtableEntry != 0)
+                        {
+                            // Value type overrides this method - call directly with managed pointer as 'this'
+                            // Stack: [managed_ptr, arg0, arg1, ...]
+                            // We need to call the method with managed_ptr as 'this' (passed in RCX)
+
+                            // First, save the arguments in caller-saved registers
+                            if (numArgs >= 3)
+                            {
+                                X64Emitter.Pop(ref _code, VReg.R7);   // R12 = arg2
+                                PopEntry();
+                            }
+                            if (numArgs >= 2)
+                            {
+                                X64Emitter.Pop(ref _code, VReg.R6);   // R11 = arg1
+                                PopEntry();
+                            }
+                            if (numArgs >= 1)
+                            {
+                                X64Emitter.Pop(ref _code, VReg.R5);   // R10 = arg0
+                                PopEntry();
+                            }
+
+                            // Pop managed pointer (this)
+                            X64Emitter.Pop(ref _code, VReg.R1);  // RCX = managed_ptr (this)
+                            PopEntry();
+
+                            // Set up the call: RCX = this (managed_ptr), RDX = arg0, R8 = arg1, R9 = arg2
+                            if (numArgs >= 1) X64Emitter.MovRR(ref _code, VReg.R2, VReg.R5);  // RDX = arg0
+                            if (numArgs >= 2) X64Emitter.MovRR(ref _code, VReg.R3, VReg.R6);  // R8 = arg1
+                            if (numArgs >= 3) X64Emitter.MovRR(ref _code, VReg.R4, VReg.R7);  // R9 = arg2
+
+                            // Shadow space
+                            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+
+                            // Call the method directly
+                            X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)vtableEntry);
+                            X64Emitter.CallR(ref _code, VReg.R0);
+
+                            // Clean up shadow space
+                            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+
+                            // Handle return value
+                            if (tempMethod.ReturnKind != ReturnKind.Void)
+                            {
+                                X64Emitter.Push(ref _code, VReg.R0);
+                                if (tempMethod.ReturnKind == ReturnKind.Struct)
+                                    PushEntry(EvalStackEntry.Struct(tempMethod.ReturnStructSize > 8 ? 16 : 8));
+                                else if (tempMethod.ReturnKind == ReturnKind.Float32)
+                                    PushEntry(EvalStackEntry.Float32);
+                                else if (tempMethod.ReturnKind == ReturnKind.Float64)
+                                    PushEntry(EvalStackEntry.Float64);
+                                else
+                                    PushEntry(EvalStackEntry.NativeInt);
+                            }
+
+                            return true;  // Done - don't fall through to boxing
+                        }
+                    }
 
                     // OPTIMIZATION: For primitive types, inline Equals comparison instead of boxing
                     // This avoids the boxing overhead and correctly implements value equality

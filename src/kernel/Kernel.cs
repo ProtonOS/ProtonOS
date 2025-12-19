@@ -474,6 +474,17 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("==============================");
         DebugConsole.WriteLine();
 
+        // Debug: Check korlib blob heap integrity before running tests
+        var korlibAsm = AssemblyLoader.GetAssembly(_korlibId);
+        if (korlibAsm != null)
+        {
+            DebugConsole.Write("[FullTest] Korlib blob heap check: [0x44]=0x");
+            DebugConsole.WriteHex(korlibAsm->Metadata.BlobHeap[0x44]);
+            DebugConsole.Write(" [0x4D]=0x");
+            DebugConsole.WriteHex(korlibAsm->Metadata.BlobHeap[0x4D]);
+            DebugConsole.WriteLine();
+        }
+
         if (_testAssemblyId == AssemblyLoader.InvalidAssemblyId)
         {
             DebugConsole.WriteLine("[FullTest] ERROR: No test assembly loaded");

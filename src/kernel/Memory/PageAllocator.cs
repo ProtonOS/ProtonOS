@@ -287,6 +287,16 @@ public static unsafe class PageAllocator
             {
                 ulong kernelStartPage = kernelBase / PageSize;
                 ulong kernelPages = (kernelSize + PageSize - 1) / PageSize;
+                DebugConsole.Write("[PageAlloc] Kernel/LoaderData: 0x");
+                DebugConsole.WriteHex(kernelBase);
+                DebugConsole.Write(" - 0x");
+                DebugConsole.WriteHex(kernelBase + kernelSize);
+                DebugConsole.Write(" (");
+                DebugConsole.WriteDecimal((uint)(kernelSize / 1024));
+                DebugConsole.WriteLine(" KB)");
+                // Store for debug checking
+                _kernelStart = kernelBase;
+                _kernelEnd = kernelBase + kernelSize;
                 ReserveRange(kernelStartPage, kernelPages, "kernel");
             }
 
@@ -348,6 +358,10 @@ public static unsafe class PageAllocator
         // }
     }
 
+    // Debug: kernel region boundaries for detecting bad allocations
+    private static ulong _kernelStart;
+    private static ulong _kernelEnd;
+
     /// <summary>
     /// Allocate a single physical page.
     /// </summary>
@@ -363,10 +377,18 @@ public static unsafe class PageAllocator
         {
             if (IsPageFree(pageNum))
             {
+                ulong physAddr = pageNum * PageSize;
+                // Debug: check if allocating from kernel region
+                if (physAddr >= _kernelStart && physAddr < _kernelEnd)
+                {
+                    DebugConsole.Write("[PageAlloc] WARN: Allocating page 0x");
+                    DebugConsole.WriteHex(physAddr);
+                    DebugConsole.WriteLine(" from kernel region!");
+                }
                 SetPageUsed(pageNum);
                 _freePages--;
                 UpdateNodeStatsOnAlloc(pageNum);
-                return pageNum * PageSize;
+                return physAddr;
             }
         }
 

@@ -42,6 +42,13 @@ public static unsafe class Tier0JIT
     /// <returns>JIT compilation result.</returns>
     public static JitResult CompileMethod(uint assemblyId, uint methodToken)
     {
+        // DEBUG: Show every method being compiled
+        DebugConsole.Write("[JIT] Compile asm=");
+        DebugConsole.WriteDecimal(assemblyId);
+        DebugConsole.Write(" tok=0x");
+        DebugConsole.WriteHex(methodToken);
+        DebugConsole.WriteLine();
+
         // Try token-based AOT registry first (fast path for korlib methods)
         AotTokenEntry tokenEntry;
         if (AotMethodRegistry.TryLookupByToken(assemblyId, methodToken, out tokenEntry))

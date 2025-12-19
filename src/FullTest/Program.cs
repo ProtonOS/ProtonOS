@@ -292,6 +292,22 @@ public static class TestRunner
         RecordResult("UtilityTests.TestHashCodeCombine2", UtilityTests.TestHashCodeCombine2() == 1);
         RecordResult("UtilityTests.TestHashCodeCombine3", UtilityTests.TestHashCodeCombine3() == 1);
         RecordResult("UtilityTests.TestHashCodeAdd", UtilityTests.TestHashCodeAdd() == 1);
+        // TimeSpan tests
+        RecordResult("UtilityTests.TestTimeSpanBasic", UtilityTests.TestTimeSpanBasic() == 1);
+        RecordResult("UtilityTests.TestTimeSpanArithmetic", UtilityTests.TestTimeSpanArithmetic() == 1);
+        RecordResult("UtilityTests.TestTimeSpanCompare", UtilityTests.TestTimeSpanCompare() == 1);
+        // Guid tests
+        RecordResult("UtilityTests.TestGuidFromBytes", UtilityTests.TestGuidFromBytes() == 1);
+        RecordResult("UtilityTests.TestGuidEquality", UtilityTests.TestGuidEquality() == 1);
+        RecordResult("UtilityTests.TestGuidParse", UtilityTests.TestGuidParse() == 1);
+        // Queue tests
+        RecordResult("UtilityTests.TestQueueBasic", UtilityTests.TestQueueBasic() == 1);
+        RecordResult("UtilityTests.TestQueueForeach", UtilityTests.TestQueueForeach() == 1);
+        RecordResult("UtilityTests.TestQueueContainsClear", UtilityTests.TestQueueContainsClear() == 1);
+        // Stack tests
+        RecordResult("UtilityTests.TestStackBasic", UtilityTests.TestStackBasic() == 1);
+        RecordResult("UtilityTests.TestStackForeach", UtilityTests.TestStackForeach() == 1);
+        RecordResult("UtilityTests.TestStackContainsClear", UtilityTests.TestStackContainsClear() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -306,6 +322,7 @@ public static class TestRunner
     {
         RecordResult("StringTests.TestLdstr", StringTests.TestLdstr() == 5);
         RecordResult("StringTests.TestStringConcat", StringTests.TestStringConcat() == 10);
+        RecordResult("StringTests.TestStringReplace", StringTests.TestStringReplace() == 1);
     }
 
     private static void RunBoxingTests()
@@ -954,7 +971,6 @@ public static class TestRunner
         // ArgIterator tests
         RecordResult("VarargTests.TestArgIteratorCtorCall", VarargTests.TestArgIteratorCtorCall() == 1);
         // GetRemainingCount tests
-        // TODO: TestGetRemainingCountZero fails - zero-arg vararg call site handling needs investigation
         RecordResult("VarargTests.TestGetRemainingCountZero", VarargTests.TestGetRemainingCountZero() == 1);
         RecordResult("VarargTests.TestGetRemainingCountTwo", VarargTests.TestGetRemainingCountTwo() == 1);
         RecordResult("VarargTests.TestGetRemainingCountThree", VarargTests.TestGetRemainingCountThree() == 1);
@@ -4064,6 +4080,17 @@ public static class StringTests
         string c = a + b;
         return c.Length;  // 10
     }
+
+    public static int TestStringReplace()
+    {
+        string s = "12-34-56";
+        string result = s.Replace("-", "");
+        Debug.WriteLine("[Replace] input: " + s);
+        Debug.WriteLine("[Replace] result: " + result);
+        Debug.WriteLine("[Replace] expected: 123456");
+        if (result == "123456") return 1;
+        return 0;
+    }
 }
 
 // =============================================================================
@@ -5057,7 +5084,14 @@ public static class MultiTypeParamHelper
     public static int Combine<T1, T2>(T1 first, T2 second)
     {
         // Return hash combination to verify both params work
-        return first.GetHashCode() ^ second.GetHashCode();
+        int hash1 = first.GetHashCode();
+        int hash2 = second.GetHashCode();
+        ProtonOS.DDK.Kernel.Debug.Write("[Comb] h1=");
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)hash1);
+        ProtonOS.DDK.Kernel.Debug.Write(" h2=");
+        ProtonOS.DDK.Kernel.Debug.WriteHex((uint)hash2);
+        ProtonOS.DDK.Kernel.Debug.WriteLine();
+        return hash1 ^ hash2;
     }
 }
 
@@ -8258,6 +8292,314 @@ public static class UtilityTests
 
         // Different order should produce different hash
         if (result1 == result3) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // TimeSpan Tests
+    // =========================================================================
+
+    /// <summary>Tests TimeSpan creation and properties</summary>
+    public static int TestTimeSpanBasic()
+    {
+        var ts = new TimeSpan(1, 2, 30, 45);  // 1 day, 2 hours, 30 minutes, 45 seconds
+        if (ts.Days != 1) return 0;
+        if (ts.Hours != 2) return 0;
+        if (ts.Minutes != 30) return 0;
+        if (ts.Seconds != 45) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests TimeSpan arithmetic</summary>
+    public static int TestTimeSpanArithmetic()
+    {
+        var ts1 = new TimeSpan(1, 0, 0);  // 1 hour
+        var ts2 = new TimeSpan(0, 30, 0); // 30 minutes
+        var sum = ts1 + ts2;
+
+        // 1 hour + 30 minutes = 90 minutes = 1 hour 30 min
+        if (sum.Hours != 1) return 0;
+        if (sum.Minutes != 30) return 0;
+
+        var diff = ts1 - ts2;
+        // 1 hour - 30 minutes = 30 minutes
+        if (diff.Hours != 0) return 0;
+        if (diff.Minutes != 30) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests TimeSpan comparison</summary>
+    public static int TestTimeSpanCompare()
+    {
+        var ts1 = new TimeSpan(0, 1, 0);   // 1 minute = 60 seconds
+        var ts2 = new TimeSpan(0, 1, 0);   // 1 minute
+        var ts3 = new TimeSpan(0, 2, 0);   // 2 minutes = 120 seconds
+
+        // 60 seconds == 1 minute
+        if (ts1 != ts2) return 0;
+        if (ts1 >= ts3) return 0;
+        if (ts3 <= ts1) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // Guid Tests
+    // =========================================================================
+
+    /// <summary>Tests Guid creation from bytes</summary>
+    public static int TestGuidFromBytes()
+    {
+        byte[] bytes = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                                    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10 };
+        var guid = new Guid(bytes);
+
+        byte[] result = guid.ToByteArray();
+        for (int i = 0; i < 16; i++)
+        {
+            if (result[i] != bytes[i]) return 0;
+        }
+        return 1;
+    }
+
+    /// <summary>Tests Guid equality</summary>
+    public static int TestGuidEquality()
+    {
+        // Use byte array constructor to avoid JIT issues with 11-argument constructor
+        byte[] bytes1 = new byte[] { 0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78 };
+        byte[] bytes2 = new byte[] { 0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78 };
+        byte[] bytes3 = new byte[] { 0x21, 0x43, 0x65, 0x87, 0x21, 0x43, 0x65, 0x87, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89 };
+
+        var guid1 = new Guid(bytes1);
+        var guid2 = new Guid(bytes2);
+        var guid3 = new Guid(bytes3);
+
+        if (guid1 != guid2) return 0;
+        if (guid1 == guid3) return 0;
+
+        return 1;
+    }
+
+    // Helper to test many-args calling - 8 args total (4 reg + 4 stack)
+    private static int Sum8(int a, int b, int c, int d, int e, int f, int g, int h)
+    {
+        Debug.Write("[Sum8] a="); Debug.WriteDecimal((uint)a);
+        Debug.Write(" b="); Debug.WriteDecimal((uint)b);
+        Debug.Write(" c="); Debug.WriteDecimal((uint)c);
+        Debug.Write(" d="); Debug.WriteDecimal((uint)d);
+        Debug.Write(" e="); Debug.WriteDecimal((uint)e);
+        Debug.Write(" f="); Debug.WriteDecimal((uint)f);
+        Debug.Write(" g="); Debug.WriteDecimal((uint)g);
+        Debug.Write(" h="); Debug.WriteDecimal((uint)h);
+        Debug.WriteLine();
+        return a + b + c + d + e + f + g + h;
+    }
+
+    // Helper to test many-args calling - 12 args total (4 reg + 8 stack)
+    private static int Sum12(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j, int k, int l)
+    {
+        Debug.Write("[Sum12] a="); Debug.WriteDecimal((uint)a);
+        Debug.Write(" b="); Debug.WriteDecimal((uint)b);
+        Debug.Write(" c="); Debug.WriteDecimal((uint)c);
+        Debug.Write(" d="); Debug.WriteDecimal((uint)d);
+        Debug.Write(" e="); Debug.WriteDecimal((uint)e);
+        Debug.Write(" f="); Debug.WriteDecimal((uint)f);
+        Debug.Write(" g="); Debug.WriteDecimal((uint)g);
+        Debug.Write(" h="); Debug.WriteDecimal((uint)h);
+        Debug.Write(" i="); Debug.WriteDecimal((uint)i);
+        Debug.Write(" j="); Debug.WriteDecimal((uint)j);
+        Debug.Write(" k="); Debug.WriteDecimal((uint)k);
+        Debug.Write(" l="); Debug.WriteDecimal((uint)l);
+        Debug.WriteLine();
+        return a + b + c + d + e + f + g + h + i + j + k + l;
+    }
+
+    /// <summary>Tests calling with 8 args</summary>
+    public static int TestSum8Args()
+    {
+        int result = Sum8(1, 2, 3, 4, 5, 6, 7, 8);
+        Debug.Write("[TestSum8Args] result="); Debug.WriteDecimal((uint)result); Debug.WriteLine();
+        return result == 36 ? 1 : 0;
+    }
+
+    /// <summary>Tests calling with 12 args</summary>
+    public static int TestSum12Args()
+    {
+        int result = Sum12(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        Debug.Write("[TestSum12Args] result="); Debug.WriteDecimal((uint)result); Debug.WriteLine();
+        return result == 78 ? 1 : 0;
+    }
+
+    /// <summary>Tests Guid parsing from string</summary>
+    public static int TestGuidParse()
+    {
+        // First test: test 8-arg and 12-arg function calls
+        int sum8 = Sum8(1, 2, 3, 4, 5, 6, 7, 8);
+        Debug.Write("[GuidParse] Sum8="); Debug.WriteDecimal((uint)sum8); Debug.WriteLine();
+        if (sum8 != 36) return 0;
+
+        int sum12 = Sum12(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        Debug.Write("[GuidParse] Sum12="); Debug.WriteDecimal((uint)sum12); Debug.WriteLine();
+        if (sum12 != 78) return 0;
+
+        string str = "12345678-1234-5678-9abc-def012345678";
+
+        // Verify Replace works on this string
+        string clean = str.Replace("-", "");
+        Debug.WriteLine("[GuidParse] clean: " + clean);
+        Debug.Write("[GuidParse] clean.Length: ");
+        Debug.WriteDecimal((uint)clean.Length);
+        Debug.WriteLine();
+
+        if (clean.Length != 32)
+        {
+            Debug.WriteLine("[GuidParse] ERROR: clean.Length != 32");
+            return 0;
+        }
+
+        // Try the 11-arg constructor (avoids string parsing)
+        var guidDirect = new Guid(
+            0x12345678,          // a
+            0x1234,              // b
+            0x5678,              // c
+            0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78  // d-k
+        );
+
+        // Debug: dump the raw bytes of the Guid to see what actually got stored
+        byte[] rawBytes = guidDirect.ToByteArray();
+        Debug.Write("[GuidParse] raw bytes: ");
+        for (int bi = 0; bi < rawBytes.Length; bi++)
+        {
+            Debug.WriteHex(rawBytes[bi]);
+            Debug.Write(" ");
+        }
+        Debug.WriteLine();
+
+        string directResult = guidDirect.ToString();
+        Debug.WriteLine("[GuidParse] direct.ToString: " + directResult);
+
+        // Now try the string constructor
+        var guid = new Guid(str);
+        string result = guid.ToString();
+
+        // Debug: print both strings
+        Debug.WriteLine("[GuidParse] expect: " + str);
+        Debug.WriteLine("[GuidParse] actual: " + result);
+
+        if (result != str) return 0;
+        return 1;
+    }
+
+    // =========================================================================
+    // Queue<T> Tests
+    // =========================================================================
+
+    /// <summary>Tests Queue basic operations</summary>
+    public static int TestQueueBasic()
+    {
+        var queue = new System.Collections.Generic.Queue<int>();
+        queue.Enqueue(1);
+        queue.Enqueue(2);
+        queue.Enqueue(3);
+
+        if (queue.Count != 3) return 0;
+        if (queue.Dequeue() != 1) return 0;
+        if (queue.Dequeue() != 2) return 0;
+        if (queue.Count != 1) return 0;
+        if (queue.Peek() != 3) return 0;
+        if (queue.Count != 1) return 0;  // Peek doesn't remove
+
+        return 1;
+    }
+
+    /// <summary>Tests Queue foreach</summary>
+    public static int TestQueueForeach()
+    {
+        var queue = new System.Collections.Generic.Queue<int>();
+        queue.Enqueue(10);
+        queue.Enqueue(20);
+        queue.Enqueue(30);
+
+        int sum = 0;
+        foreach (int item in queue)
+        {
+            sum += item;
+        }
+
+        return sum == 60 ? 1 : 0;
+    }
+
+    /// <summary>Tests Queue Contains and Clear</summary>
+    public static int TestQueueContainsClear()
+    {
+        var queue = new System.Collections.Generic.Queue<string>();
+        queue.Enqueue("hello");
+        queue.Enqueue("world");
+
+        if (!queue.Contains("hello")) return 0;
+        if (queue.Contains("foo")) return 0;
+
+        queue.Clear();
+        if (queue.Count != 0) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // Stack<T> Tests
+    // =========================================================================
+
+    /// <summary>Tests Stack basic operations</summary>
+    public static int TestStackBasic()
+    {
+        var stack = new System.Collections.Generic.Stack<int>();
+        stack.Push(1);
+        stack.Push(2);
+        stack.Push(3);
+
+        if (stack.Count != 3) return 0;
+        if (stack.Pop() != 3) return 0;  // LIFO order
+        if (stack.Pop() != 2) return 0;
+        if (stack.Count != 1) return 0;
+        if (stack.Peek() != 1) return 0;
+        if (stack.Count != 1) return 0;  // Peek doesn't remove
+
+        return 1;
+    }
+
+    /// <summary>Tests Stack foreach</summary>
+    public static int TestStackForeach()
+    {
+        var stack = new System.Collections.Generic.Stack<int>();
+        stack.Push(1);
+        stack.Push(2);
+        stack.Push(3);
+
+        // Stack enumerates in LIFO order (3, 2, 1)
+        int expected = 3;
+        foreach (int item in stack)
+        {
+            if (item != expected) return 0;
+            expected--;
+        }
+
+        return expected == 0 ? 1 : 0;
+    }
+
+    /// <summary>Tests Stack Contains and Clear</summary>
+    public static int TestStackContainsClear()
+    {
+        var stack = new System.Collections.Generic.Stack<string>();
+        stack.Push("hello");
+        stack.Push("world");
+
+        if (!stack.Contains("hello")) return 0;
+        if (stack.Contains("foo")) return 0;
+
+        stack.Clear();
+        if (stack.Count != 0) return 0;
 
         return 1;
     }

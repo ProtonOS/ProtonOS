@@ -822,6 +822,24 @@ public static unsafe class MetadataReader
             {
                 root.BlobHeap = metadataBase + offset;
                 root.BlobHeapSize = size;
+                // Debug: log blob heap setup
+                DebugConsole.Write("[MDReader] #Blob heap at 0x");
+                DebugConsole.WriteHex((ulong)root.BlobHeap);
+                DebugConsole.Write(" (base=0x");
+                DebugConsole.WriteHex((ulong)metadataBase);
+                DebugConsole.Write(" + off=0x");
+                DebugConsole.WriteHex(offset);
+                DebugConsole.Write(") size=");
+                DebugConsole.WriteDecimal(size);
+                DebugConsole.Write(" first4=[");
+                DebugConsole.WriteHex(root.BlobHeap[0]);
+                DebugConsole.Write(" ");
+                DebugConsole.WriteHex(root.BlobHeap[1]);
+                DebugConsole.Write(" ");
+                DebugConsole.WriteHex(root.BlobHeap[2]);
+                DebugConsole.Write(" ");
+                DebugConsole.WriteHex(root.BlobHeap[3]);
+                DebugConsole.WriteLine("]");
             }
             // #Pdb and #- (uncompressed tables) are ignored for now
 
@@ -1154,7 +1172,20 @@ public static unsafe class MetadataReader
             return null;
 
         byte* ptr = root.BlobHeap + index;
+        byte firstByte = *ptr;
         length = ReadCompressedUInt(ref ptr);
+
+        // Debug: if length is 0, log the first byte
+        if (length == 0)
+        {
+            DebugConsole.Write("[GetBlob] idx=0x");
+            DebugConsole.WriteHex(index);
+            DebugConsole.Write(" firstByte=0x");
+            DebugConsole.WriteHex(firstByte);
+            DebugConsole.Write(" heap=0x");
+            DebugConsole.WriteHex((ulong)root.BlobHeap);
+            DebugConsole.WriteLine(" len=0");
+        }
 
         return ptr;
     }

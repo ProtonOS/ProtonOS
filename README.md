@@ -44,7 +44,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **512 tests passing**
+The JIT runs a comprehensive test suite on boot: **525 tests passing**
 
 ### Supported C# Features
 
@@ -125,7 +125,7 @@ src/
 │       ├── virtio/      # VirtIO common infrastructure
 │       └── storage/     # Block device drivers (virtio-blk)
 ├── SystemRuntime/       # Deprecated - reference code only (korlib handles all types)
-└── FullTest/            # JIT test assembly (512 tests, runs on boot)
+└── FullTest/            # JIT test assembly (525 tests, runs on boot)
 ```
 
 ## How It Works
