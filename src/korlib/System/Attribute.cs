@@ -81,4 +81,21 @@ namespace System
     {
         public ParamArrayAttribute() { }
     }
+
+    /// <summary>
+    /// Marks the program elements that are no longer in use.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Enum |
+                    AttributeTargets.Interface | AttributeTargets.Constructor | AttributeTargets.Method |
+                    AttributeTargets.Property | AttributeTargets.Field | AttributeTargets.Event |
+                    AttributeTargets.Delegate, Inherited = false)]
+    public sealed class ObsoleteAttribute : Attribute
+    {
+        public ObsoleteAttribute() { }
+        public ObsoleteAttribute(string? message) => Message = message;
+        public ObsoleteAttribute(string? message, bool error) => (Message, IsError) = (message, error);
+
+        public string? Message { get; }
+        public bool IsError { get; }
+    }
 }

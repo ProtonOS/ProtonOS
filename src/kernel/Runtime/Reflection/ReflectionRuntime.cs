@@ -184,8 +184,8 @@ public static unsafe class ReflectionRuntime
     /// <returns>The return value, or null for void methods.</returns>
     public static object? InvokeMethod(uint assemblyId, uint methodToken, object? target, object?[]? args)
     {
-        // Look up the compiled method
-        CompiledMethodInfo* methodInfo = CompiledMethodRegistry.Lookup(methodToken);
+        // Look up the compiled method using assembly ID to avoid cross-assembly token collisions
+        CompiledMethodInfo* methodInfo = CompiledMethodRegistry.Lookup(methodToken, assemblyId);
         if (methodInfo == null || !methodInfo->IsCompiled)
         {
             // Method not compiled yet - JIT compile it on demand
@@ -205,7 +205,7 @@ public static unsafe class ReflectionRuntime
             }
 
             // Look up again after compilation
-            methodInfo = CompiledMethodRegistry.Lookup(methodToken);
+            methodInfo = CompiledMethodRegistry.Lookup(methodToken, assemblyId);
             if (methodInfo == null || !methodInfo->IsCompiled)
             {
                 DebugConsole.Write("[Reflection] Method still not found after JIT: 0x");

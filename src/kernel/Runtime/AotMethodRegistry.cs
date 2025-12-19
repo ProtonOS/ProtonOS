@@ -424,6 +424,12 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<string?, string?, bool>)&StringHelpers.OpInequality,
             2, ReturnKind.Int32, false, false);
 
+        // String.GetHashCode() - 0 parameters, HasThis=true, returns int (virtual)
+        Register(
+            "System.String", "GetHashCode",
+            (nint)(delegate*<string, int>)&StringHelpers.GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
         // String.GetPinnableReference() - 0 parameters, HasThis=true, returns ref char (pointer)
         Register(
             "System.String", "GetPinnableReference",
@@ -1464,6 +1470,25 @@ public static unsafe class StringHelpers
     public static bool OpInequality(string? a, string? b)
     {
         return !OpEquality(a, b);
+    }
+
+    /// <summary>
+    /// Wrapper for String.GetHashCode().
+    /// Returns a content-based hash code for the string.
+    /// </summary>
+    public static int GetHashCode(string s)
+    {
+        if (s == null)
+            return 0;
+
+        // Simple but effective hash algorithm (similar to Java's String.hashCode)
+        int hash = 0;
+        int len = s.Length;
+        for (int i = 0; i < len; i++)
+        {
+            hash = 31 * hash + s[i];
+        }
+        return hash;
     }
 
     /// <summary>

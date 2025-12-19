@@ -9,7 +9,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 ## Features
 
 - **UEFI Boot** - Native UEFI application, no legacy BIOS
-- **Custom Runtime (korlib)** - Minimal .NET runtime library forked from bflat's zerolib
+- **Custom Runtime (korlib)** - Minimal .NET runtime with collections (List, Dictionary, StringBuilder)
 - **Compacting GC** - Mark-sweep with Lisp-2 compaction, Large Object Heap (LOH)
 - **Full Exception Handling** - try/catch/finally/filter with funclet-based unwinding
 - **SMP Support** - Multi-processor boot with per-CPU scheduling
@@ -44,7 +44,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **470 tests passing**
+The JIT runs a comprehensive test suite on boot: **512 tests passing**
 
 ### Supported C# Features
 
@@ -62,7 +62,8 @@ The JIT runs a comprehensive test suite on boot: **470 tests passing**
 | **Reflection** | typeof, GetType, GetMethods/Fields/Constructors, MethodInfo.Invoke |
 | **Unsafe Code** | Pointers, stackalloc, fixed buffers, calli, function pointers |
 | **Threading** | Interlocked operations, thread APIs (via kernel exports) |
-| **Resource Management** | IDisposable, using statement, foreach on arrays |
+| **Resource Management** | IDisposable, using statement, foreach on arrays and collections |
+| **Collections** | List\<T\>, Dictionary\<TKey,TValue\>, StringBuilder, custom iterators |
 | **Special** | Static constructors, overflow checking, varargs (__arglist), nameof |
 
 ## Building
@@ -123,8 +124,8 @@ src/
 │   └── shared/
 │       ├── virtio/      # VirtIO common infrastructure
 │       └── storage/     # Block device drivers (virtio-blk)
-├── SystemRuntime/       # Cross-assembly type definitions
-└── FullTest/            # JIT test assembly (runs on boot)
+├── SystemRuntime/       # Deprecated - reference code only (korlib handles all types)
+└── FullTest/            # JIT test assembly (512 tests, runs on boot)
 ```
 
 ## How It Works
@@ -149,6 +150,7 @@ Everything else is C#.
 - [Architecture Reference](docs/ARCHITECTURE.md) - Detailed system design
 - [JIT Test Coverage](docs/JIT_TEST_COVERAGE.md) - Comprehensive IL opcode and feature coverage
 - [korlib Plan](docs/KORLIB_PLAN.md) - Runtime library roadmap
+- [System.Runtime Migration](docs/SYSTEMRUNTIME_MIGRATION.md) - Type migration status and JIT fixes
 - [Allocation Limits](docs/ALLOCATION_LIMITS.md) - Registry and allocator documentation
 
 ## Contributing

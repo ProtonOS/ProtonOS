@@ -172,6 +172,9 @@ public static class TestRunner
         // Iterator tests - custom IEnumerable/IEnumerator implementations
         RunIteratorTests();
 
+        // Utility tests - BitConverter, HashCode, etc. from korlib
+        RunUtilityTests();
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -277,6 +280,18 @@ public static class TestRunner
         RecordResult("IteratorTests.TestForeachCustomCount", IteratorTests.TestForeachCustomCount() == 3);
         RecordResult("IteratorTests.TestForeachCustomEmpty", IteratorTests.TestForeachCustomEmpty() == 1);
         RecordResult("IteratorTests.TestForeachCustomBreak", IteratorTests.TestForeachCustomBreak() == 6);
+    }
+
+    private static void RunUtilityTests()
+    {
+        // BitConverter tests
+        RecordResult("UtilityTests.TestBitConverterInt32", UtilityTests.TestBitConverterInt32() == 1);
+        RecordResult("UtilityTests.TestBitConverterInt64", UtilityTests.TestBitConverterInt64() == 1);
+        RecordResult("UtilityTests.TestBitConverterRoundtrip", UtilityTests.TestBitConverterRoundtrip() == 1);
+        // HashCode tests
+        RecordResult("UtilityTests.TestHashCodeCombine2", UtilityTests.TestHashCodeCombine2() == 1);
+        RecordResult("UtilityTests.TestHashCodeCombine3", UtilityTests.TestHashCodeCombine3() == 1);
+        RecordResult("UtilityTests.TestHashCodeAdd", UtilityTests.TestHashCodeAdd() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -8124,9 +8139,130 @@ public static class ReflectionTypeTests
     }
 }
 
-/// <summary>
-/// Tests foreach on custom IEnumerable implementations.
-/// </summary>
+// =============================================================================
+// Utility Tests - Tests for BitConverter, HashCode, etc. from korlib
+// =============================================================================
+
+public static class UtilityTests
+{
+    // =========================================================================
+    // BitConverter Tests
+    // =========================================================================
+
+    /// <summary>Tests BitConverter.GetBytes and ToInt32</summary>
+    public static int TestBitConverterInt32()
+    {
+        int value = 0x12345678;
+        byte[] bytes = BitConverter.GetBytes(value);
+
+        // Verify bytes (little-endian)
+        if (bytes.Length != 4) return 0;
+        if (bytes[0] != 0x78) return 0;
+        if (bytes[1] != 0x56) return 0;
+        if (bytes[2] != 0x34) return 0;
+        if (bytes[3] != 0x12) return 0;
+
+        // Verify ToInt32 converts back
+        int result = BitConverter.ToInt32(bytes, 0);
+        return result == value ? 1 : 0;
+    }
+
+    /// <summary>Tests BitConverter.GetBytes and ToInt64</summary>
+    public static int TestBitConverterInt64()
+    {
+        long value = 0x123456789ABCDEF0;
+        byte[] bytes = BitConverter.GetBytes(value);
+
+        // Verify length
+        if (bytes.Length != 8) return 0;
+
+        // Verify ToInt64 converts back
+        long result = BitConverter.ToInt64(bytes, 0);
+        return result == value ? 1 : 0;
+    }
+
+    /// <summary>Tests BitConverter roundtrip for various types</summary>
+    public static int TestBitConverterRoundtrip()
+    {
+        // Test short
+        short s = -1234;
+        if (BitConverter.ToInt16(BitConverter.GetBytes(s), 0) != s) return 0;
+
+        // Test uint
+        uint u = 0xDEADBEEF;
+        if (BitConverter.ToUInt32(BitConverter.GetBytes(u), 0) != u) return 0;
+
+        // Test bool
+        if (BitConverter.ToBoolean(BitConverter.GetBytes(true), 0) != true) return 0;
+        if (BitConverter.ToBoolean(BitConverter.GetBytes(false), 0) != false) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // HashCode Tests
+    // =========================================================================
+
+    /// <summary>Tests HashCode.Combine with 2 values</summary>
+    public static int TestHashCodeCombine2()
+    {
+        int hash1 = HashCode.Combine(42, "hello");
+        int hash2 = HashCode.Combine(42, "hello");
+        int hash3 = HashCode.Combine(42, "world");
+
+        // Same inputs should produce same hash
+        if (hash1 != hash2) return 0;
+
+        // Different inputs should produce different hash
+        if (hash1 == hash3) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests HashCode.Combine with 3 values</summary>
+    public static int TestHashCodeCombine3()
+    {
+        int hash1 = HashCode.Combine(1, 2, 3);
+        int hash2 = HashCode.Combine(1, 2, 3);
+        int hash3 = HashCode.Combine(3, 2, 1);  // Different order
+
+        // Same inputs should produce same hash
+        if (hash1 != hash2) return 0;
+
+        // Different order should produce different hash
+        if (hash1 == hash3) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests HashCode.Add and ToHashCode</summary>
+    public static int TestHashCodeAdd()
+    {
+        var hc1 = new HashCode();
+        hc1.Add(10);
+        hc1.Add(20);
+        int result1 = hc1.ToHashCode();
+
+        var hc2 = new HashCode();
+        hc2.Add(10);
+        hc2.Add(20);
+        int result2 = hc2.ToHashCode();
+
+        // Same sequence should produce same hash
+        if (result1 != result2) return 0;
+
+        var hc3 = new HashCode();
+        hc3.Add(20);
+        hc3.Add(10);
+        int result3 = hc3.ToHashCode();
+
+        // Different order should produce different hash
+        if (result1 == result3) return 0;
+
+        return 1;
+    }
+}
+
 public static class IteratorTests
 {
     /// <summary>

@@ -104,7 +104,7 @@ Required for async/await support. Lower priority until async is needed.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `DateTime` | 283 | Not Started | Date and time handling |
-| `DateTimeKind` | 26 | Not Started | Enum (UTC/Local/Unspecified) |
+| `DateTimeKind` | 26 | **Migrated** | Enum (UTC/Local/Unspecified) |
 | `TimeSpan` | 168 | Not Started | Duration representation |
 
 ---
@@ -114,7 +114,7 @@ Required for async/await support. Lower priority until async is needed.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `StringBuilder` | ~490 | **Migrated** | Full implementation with Append, Insert, Remove, Replace |
-| `StringComparison` | 23 | Not Started | Enum |
+| `StringComparison` | 23 | **Migrated** | Enum |
 
 ---
 
@@ -123,8 +123,8 @@ Required for async/await support. Lower priority until async is needed.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `Guid` | 211 | Not Started | Unique identifiers |
-| `BitConverter` | 234 | Not Started | Byte/primitive conversions |
-| `HashCode` | 193 | Not Started | Hash combining |
+| `BitConverter` | ~200 | **Migrated** | Byte/primitive conversions (without Half type) |
+| `HashCode` | 193 | **Migrated** | Hash combining |
 | `ArraySegment<T>` | 231 | Not Started | Array view/slice |
 
 ---
@@ -163,6 +163,7 @@ korlib already has partial reflection support. These types may need merging or r
 | `IAsyncResult` | 68 | Not Started | Legacy async pattern |
 | `RuntimeHandles` | 91 | Partial | korlib has `RuntimeHandles.cs` |
 | `Nullable` helpers | 30 | Migrated | korlib has `Nullable.cs` |
+| `ObsoleteAttribute` | ~20 | **Migrated** | Marks deprecated elements |
 
 ---
 
@@ -202,16 +203,17 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 2. ~~`StringBuilder`~~ - Full implementation
 3. ~~`EqualityComparer<T>`, `Comparer<T>`~~ - Complete with value type support
 4. ~~All collection interfaces~~ - IEnumerable, IEnumerator, ICollection, IList, etc.
+5. ~~`BitConverter`, `HashCode`~~ - Utility types for binary conversion and hash combining
 
 ### Medium Priority
-5. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections
-6. `DateTime`, `TimeSpan` - Time handling
-7. `Guid` - Unique identifiers
+6. `HashSet<T>`, `Queue<T>`, `Stack<T>` - Useful collections (HashCode precursor done)
+7. `DateTime`, `TimeSpan` - Time handling (DateTimeKind enum done)
+8. `Guid` - Unique identifiers
 
 ### Lower Priority (migrate when needed)
-8. Async/Tasks infrastructure - Only when async/await support is required
-9. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
-10. Reflection types - Only for advanced scenarios
+9. Async/Tasks infrastructure - Only when async/await support is required
+10. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
+11. Reflection types - Only for advanced scenarios
 
 ---
 
@@ -258,6 +260,16 @@ The valueSize calculation for box/unbox was not distinguishing between TypeSpec 
 
 **Fix**: Added token table check - TypeSpec (0x1B) generic instances have baseSize including +8, while TypeDef (0x02) user structs have baseSize = raw size.
 
+### String.GetHashCode Missing from AOT Registry
+`HashCode.Combine()` with string arguments was failing because `String.GetHashCode()` wasn't registered in the AOT method registry. It was falling back to `Object.GetHashCode()` which uses pointer-based hashing instead of content-based hashing.
+
+**Fix**: Added `StringHelpers.GetHashCode()` to `AotMethodRegistry.cs` with a content-based hash implementation (Java-style `31 * hash + char`).
+
+### Reflection Invoke Cross-Assembly Token Collision
+`MethodInfo.Invoke()` was finding the wrong method because `CompiledMethodRegistry.Lookup(token)` scans all assemblies. When korlib and FullTest have methods with the same token number, it could return the wrong one.
+
+**Fix**: Changed `ReflectionRuntime.InvokeMethod()` to use `Lookup(token, assemblyId)` which properly scopes the lookup to the correct assembly.
+
 ---
 
 ## History
@@ -271,3 +283,6 @@ The valueSize calculation for box/unbox was not distinguishing between TypeSpec 
 - **2024-12**: Fixed Nullable<T> boxing/unboxing and ELEMENT_TYPE_VAR field resolution
 - **2024-12**: Fixed newobj temp slot overlap with local V_0 (lifted arithmetic tests)
 - **2024-12**: Enabled Iterator tests - IEnumerable/IEnumerator now resolvable (506 tests)
+- **2024-12**: Migrated utility types: StringComparison, DateTimeKind, BitConverter, HashCode, ObsoleteAttribute
+- **2024-12**: Added String.GetHashCode to AOT registry for content-based hashing (512 tests)
+- **2024-12**: Fixed reflection invoke cross-assembly token collision in CompiledMethodRegistry lookup
