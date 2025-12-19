@@ -393,6 +393,9 @@ public static unsafe class MetadataIntegration
         public const uint Span = 0xF0000060;           // Span`1
         public const uint ReadOnlySpan = 0xF0000061;   // ReadOnlySpan`1
 
+        // Nullable types - for lifted operators
+        public const uint Nullable = 0xF0000068;       // Nullable`1
+
         // Base types - for type hierarchy
         public const uint ValueType = 0xF0000070;
         public const uint Enum = 0xF0000071;
@@ -1665,6 +1668,68 @@ public static unsafe class MetadataIntegration
             byte genKind = sig[2];
             fieldIsValueType = (genKind == 0x11);  // VALUETYPE
         }
+
+        // For ELEMENT_TYPE_VAR (0x13), look up the actual type argument from generic context
+        // Field signature: 0x06 (calling conv) + 0x13 (VAR) + <var_index>
+        // The var_index is a compressed uint indicating which type parameter (T=0, U=1, etc.)
+        if (elementType == 0x13 && sigLen >= 3)
+        {
+            // Read the var index (compressed uint)
+            // sig[0] = 0x06 (field calling convention)
+            // sig[1] = 0x13 (ELEMENT_TYPE_VAR)
+            // sig[2]... = var index (compressed uint)
+            byte* sigPtr = sig + 2;  // Skip 0x06 and 0x13
+            uint varIndex = MetadataReader.ReadCompressedUInt(ref sigPtr);
+
+            // Get the actual type argument from the current generic context
+            MethodTable* typeArgMT = GetTypeTypeArgMethodTable((int)varIndex);
+            if (typeArgMT != null)
+            {
+                fieldIsValueType = typeArgMT->IsValueType;
+                isGCRef = !fieldIsValueType;
+
+                // Compute field size:
+                // - For value types: _uBaseSize includes MT pointer (8 bytes), subtract it
+                // - For reference types: always 8 bytes (pointer size)
+                uint fieldSize;
+                if (fieldIsValueType)
+                {
+                    // _uBaseSize = 8 (MT ptr) + actual_value_size
+                    fieldSize = typeArgMT->_uBaseSize > 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize;
+                }
+                else
+                {
+                    fieldSize = 8;  // Reference types are pointers
+                }
+
+                DebugConsole.Write("[VAR-FLD] varIdx=");
+                DebugConsole.WriteDecimal(varIndex);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)typeArgMT);
+                DebugConsole.Write(" baseSize=");
+                DebugConsole.WriteDecimal(typeArgMT->_uBaseSize);
+                DebugConsole.Write(" fieldSize=");
+                DebugConsole.WriteDecimal(fieldSize);
+                DebugConsole.Write(" isVT=");
+                DebugConsole.Write(fieldIsValueType ? "Y" : "N");
+                DebugConsole.WriteLine();
+
+                size = (byte)(fieldSize > 255 ? 255 : fieldSize);
+
+                // Update the result with the resolved type info
+                result.IsSigned = false;  // Generic type args don't preserve signedness
+                result.IsGCRef = isGCRef;
+            }
+            else
+            {
+                DebugConsole.Write("[VAR-FLD] varIdx=");
+                DebugConsole.WriteDecimal(varIndex);
+                DebugConsole.Write(" typeArgCnt=");
+                DebugConsole.WriteDecimal((uint)GetTypeTypeArgCount());
+                DebugConsole.WriteLine(" MT=NULL (no type context)");
+            }
+        }
+
         result.IsFieldTypeValueType = fieldIsValueType;
 
         if (size == 0)
@@ -4440,6 +4505,27 @@ public static unsafe class MetadataIntegration
                     // Pass the type signature (after the 0x06 calling convention byte)
                     size = (int)AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, sig + 1, sigLen - 1);
                 }
+                else if (elementType == 0x13)  // ELEMENT_TYPE_VAR (generic type parameter)
+                {
+                    // Look up the actual type argument from the generic context
+                    // sig[0] = 0x06 (field calling convention)
+                    // sig[1] = 0x13 (ELEMENT_TYPE_VAR)
+                    // sig[2]... = var index (compressed uint)
+                    byte* sigPtr = sig + 2;  // Skip 0x06 and 0x13
+                    uint varIndex = MetadataReader.ReadCompressedUInt(ref sigPtr);
+                    MethodTable* typeArgMT = GetTypeTypeArgMethodTable((int)varIndex);
+                    if (typeArgMT != null)
+                    {
+                        // For value types: _uBaseSize includes MT pointer (8 bytes)
+                        // For reference types: always 8 bytes (pointer size)
+                        if (typeArgMT->IsValueType)
+                            size = (int)(typeArgMT->_uBaseSize > 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize);
+                        else
+                            size = 8;
+                    }
+                    else
+                        size = 8;  // Fallback if no type context
+                }
                 else
                 {
                     GetFieldSizeFromElementType(elementType, out byte primSize, out _, out _);
@@ -4468,6 +4554,27 @@ public static unsafe class MetadataIntegration
             if (targetElementType == ElementType.ValueType || targetElementType == ElementType.GenericInst)
             {
                 targetSize = (int)AssemblyLoader.GetFieldTypeSizeForAssembly(_currentAssemblyId, targetSig + 1, targetSigLen - 1);
+            }
+            else if (targetElementType == 0x13)  // ELEMENT_TYPE_VAR (generic type parameter)
+            {
+                // Look up the actual type argument from the generic context
+                // targetSig[0] = 0x06 (field calling convention)
+                // targetSig[1] = 0x13 (ELEMENT_TYPE_VAR)
+                // targetSig[2]... = var index (compressed uint)
+                byte* sigPtr = targetSig + 2;  // Skip 0x06 and 0x13
+                uint varIndex = MetadataReader.ReadCompressedUInt(ref sigPtr);
+                MethodTable* typeArgMT = GetTypeTypeArgMethodTable((int)varIndex);
+                if (typeArgMT != null)
+                {
+                    // For value types: _uBaseSize includes MT pointer (8 bytes)
+                    // For reference types: always 8 bytes (pointer size)
+                    if (typeArgMT->IsValueType)
+                        targetSize = (int)(typeArgMT->_uBaseSize > 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize);
+                    else
+                        targetSize = 8;
+                }
+                else
+                    targetSize = 8;  // Fallback if no type context
             }
             else
             {

@@ -4630,6 +4630,8 @@ public static unsafe class AssemblyLoader
                     name[17] == 'p' && name[18] == 't' && name[19] == 'i' && name[20] == 'o' &&
                     name[21] == 'n' && name[22] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.NullReferenceException;
+                // NOTE: Nullable`1 is NOT a well-known type because it's generic and needs
+                // to resolve via korlib fallback for method lookups to work
                 break;
 
             case (byte)'F':  // FormatException

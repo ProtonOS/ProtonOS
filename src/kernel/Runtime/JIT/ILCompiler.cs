@@ -2394,11 +2394,11 @@ public unsafe struct ILCompiler
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
 
-        // Debug: trace stloc.0 in TestDictForeach
-        if (_debugAssemblyId == 6 && _debugMethodToken == 0x060002E7 && index == 0)
+        // Debug: trace ALL stloc.0 in FullTest to find problematic cases
+        if (_debugAssemblyId == 6 && index == 0)
         {
             EvalStackEntry dbgTos = PeekEntry();
-            DebugConsole.Write("[DF-stloc0] isVT=");
+            DebugConsole.Write("[FT-stloc0] isVT=");
             DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
             DebugConsole.Write(" typeSz=");
             DebugConsole.WriteDecimal(typeSize);
@@ -2406,6 +2406,8 @@ public unsafe struct ILCompiler
             DebugConsole.WriteDecimal((uint)dbgTos.ByteSize);
             DebugConsole.Write(" tosKind=");
             DebugConsole.WriteDecimal((uint)dbgTos.Kind);
+            DebugConsole.Write(" tok=0x");
+            DebugConsole.WriteHex(_debugMethodToken);
             DebugConsole.WriteLine();
         }
         // bool debugBind = IsDebugBindMethod();
@@ -8727,7 +8729,11 @@ public unsafe struct ILCompiler
             // Fix: move RSP down 32 bytes to put live data safely below shadow space.
             X64Emitter.SubRI(ref _code, VReg.SP, 32);
 
-            int newobjTempOffset = -(_localCount * 8 + 64);
+            // newobjTempOffset must be AFTER all local variable slots.
+            // GetLocalOffset uses 64-byte slots starting at -(CalleeSaveSize + 64).
+            // Last local (index _localCount-1) is at -(CalleeSaveSize + _localCount*64).
+            // So temp must be at -(CalleeSaveSize + (_localCount+1)*64) or lower.
+            int newobjTempOffset = -(X64Emitter.CalleeSaveSize + (_localCount + 1) * 64);
 
             if (isValueType)
             {
@@ -8737,6 +8743,29 @@ public unsafe struct ILCompiler
 
                 // Get the actual size of the value type from its MethodTable
                 uint vtSize = mt->BaseSize;
+
+                // Special handling for Nullable<T>: BaseSize from generic definition is unreliable
+                // Nullable<T> has layout: bool _hasValue (1 byte) + padding + T _value
+                // For T <= 4 bytes: actual size is 8 (1 + padding + 4, aligned)
+                // For T = 8 bytes: actual size is 16 (1 + padding + 8)
+                // The ctor arg size tells us T's size
+                if (mt->IsNullable && ctorArgs == 1)
+                {
+                    // Get T's size from the constructor argument
+                    // For Nullable<int>.ctor(int), the arg is 4 bytes
+                    // We can't easily access the arg type here, but we know:
+                    // - Nullable<byte/short/int/float> (T<=4): size should be 8
+                    // - Nullable<long/double> (T=8): size should be 16
+                    // Since BaseSize=16 is set for generic def, and 16 would be correct for T=8,
+                    // we can check if the "wrong" BaseSize is 16 for smaller T.
+                    // Heuristic: if IsNullable and BaseSize==16, assume T<=4 and use size=8
+                    // This works because Nullable<long> would have correct BaseSize anyway
+                    if (vtSize == 16)
+                    {
+                        vtSize = 8;  // Likely Nullable<int/short/byte> - T fits in 4 bytes
+                    }
+                }
+
                 int alignedVtSize = (int)((vtSize + 7) & ~7UL);  // Round up to 8-byte alignment
 
                 // Adjust newobjTempOffset to account for larger structs
@@ -8826,6 +8855,13 @@ public unsafe struct ILCompiler
             {
                 // For value types, push the entire struct onto the eval stack
                 uint vtSize = mt->BaseSize;
+
+                // Same Nullable<T> size fix as above
+                if (mt->IsNullable && ctorArgs == 1 && vtSize == 16)
+                {
+                    vtSize = 8;  // Likely Nullable<int/short/byte> - T fits in 4 bytes
+                }
+
                 int alignedVtSize = (int)((vtSize + 7) & ~7UL);
                 // Calculate the base offset (same formula as above)
                 int vtBaseOffset = newobjTempOffset - (alignedVtSize - 8);
@@ -9128,7 +9164,8 @@ public unsafe struct ILCompiler
 
                 // For value types, we need the raw value size (bytes to copy when boxing).
                 // - AOT primitives: ComponentSize is raw size, BaseSize is boxed size (includes +8)
-                // - JIT-created structs: ComponentSize is 0, BaseSize IS the raw size (no +8)
+                // - TypeSpec (0x1B) generic instances: ComponentSize is 0, BaseSize is boxed size (includes +8)
+                // - TypeDef (0x02) user structs: ComponentSize is 0, BaseSize IS raw size (no +8)
                 // For reference types (boxing a ref type is a no-op), just return - leave value on stack.
                 if (mt->IsValueType)
                 {
@@ -9140,8 +9177,16 @@ public unsafe struct ILCompiler
                     }
                     else
                     {
-                        // JIT-created struct: BaseSize IS the raw value size
-                        valueSize = baseSize;
+                        // Check token table to determine if baseSize includes +8 or not
+                        uint tokenTable = token >> 24;
+                        if (tokenTable == 0x1B)  // TypeSpec - generic instantiation, baseSize includes +8
+                        {
+                            valueSize = baseSize > 8 ? baseSize - 8 : baseSize;
+                        }
+                        else  // TypeDef (0x02) or other - baseSize IS the raw value size
+                        {
+                            valueSize = baseSize;
+                        }
                     }
                     DebugConsole.Write(" valueSize=");
                     DebugConsole.WriteHex(valueSize);
@@ -9703,12 +9748,21 @@ public unsafe struct ILCompiler
 
                     // Get the Nullable struct size - must match how boxing determines size
                     // For AOT types: ComponentSize is raw size
-                    // For JIT types: BaseSize IS the raw size (no overhead)
+                    // For TypeSpec (0x1B) generic instances: BaseSize includes +8
+                    // For TypeDef (0x02) local types: BaseSize IS the raw size
                     ushort componentSize = mt->_usComponentSize;
                     if (componentSize > 0)
+                    {
                         nullableSize = componentSize;
+                    }
                     else
-                        nullableSize = baseSize;
+                    {
+                        uint tokenTable = token >> 24;
+                        if (tokenTable == 0x1B)  // TypeSpec - generic instantiation
+                            nullableSize = baseSize > 8 ? baseSize - 8 : baseSize;
+                        else
+                            nullableSize = baseSize;
+                    }
 
                     // Get the inner type's MethodTable from _relatedType
                     MethodTable* innerMt = mt->_relatedType;

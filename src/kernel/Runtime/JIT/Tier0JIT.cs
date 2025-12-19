@@ -1054,12 +1054,22 @@ public static unsafe class Tier0JIT
                                 // Use resolved size if available, otherwise fall back to GetTypeSize
                                 uint baseSize = resolvedBaseSize > 0 ? resolvedBaseSize : MetadataIntegration.GetTypeSize(fullToken);
 
-                                // Nullable<T> pattern: base size <= 8, single type arg
-                                if (baseSize <= 8 && argCount == 1 && typeArgSizes[0] > 0)
+                                // Nullable<T> pattern: single primitive type arg AND small base size
+                                // Note: baseSize from generic definition MethodTable is unreliable for Nullable<T>
+                                // because the compiler doesn't know T's size. Generic definitions often have
+                                // placeholder sizes (like 16) that don't reflect the actual instantiated size.
+                                // For single-arg generics with primitive T, use Nullable<T> layout formula.
+                                // IMPORTANT: Only apply this for types with small base size (<=16).
+                                // List<T>.Enumerator has baseSize=24 and should NOT use the Nullable formula.
+                                if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8 && baseSize <= 16)
                                 {
-                                    // Nullable<T>: size = 8 (hasValue + padding) + sizeof(T), aligned to 8
-                                    int alignedTSize = (typeArgSizes[0] + 7) & ~7;
-                                    typeSize[i] = (ushort)(8 + alignedTSize);
+                                    // Nullable<T> layout: 1 byte hasValue + padding to T alignment + T
+                                    // - Nullable<byte/sbyte> (T=1): 1+1=2 -> aligned to 8 = 8
+                                    // - Nullable<short/ushort/char> (T=2): 1+1+2=4 -> aligned to 8 = 8
+                                    // - Nullable<int/uint/float> (T=4): 1+3+4=8
+                                    // - Nullable<long/ulong/double> (T=8): 1+7+8=16
+                                    int tSize = typeArgSizes[0];
+                                    typeSize[i] = (ushort)(tSize <= 4 ? 8 : 16);
                                 }
                                 // Generic struct with embedded generic fields (like Dictionary.Enumerator)
                                 // The base size from the generic definition doesn't include space for instantiated fields.
@@ -1364,11 +1374,13 @@ public static unsafe class Tier0JIT
                                 fullToken = 0x1B000000 | typeRid;  // TypeSpec
 
                             uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
-                            // Nullable<T> pattern: base size <= 8, single type arg
-                            if (baseSize <= 8 && argCount == 1 && typeArgSizes[0] > 0)
+                            // Nullable<T> pattern: single primitive type arg
+                            // Note: baseSize from generic definition MethodTable is unreliable
+                            if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8)
                             {
-                                int alignedTSize = (typeArgSizes[0] + 7) & ~7;
-                                typeSize = (ushort)(8 + alignedTSize);
+                                // Nullable<T> layout: 1 byte hasValue + padding to T alignment + T
+                                int tSize = typeArgSizes[0];
+                                typeSize = (ushort)(tSize <= 4 ? 8 : 16);
                             }
                             // Generic struct with embedded generic fields (like Dictionary.Enumerator)
                             // Add type argument sizes to base size to account for instantiated fields
@@ -1611,23 +1623,21 @@ public static unsafe class Tier0JIT
                     else if (tag == 2)
                         fullToken = 0x1B000000 | typeRid;
 
-                    // Special handling for Nullable<T>: size = 8 + sizeof(T), aligned to 8
-                    // The base generic Nullable<T> has argCount=1, and the layout is:
-                    //   bool _hasValue (1 byte) + padding to 8 + T _value
-                    // For small T (<=8 bytes), total is 16 bytes.
-                    // For larger T, total is 8 + alignedSize(T), rounded to 8.
-                    // We detect Nullable by checking if the base type resolves to 0 or invalid size.
-                    uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
-                    if (baseSize <= 8 && argCount == 1 && firstTypeArgSize > 0)
+                    // Nullable<T> pattern: single primitive type arg
+                    // Note: baseSize from generic definition MethodTable is unreliable for Nullable<T>
+                    // because the compiler doesn't know T's size at definition time.
+                    if (argCount == 1 && firstTypeArgSize > 0 && firstTypeArgSize <= 8)
                     {
-                        // This looks like a generic wrapper type (like Nullable<T>)
-                        // The size is 8 (for hasValue + padding) + sizeof(T), aligned to 8
-                        int alignedTSize = (firstTypeArgSize + 7) & ~7;
-                        typeSize = (ushort)(8 + alignedTSize);
+                        // Nullable<T> layout: 1 byte hasValue + padding to T alignment + T
+                        // - Nullable<byte/sbyte> (T=1): 1+1=2 -> aligned to 8 = 8
+                        // - Nullable<short/ushort/char> (T=2): 1+1+2=4 -> aligned to 8 = 8
+                        // - Nullable<int/uint/float> (T=4): 1+3+4=8
+                        // - Nullable<long/ulong/double> (T=8): 1+7+8=16
+                        typeSize = (ushort)(firstTypeArgSize <= 4 ? 8 : 16);
                     }
                     else
                     {
-                        typeSize = (ushort)baseSize;
+                        typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
                     }
                 }
             }
