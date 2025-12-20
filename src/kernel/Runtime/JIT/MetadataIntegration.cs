@@ -2116,10 +2116,13 @@ public static unsafe class MetadataIntegration
             {
                 result.VtableSlot = -1;  // Not a vtable method
             }
-            // For value type constructors, we need to provide the MethodTable
-            // so that newobj can allocate stack space
+            // For constructors, we need to provide the MethodTable so that newobj can allocate
+            // For value types: allocate stack space
+            // For reference types: allocate heap object via RhpNewFast
             if (NameEquals(typeName, "System.ArgIterator"))
                 result.MethodTable = _argIteratorMT;
+            else if (NameEquals(typeName, "System.Object"))
+                result.MethodTable = LookupType(WellKnownTypes.Object);
             else
                 result.MethodTable = null;
             result.IsInterfaceMethod = false;

@@ -7747,17 +7747,37 @@ public static unsafe class AssemblyLoader
                         // Look up by the generic definition's MT and slot
                         JIT.CompiledMethodInfo* info = JIT.CompiledMethodRegistry.LookupByVtableSlot(genDefMT, (short)i);
 
-                        // Debug: trace failed lookups for slot 3
-                        if (info == null && i == 3)
+                        // If not found, walk up the base class hierarchy
+                        // Inherited methods are registered with the base class's MethodTable
+                        if (info == null)
                         {
-                            DebugConsole.Write("[GenInst] LookupByVtableSlot failed for slot ");
-                            DebugConsole.WriteDecimal((uint)i);
-                            DebugConsole.Write(" genDefMT=0x");
-                            DebugConsole.WriteHex((ulong)genDefMT);
-                            DebugConsole.Write(" instMT=0x");
-                            DebugConsole.WriteHex((ulong)instMT);
-                            DebugConsole.WriteLine();
+                            MethodTable* currentMT = genDefMT;
+                            while (info == null && currentMT != null)
+                            {
+                                MethodTable* parentMT = currentMT->GetParentType();
+                                if (parentMT != null && i < parentMT->_usNumVtableSlots)
+                                {
+                                    info = JIT.CompiledMethodRegistry.LookupByVtableSlot(parentMT, (short)i);
+                                    if (info != null)
+                                    {
+                                        // Found in parent - also try copying from parent vtable
+                                        nint* parentVtable = parentMT->GetVtablePtr();
+                                        if (parentVtable[i] != 0)
+                                        {
+                                            dstVtable[i] = parentVtable[i];
+                                            // Slot is now populated, skip JIT compilation
+                                            info = null;
+                                            break;
+                                        }
+                                    }
+                                }
+                                currentMT = parentMT;
+                            }
                         }
+
+                        // Skip if slot was populated from parent
+                        if (dstVtable[i] != 0)
+                            continue;
 
                         if (info != null && info->Token != 0)
                         {

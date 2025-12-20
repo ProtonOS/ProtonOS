@@ -363,6 +363,11 @@ public static class TestRunner
         RecordResult("UtilityTests.TestCancellationTokenSource", UtilityTests.TestCancellationTokenSource() == 1);
         RecordResult("UtilityTests.TestCancellationTokenCallback", UtilityTests.TestCancellationTokenCallback() == 1);
         RecordResult("UtilityTests.TestMemberTypes", UtilityTests.TestMemberTypes() == 1);
+        // Task tests
+        RecordResult("UtilityTests.TestTaskCompletedTask", UtilityTests.TestTaskCompletedTask() == 1);
+        RecordResult("UtilityTests.TestTaskRun", UtilityTests.TestTaskRun() == 1);
+        RecordResult("UtilityTests.TestTaskFromResult", UtilityTests.TestTaskFromResult() == 1);
+        RecordResult("UtilityTests.TestTaskCompletionSource", UtilityTests.TestTaskCompletionSource() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9383,6 +9388,65 @@ public static class UtilityTests
         if ((all & System.Reflection.MemberTypes.Constructor) == 0) return 0;
         if ((all & System.Reflection.MemberTypes.Method) == 0) return 0;
         if ((all & System.Reflection.MemberTypes.Property) == 0) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests Task.CompletedTask</summary>
+    public static int TestTaskCompletedTask()
+    {
+        var task = System.Threading.Tasks.Task.CompletedTask;
+        if (!task.IsCompleted) return 0;
+        if (!task.IsCompletedSuccessfully) return 0;
+        if (task.IsFaulted) return 0;
+        if (task.IsCanceled) return 0;
+        if (task.Status != System.Threading.Tasks.TaskStatus.RanToCompletion) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests Task.FromResult</summary>
+    public static int TestTaskFromResult()
+    {
+        var task = System.Threading.Tasks.Task.FromResult(42);
+        if (!task.IsCompleted) return 0;
+        if (!task.IsCompletedSuccessfully) return 0;
+        if (task.Result != 42) return 0;
+        return 1;
+    }
+
+    private static int _taskRunValue = 0;
+
+    private static void TaskRunCallback()
+    {
+        _taskRunValue = 123;
+    }
+
+    /// <summary>Tests Task.Run (synchronous for now)</summary>
+    public static int TestTaskRun()
+    {
+        _taskRunValue = 0;
+        var task = System.Threading.Tasks.Task.Run(TaskRunCallback);
+        if (!task.IsCompleted) return 0;
+        if (_taskRunValue != 123) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests TaskCompletionSource</summary>
+    public static int TestTaskCompletionSource()
+    {
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<int>();
+        var task = tcs.Task;
+
+        // Task should not be completed yet
+        if (task.IsCompleted) return 0;
+
+        // Set the result
+        tcs.SetResult(99);
+
+        // Now it should be completed
+        if (!task.IsCompleted) return 0;
+        if (!task.IsCompletedSuccessfully) return 0;
+        if (task.Result != 99) return 0;
 
         return 1;
     }

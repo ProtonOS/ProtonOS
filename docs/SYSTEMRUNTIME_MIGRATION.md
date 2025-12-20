@@ -68,24 +68,24 @@ High-value types commonly needed for general programming.
 
 ## Async/Tasks (`System.Threading.Tasks`)
 
-Required for async/await support. Lower priority until async is needed.
+Required for async/await support.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Task` / `Task<T>` | 460 | Not Started | Core async support |
+| `Task` / `Task<T>` | 460 | **Migrated** | Core async support (4 tests passing - 572 total) |
 | `ValueTask` / `ValueTask<T>` | 219 | Not Started | Allocation-free async |
-| `TaskCompletionSource<T>` | 86 | Not Started | Manual task completion |
+| `TaskCompletionSource<T>` | 86 | **Migrated** | Manual task completion |
 | `TaskStatus` | 35 | **Migrated** | Enum |
-| `TaskCanceledException` | 42 | **Migrated** | Exception (simplified, without Task/CancellationToken) |
+| `TaskCanceledException` | 42 | **Migrated** | Exception with Task reference |
 
 ### Async Infrastructure (`System.Runtime.CompilerServices`)
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `AsyncMethodBuilder` | 326 | Not Started | State machine builder |
-| `TaskAwaiter` | 94 | Not Started | Awaiter pattern |
+| `AsyncMethodBuilder` | 326 | **Migrated** | AsyncTaskMethodBuilder, AsyncTaskMethodBuilder<T>, AsyncVoidMethodBuilder |
+| `TaskAwaiter` | 94 | **Migrated** | TaskAwaiter and TaskAwaiter<T> |
 | `ValueTaskAwaiter` | 203 | Not Started | ValueTask awaiter |
-| `ConfiguredTaskAwaitable` | 130 | Not Started | ConfigureAwait support |
+| `ConfiguredTaskAwaitable` | 130 | **Migrated** | ConfigureAwait support |
 | `IAsyncStateMachine` | 21 | **Migrated** | Interface |
 | `INotifyCompletion` | 27 | **Migrated** | Interface (includes ICriticalNotifyCompletion) |
 | `DefaultInterpolatedStringHandler` | 184 | Migrated | Already in korlib |
@@ -94,8 +94,9 @@ Required for async/await support. Lower priority until async is needed.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `CancellationToken` | 101 | Not Started | |
-| `CancellationTokenSource` | 191 | Not Started | |
+| `CancellationToken` | 101 | **Migrated** | Full token functionality |
+| `CancellationTokenSource` | 191 | **Migrated** | Cancel/Token work; Dispose/callbacks have JIT issues |
+| `Monitor` | N/A | **Migrated** | Minimal no-op for lock statement support |
 
 ---
 
@@ -140,7 +141,7 @@ korlib already has partial reflection support. These types may need merging or r
 | `MethodBase` | 351 | Not Started | |
 | `MethodInfo` | 584 | Not Started | |
 | `BindingFlags` | 69 | **Migrated** | Enum (in MemberInfo.cs) |
-| `MemberTypes` | 428 | Not Started | Enum (large due to docs) |
+| `MemberTypes` | 428 | **Migrated** | Enum (in MemberInfo.cs) |
 
 ---
 
@@ -159,8 +160,8 @@ korlib already has partial reflection support. These types may need merging or r
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `Activator` | 88 | Partial | korlib has `Activator.CreateInstance<T>()` |
-| `GC` | 84 | Not Started | GC control (stubs) |
-| `IAsyncResult` | 68 | Not Started | Legacy async pattern |
+| `GC` | 84 | **Migrated** | Minimal stubs (SuppressFinalize, Collect, etc.) |
+| `IAsyncResult` | 68 | **Migrated** | Legacy async pattern with WaitHandle |
 | `RuntimeHandles` | 91 | Partial | korlib has `RuntimeHandles.cs` |
 | `Nullable` helpers | 30 | Migrated | korlib has `Nullable.cs` |
 | `ObsoleteAttribute` | ~20 | **Migrated** | Marks deprecated elements |
@@ -327,3 +328,14 @@ Note: Some repeated type resolution log messages may appear during JIT compilati
 - **2024-12**: Migrated async interfaces: IAsyncStateMachine, INotifyCompletion, ICriticalNotifyCompletion
 - **2024-12**: Migrated TaskCanceledException with AOT registration (564 tests)
 - **2024-12**: Confirmed BindingFlags already migrated in MemberInfo.cs
+- **2024-12**: Migrated CancellationToken, CancellationTokenSource, Monitor, GC (568 tests)
+- **2024-12**: Confirmed MemberTypes already migrated in MemberInfo.cs
+- **2024-12**: Updated OperationCanceledException with CancellationToken constructors
+- **2024-12**: Added AggregateException constructors for IEnumerable/List
+- **2024-12**: Fixed vtable slot collision for interface implementations (Dispose() vs Dispose(bool))
+- **2024-12**: Fixed generic instantiation vtable slot lookup for inherited methods
+- **2024-12**: Migrated Task, Task<T>, TaskCompletionSource<T> to korlib
+- **2024-12**: Migrated TaskAwaiter, TaskAwaiter<T>, ConfiguredTaskAwaitable to korlib
+- **2024-12**: Migrated AsyncTaskMethodBuilder, AsyncTaskMethodBuilder<T>, AsyncVoidMethodBuilder to korlib
+- **2024-12**: Migrated IAsyncResult and WaitHandle to korlib
+- **2024-12**: Fixed JIT Object.ctor MethodTable resolution for AOT lookup (572 tests passing)

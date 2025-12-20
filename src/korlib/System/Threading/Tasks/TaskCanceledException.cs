@@ -1,6 +1,5 @@
 // ProtonOS korlib - TaskCanceledException
 // Represents an exception used to communicate task cancellation.
-// Note: Task and CancellationToken support not yet available - simplified version.
 
 namespace System.Threading.Tasks
 {
@@ -9,6 +8,11 @@ namespace System.Threading.Tasks
     /// </summary>
     public class TaskCanceledException : OperationCanceledException
     {
+        private readonly Task? _task;
+
+        /// <summary>Gets the task associated with this exception.</summary>
+        public Task? Task => _task;
+
         /// <summary>Initializes a new instance of the TaskCanceledException class with a default message.</summary>
         public TaskCanceledException() : this("A task was canceled.")
         {
@@ -22,6 +26,12 @@ namespace System.Threading.Tasks
         /// <summary>Initializes a new instance of the TaskCanceledException class with a specified message and inner exception.</summary>
         public TaskCanceledException(string? message, Exception? innerException) : base(message, innerException)
         {
+        }
+
+        /// <summary>Initializes a new instance of the TaskCanceledException class with a reference to the Task that has been canceled.</summary>
+        public TaskCanceledException(Task? task) : base("A task was canceled.")
+        {
+            _task = task;
         }
     }
 }
