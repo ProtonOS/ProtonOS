@@ -75,7 +75,7 @@ Required for async/await support. Lower priority until async is needed.
 | `Task` / `Task<T>` | 460 | Not Started | Core async support |
 | `ValueTask` / `ValueTask<T>` | 219 | Not Started | Allocation-free async |
 | `TaskCompletionSource<T>` | 86 | Not Started | Manual task completion |
-| `TaskStatus` | 35 | Not Started | Enum |
+| `TaskStatus` | 35 | **Migrated** | Enum |
 | `TaskCanceledException` | 42 | Not Started | Exception |
 
 ### Async Infrastructure (`System.Runtime.CompilerServices`)
@@ -148,9 +148,9 @@ korlib already has partial reflection support. These types may need merging or r
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `SystemException` | 65 | Not Started | Base exception type |
+| `SystemException` | 26 | **Migrated** | Base exception type |
 | `AggregateException` | 137 | Not Started | Multiple exceptions |
-| `OperationCanceledException` | 50 | Not Started | Cancellation |
+| `OperationCanceledException` | 24 | **Migrated** | Cancellation (without CancellationToken) |
 
 ---
 

@@ -351,6 +351,11 @@ public static class TestRunner
         RecordResult("UtilityTests.TestSortedListBasic", UtilityTests.TestSortedListBasic() == 1);
         RecordResult("UtilityTests.TestSortedListIndexAccess", UtilityTests.TestSortedListIndexAccess() == 1);
         RecordResult("UtilityTests.TestSortedListRemove", UtilityTests.TestSortedListRemove() == 1);
+
+        // Exception and enum tests
+        RecordResult("UtilityTests.TestTaskStatus", UtilityTests.TestTaskStatus() == 1);
+        RecordResult("UtilityTests.TestSystemException", UtilityTests.TestSystemException() == 1);
+        RecordResult("UtilityTests.TestOperationCanceledException", UtilityTests.TestOperationCanceledException() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9129,6 +9134,62 @@ public static class UtilityTests
         // Re-add
         sorted.Add(100, 10);
         if (sorted.Count != 1) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests TaskStatus enum</summary>
+    public static int TestTaskStatus()
+    {
+        var status = System.Threading.Tasks.TaskStatus.Created;
+        if ((int)status != 0) return 0;
+
+        status = System.Threading.Tasks.TaskStatus.Running;
+        if ((int)status != 3) return 0;
+
+        status = System.Threading.Tasks.TaskStatus.RanToCompletion;
+        if ((int)status != 5) return 0;
+
+        status = System.Threading.Tasks.TaskStatus.Faulted;
+        if ((int)status != 7) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests SystemException</summary>
+    public static int TestSystemException()
+    {
+        // Test that we can create SystemException instances
+        var ex = new System.SystemException("Test error");
+        if (ex == null) return 0;
+
+        var ex2 = new System.SystemException();
+        if (ex2 == null) return 0;
+
+        // Test inheritance - SystemException extends Exception
+        System.Exception baseEx = ex;
+        if (baseEx == null) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests OperationCanceledException</summary>
+    public static int TestOperationCanceledException()
+    {
+        // Test that we can create OperationCanceledException instances
+        var ex = new System.OperationCanceledException();
+        if (ex == null) return 0;
+
+        var ex2 = new System.OperationCanceledException("Custom cancel message");
+        if (ex2 == null) return 0;
+
+        // Test inheritance - OperationCanceledException extends SystemException
+        System.SystemException sysEx = ex;
+        if (sysEx == null) return 0;
+
+        // Test inheritance chain - also extends Exception
+        System.Exception baseEx = ex;
+        if (baseEx == null) return 0;
 
         return 1;
     }
