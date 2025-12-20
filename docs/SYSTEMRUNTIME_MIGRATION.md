@@ -28,7 +28,7 @@ High-value types commonly needed for general programming.
 | `Queue<T>` | 286 | **Migrated** | FIFO collection with full foreach support |
 | `Stack<T>` | 254 | **Migrated** | LIFO collection with full foreach support |
 | `LinkedList<T>` | ~400 | **Migrated** | Doubly linked list with LinkedListNode<T> |
-| `SortedList<TKey,TValue>` | 773 | Not Started | Less commonly used |
+| `SortedList<TKey,TValue>` | ~640 | **Migrated** | Sorted key-value collection with binary search |
 | `EqualityComparer<T>` | ~80 | **Migrated** | Foundation for Dictionary and collections |
 | `Comparer<T>` | ~100 | **Migrated** | Foundation for sorting |
 | `KeyNotFoundException` | ~25 | **Migrated** | Exception for Dictionary indexer |
