@@ -62,7 +62,7 @@ High-value types commonly needed for general programming.
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `Collection<T>` | 259 | Not Started | Base for custom collections |
-| `ReadOnlyCollection<T>` | 91 | Not Started | Read-only wrapper |
+| `ReadOnlyCollection<T>` | ~100 | **Migrated** | Read-only wrapper for IList<T> |
 
 ---
 

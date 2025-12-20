@@ -44,7 +44,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **546 tests passing**
+The JIT runs a comprehensive test suite on boot: **549 tests passing**
 
 ### Supported C# Features
 

@@ -333,6 +333,10 @@ public static class TestRunner
         RecordResult("UtilityTests.TestStackBasic", UtilityTests.TestStackBasic() == 1);
         RecordResult("UtilityTests.TestStackForeach", UtilityTests.TestStackForeach() == 1);
         RecordResult("UtilityTests.TestStackContainsClear", UtilityTests.TestStackContainsClear() == 1);
+        // ReadOnlyCollection tests
+        RecordResult("UtilityTests.TestReadOnlyCollectionBasic", UtilityTests.TestReadOnlyCollectionBasic() == 1);
+        RecordResult("UtilityTests.TestReadOnlyCollectionContainsIndexOf", UtilityTests.TestReadOnlyCollectionContainsIndexOf() == 1);
+        RecordResult("UtilityTests.TestReadOnlyCollectionCopyTo", UtilityTests.TestReadOnlyCollectionCopyTo() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -8804,6 +8808,57 @@ public static class UtilityTests
 
         stack.Clear();
         if (stack.Count != 0) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // ReadOnlyCollection<T> Tests
+    // =========================================================================
+
+    /// <summary>Tests ReadOnlyCollection basic creation and access</summary>
+    public static int TestReadOnlyCollectionBasic()
+    {
+        var list = new System.Collections.Generic.List<int> { 10, 20, 30 };
+        var readOnly = new System.Collections.ObjectModel.ReadOnlyCollection<int>(list);
+
+        if (readOnly.Count != 3) return 0;
+        if (readOnly[0] != 10) return 0;
+        if (readOnly[1] != 20) return 0;
+        if (readOnly[2] != 30) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests ReadOnlyCollection Contains and IndexOf</summary>
+    public static int TestReadOnlyCollectionContainsIndexOf()
+    {
+        var list = new System.Collections.Generic.List<int> { 100, 200, 300 };
+        var readOnly = new System.Collections.ObjectModel.ReadOnlyCollection<int>(list);
+
+        if (!readOnly.Contains(200)) return 0;
+        if (readOnly.Contains(400)) return 0;
+
+        if (readOnly.IndexOf(200) != 1) return 0;
+        if (readOnly.IndexOf(400) != -1) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests ReadOnlyCollection CopyTo</summary>
+    public static int TestReadOnlyCollectionCopyTo()
+    {
+        var list = new System.Collections.Generic.List<int> { 5, 10, 15 };
+        var readOnly = new System.Collections.ObjectModel.ReadOnlyCollection<int>(list);
+
+        int[] dest = new int[5];
+        readOnly.CopyTo(dest, 1);
+
+        if (dest[0] != 0) return 0;
+        if (dest[1] != 5) return 0;
+        if (dest[2] != 10) return 0;
+        if (dest[3] != 15) return 0;
+        if (dest[4] != 0) return 0;
 
         return 1;
     }
