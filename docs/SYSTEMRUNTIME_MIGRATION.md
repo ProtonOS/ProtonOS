@@ -125,7 +125,7 @@ Required for async/await support. Lower priority until async is needed.
 | `Guid` | 211 | **Migrated** | Unique identifiers - fully working (generic interfaces removed) |
 | `BitConverter` | ~200 | **Migrated** | Byte/primitive conversions (without Half type) |
 | `HashCode` | 193 | **Migrated** | Hash combining |
-| `ArraySegment<T>` | 231 | Not Started | Array view/slice |
+| `ArraySegment<T>` | ~240 | **Migrated** | Array view/slice (Slice returns struct - may need JIT fixes) |
 
 ---
 

@@ -384,6 +384,15 @@ public static unsafe class JitStubs
                     }
                 }
 
+                // Debug: print what we're about to compile
+                DebugConsole.Write("[JitStubs] Compiling slot ");
+                DebugConsole.WriteDecimal((uint)vtableSlot);
+                DebugConsole.Write(" token=0x");
+                DebugConsole.WriteHex(info->Token);
+                DebugConsole.Write(" asm=");
+                DebugConsole.WriteDecimal(info->AssemblyId);
+                DebugConsole.WriteLine();
+
                 var result = Tier0JIT.CompileMethod(info->AssemblyId, info->Token);
 
                 // Clear type context after compilation

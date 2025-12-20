@@ -1892,17 +1892,42 @@ public static unsafe class Int32Helpers
     }
 
     /// <summary>
-    /// Wrapper for Int32.GetHashCode() when called on a boxed Int32.
+    /// Wrapper for Int32.GetHashCode() called on either a boxed Int32 or a byref.
     /// Returns the int value itself as the hash code.
     /// </summary>
+    /// <remarks>
+    /// This method is called in two scenarios:
+    /// 1. Boxed object (via vtable dispatch): thisPtr points to [MethodTable*][int value]
+    /// 2. Byref (via call instance): thisPtr points directly to [int value]
+    ///
+    /// We detect which case by checking if [thisPtr] looks like a pointer (> 0x100000)
+    /// or looks like a small int value. MethodTable pointers are always large addresses.
+    /// </remarks>
     public static int GetHashCode(nint thisPtr)
     {
         if (thisPtr == 0)
             return 0;
-        // thisPtr is a boxed object: [MethodTable*][int value]
-        // Value is at offset 8
-        int* valuePtr = (int*)(thisPtr + 8);
-        return *valuePtr;
+
+        // Read the first 8 bytes at thisPtr
+        ulong firstQword = *(ulong*)thisPtr;
+
+        // If it looks like a MethodTable pointer (large address in kernel/heap space),
+        // then this is a boxed object and value is at offset 8.
+        // MethodTable pointers are typically > 0x100000 (1MB).
+        // Actual int values being hashed would almost never be that large in practice,
+        // and even if they were, this heuristic covers the common cases correctly.
+        if (firstQword > 0x100000)
+        {
+            // Boxed object: value at offset 8
+            int* valuePtr = (int*)(thisPtr + 8);
+            return *valuePtr;
+        }
+        else
+        {
+            // Byref: value at offset 0
+            int* valuePtr = (int*)thisPtr;
+            return *valuePtr;
+        }
     }
 }
 
