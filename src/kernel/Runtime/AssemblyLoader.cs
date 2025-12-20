@@ -2228,8 +2228,9 @@ public static unsafe class AssemblyLoader
 
     /// <summary>
     /// Find the index of a method by name in an interface's method list.
+    /// Also compares parameter count to avoid matching overloaded methods incorrectly.
     /// </summary>
-    private static short FindMethodIndexInInterface(MethodTable* interfaceMT, byte* methodName, LoadedAssembly* contextAsm)
+    private static short FindMethodIndexInInterface(MethodTable* interfaceMT, byte* methodName, LoadedAssembly* contextAsm, uint implParamCount = 0xFFFFFFFF)
     {
         // Look up the interface type info to find its methods
         uint asmId, typeToken;
@@ -2263,6 +2264,31 @@ public static unsafe class AssemblyLoader
 
             if (ifaceMethodName != null && NameEquals(methodName, ifaceMethodName))
             {
+                // Name matches - also check parameter count if specified
+                if (implParamCount != 0xFFFFFFFF)
+                {
+                    // Get the interface method's parameter count from its signature
+                    uint sigIdx = MetadataReader.GetMethodDefSignature(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, methodRow);
+                    byte* sigBlob = MetadataReader.GetBlob(ref ifaceAsm->Metadata, sigIdx, out uint sigLen);
+                    if (sigBlob != null && sigLen > 0)
+                    {
+                        MethodSignature sig;
+                        if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out sig))
+                        {
+                            // Only match if parameter counts are equal
+                            if (sig.ParamCount != implParamCount)
+                            {
+                                // Name matches but param count differs - skip and continue searching
+                                ushort mflags = MetadataReader.GetMethodDefFlags(ref ifaceAsm->Tables, ref ifaceAsm->Sizes, methodRow);
+                                if ((mflags & MethodDefFlags.Virtual) != 0)
+                                {
+                                    index++;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
                 return index;
             }
 
@@ -2295,6 +2321,19 @@ public static unsafe class AssemblyLoader
         if ((methodFlags & MethodDefFlags.MemberAccessMask) != MethodDefFlags.Public)
             return -1;
 
+        // Get the implementation method's parameter count from its signature
+        uint implParamCount = 0;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* sigBlob = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sigBlob != null && sigLen > 0)
+        {
+            MethodSignature sig;
+            if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out sig))
+            {
+                implParamCount = sig.ParamCount;
+            }
+        }
+
         // Search through the type's interface map to find a matching interface method
         InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
         int numInterfaces = mt->_usNumInterfaces;
@@ -2305,8 +2344,8 @@ public static unsafe class AssemblyLoader
             if (interfaceMT == null)
                 continue;
 
-            // Find the method index in this interface
-            short methodIndex = FindMethodIndexInInterface(interfaceMT, methodName, asm);
+            // Find the method index in this interface - must match both name AND param count
+            short methodIndex = FindMethodIndexInInterface(interfaceMT, methodName, asm, implParamCount);
             if (methodIndex >= 0)
             {
                 // Found a match - return the interface slot
@@ -2334,7 +2373,23 @@ public static unsafe class AssemblyLoader
         else
             methodEnd = methodCount + 1;
 
+        // Calculate the first slot after all interface slots
+        // Interface slots start at baseVtableSlots and each interface takes up its method count
         short currentSlot = (short)baseVtableSlots;
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int numInterfaces = mt->_usNumInterfaces;
+        for (int i = 0; i < numInterfaces; i++)
+        {
+            if (map[i].InterfaceMT != null)
+            {
+                ushort interfaceMethodCount = map[i].InterfaceMT->_usNumVtableSlots;
+                if (interfaceMethodCount == 0)
+                    interfaceMethodCount = 1;  // At least 1 slot per interface
+                short endSlot = (short)(map[i].StartSlot + interfaceMethodCount);
+                if (endSlot > currentSlot)
+                    currentSlot = endSlot;
+            }
+        }
         for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
         {
             ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);

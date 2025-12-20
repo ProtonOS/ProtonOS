@@ -359,6 +359,10 @@ public static class TestRunner
         RecordResult("UtilityTests.TestAggregateException", UtilityTests.TestAggregateException() == 1);
         RecordResult("UtilityTests.TestTaskCanceledException", UtilityTests.TestTaskCanceledException() == 1);
         RecordResult("UtilityTests.TestBindingFlags", UtilityTests.TestBindingFlags() == 1);
+        RecordResult("UtilityTests.TestCancellationToken", UtilityTests.TestCancellationToken() == 1);
+        RecordResult("UtilityTests.TestCancellationTokenSource", UtilityTests.TestCancellationTokenSource() == 1);
+        RecordResult("UtilityTests.TestCancellationTokenCallback", UtilityTests.TestCancellationTokenCallback() == 1);
+        RecordResult("UtilityTests.TestMemberTypes", UtilityTests.TestMemberTypes() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9279,6 +9283,106 @@ public static class UtilityTests
         // Test that flags are independent
         if ((combined & System.Reflection.BindingFlags.Instance) == 0) return 0;
         if ((combined & System.Reflection.BindingFlags.Public) == 0) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests CancellationToken basic functionality</summary>
+    public static int TestCancellationToken()
+    {
+        // Test CancellationToken.None
+        var none = System.Threading.CancellationToken.None;
+        if (none.IsCancellationRequested) return 0;
+        if (none.CanBeCanceled) return 0;
+
+        // Test token from source - not canceled
+        var cts = new System.Threading.CancellationTokenSource();
+        var token = cts.Token;
+        if (token.IsCancellationRequested) return 0;
+        if (!token.CanBeCanceled) return 0;
+
+        // Test equality
+        var token2 = cts.Token;
+        if (token != token2) return 0;
+        if (none == token) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests CancellationTokenSource cancellation</summary>
+    public static int TestCancellationTokenSource()
+    {
+        var cts = new System.Threading.CancellationTokenSource();
+        var token = cts.Token;
+
+        // Initially not canceled
+        if (cts.IsCancellationRequested) return 0;
+        if (token.IsCancellationRequested) return 0;
+
+        // Cancel
+        cts.Cancel();
+
+        // Now should be canceled
+        if (!cts.IsCancellationRequested) return 0;
+        if (!token.IsCancellationRequested) return 0;
+
+        // Test Dispose() - GC.SuppressFinalize is AOT registered
+        cts.Dispose();
+
+        return 1;
+    }
+
+    /// <summary>Tests CancellationToken callback registration - simplified</summary>
+    private static int _callbackInvoked = 0;
+
+    private static void CancellationCallback()
+    {
+        _callbackInvoked = 1;
+    }
+
+    public static int TestCancellationTokenCallback()
+    {
+        _callbackInvoked = 0;
+
+        var cts = new System.Threading.CancellationTokenSource();
+        var token = cts.Token;
+
+        // Register a static method callback (avoids closure issues)
+        token.Register(CancellationCallback);
+
+        // Verify callback not yet invoked
+        if (_callbackInvoked != 0) return 0;
+
+        // Cancel - should invoke callback
+        cts.Cancel();
+
+        // Verify callback was invoked
+        if (_callbackInvoked != 1) return 0;
+
+        // Verify token state
+        if (!token.IsCancellationRequested) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests MemberTypes enum values</summary>
+    public static int TestMemberTypes()
+    {
+        // Test individual values
+        if ((int)System.Reflection.MemberTypes.Constructor != 1) return 0;
+        if ((int)System.Reflection.MemberTypes.Event != 2) return 0;
+        if ((int)System.Reflection.MemberTypes.Field != 4) return 0;
+        if ((int)System.Reflection.MemberTypes.Method != 8) return 0;
+        if ((int)System.Reflection.MemberTypes.Property != 16) return 0;
+        if ((int)System.Reflection.MemberTypes.TypeInfo != 32) return 0;
+        if ((int)System.Reflection.MemberTypes.Custom != 64) return 0;
+        if ((int)System.Reflection.MemberTypes.NestedType != 128) return 0;
+
+        // Test All flag
+        var all = System.Reflection.MemberTypes.All;
+        if ((all & System.Reflection.MemberTypes.Constructor) == 0) return 0;
+        if ((all & System.Reflection.MemberTypes.Method) == 0) return 0;
+        if ((all & System.Reflection.MemberTypes.Property) == 0) return 0;
 
         return 1;
     }
