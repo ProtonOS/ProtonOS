@@ -149,7 +149,7 @@ korlib already has partial reflection support. These types may need merging or r
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `SystemException` | 26 | **Migrated** | Base exception type |
-| `AggregateException` | 137 | Not Started | Multiple exceptions |
+| `AggregateException` | 115 | **Migrated** | Multiple exceptions with Flatten/Handle |
 | `OperationCanceledException` | 24 | **Migrated** | Cancellation (without CancellationToken) |
 
 ---

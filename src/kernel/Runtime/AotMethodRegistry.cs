@@ -860,6 +860,34 @@ public static unsafe class AotMethodRegistry
             "System.FormatException", ".ctor",
             (nint)(delegate*<string?, FormatException>)&ExceptionHelpers.Ctor_FormatException_String,
             1, ReturnKind.IntPtr, false, false);
+
+        // AggregateException constructors
+        Register(
+            "System.AggregateException", ".ctor",
+            (nint)(delegate*<AggregateException>)&ExceptionHelpers.Ctor_AggregateException,
+            0, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.AggregateException", ".ctor",
+            (nint)(delegate*<string?, AggregateException>)&ExceptionHelpers.Ctor_AggregateException_String,
+            1, ReturnKind.IntPtr, false, false);
+
+        Register(
+            "System.AggregateException", ".ctor",
+            (nint)(delegate*<string?, Exception[], AggregateException>)&ExceptionHelpers.Ctor_AggregateException_String_ExceptionArray,
+            2, ReturnKind.IntPtr, false, false);
+
+        // AggregateException.InnerExceptions property getter
+        Register(
+            "System.AggregateException", "get_InnerExceptions",
+            (nint)(delegate*<AggregateException, System.Collections.ObjectModel.ReadOnlyCollection<Exception>>)&ExceptionHelpers.AggregateException_get_InnerExceptions,
+            0, ReturnKind.IntPtr, true, false);
+
+        // ReadOnlyCollection<T>.Count property getter (works for any T since layout is same)
+        Register(
+            "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Count",
+            (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
+            0, ReturnKind.Int32, true, false);
     }
 
     /// <summary>
@@ -1291,6 +1319,12 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.InvalidCastException"))
             return true;
         if (StringMatches(typeName, "System.FormatException"))
+            return true;
+        if (StringMatches(typeName, "System.AggregateException"))
+            return true;
+
+        // Collection types (generic - match by name without type args)
+        if (StringMatches(typeName, "System.Collections.ObjectModel.ReadOnlyCollection`1"))
             return true;
 
         // Delegate types
@@ -2580,6 +2614,12 @@ public static class ExceptionHelpers
     // FormatException
     public static FormatException Ctor_FormatException() => new FormatException();
     public static FormatException Ctor_FormatException_String(string? message) => new FormatException(message);
+
+    // AggregateException
+    public static AggregateException Ctor_AggregateException() => new AggregateException();
+    public static AggregateException Ctor_AggregateException_String(string? message) => new AggregateException(message);
+    public static AggregateException Ctor_AggregateException_String_ExceptionArray(string? message, Exception[] innerExceptions) => new AggregateException(message, innerExceptions);
+    public static System.Collections.ObjectModel.ReadOnlyCollection<Exception> AggregateException_get_InnerExceptions(AggregateException ex) => ex.InnerExceptions;
 }
 
 /// <summary>
@@ -2953,5 +2993,32 @@ public static unsafe class SpanHelpers
     public static bool IsEmpty(nint spanPtr)
     {
         return *(int*)((byte*)spanPtr + 8) == 0;
+    }
+}
+
+/// <summary>
+/// Helper methods for collection types.
+/// </summary>
+public static unsafe class CollectionHelpers
+{
+    /// <summary>
+    /// Get the Count of a ReadOnlyCollection&lt;T&gt;.
+    /// ReadOnlyCollection layout: [header 8] [_list reference 8]
+    /// The _list is a List&lt;T&gt; which has layout: [header 8] [_items 8] [_size 4] ...
+    /// Since we know AggregateException uses List&lt;Exception&gt;, we can access _size directly.
+    /// </summary>
+    public static int ReadOnlyCollectionException_get_Count(System.Collections.ObjectModel.ReadOnlyCollection<Exception> collection)
+    {
+        // Access the underlying list directly via object layout
+        // ReadOnlyCollection has one field: _list (IList<T>)
+        // Object layout: [MethodTable* 8] [_list 8]
+        byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.As<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, nint>(ref collection);
+        nint listPtr = *(nint*)(objPtr + 8);  // Skip MT, get _list reference
+
+        // The underlying list is typically a List<T>
+        // List<T> layout: [MT 8] [_items 8] [_size 4] ...
+        byte* listBytes = (byte*)listPtr;
+        int size = *(int*)(listBytes + 16);  // Skip MT (8) + _items (8), get _size (4)
+        return size;
     }
 }

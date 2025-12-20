@@ -373,6 +373,7 @@ public static unsafe class MetadataIntegration
         public const uint DivideByZeroException = 0xF000002B;
         public const uint OverflowException = 0xF000002C;
         public const uint StackOverflowException = 0xF000002D;
+        public const uint AggregateException = 0xF000002E;
 
         // Reflection types - for GetType() support
         public const uint Type = 0xF0000030;
@@ -875,6 +876,12 @@ public static unsafe class MetadataIntegration
         var stackOverflowEx = new StackOverflowException();
         MethodTable* stackOverflowExMT = (MethodTable*)stackOverflowEx.m_pMethodTable;
         if (stackOverflowExMT != null && RegisterType(WellKnownTypes.StackOverflowException, stackOverflowExMT))
+            count++;
+
+        // AggregateException
+        var aggregateEx = new AggregateException();
+        MethodTable* aggregateExMT = (MethodTable*)aggregateEx.m_pMethodTable;
+        if (aggregateExMT != null && RegisterType(WellKnownTypes.AggregateException, aggregateExMT))
             count++;
 
         return count;
@@ -1943,7 +1950,7 @@ public static unsafe class MetadataIntegration
             return false;
         }
 
-        // Get the type name from the TypeRef
+        // Get the type name from the TypeRef or TypeSpec
         byte* typeName = null;
         if (classRef.Table == MetadataTableId.TypeRef)
         {
@@ -1957,14 +1964,51 @@ public static unsafe class MetadataIntegration
             // Combine into full name
             typeName = BuildFullTypeName(ns, name);
         }
-        // else
-        // {
-        //     DebugConsole.Write("[AotMemberRef] Token 0x");
-        //     DebugConsole.WriteHex(token);
-        //     DebugConsole.Write(" classRef.Table=");
-        //     DebugConsole.WriteDecimal((int)classRef.Table);
-        //     DebugConsole.WriteLine(" (not TypeRef)");
-        // }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - parse to get the underlying generic type definition
+            uint typeSpecRow = classRef.RowId;
+            if (typeSpecRow > 0 && typeSpecRow <= _tablesHeader->RowCounts[(int)MetadataTableId.TypeSpec])
+            {
+                uint tsSigIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, typeSpecRow);
+                byte* tsSig = MetadataReader.GetBlob(ref *_metadataRoot, tsSigIdx, out uint tsSigLen);
+                if (tsSig != null && tsSigLen > 0)
+                {
+                    int tsPos = 0;
+                    byte elementType = tsSig[tsPos++];
+
+                    // ELEMENT_TYPE_GENERICINST (0x15) - generic type instantiation
+                    if (elementType == 0x15 && tsPos < (int)tsSigLen)
+                    {
+                        // Skip CLASS (0x12) or VALUETYPE (0x11)
+                        tsPos++;
+
+                        // Decode the TypeDefOrRefOrSpec coded index
+                        uint codedIndex = 0;
+                        byte b1 = tsSig[tsPos++];
+                        if ((b1 & 0x80) == 0)
+                            codedIndex = b1;
+                        else if ((b1 & 0xC0) == 0x80 && tsPos < (int)tsSigLen)
+                            codedIndex = (uint)(((b1 & 0x3F) << 8) | tsSig[tsPos++]);
+                        else if ((b1 & 0xE0) == 0xC0 && tsPos + 2 < (int)tsSigLen)
+                            codedIndex = (uint)(((b1 & 0x1F) << 24) | (tsSig[tsPos++] << 16) | (tsSig[tsPos++] << 8) | tsSig[tsPos++]);
+
+                        // TypeDefOrRefOrSpec: bits 0-1 = table (0=TypeDef, 1=TypeRef, 2=TypeSpec)
+                        uint tableId = codedIndex & 0x03;
+                        uint typeRow = codedIndex >> 2;
+
+                        if (tableId == 1 && typeRow > 0) // TypeRef
+                        {
+                            uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, typeRow);
+                            uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, typeRow);
+                            byte* ns = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+                            byte* name = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+                            typeName = BuildFullTypeName(ns, name);
+                        }
+                    }
+                }
+            }
+        }
 
         if (typeName == null)
         {

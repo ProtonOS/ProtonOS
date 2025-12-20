@@ -356,6 +356,7 @@ public static class TestRunner
         RecordResult("UtilityTests.TestTaskStatus", UtilityTests.TestTaskStatus() == 1);
         RecordResult("UtilityTests.TestSystemException", UtilityTests.TestSystemException() == 1);
         RecordResult("UtilityTests.TestOperationCanceledException", UtilityTests.TestOperationCanceledException() == 1);
+        RecordResult("UtilityTests.TestAggregateException", UtilityTests.TestAggregateException() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9189,6 +9190,35 @@ public static class UtilityTests
 
         // Test inheritance chain - also extends Exception
         System.Exception baseEx = ex;
+        if (baseEx == null) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests AggregateException</summary>
+    public static int TestAggregateException()
+    {
+        // Test empty constructor
+        var ex1 = new System.AggregateException();
+        if (ex1 == null) return 0;
+
+        // Test with message
+        var ex2 = new System.AggregateException("Multiple errors");
+        if (ex2 == null) return 0;
+
+        // Test with inner exceptions array
+        var inner1 = new System.Exception("Error 1");
+        var inner2 = new System.Exception("Error 2");
+        var ex3 = new System.AggregateException("Errors", inner1, inner2);
+        if (ex3 == null) return 0;
+
+        // Test that InnerExceptions is not null and has correct count
+        var innerExceptions = ex3.InnerExceptions;
+        if (innerExceptions == null) return 0;
+        if (innerExceptions.Count != 2) return 0;
+
+        // Test inheritance - AggregateException extends Exception
+        System.Exception baseEx = ex3;
         if (baseEx == null) return 0;
 
         return 1;

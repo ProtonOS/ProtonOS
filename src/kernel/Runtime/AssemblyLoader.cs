@@ -5017,7 +5017,14 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.Enum;
                 break;
 
-            case (byte)'A':  // ArgumentException, ArgumentNullException, ArgumentOutOfRangeException, ArgIterator, Array
+            case (byte)'A':  // AggregateException, ArgumentException, ArgumentNullException, ArgumentOutOfRangeException, ArgIterator, Array
+                // AggregateException
+                if (name[1] == 'g' && name[2] == 'g' && name[3] == 'r' && name[4] == 'e' &&
+                    name[5] == 'g' && name[6] == 'a' && name[7] == 't' && name[8] == 'e' &&
+                    name[9] == 'E' && name[10] == 'x' && name[11] == 'c' && name[12] == 'e' &&
+                    name[13] == 'p' && name[14] == 't' && name[15] == 'i' && name[16] == 'o' &&
+                    name[17] == 'n' && name[18] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.AggregateException;
                 // Array
                 if (name[1] == 'r' && name[2] == 'r' && name[3] == 'a' && name[4] == 'y' && name[5] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.Array;
