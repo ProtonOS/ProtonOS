@@ -341,6 +341,11 @@ public static class TestRunner
         RecordResult("UtilityTests.TestCollectionBasic", UtilityTests.TestCollectionBasic() == 1);
         RecordResult("UtilityTests.TestCollectionInsertRemove", UtilityTests.TestCollectionInsertRemove() == 1);
         RecordResult("UtilityTests.TestCollectionClear", UtilityTests.TestCollectionClear() == 1);
+
+        // LinkedList tests
+        RecordResult("UtilityTests.TestLinkedListBasic", UtilityTests.TestLinkedListBasic() == 1);
+        RecordResult("UtilityTests.TestLinkedListAddRemove", UtilityTests.TestLinkedListAddRemove() == 1);
+        RecordResult("UtilityTests.TestLinkedListFind", UtilityTests.TestLinkedListFind() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -8935,6 +8940,116 @@ public static class UtilityTests
 
         coll.Clear();
         if (coll.Count != 0) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests LinkedList basic operations</summary>
+    public static int TestLinkedListBasic()
+    {
+        var list = new System.Collections.Generic.LinkedList<int>();
+        list.AddLast(10);
+        list.AddLast(20);
+        list.AddLast(30);
+
+        if (list.Count != 3) return 0;
+        if (list.First == null) return 0;
+        if (list.First.Value != 10) return 0;
+        if (list.Last == null) return 0;
+        if (list.Last.Value != 30) return 0;
+
+        // Traverse using nodes
+        var node = list.First;
+        if (node == null) return 0;
+        if (node.Value != 10) return 0;
+        node = node.Next;
+        if (node == null) return 0;
+        if (node.Value != 20) return 0;
+        node = node.Next;
+        if (node == null) return 0;
+        if (node.Value != 30) return 0;
+        // Next should be null at the end
+        if (node.Next != null) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests LinkedList AddFirst, AddAfter, AddBefore, Remove</summary>
+    public static int TestLinkedListAddRemove()
+    {
+        var list = new System.Collections.Generic.LinkedList<int>();
+        list.AddLast(20);
+        list.AddFirst(10);
+        list.AddLast(40);
+
+        // List should be: 10, 20, 40
+        if (list.Count != 3) return 0;
+        if (list.First!.Value != 10) return 0;
+        if (list.Last!.Value != 40) return 0;
+
+        // AddAfter - insert 30 after 20
+        var node20 = list.First.Next;
+        if (node20 == null || node20.Value != 20) return 0;
+        list.AddAfter(node20, 30);
+
+        // List should be: 10, 20, 30, 40
+        if (list.Count != 4) return 0;
+
+        // AddBefore - insert 15 before 20
+        list.AddBefore(node20, 15);
+
+        // List should be: 10, 15, 20, 30, 40
+        if (list.Count != 5) return 0;
+
+        // Remove by value
+        bool removed = list.Remove(15);
+        if (!removed) return 0;
+        if (list.Count != 4) return 0;
+
+        // RemoveFirst
+        list.RemoveFirst();
+        if (list.Count != 3) return 0;
+        if (list.First!.Value != 20) return 0;
+
+        // RemoveLast
+        list.RemoveLast();
+        if (list.Count != 2) return 0;
+        if (list.Last!.Value != 30) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests LinkedList Find and FindLast</summary>
+    public static int TestLinkedListFind()
+    {
+        var list = new System.Collections.Generic.LinkedList<int>();
+        list.AddLast(10);
+        list.AddLast(20);
+        list.AddLast(30);
+        list.AddLast(20);  // Duplicate
+        list.AddLast(40);
+
+        // Find first occurrence of 20
+        var found = list.Find(20);
+        if (found == null) return 0;
+        if (found.Value != 20) return 0;
+        // Should be the first 20 (index 1)
+        if (found.Previous == null || found.Previous.Value != 10) return 0;
+
+        // FindLast - last occurrence of 20
+        var foundLast = list.FindLast(20);
+        if (foundLast == null) return 0;
+        if (foundLast.Value != 20) return 0;
+        // Should be the second 20 (before 40)
+        if (foundLast.Next == null || foundLast.Next.Value != 40) return 0;
+
+        // Find non-existent
+        var notFound = list.Find(999);
+        if (notFound != null) return 0;
+
+        // Contains
+        if (!list.Contains(30)) return 0;
+        if (list.Contains(999)) return 0;
 
         return 1;
     }
