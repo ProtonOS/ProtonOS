@@ -103,7 +103,7 @@ Required for async/await support. Lower priority until async is needed.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `DateTime` | 283 | Not Started | Date and time handling |
+| `DateTime` | 283 | **Migrated** | Date and time handling (bounds checks removed for JIT compatibility) |
 | `DateTimeKind` | 26 | **Migrated** | Enum (UTC/Local/Unspecified) |
 | `TimeSpan` | 168 | **Migrated** | Duration representation - fully working (generic interfaces removed) |
 

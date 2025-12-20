@@ -309,6 +309,12 @@ public static class TestRunner
         RecordResult("UtilityTests.TestTimeSpanBasic", UtilityTests.TestTimeSpanBasic() == 1);
         RecordResult("UtilityTests.TestTimeSpanArithmetic", UtilityTests.TestTimeSpanArithmetic() == 1);
         RecordResult("UtilityTests.TestTimeSpanCompare", UtilityTests.TestTimeSpanCompare() == 1);
+        // DateTime tests
+        RecordResult("UtilityTests.TestDateTimeBasic", UtilityTests.TestDateTimeBasic() == 1);
+        RecordResult("UtilityTests.TestDateTimeComponents", UtilityTests.TestDateTimeComponents() == 1);
+        RecordResult("UtilityTests.TestDateTimeArithmetic", UtilityTests.TestDateTimeArithmetic() == 1);
+        RecordResult("UtilityTests.TestDateTimeCompare", UtilityTests.TestDateTimeCompare() == 1);
+        RecordResult("UtilityTests.TestDateTimeLeapYear", UtilityTests.TestDateTimeLeapYear() == 1);
         // Guid tests
         RecordResult("UtilityTests.TestGuidFromBytes", UtilityTests.TestGuidFromBytes() == 1);
         RecordResult("UtilityTests.TestGuidEquality", UtilityTests.TestGuidEquality() == 1);
@@ -8357,6 +8363,88 @@ public static class UtilityTests
         if (ts1 != ts2) return 0;
         if (ts1 >= ts3) return 0;
         if (ts3 <= ts1) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // DateTime Tests
+    // =========================================================================
+
+    /// <summary>Tests DateTime basic creation</summary>
+    public static int TestDateTimeBasic()
+    {
+        var dt = new DateTime(2024, 12, 25);
+        if (dt.Year != 2024) return 0;
+        if (dt.Month != 12) return 0;
+        if (dt.Day != 25) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests DateTime time components</summary>
+    public static int TestDateTimeComponents()
+    {
+        var dt = new DateTime(2024, 6, 15, 14, 30, 45, 123);
+        if (dt.Year != 2024) return 0;
+        if (dt.Month != 6) return 0;
+        if (dt.Day != 15) return 0;
+        if (dt.Hour != 14) return 0;
+        if (dt.Minute != 30) return 0;
+        if (dt.Second != 45) return 0;
+        if (dt.Millisecond != 123) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests DateTime arithmetic</summary>
+    public static int TestDateTimeArithmetic()
+    {
+        var dt1 = new DateTime(2024, 1, 15);
+
+        // Test AddTicks: 10 days = 10 * 864000000000 ticks
+        var dt2 = dt1.AddTicks(10 * 864000000000L);
+        if (dt2.Day != 25) return 0;
+
+        // Test subtraction
+        var diff = dt2 - dt1;
+        if (diff.Days != 10) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests DateTime comparison</summary>
+    public static int TestDateTimeCompare()
+    {
+        var dt1 = new DateTime(2024, 6, 15);
+        var dt2 = new DateTime(2024, 6, 15);
+        var dt3 = new DateTime(2024, 6, 16);
+
+        if (dt1 != dt2) return 0;
+        if (dt1 == dt3) return 0;
+        if (!(dt1 < dt3)) return 0;
+        if (!(dt3 > dt1)) return 0;
+        if (!dt1.Equals(dt2)) return 0;
+        if (dt1.CompareTo(dt2) != 0) return 0;
+        if (dt1.CompareTo(dt3) >= 0) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests DateTime leap year</summary>
+    public static int TestDateTimeLeapYear()
+    {
+        // 2024 is a leap year (divisible by 4)
+        if (!DateTime.IsLeapYear(2024)) return 0;
+        // 2023 is not a leap year
+        if (DateTime.IsLeapYear(2023)) return 0;
+        // 2000 is a leap year (divisible by 400)
+        if (!DateTime.IsLeapYear(2000)) return 0;
+        // 1900 is not a leap year (divisible by 100 but not 400)
+        if (DateTime.IsLeapYear(1900)) return 0;
+
+        // Test DaysInMonth
+        if (DateTime.DaysInMonth(2024, 2) != 29) return 0;  // Feb in leap year
+        if (DateTime.DaysInMonth(2023, 2) != 28) return 0;  // Feb in non-leap year
+        if (DateTime.DaysInMonth(2024, 1) != 31) return 0;  // January
 
         return 1;
     }
