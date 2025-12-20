@@ -256,6 +256,9 @@ public static unsafe class AotMethodRegistry
         // Register Span helpers (for memory operations)
         RegisterSpanMethods();
 
+        // Register GC methods (for Dispose pattern support)
+        RegisterGCMethods();
+
         _initialized = true;
 
         int count;
@@ -1104,6 +1107,31 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register GC methods for Dispose pattern support.
+    /// GC.SuppressFinalize is commonly called in Dispose methods.
+    /// </summary>
+    private static void RegisterGCMethods()
+    {
+        // GC.SuppressFinalize(object) - static method, 1 parameter, returns void
+        Register(
+            "System.GC", "SuppressFinalize",
+            (nint)(delegate*<object?, void>)&GCHelpers.SuppressFinalize,
+            1, ReturnKind.Void, false, false);
+
+        // GC.KeepAlive(object) - static method, 1 parameter, returns void
+        Register(
+            "System.GC", "KeepAlive",
+            (nint)(delegate*<object?, void>)&GCHelpers.KeepAlive,
+            1, ReturnKind.Void, false, false);
+
+        // GC.Collect() - static method, 0 parameters, returns void
+        Register(
+            "System.GC", "Collect",
+            (nint)(delegate*<void>)&GCHelpers.Collect,
+            0, ReturnKind.Void, false, false);
+    }
+
+    /// <summary>
     /// Register an AOT method (legacy overload for backwards compatibility).
     /// </summary>
     private static void Register(string typeName, string methodName, nint nativeCode,
@@ -1379,6 +1407,10 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.RuntimeArgumentHandle"))
             return true;
         if (StringMatches(typeName, "System.ArgIterator"))
+            return true;
+
+        // GC type (for Dispose pattern support)
+        if (StringMatches(typeName, "System.GC"))
             return true;
 
         return false;
@@ -3041,5 +3073,39 @@ public static unsafe class CollectionHelpers
         byte* listBytes = (byte*)listPtr;
         int size = *(int*)(listBytes + 16);  // Skip MT (8) + _items (8), get _size (4)
         return size;
+    }
+}
+
+/// <summary>
+/// Helper methods for GC operations.
+/// These are no-ops in bare-metal environment but need to be resolvable by JIT.
+/// </summary>
+public static class GCHelpers
+{
+    /// <summary>
+    /// Suppress finalization for an object.
+    /// In bare-metal environment, this is a no-op since we don't have a GC finalizer thread.
+    /// </summary>
+    public static void SuppressFinalize(object? obj)
+    {
+        // No-op - no finalizer thread in bare-metal environment
+    }
+
+    /// <summary>
+    /// Keep an object alive until this point.
+    /// In bare-metal environment, this is a no-op since we don't have GC.
+    /// </summary>
+    public static void KeepAlive(object? obj)
+    {
+        // No-op - objects stay alive as long as they're referenced
+    }
+
+    /// <summary>
+    /// Force a garbage collection.
+    /// In bare-metal environment, this is a no-op since we don't have GC.
+    /// </summary>
+    public static void Collect()
+    {
+        // No-op - no garbage collector in bare-metal environment
     }
 }

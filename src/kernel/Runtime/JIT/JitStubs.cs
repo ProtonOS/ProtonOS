@@ -189,29 +189,12 @@ public static unsafe class JitStubs
         if (methodTable == 0)
             return 0;
 
-        // Debug: trace ALL EnsureVtableSlotCompiled calls
-        DebugConsole.Write("[EnsureVT] slot=");
-        DebugConsole.WriteDecimal((uint)vtableSlot);
-        DebugConsole.Write(" MT=0x");
-        DebugConsole.WriteHex((ulong)methodTable);
-        DebugConsole.WriteLine();
-
         // Get vtable from MethodTable
         // MethodTable layout: [ComponentSize (2)] [Flags (2)] [BaseSize (4)] [RelatedType (8)]
         //                     [NumVtableSlots (2)] [NumInterfaces (2)] [HashCode (4)] [VTable...]
         // MethodTable.HeaderSize = 24 bytes
         nint* vtable = (nint*)(methodTable + ProtonOS.Runtime.MethodTable.HeaderSize);
         nint currentSlotCode = vtable[vtableSlot];
-
-        // Debug: trace ALL virtual calls to Equals (slot 3) for debugging
-        if (vtableSlot == 3)
-        {
-            DebugConsole.Write("[VT3] MT=0x");
-            DebugConsole.WriteHex((ulong)methodTable);
-            DebugConsole.Write(" code=0x");
-            DebugConsole.WriteHex((ulong)currentSlotCode);
-            DebugConsole.WriteLine();
-        }
 
         // Check if vtable slot is within bounds
         // NativeAOT may optimize away vtable slots for sealed types (e.g., String.GetHashCode)

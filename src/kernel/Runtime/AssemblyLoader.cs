@@ -7671,6 +7671,30 @@ public static unsafe class AssemblyLoader
             return null;
         }
 
+        // CRITICAL: Add to cache BEFORE computing size to break recursive instantiation loops.
+        // For types like ValueTask<T> which have fields that reference ValueTask<T>,
+        // ComputeInstanceSize can trigger recursive GetOrCreateGenericInstantiation calls.
+        // By caching early, recursive lookups return this (incomplete) MT instead of looping.
+        int cacheSlot = -1;
+        if (_genericInstCacheCount < MaxGenericInstCache)
+        {
+            cacheSlot = _genericInstCacheCount;
+            _genericInstCacheDefTokens[cacheSlot] = genDefToken;
+            _genericInstCacheArgHashes[cacheSlot] = argHash;
+            _genericInstCacheInstMTs[cacheSlot] = instMT;
+
+            // Store type arguments (up to MaxTypeArgsPerInst)
+            int argsToStore = typeArgCount < MaxTypeArgsPerInst ? typeArgCount : MaxTypeArgsPerInst;
+            _genericInstCacheTypeArgCounts[cacheSlot] = (byte)argsToStore;
+            int baseIdx = cacheSlot * MaxTypeArgsPerInst;
+            for (int i = 0; i < argsToStore; i++)
+            {
+                _genericInstCacheTypeArgs[baseIdx + i] = typeArgMTs[i];
+            }
+
+            _genericInstCacheCount++;
+        }
+
         // Copy base info from generic definition if available
         if (genDefMT != null)
         {
@@ -7970,28 +7994,14 @@ public static unsafe class AssemblyLoader
         // Generate unique hash code for this instantiation
         instMT->_uHashCode = (uint)(genDefToken ^ argHash ^ (argHash >> 32));
 
-        // Cache the new instantiated MT
-        if (_genericInstCacheCount < MaxGenericInstCache)
+        // Log the cache slot used (caching was done early to break recursive loops)
+        if (cacheSlot >= 0)
         {
             DebugConsole.Write("[GenInst] CACHE MISS - creating at ");
-            DebugConsole.WriteDecimal((uint)_genericInstCacheCount);
+            DebugConsole.WriteDecimal((uint)cacheSlot);
             DebugConsole.Write(" MT=0x");
             DebugConsole.WriteHex((ulong)instMT);
             DebugConsole.WriteLine();
-            _genericInstCacheDefTokens[_genericInstCacheCount] = genDefToken;
-            _genericInstCacheArgHashes[_genericInstCacheCount] = argHash;
-            _genericInstCacheInstMTs[_genericInstCacheCount] = instMT;
-
-            // Store type arguments (up to MaxTypeArgsPerInst)
-            int argsToStore = typeArgCount < MaxTypeArgsPerInst ? typeArgCount : MaxTypeArgsPerInst;
-            _genericInstCacheTypeArgCounts[_genericInstCacheCount] = (byte)argsToStore;
-            int baseIdx = _genericInstCacheCount * MaxTypeArgsPerInst;
-            for (int i = 0; i < argsToStore; i++)
-            {
-                _genericInstCacheTypeArgs[baseIdx + i] = typeArgMTs[i];
-            }
-
-            _genericInstCacheCount++;
         }
 
         // Register type info for this instantiated MT so JitStubs can look it up

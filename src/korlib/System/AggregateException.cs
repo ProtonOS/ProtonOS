@@ -60,6 +60,28 @@ namespace System
             _innerExceptions = new ReadOnlyCollection<Exception>(innerExceptions);
         }
 
+        /// <summary>Initializes a new instance of the AggregateException class with an enumerable of inner exceptions.</summary>
+        public AggregateException(IEnumerable<Exception> innerExceptions) : this("One or more errors occurred.", innerExceptions)
+        {
+        }
+
+        /// <summary>Initializes a new instance of the AggregateException class with a List of inner exceptions.</summary>
+        public AggregateException(List<Exception> innerExceptions) : this("One or more errors occurred.", innerExceptions)
+        {
+        }
+
+        /// <summary>Initializes a new instance of the AggregateException class with an enumerable of inner exceptions.</summary>
+        public AggregateException(string? message, IEnumerable<Exception> innerExceptions) : base(message)
+        {
+            if (innerExceptions == null) throw new ArgumentNullException(nameof(innerExceptions));
+            var list = new List<Exception>();
+            foreach (var ex in innerExceptions)
+            {
+                list.Add(ex);
+            }
+            _innerExceptions = new ReadOnlyCollection<Exception>(list);
+        }
+
         /// <summary>Flattens an AggregateException instances into a single, new instance.</summary>
         public AggregateException Flatten()
         {

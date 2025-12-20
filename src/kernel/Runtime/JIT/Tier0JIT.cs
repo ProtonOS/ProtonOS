@@ -2119,7 +2119,9 @@ public static unsafe class Tier0JIT
                 bool mtIsGenericDefinition = (genDefMT == null) && compilingForInstantiation;
 
                 // Only store on the MT if this is NOT a generic definition
-                if (!mtIsGenericDefinition)
+                // Also skip delegate slots 3/4 (CombineImpl/RemoveImpl) - these are AOT from korlib
+                bool skipDelegateSlot = mt->IsDelegate && (registeredSlot == 3 || registeredSlot == 4);
+                if (!mtIsGenericDefinition && !skipDelegateSlot)
                 {
                     nint* vtablePtr = mt->GetVtablePtr();
                     vtablePtr[registeredSlot] = nativeCode;
@@ -2204,6 +2206,12 @@ public static unsafe class Tier0JIT
             DebugConsole.Write(" token=0x");
             DebugConsole.WriteHex(methodToken);
             DebugConsole.WriteLine();
+            return;
+        }
+
+        // Skip delegate slots 3/4 (CombineImpl/RemoveImpl) - these are AOT from korlib
+        if (mt->IsDelegate && (vtableSlot == 3 || vtableSlot == 4))
+        {
             return;
         }
 

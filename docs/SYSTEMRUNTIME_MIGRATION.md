@@ -72,8 +72,8 @@ Required for async/await support.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Task` / `Task<T>` | 460 | **Migrated** | Core async support (4 tests passing - 572 total) |
-| `ValueTask` / `ValueTask<T>` | 219 | Not Started | Allocation-free async |
+| `Task` / `Task<T>` | 460 | **Migrated** | Core async support (4 tests passing - 576 total) |
+| `ValueTask` / `ValueTask<T>` | 219 | **Migrated** | Allocation-free async (3 tests) |
 | `TaskCompletionSource<T>` | 86 | **Migrated** | Manual task completion |
 | `TaskStatus` | 35 | **Migrated** | Enum |
 | `TaskCanceledException` | 42 | **Migrated** | Exception with Task reference |
@@ -82,9 +82,9 @@ Required for async/await support.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `AsyncMethodBuilder` | 326 | **Migrated** | AsyncTaskMethodBuilder, AsyncTaskMethodBuilder<T>, AsyncVoidMethodBuilder |
+| `AsyncMethodBuilder` | ~350 | **Migrated** | AsyncTaskMethodBuilder, AsyncTaskMethodBuilder<T>, AsyncVoidMethodBuilder, AsyncValueTaskMethodBuilder, AsyncValueTaskMethodBuilder<T> |
 | `TaskAwaiter` | 94 | **Migrated** | TaskAwaiter and TaskAwaiter<T> |
-| `ValueTaskAwaiter` | 203 | Not Started | ValueTask awaiter |
+| `ValueTaskAwaiter` | 203 | **Migrated** | ValueTaskAwaiter<T>, ConfiguredValueTaskAwaitable<T> |
 | `ConfiguredTaskAwaitable` | 130 | **Migrated** | ConfigureAwait support |
 | `IAsyncStateMachine` | 21 | **Migrated** | Interface |
 | `INotifyCompletion` | 27 | **Migrated** | Interface (includes ICriticalNotifyCompletion) |

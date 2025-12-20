@@ -368,6 +368,11 @@ public static class TestRunner
         RecordResult("UtilityTests.TestTaskRun", UtilityTests.TestTaskRun() == 1);
         RecordResult("UtilityTests.TestTaskFromResult", UtilityTests.TestTaskFromResult() == 1);
         RecordResult("UtilityTests.TestTaskCompletionSource", UtilityTests.TestTaskCompletionSource() == 1);
+        // ValueTask tests
+        RecordResult("UtilityTests.TestValueTaskCompleted", UtilityTests.TestValueTaskCompleted() == 1);
+        RecordResult("UtilityTests.TestValueTaskWithResult", UtilityTests.TestValueTaskWithResult() == 1);
+        RecordResult("UtilityTests.TestValueTaskFromTask", UtilityTests.TestValueTaskFromTask() == 1);
+        RecordResult("UtilityTests.TestAsyncAwait", UtilityTests.TestAsyncAwait() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9447,6 +9452,87 @@ public static class UtilityTests
         if (!task.IsCompleted) return 0;
         if (!task.IsCompletedSuccessfully) return 0;
         if (task.Result != 99) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests ValueTask.CompletedTask (default)</summary>
+    public static int TestValueTaskCompleted()
+    {
+        var vt = System.Threading.Tasks.ValueTask.CompletedTask;
+        if (!vt.IsCompleted) return 0;
+        if (!vt.IsCompletedSuccessfully) return 0;
+        if (vt.IsFaulted) return 0;
+        if (vt.IsCanceled) return 0;
+        return 1;
+    }
+
+    /// <summary>Tests ValueTask{T} with immediate result</summary>
+    public static int TestValueTaskWithResult()
+    {
+        var vt = new System.Threading.Tasks.ValueTask<int>(42);
+        if (!vt.IsCompleted) return 0;
+        if (!vt.IsCompletedSuccessfully) return 0;
+        if (vt.Result != 42) return 0;
+
+        // Test constructor with result (equivalent to FromResult)
+        var vt2 = new System.Threading.Tasks.ValueTask<int>(99);
+        if (!vt2.IsCompleted) return 0;
+        if (vt2.Result != 99) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests ValueTask wrapping a Task</summary>
+    public static int TestValueTaskFromTask()
+    {
+        var task = System.Threading.Tasks.Task.FromResult(123);
+        var vt = new System.Threading.Tasks.ValueTask<int>(task);
+        if (!vt.IsCompleted) return 0;
+        if (!vt.IsCompletedSuccessfully) return 0;
+        if (vt.Result != 123) return 0;
+
+        // Test AsTask()
+        var taskBack = vt.AsTask();
+        if (taskBack == null) return 0;
+        if (taskBack.Result != 123) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests async infrastructure manually (without async keyword)</summary>
+    public static int TestAsyncAwait()
+    {
+        // Test TaskAwaiter with completed task
+        var completedTask = System.Threading.Tasks.Task.CompletedTask;
+        var awaiter = completedTask.GetAwaiter();
+        if (!awaiter.IsCompleted) return 0;
+
+        // Test Task<T> awaiter
+        var resultTask = System.Threading.Tasks.Task.FromResult(42);
+        var resultAwaiter = resultTask.GetAwaiter();
+        if (!resultAwaiter.IsCompleted) return 0;
+        if (resultAwaiter.GetResult() != 42) return 0;
+
+        // Test ConfigureAwait
+        var configured = completedTask.ConfigureAwait(false);
+        var configuredAwaiter = configured.GetAwaiter();
+        if (!configuredAwaiter.IsCompleted) return 0;
+
+        // Test continuations (synchronous case)
+        int continuationRan = 0;
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<int>();
+        var pendingTask = tcs.Task;
+
+        // Add continuation before completion
+        pendingTask.GetAwaiter().OnCompleted(() => { continuationRan = 1; });
+
+        // Complete the task - should run continuation
+        tcs.SetResult(99);
+
+        // Verify continuation ran
+        if (continuationRan != 1) return 0;
+        if (pendingTask.Result != 99) return 0;
 
         return 1;
     }

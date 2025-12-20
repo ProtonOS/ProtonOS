@@ -987,6 +987,19 @@ public static unsafe class CompiledMethodRegistry
         if (!_initialized || token == 0)
             return null;
 
+        // Debug: trace lookups for tokens 0x268 and 0x269 in asm 1
+        bool debugThis = (assemblyId == 1 && (token == 0x06000268 || token == 0x06000269));
+        if (debugThis)
+        {
+            DebugConsole.Write("[LookupDbg] token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" hash=0x");
+            DebugConsole.WriteHex(typeArgHash);
+            DebugConsole.WriteLine();
+        }
+
         // Scan all blocks for the token + assemblyId + typeArgHash combination
         for (int b = 0; b < _blockCount; b++)
         {
@@ -1000,7 +1013,18 @@ public static unsafe class CompiledMethodRegistry
                 if (entries[i].Token == token &&
                     entries[i].AssemblyId == assemblyId &&
                     entries[i].TypeArgHash == typeArgHash)
+                {
+                    if (debugThis)
+                    {
+                        DebugConsole.Write("[LookupDbg] FOUND VtSlot=");
+                        DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
+                        if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
+                        DebugConsole.Write(" isVirt=");
+                        DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
+                        DebugConsole.WriteLine();
+                    }
                     return &entries[i];
+                }
             }
         }
 
@@ -1031,6 +1055,15 @@ public static unsafe class CompiledMethodRegistry
                         entries[i].AssemblyId == assemblyId &&
                         entries[i].TypeArgHash == 0)
                     {
+                        if (debugThis)
+                        {
+                            DebugConsole.Write("[LookupDbg] FALLBACK VtSlot=");
+                            DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
+                            if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
+                            DebugConsole.Write(" isVirt=");
+                            DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
+                            DebugConsole.WriteLine();
+                        }
                         DebugConsole.Write("[RegFallback] token=0x");
                         DebugConsole.WriteHex(token);
                         DebugConsole.Write(" asm=");
@@ -1047,6 +1080,10 @@ public static unsafe class CompiledMethodRegistry
             }
         }
 
+        if (debugThis)
+        {
+            DebugConsole.WriteLine("[LookupDbg] NOT FOUND");
+        }
         return null;
     }
 
