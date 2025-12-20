@@ -337,6 +337,10 @@ public static class TestRunner
         RecordResult("UtilityTests.TestReadOnlyCollectionBasic", UtilityTests.TestReadOnlyCollectionBasic() == 1);
         RecordResult("UtilityTests.TestReadOnlyCollectionContainsIndexOf", UtilityTests.TestReadOnlyCollectionContainsIndexOf() == 1);
         RecordResult("UtilityTests.TestReadOnlyCollectionCopyTo", UtilityTests.TestReadOnlyCollectionCopyTo() == 1);
+        // Collection tests
+        RecordResult("UtilityTests.TestCollectionBasic", UtilityTests.TestCollectionBasic() == 1);
+        RecordResult("UtilityTests.TestCollectionInsertRemove", UtilityTests.TestCollectionInsertRemove() == 1);
+        RecordResult("UtilityTests.TestCollectionClear", UtilityTests.TestCollectionClear() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -8859,6 +8863,78 @@ public static class UtilityTests
         if (dest[2] != 10) return 0;
         if (dest[3] != 15) return 0;
         if (dest[4] != 0) return 0;
+
+        return 1;
+    }
+
+    // =========================================================================
+    // Collection<T> Tests
+    // =========================================================================
+
+    /// <summary>Tests Collection basic Add and indexer</summary>
+    public static int TestCollectionBasic()
+    {
+        var coll = new System.Collections.ObjectModel.Collection<int>();
+        coll.Add(10);
+        coll.Add(20);
+        coll.Add(30);
+
+        if (coll.Count != 3) return 0;
+        if (coll[0] != 10) return 0;
+        if (coll[1] != 20) return 0;
+        if (coll[2] != 30) return 0;
+
+        // Test setter
+        coll[1] = 25;
+        if (coll[1] != 25) return 0;
+
+        // Test Contains and IndexOf
+        if (!coll.Contains(25)) return 0;
+        if (coll.IndexOf(30) != 2) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests Collection Insert and Remove</summary>
+    public static int TestCollectionInsertRemove()
+    {
+        var coll = new System.Collections.ObjectModel.Collection<int>();
+        coll.Add(10);
+        coll.Add(30);
+
+        // Insert at index 1
+        coll.Insert(1, 20);
+        if (coll.Count != 3) return 0;
+        if (coll[0] != 10) return 0;
+        if (coll[1] != 20) return 0;
+        if (coll[2] != 30) return 0;
+
+        // Remove by value
+        bool removed = coll.Remove(20);
+        if (!removed) return 0;
+        if (coll.Count != 2) return 0;
+        if (coll[1] != 30) return 0;
+
+        // RemoveAt
+        coll.RemoveAt(0);
+        if (coll.Count != 1) return 0;
+        if (coll[0] != 30) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests Collection Clear</summary>
+    public static int TestCollectionClear()
+    {
+        var coll = new System.Collections.ObjectModel.Collection<int>();
+        coll.Add(1);
+        coll.Add(2);
+        coll.Add(3);
+
+        if (coll.Count != 3) return 0;
+
+        coll.Clear();
+        if (coll.Count != 0) return 0;
 
         return 1;
     }
