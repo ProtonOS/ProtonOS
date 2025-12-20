@@ -888,6 +888,20 @@ public static unsafe class AotMethodRegistry
             "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Count",
             (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
             0, ReturnKind.Int32, true, false);
+
+        // TaskCanceledException constructors
+        Register(
+            "System.Threading.Tasks.TaskCanceledException", ".ctor",
+            (nint)(delegate*<System.Threading.Tasks.TaskCanceledException>)&ExceptionHelpers.Ctor_TaskCanceledException,
+            0, ReturnKind.IntPtr, false, false);
+        Register(
+            "System.Threading.Tasks.TaskCanceledException", ".ctor",
+            (nint)(delegate*<string?, System.Threading.Tasks.TaskCanceledException>)&ExceptionHelpers.Ctor_TaskCanceledException_String,
+            1, ReturnKind.IntPtr, false, false);
+        Register(
+            "System.Threading.Tasks.TaskCanceledException", ".ctor",
+            (nint)(delegate*<string?, Exception?, System.Threading.Tasks.TaskCanceledException>)&ExceptionHelpers.Ctor_TaskCanceledException_String_Exception,
+            2, ReturnKind.IntPtr, false, false);
     }
 
     /// <summary>
@@ -1321,6 +1335,8 @@ public static unsafe class AotMethodRegistry
         if (StringMatches(typeName, "System.FormatException"))
             return true;
         if (StringMatches(typeName, "System.AggregateException"))
+            return true;
+        if (StringMatches(typeName, "System.Threading.Tasks.TaskCanceledException"))
             return true;
 
         // Collection types (generic - match by name without type args)
@@ -2620,6 +2636,11 @@ public static class ExceptionHelpers
     public static AggregateException Ctor_AggregateException_String(string? message) => new AggregateException(message);
     public static AggregateException Ctor_AggregateException_String_ExceptionArray(string? message, Exception[] innerExceptions) => new AggregateException(message, innerExceptions);
     public static System.Collections.ObjectModel.ReadOnlyCollection<Exception> AggregateException_get_InnerExceptions(AggregateException ex) => ex.InnerExceptions;
+
+    // TaskCanceledException
+    public static System.Threading.Tasks.TaskCanceledException Ctor_TaskCanceledException() => new System.Threading.Tasks.TaskCanceledException();
+    public static System.Threading.Tasks.TaskCanceledException Ctor_TaskCanceledException_String(string? message) => new System.Threading.Tasks.TaskCanceledException(message);
+    public static System.Threading.Tasks.TaskCanceledException Ctor_TaskCanceledException_String_Exception(string? message, Exception? innerException) => new System.Threading.Tasks.TaskCanceledException(message, innerException);
 }
 
 /// <summary>

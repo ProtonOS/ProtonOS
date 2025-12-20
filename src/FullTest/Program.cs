@@ -357,6 +357,8 @@ public static class TestRunner
         RecordResult("UtilityTests.TestSystemException", UtilityTests.TestSystemException() == 1);
         RecordResult("UtilityTests.TestOperationCanceledException", UtilityTests.TestOperationCanceledException() == 1);
         RecordResult("UtilityTests.TestAggregateException", UtilityTests.TestAggregateException() == 1);
+        RecordResult("UtilityTests.TestTaskCanceledException", UtilityTests.TestTaskCanceledException() == 1);
+        RecordResult("UtilityTests.TestBindingFlags", UtilityTests.TestBindingFlags() == 1);
     }
 
     private static void RunStringFormatTests()
@@ -9220,6 +9222,63 @@ public static class UtilityTests
         // Test inheritance - AggregateException extends Exception
         System.Exception baseEx = ex3;
         if (baseEx == null) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests TaskCanceledException</summary>
+    public static int TestTaskCanceledException()
+    {
+        // Test empty constructor
+        var ex1 = new System.Threading.Tasks.TaskCanceledException();
+        if (ex1 == null) return 0;
+
+        // Test with message
+        var ex2 = new System.Threading.Tasks.TaskCanceledException("Task was canceled");
+        if (ex2 == null) return 0;
+
+        // Test with message and inner exception
+        var inner = new System.Exception("Inner error");
+        var ex3 = new System.Threading.Tasks.TaskCanceledException("Outer error", inner);
+        if (ex3 == null) return 0;
+
+        // Test inheritance - TaskCanceledException extends OperationCanceledException
+        System.OperationCanceledException opEx = ex3;
+        if (opEx == null) return 0;
+
+        // Test inheritance - also extends Exception
+        System.Exception baseEx = ex3;
+        if (baseEx == null) return 0;
+
+        return 1;
+    }
+
+    /// <summary>Tests BindingFlags enum values</summary>
+    public static int TestBindingFlags()
+    {
+        // Test individual flags
+        var defaultFlag = System.Reflection.BindingFlags.Default;
+        if ((int)defaultFlag != 0) return 0;
+
+        var instance = System.Reflection.BindingFlags.Instance;
+        if ((int)instance != 4) return 0;
+
+        var staticFlag = System.Reflection.BindingFlags.Static;
+        if ((int)staticFlag != 8) return 0;
+
+        var publicFlag = System.Reflection.BindingFlags.Public;
+        if ((int)publicFlag != 16) return 0;
+
+        var nonPublic = System.Reflection.BindingFlags.NonPublic;
+        if ((int)nonPublic != 32) return 0;
+
+        // Test combining flags (common usage: Instance | Public)
+        var combined = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+        if ((int)combined != 20) return 0;  // 4 + 16 = 20
+
+        // Test that flags are independent
+        if ((combined & System.Reflection.BindingFlags.Instance) == 0) return 0;
+        if ((combined & System.Reflection.BindingFlags.Public) == 0) return 0;
 
         return 1;
     }

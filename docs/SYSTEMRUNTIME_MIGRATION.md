@@ -76,7 +76,7 @@ Required for async/await support. Lower priority until async is needed.
 | `ValueTask` / `ValueTask<T>` | 219 | Not Started | Allocation-free async |
 | `TaskCompletionSource<T>` | 86 | Not Started | Manual task completion |
 | `TaskStatus` | 35 | **Migrated** | Enum |
-| `TaskCanceledException` | 42 | Not Started | Exception |
+| `TaskCanceledException` | 42 | **Migrated** | Exception (simplified, without Task/CancellationToken) |
 
 ### Async Infrastructure (`System.Runtime.CompilerServices`)
 
@@ -86,8 +86,8 @@ Required for async/await support. Lower priority until async is needed.
 | `TaskAwaiter` | 94 | Not Started | Awaiter pattern |
 | `ValueTaskAwaiter` | 203 | Not Started | ValueTask awaiter |
 | `ConfiguredTaskAwaitable` | 130 | Not Started | ConfigureAwait support |
-| `IAsyncStateMachine` | 21 | Not Started | Interface |
-| `INotifyCompletion` | 27 | Not Started | Interface |
+| `IAsyncStateMachine` | 21 | **Migrated** | Interface |
+| `INotifyCompletion` | 27 | **Migrated** | Interface (includes ICriticalNotifyCompletion) |
 | `DefaultInterpolatedStringHandler` | 184 | Migrated | Already in korlib |
 
 ### Cancellation (`System.Threading`)
@@ -139,7 +139,7 @@ korlib already has partial reflection support. These types may need merging or r
 | `MemberInfo` | 251 | Partial | korlib has `MemberInfo.cs` |
 | `MethodBase` | 351 | Not Started | |
 | `MethodInfo` | 584 | Not Started | |
-| `BindingFlags` | 69 | Not Started | Enum |
+| `BindingFlags` | 69 | **Migrated** | Enum (in MemberInfo.cs) |
 | `MemberTypes` | 428 | Not Started | Enum (large due to docs) |
 
 ---
@@ -323,3 +323,7 @@ Note: Some repeated type resolution log messages may appear during JIT compilati
 - **2024-12**: Fixed HashSet ref local JIT issue by using direct array indexing instead of ref locals (530 tests)
 - **2024-12**: Fixed HashSet Enumerator ref local issue, enabled foreach iteration (531 tests)
 - **2024-12**: Enabled TestVirtqueuePattern regression test (532 tests)
+- **2024-12**: Migrated AggregateException with full InnerExceptions.Count access (562 tests)
+- **2024-12**: Migrated async interfaces: IAsyncStateMachine, INotifyCompletion, ICriticalNotifyCompletion
+- **2024-12**: Migrated TaskCanceledException with AOT registration (564 tests)
+- **2024-12**: Confirmed BindingFlags already migrated in MemberInfo.cs

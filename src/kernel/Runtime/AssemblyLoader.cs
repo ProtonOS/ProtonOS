@@ -5106,7 +5106,7 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.MulticastDelegate;
                 break;
 
-            case (byte)'T':  // Type, TypedReference
+            case (byte)'T':  // Type, TypedReference, TaskCanceledException
                 if (name[1] == 'y' && name[2] == 'p' && name[3] == 'e')
                 {
                     if (name[4] == 0)
@@ -5117,6 +5117,14 @@ public static unsafe class AssemblyLoader
                         name[12] == 'c' && name[13] == 'e' && name[14] == 0)
                         return JIT.MetadataIntegration.WellKnownTypes.TypedReference;
                 }
+                // TaskCanceledException
+                if (name[1] == 'a' && name[2] == 's' && name[3] == 'k' && name[4] == 'C' &&
+                    name[5] == 'a' && name[6] == 'n' && name[7] == 'c' && name[8] == 'e' &&
+                    name[9] == 'l' && name[10] == 'e' && name[11] == 'd' && name[12] == 'E' &&
+                    name[13] == 'x' && name[14] == 'c' && name[15] == 'e' && name[16] == 'p' &&
+                    name[17] == 't' && name[18] == 'i' && name[19] == 'o' && name[20] == 'n' &&
+                    name[21] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.TaskCanceledException;
                 break;
 
             case (byte)'R':  // RuntimeType, RuntimeArgumentHandle, ReadOnlySpan`1

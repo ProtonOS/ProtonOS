@@ -374,6 +374,7 @@ public static unsafe class MetadataIntegration
         public const uint OverflowException = 0xF000002C;
         public const uint StackOverflowException = 0xF000002D;
         public const uint AggregateException = 0xF000002E;
+        public const uint TaskCanceledException = 0xF000002F;
 
         // Reflection types - for GetType() support
         public const uint Type = 0xF0000030;
@@ -882,6 +883,12 @@ public static unsafe class MetadataIntegration
         var aggregateEx = new AggregateException();
         MethodTable* aggregateExMT = (MethodTable*)aggregateEx.m_pMethodTable;
         if (aggregateExMT != null && RegisterType(WellKnownTypes.AggregateException, aggregateExMT))
+            count++;
+
+        // TaskCanceledException
+        var taskCanceledEx = new System.Threading.Tasks.TaskCanceledException();
+        MethodTable* taskCanceledExMT = (MethodTable*)taskCanceledEx.m_pMethodTable;
+        if (taskCanceledExMT != null && RegisterType(WellKnownTypes.TaskCanceledException, taskCanceledExMT))
             count++;
 
         return count;
