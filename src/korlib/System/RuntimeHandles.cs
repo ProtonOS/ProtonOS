@@ -36,6 +36,9 @@ namespace System
 
         public bool Equals(RuntimeTypeHandle handle) => _value == handle._value;
         public override int GetHashCode() => _value.GetHashCode();
+
+        public static bool operator ==(RuntimeTypeHandle left, RuntimeTypeHandle right) => left._value == right._value;
+        public static bool operator !=(RuntimeTypeHandle left, RuntimeTypeHandle right) => left._value != right._value;
     }
 
     public struct RuntimeMethodHandle
@@ -58,6 +61,9 @@ namespace System
 
         public bool Equals(RuntimeMethodHandle handle) => _value == handle._value;
         public override int GetHashCode() => _value.GetHashCode();
+
+        public static bool operator ==(RuntimeMethodHandle left, RuntimeMethodHandle right) => left._value == right._value;
+        public static bool operator !=(RuntimeMethodHandle left, RuntimeMethodHandle right) => left._value != right._value;
     }
 
     public struct RuntimeFieldHandle
@@ -80,5 +86,8 @@ namespace System
 
         public bool Equals(RuntimeFieldHandle handle) => _value == handle._value;
         public override int GetHashCode() => _value.GetHashCode();
+
+        public static bool operator ==(RuntimeFieldHandle left, RuntimeFieldHandle right) => left._value == right._value;
+        public static bool operator !=(RuntimeFieldHandle left, RuntimeFieldHandle right) => left._value != right._value;
     }
 }

@@ -8938,8 +8938,11 @@ public unsafe struct ILCompiler
             // After popping args, there may still be items on the RSP-based eval stack
             // (e.g., from 'dup' in object initializers). These items are at [RSP] and above.
             // When we call RhpNewFast/constructor, the callee's shadow space overlaps this!
-            // Fix: move RSP down 32 bytes to put live data safely below shadow space.
-            X64Emitter.SubRI(ref _code, VReg.SP, 32);
+            // Fix: move RSP down to put live data safely below shadow space.
+            // For 4-arg constructors (5 physical args with 'this'), we also need space
+            // for the 5th arg at [RSP+32], so reserve 40 bytes instead of 32.
+            int shadowReserve = ctorArgs >= 4 ? 40 : 32;
+            X64Emitter.SubRI(ref _code, VReg.SP, shadowReserve);
 
             // newobjTempOffset must be AFTER all local variable slots.
             // GetLocalOffset uses 64-byte slots starting at -(CalleeSaveSize + 64).
@@ -9043,12 +9046,6 @@ public unsafe struct ILCompiler
                 X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R10);  // shadow space [rsp+32]
             }
 
-            // newobj ctor call debug (verbose - commented out)
-            // DebugConsole.WriteHex((ulong)ctor.NativeCode);
-            // DebugConsole.Write(" args=");
-            // DebugConsole.WriteDecimal((uint)ctorArgs);
-            // DebugConsole.WriteLine();
-
             if (ctor.NativeCode == null)
             {
                 // DebugConsole.WriteLine("[JIT newobj] ERROR: ctor.NativeCode is null!");
@@ -9060,7 +9057,7 @@ public unsafe struct ILCompiler
             RecordSafePoint();
 
             // Restore RSP after the shadow space reservation
-            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+            X64Emitter.AddRI(ref _code, VReg.SP, shadowReserve);
 
             // Push result onto eval stack
             if (isValueType)

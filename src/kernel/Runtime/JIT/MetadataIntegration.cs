@@ -385,6 +385,11 @@ public static unsafe class MetadataIntegration
         public const uint RuntimeArgumentHandle = 0xF0000041;
         public const uint ArgIterator = 0xF0000042;
 
+        // Runtime handle types - for reflection handle access
+        public const uint RuntimeTypeHandle = 0xF0000043;
+        public const uint RuntimeMethodHandle = 0xF0000044;
+        public const uint RuntimeFieldHandle = 0xF0000045;
+
         // Interface types - for using statement / IDisposable support
         public const uint IDisposable = 0xF0000050;
         // Note: IEnumerable/IEnumerator are NOT well-known types because their methods
@@ -1169,6 +1174,19 @@ public static unsafe class MetadataIntegration
     {
         // Extract table ID for debugging
         byte tableId = (byte)(token >> 24);
+
+        // Handle well-known handle types directly - they're all nint wrappers (8 bytes on x64)
+        if ((token & 0xFF000000) == 0xF0000000)
+        {
+            switch (token)
+            {
+                case WellKnownTypes.RuntimeTypeHandle:
+                case WellKnownTypes.RuntimeMethodHandle:
+                case WellKnownTypes.RuntimeFieldHandle:
+                case WellKnownTypes.RuntimeArgumentHandle:
+                    return 8;  // All handle types are nint wrappers
+            }
+        }
 
         // Try to resolve the type to get its MethodTable
         void* mtPtr;

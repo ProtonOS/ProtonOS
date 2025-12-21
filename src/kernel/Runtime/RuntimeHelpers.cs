@@ -416,8 +416,8 @@ public static unsafe class RuntimeHelpers
 
         *(MethodTable**)result = pMT;
 
-        // Debug: trace allocation success for 4-slot types (potential issue)
-        if (pMT->NumVtableSlots == 4)
+        // Debug: trace allocation success for 4+ slot types (potential issue)
+        if (pMT->NumVtableSlots >= 4)
         {
             DebugConsole.Write("[RhpNewFast] OK obj=0x");
             DebugConsole.WriteHex((ulong)result);

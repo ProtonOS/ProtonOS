@@ -4832,9 +4832,60 @@ public static unsafe class AssemblyLoader
         uint wellKnownToken = GetWellKnownTypeToken(name);
 
         if (wellKnownToken != 0)
-            return JIT.MetadataIntegration.LookupType(wellKnownToken);
+        {
+            MethodTable* mt = JIT.MetadataIntegration.LookupType(wellKnownToken);
+            if (mt != null)
+                return mt;
+
+            // For handle types, create synthetic MTs if not already registered
+            // These are simple 8-byte value types (nint wrappers)
+            if (wellKnownToken == JIT.MetadataIntegration.WellKnownTypes.RuntimeTypeHandle ||
+                wellKnownToken == JIT.MetadataIntegration.WellKnownTypes.RuntimeMethodHandle ||
+                wellKnownToken == JIT.MetadataIntegration.WellKnownTypes.RuntimeFieldHandle)
+            {
+                mt = CreateHandleTypeMethodTable(wellKnownToken);
+                if (mt != null)
+                    return mt;
+            }
+        }
 
         return null;
+    }
+
+    /// <summary>
+    /// Create a synthetic MethodTable for runtime handle types.
+    /// These are simple 8-byte value types (nint wrappers).
+    /// </summary>
+    private static MethodTable* CreateHandleTypeMethodTable(uint wellKnownToken)
+    {
+        // Allocate minimal MethodTable (just header, no vtable slots needed for simple value types)
+        MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        if (mt == null)
+            return null;
+
+        // Set flags for value type (in high 16 bits of combined flags)
+        mt->_usFlags = (ushort)(MTFlags.IsValueType >> 16);
+
+        // Base size is 8 bytes (sizeof nint) - no object header for unboxed value types
+        mt->_uBaseSize = 8;
+
+        // ComponentSize is used for primitives; set to 8 for handle types
+        mt->_usComponentSize = 8;
+
+        // No vtable slots needed for these simple value types
+        mt->_usNumVtableSlots = 0;
+        mt->_usNumInterfaces = 0;
+
+        // Register in the type registry
+        JIT.MetadataIntegration.RegisterType(wellKnownToken, mt);
+
+        DebugConsole.Write("[AsmLoader] Created handle MT for token 0x");
+        DebugConsole.WriteHex(wellKnownToken);
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.WriteLine();
+
+        return mt;
     }
 
     /// <summary>
@@ -5189,13 +5240,30 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.TaskCanceledException;
                 break;
 
-            case (byte)'R':  // RuntimeType, RuntimeArgumentHandle, ReadOnlySpan`1
+            case (byte)'R':  // RuntimeType, RuntimeArgumentHandle, RuntimeTypeHandle, RuntimeMethodHandle, RuntimeFieldHandle, ReadOnlySpan`1
                 if (name[1] == 'u' && name[2] == 'n' && name[3] == 't' && name[4] == 'i' &&
                     name[5] == 'm' && name[6] == 'e')
                 {
                     // RuntimeType
-                    if (name[7] == 'T' && name[8] == 'y' && name[9] == 'p' && name[10] == 'e' && name[11] == 0)
-                        return JIT.MetadataIntegration.WellKnownTypes.RuntimeType;
+                    if (name[7] == 'T' && name[8] == 'y' && name[9] == 'p' && name[10] == 'e')
+                    {
+                        if (name[11] == 0)
+                            return JIT.MetadataIntegration.WellKnownTypes.RuntimeType;
+                        // RuntimeTypeHandle
+                        if (name[11] == 'H' && name[12] == 'a' && name[13] == 'n' && name[14] == 'd' &&
+                            name[15] == 'l' && name[16] == 'e' && name[17] == 0)
+                            return JIT.MetadataIntegration.WellKnownTypes.RuntimeTypeHandle;
+                    }
+                    // RuntimeMethodHandle
+                    if (name[7] == 'M' && name[8] == 'e' && name[9] == 't' && name[10] == 'h' &&
+                        name[11] == 'o' && name[12] == 'd' && name[13] == 'H' && name[14] == 'a' &&
+                        name[15] == 'n' && name[16] == 'd' && name[17] == 'l' && name[18] == 'e' && name[19] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.RuntimeMethodHandle;
+                    // RuntimeFieldHandle
+                    if (name[7] == 'F' && name[8] == 'i' && name[9] == 'e' && name[10] == 'l' &&
+                        name[11] == 'd' && name[12] == 'H' && name[13] == 'a' && name[14] == 'n' &&
+                        name[15] == 'd' && name[16] == 'l' && name[17] == 'e' && name[18] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.RuntimeFieldHandle;
                     // RuntimeArgumentHandle
                     if (name[7] == 'A' && name[8] == 'r' && name[9] == 'g' && name[10] == 'u' &&
                         name[11] == 'm' && name[12] == 'e' && name[13] == 'n' && name[14] == 't' &&

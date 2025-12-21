@@ -132,16 +132,27 @@ Required for async/await support.
 
 ## Reflection
 
-korlib already has partial reflection support. These types may need merging or replacement.
+korlib has full reflection support with all types from System.Runtime now migrated.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Assembly` | 617 | Partial | korlib has `RuntimeAssembly.cs` |
-| `MemberInfo` | 251 | Partial | korlib has `MemberInfo.cs` |
+| `Assembly` | ~180 | **Migrated** | Full abstract base with all properties (Location, EntryPoint, IsDynamic, etc.), methods (GetName, GetTypes, GetModule, Load, etc.), and operators |
+| `AssemblyName` | ~110 | **Migrated** | Full name/version/culture/flags support, GetPublicKeyToken, Clone |
+| `Module` | ~80 | **Migrated** | Full abstract base with GetType, GetTypes, FindTypes, GetPEKind |
+| `MemberInfo` | ~30 | **Migrated** | GetCustomAttributesData added |
+| `CustomAttributeData` | ~40 | **Migrated** | AttributeType, Constructor, ConstructorArguments, NamedArguments |
+| `CustomAttributeTypedArgument` | ~40 | **Migrated** | ArgumentType, Value struct |
+| `CustomAttributeNamedArgument` | ~40 | **Migrated** | MemberInfo, TypedValue, IsField struct |
+| `ManifestResourceInfo` | ~15 | **Migrated** | ResourceLocation support |
 | `MethodBase` | 351 | **Migrated** | Full properties: IsPublic/Static/Virtual/Abstract, generic method support, MethodImplAttributes, MethodBody, AOT registry (587 tests) |
 | `MethodInfo` | 584 | **Migrated** | ReturnType, ReturnParameter, GetGenericMethodDefinition, MakeGenericMethod, CreateDelegate, GetBaseDefinition, AOT registry (589 tests) |
 | `BindingFlags` | 69 | **Migrated** | Enum (in MemberInfo.cs) |
 | `MemberTypes` | 428 | **Migrated** | Enum (in MemberInfo.cs) |
+| `TypeFilter` | ~5 | **Migrated** | Delegate for Module.FindTypes |
+| `PortableExecutableKinds` | ~20 | **Migrated** | Enum for PE file kind |
+| `ImageFileMachine` | ~15 | **Migrated** | Enum for target machine |
+| `ResourceLocation` | ~10 | **Migrated** | Enum for manifest resource location |
+| `AssemblyNameFlags` | ~15 | **Migrated** | Enum for assembly attributes |
 
 ---
 
@@ -159,12 +170,14 @@ korlib already has partial reflection support. These types may need merging or r
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Activator` | 88 | Partial | korlib has `Activator.CreateInstance<T>()` |
+| `Activator` | ~65 | **Migrated** | Full class with CreateInstance overloads, ObjectHandle class |
 | `GC` | 84 | **Migrated** | Minimal stubs (SuppressFinalize, Collect, etc.) |
 | `IAsyncResult` | 68 | **Migrated** | Legacy async pattern with WaitHandle |
-| `RuntimeHandles` | 91 | Partial | korlib has `RuntimeHandles.cs` |
+| `RuntimeHandles` | ~90 | **Migrated** | RuntimeTypeHandle, RuntimeMethodHandle, RuntimeFieldHandle with == and != operators |
 | `Nullable` helpers | 30 | Migrated | korlib has `Nullable.cs` |
 | `ObsoleteAttribute` | ~20 | **Migrated** | Marks deprecated elements |
+| `Version` | ~150 | **Migrated** | Version number representation with comparison operators |
+| `Stream` | ~100 | **Migrated** | Abstract IO.Stream base class for manifest resource support |
 
 ---
 
@@ -339,3 +352,7 @@ Note: Some repeated type resolution log messages may appear during JIT compilati
 - **2024-12**: Migrated AsyncTaskMethodBuilder, AsyncTaskMethodBuilder<T>, AsyncVoidMethodBuilder to korlib
 - **2024-12**: Migrated IAsyncResult and WaitHandle to korlib
 - **2024-12**: Fixed JIT Object.ctor MethodTable resolution for AOT lookup (572 tests passing)
+- **2024-12**: Migrated complete reflection types: Assembly, AssemblyName, Module, CustomAttributeData (589 tests)
+- **2024-12**: Added RuntimeHandles operators, created Activator.cs with ObjectHandle
+- **2024-12**: Added supporting types: Version, Stream, TypeFilter, PortableExecutableKinds, ImageFileMachine, ResourceLocation, AssemblyNameFlags, ManifestResourceInfo
+- **2024-12**: korlib now has complete coverage of System.Runtime reflection types
