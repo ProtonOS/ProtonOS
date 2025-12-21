@@ -184,13 +184,40 @@ namespace System.Reflection
         public abstract ParameterInfo[] GetParameters();
 
         public virtual CallingConventions CallingConvention => CallingConventions.Standard;
+
+        // Visibility/access properties
         public virtual bool IsAbstract => (Attributes & MethodAttributes.Abstract) != 0;
+        public virtual bool IsAssembly => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Assembly;
         public virtual bool IsConstructor => (Attributes & MethodAttributes.RTSpecialName) != 0 && Name == ".ctor";
+        public virtual bool IsFamily => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Family;
+        public virtual bool IsFamilyAndAssembly => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.FamANDAssem;
+        public virtual bool IsFamilyOrAssembly => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.FamORAssem;
         public virtual bool IsFinal => (Attributes & MethodAttributes.Final) != 0;
+        public virtual bool IsHideBySig => (Attributes & MethodAttributes.HideBySig) != 0;
         public virtual bool IsPrivate => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Private;
         public virtual bool IsPublic => (Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.Public;
+        public virtual bool IsSpecialName => (Attributes & MethodAttributes.SpecialName) != 0;
         public virtual bool IsStatic => (Attributes & MethodAttributes.Static) != 0;
         public virtual bool IsVirtual => (Attributes & MethodAttributes.Virtual) != 0;
+
+        // Generic method properties
+        public virtual bool ContainsGenericParameters => false;
+        public virtual bool IsGenericMethod => false;
+        public virtual bool IsGenericMethodDefinition => false;
+
+        /// <summary>Returns an array of Type objects that represent the type arguments of a generic method.</summary>
+        public virtual Type[] GetGenericArguments() => Array.Empty<Type>();
+
+        // Security properties (always return safe defaults for ProtonOS)
+        public virtual bool IsSecurityCritical => true;
+        public virtual bool IsSecuritySafeCritical => false;
+        public virtual bool IsSecurityTransparent => false;
+
+        // Method implementation
+        public virtual MethodImplAttributes MethodImplementationFlags => MethodImplAttributes.IL;
+
+        /// <summary>Returns the MethodBody object that provides access to the MSIL stream, local variables, and exceptions.</summary>
+        public virtual MethodBody? GetMethodBody() => null;
 
         public abstract object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture);
@@ -506,6 +533,133 @@ namespace System.Reflection
 
         /// <summary>Returns a string representation.</summary>
         public override string ToString() => FullName;
+    }
+
+    /// <summary>
+    /// Specifies flags for the attributes of a method implementation.
+    /// </summary>
+    [Flags]
+    public enum MethodImplAttributes
+    {
+        /// <summary>Specifies that the method implementation is in IL.</summary>
+        IL = 0,
+        /// <summary>Specifies that the method implementation is native.</summary>
+        Native = 1,
+        /// <summary>Specifies that the method implementation is in optimized IL.</summary>
+        OPTIL = 2,
+        /// <summary>Specifies that the method is provided by the runtime.</summary>
+        Runtime = 3,
+        /// <summary>Specifies flags about code type.</summary>
+        CodeTypeMask = 3,
+        /// <summary>Specifies whether the code is managed.</summary>
+        ManagedMask = 4,
+        /// <summary>Specifies that the method is implemented in unmanaged code.</summary>
+        Unmanaged = 4,
+        /// <summary>Specifies that the method is implemented in managed code.</summary>
+        Managed = 0,
+        /// <summary>Specifies that the method is not defined.</summary>
+        ForwardRef = 16,
+        /// <summary>Specifies that the method signature is exported exactly as declared.</summary>
+        PreserveSig = 128,
+        /// <summary>Specifies an internal call.</summary>
+        InternalCall = 4096,
+        /// <summary>Specifies that the method is single-threaded through the body.</summary>
+        Synchronized = 32,
+        /// <summary>Specifies that the method cannot be inlined.</summary>
+        NoInlining = 8,
+        /// <summary>Specifies that the method is never optimized.</summary>
+        NoOptimization = 64,
+        /// <summary>Specifies that the method should be inlined if possible.</summary>
+        AggressiveInlining = 256,
+        /// <summary>Specifies that the method should be aggressively optimized.</summary>
+        AggressiveOptimization = 512,
+        /// <summary>Specifies a range check value.</summary>
+        MaxMethodImplVal = 65535,
+    }
+
+    /// <summary>
+    /// Provides information about the body of a method.
+    /// </summary>
+    public class MethodBody
+    {
+        /// <summary>Gets a metadata token for the signature that describes the local variables.</summary>
+        public virtual int LocalSignatureMetadataToken => 0;
+
+        /// <summary>Gets the list of local variables declared in the method body.</summary>
+        public virtual LocalVariableInfo[] LocalVariables => new LocalVariableInfo[0];
+
+        /// <summary>Gets the maximum number of items on the operand stack when the method is executing.</summary>
+        public virtual int MaxStackSize => 0;
+
+        /// <summary>Gets a value indicating whether local variables are initialized to default values.</summary>
+        public virtual bool InitLocals => true;
+
+        /// <summary>Gets a list that includes all the exception-handling clauses in the method body.</summary>
+        public virtual ExceptionHandlingClause[] ExceptionHandlingClauses => new ExceptionHandlingClause[0];
+
+        /// <summary>Returns the MSIL for the method body, as an array of bytes.</summary>
+        public virtual byte[]? GetILAsByteArray() => null;
+    }
+
+    /// <summary>
+    /// Provides information about a local variable in a method body.
+    /// </summary>
+    public class LocalVariableInfo
+    {
+        /// <summary>Gets the index of the local variable within the method body.</summary>
+        public virtual int LocalIndex => 0;
+
+        /// <summary>Gets the type of the local variable.</summary>
+        public virtual Type LocalType => typeof(object);
+
+        /// <summary>Gets a value that indicates whether the local variable is pinned in memory.</summary>
+        public virtual bool IsPinned => false;
+
+        /// <summary>Returns a string representation of this object.</summary>
+        public override string ToString() => $"{LocalType.Name} ({LocalIndex})";
+    }
+
+    /// <summary>
+    /// Represents a clause in a structured exception-handling block.
+    /// </summary>
+    public class ExceptionHandlingClause
+    {
+        /// <summary>Gets the type of exception handled by this clause.</summary>
+        public virtual Type? CatchType => null;
+
+        /// <summary>Gets a value indicating the type of this clause.</summary>
+        public virtual ExceptionHandlingClauseOptions Flags => ExceptionHandlingClauseOptions.Clause;
+
+        /// <summary>Gets the offset within the method body of the user-supplied filter code.</summary>
+        public virtual int FilterOffset => 0;
+
+        /// <summary>Gets the length, in bytes, of the body of this exception-handling clause.</summary>
+        public virtual int HandlerLength => 0;
+
+        /// <summary>Gets the offset within the method body of this exception-handling clause.</summary>
+        public virtual int HandlerOffset => 0;
+
+        /// <summary>Gets the length, in bytes, of the try block.</summary>
+        public virtual int TryLength => 0;
+
+        /// <summary>Gets the offset within the method of the try block.</summary>
+        public virtual int TryOffset => 0;
+    }
+
+    /// <summary>
+    /// Identifies kinds of exception-handling clauses.
+    /// </summary>
+    [Flags]
+    public enum ExceptionHandlingClauseOptions
+    {
+        /// <summary>The clause accepts all exceptions that derive from a specified type.</summary>
+        Clause = 0,
+        /// <summary>The clause is executed if an exception occurs, but not on normal completion.</summary>
+        Filter = 1,
+        /// <summary>The clause is executed whenever the try block exits.</summary>
+        Finally = 2,
+        /// <summary>The clause is executed if an exception occurs, but not on normal control flow.</summary>
+        Fault = 4,
     }
 
 #if !KORLIB_IL

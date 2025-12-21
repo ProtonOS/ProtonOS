@@ -205,6 +205,13 @@ public static class TestRunner
         RecordResult("ReflectionTypeTests.TestGetParametersCount", ReflectionTypeTests.TestGetParametersCount() == 1);
         RecordResult("ReflectionTypeTests.TestGetParameterType", ReflectionTypeTests.TestGetParameterType() == 1);
 
+        // Test MethodBase properties
+        RecordResult("ReflectionTypeTests.TestMethodBaseIsPublic", ReflectionTypeTests.TestMethodBaseIsPublic() == 1);
+        RecordResult("ReflectionTypeTests.TestMethodBaseIsStatic", ReflectionTypeTests.TestMethodBaseIsStatic() == 1);
+        RecordResult("ReflectionTypeTests.TestMethodImplAttributes", ReflectionTypeTests.TestMethodImplAttributes() == 1);
+        RecordResult("ReflectionTypeTests.TestExceptionHandlingClauseOptions", ReflectionTypeTests.TestExceptionHandlingClauseOptions() == 1);
+        RecordResult("ReflectionTypeTests.TestMethodBody", ReflectionTypeTests.TestMethodBody() == 1);
+
         // Note: PropertyInfo.PropertyType tests disabled - requires Type.GetProperty which
         // needs Property metadata APIs (PropertyMap table) to be implemented.
     }
@@ -8324,6 +8331,73 @@ public static class ReflectionTypeTests
         if (name0 is null || name0.Length != 5) return 0;  // "Int32"
         if (name1 is null || name1.Length != 5) return 0;  // "Int32"
 
+        return 1;
+    }
+
+    /// <summary>
+    /// Test MethodBase.IsPublic property.
+    /// </summary>
+    public static int TestMethodBaseIsPublic()
+    {
+        var type = typeof(TestClass);
+        var method = type.GetMethod("Add");
+        if (method is null) return 0;
+        // Public method should have IsPublic = true
+        return method.IsPublic ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test MethodBase.IsStatic property on instance method.
+    /// </summary>
+    public static int TestMethodBaseIsStatic()
+    {
+        var type = typeof(TestClass);
+        var method = type.GetMethod("NoParams");
+        if (method is null) return 0;
+        // NoParams is instance method, not static
+        return method.IsStatic ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Test MethodImplAttributes enum values.
+    /// </summary>
+    public static int TestMethodImplAttributes()
+    {
+        // Just verify the enum values are correct
+        var il = System.Reflection.MethodImplAttributes.IL;
+        var native = System.Reflection.MethodImplAttributes.Native;
+        var internalCall = System.Reflection.MethodImplAttributes.InternalCall;
+        if ((int)il != 0) return 0;
+        if ((int)native != 1) return 0;
+        if ((int)internalCall != 4096) return 0;
+        return 1;
+    }
+
+    /// <summary>
+    /// Test ExceptionHandlingClauseOptions enum values.
+    /// </summary>
+    public static int TestExceptionHandlingClauseOptions()
+    {
+        var clause = System.Reflection.ExceptionHandlingClauseOptions.Clause;
+        var filter = System.Reflection.ExceptionHandlingClauseOptions.Filter;
+        var finally_ = System.Reflection.ExceptionHandlingClauseOptions.Finally;
+        if ((int)clause != 0) return 0;
+        if ((int)filter != 1) return 0;
+        if ((int)finally_ != 2) return 0;
+        return 1;
+    }
+
+    /// <summary>
+    /// Test MethodBody and GetMethodBody().
+    /// </summary>
+    public static int TestMethodBody()
+    {
+        var type = typeof(TestClass);
+        var method = type.GetMethod("Add");
+        if (method is null) return 0;
+        // GetMethodBody returns null for our minimal implementation
+        var body = method.GetMethodBody();
+        // We just verify the call doesn't crash - null is expected
         return 1;
     }
 }

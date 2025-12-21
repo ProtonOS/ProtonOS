@@ -717,6 +717,42 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<System.Reflection.MethodBase, System.Reflection.ParameterInfo[]?>)&ReflectionHelpers.MethodBaseGetParameters,
             0, ReturnKind.IntPtr, true, true);
 
+        // MethodBase.get_Attributes - virtual property getter
+        Register(
+            "System.Reflection.MethodBase", "get_Attributes",
+            (nint)(delegate*<System.Reflection.MethodBase, System.Reflection.MethodAttributes>)&ReflectionHelpers.MethodBaseGetAttributes,
+            0, ReturnKind.Int32, true, true);
+
+        // MethodBase.get_IsPublic - virtual property getter
+        Register(
+            "System.Reflection.MethodBase", "get_IsPublic",
+            (nint)(delegate*<System.Reflection.MethodBase, bool>)&ReflectionHelpers.MethodBaseGetIsPublic,
+            0, ReturnKind.Int32, true, true);
+
+        // MethodBase.get_IsStatic - virtual property getter
+        Register(
+            "System.Reflection.MethodBase", "get_IsStatic",
+            (nint)(delegate*<System.Reflection.MethodBase, bool>)&ReflectionHelpers.MethodBaseGetIsStatic,
+            0, ReturnKind.Int32, true, true);
+
+        // MethodBase.get_IsVirtual - virtual property getter
+        Register(
+            "System.Reflection.MethodBase", "get_IsVirtual",
+            (nint)(delegate*<System.Reflection.MethodBase, bool>)&ReflectionHelpers.MethodBaseGetIsVirtual,
+            0, ReturnKind.Int32, true, true);
+
+        // MethodBase.get_IsAbstract - virtual property getter
+        Register(
+            "System.Reflection.MethodBase", "get_IsAbstract",
+            (nint)(delegate*<System.Reflection.MethodBase, bool>)&ReflectionHelpers.MethodBaseGetIsAbstract,
+            0, ReturnKind.Int32, true, true);
+
+        // MethodBase.GetMethodBody() - virtual method
+        Register(
+            "System.Reflection.MethodBase", "GetMethodBody",
+            (nint)(delegate*<System.Reflection.MethodBase, System.Reflection.MethodBody?>)&ReflectionHelpers.MethodBaseGetMethodBody,
+            0, ReturnKind.IntPtr, true, true);
+
         // ConstructorInfo.GetParameters() - virtual method
         Register(
             "System.Reflection.ConstructorInfo", "GetParameters",
@@ -2218,6 +2254,93 @@ public static class ReflectionHelpers
 
         // Fallback - return empty array
         return new System.Reflection.ParameterInfo[0];
+    }
+
+    /// <summary>
+    /// Get the Attributes of a MethodBase.
+    /// </summary>
+    public static System.Reflection.MethodAttributes MethodBaseGetAttributes(System.Reflection.MethodBase method)
+    {
+        if (method is null)
+            return System.Reflection.MethodAttributes.PrivateScope;
+
+        // Dispatch to the concrete implementation
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            return rmi.Attributes;
+        }
+        if (method is System.Reflection.RuntimeConstructorInfo rci)
+        {
+            return rci.Attributes;
+        }
+
+        // Fallback
+        return System.Reflection.MethodAttributes.Public;
+    }
+
+    /// <summary>
+    /// Get the IsPublic property of a MethodBase.
+    /// </summary>
+    public static bool MethodBaseGetIsPublic(System.Reflection.MethodBase method)
+    {
+        var attrs = MethodBaseGetAttributes(method);
+        return (attrs & System.Reflection.MethodAttributes.MemberAccessMask) == System.Reflection.MethodAttributes.Public;
+    }
+
+    /// <summary>
+    /// Get the IsStatic property of a MethodBase.
+    /// </summary>
+    public static bool MethodBaseGetIsStatic(System.Reflection.MethodBase method)
+    {
+        if (method is null)
+            return false;
+
+        // Dispatch to the concrete implementation - RuntimeMethodInfo has its own IsStatic
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            return rmi.IsStatic;
+        }
+
+        // Use Attributes for other types
+        var attrs = MethodBaseGetAttributes(method);
+        return (attrs & System.Reflection.MethodAttributes.Static) != 0;
+    }
+
+    /// <summary>
+    /// Get the IsVirtual property of a MethodBase.
+    /// </summary>
+    public static bool MethodBaseGetIsVirtual(System.Reflection.MethodBase method)
+    {
+        if (method is null)
+            return false;
+
+        // Dispatch to the concrete implementation - RuntimeMethodInfo has its own IsVirtual
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            return rmi.IsVirtual;
+        }
+
+        // Use Attributes for other types
+        var attrs = MethodBaseGetAttributes(method);
+        return (attrs & System.Reflection.MethodAttributes.Virtual) != 0;
+    }
+
+    /// <summary>
+    /// Get the IsAbstract property of a MethodBase.
+    /// </summary>
+    public static bool MethodBaseGetIsAbstract(System.Reflection.MethodBase method)
+    {
+        var attrs = MethodBaseGetAttributes(method);
+        return (attrs & System.Reflection.MethodAttributes.Abstract) != 0;
+    }
+
+    /// <summary>
+    /// Get the MethodBody of a MethodBase. Returns null for minimal implementation.
+    /// </summary>
+    public static System.Reflection.MethodBody? MethodBaseGetMethodBody(System.Reflection.MethodBase method)
+    {
+        // Our minimal implementation returns null
+        return null;
     }
 
     /// <summary>
