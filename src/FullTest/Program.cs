@@ -223,6 +223,7 @@ public static class TestRunner
 
     private static void RunThreadTests()
     {
+        // DDK Thread API tests
         RecordResult("ThreadTests.TestGetCurrentThreadId", ThreadTests.TestGetCurrentThreadId() == 1);
         RecordResult("ThreadTests.TestGetThreadCount", ThreadTests.TestGetThreadCount() == 1);
         RecordResult("ThreadTests.TestYield", ThreadTests.TestYield() == 1);
@@ -231,6 +232,14 @@ public static class TestRunner
         // require passing function pointers to kernel. This works for AOT-compiled code
         // but not for JIT-compiled code where method addresses aren't valid native pointers.
         // Thread creation will be tested via AOT-compiled drivers.
+
+        // System.Threading.Thread class tests
+        RecordResult("ThreadTests.TestThreadCurrentThread", ThreadTests.TestThreadCurrentThread() == 1);
+        RecordResult("ThreadTests.TestThreadSleepMethod", ThreadTests.TestThreadSleepMethod() == 1);
+        RecordResult("ThreadTests.TestThreadYieldMethod", ThreadTests.TestThreadYieldMethod() == 1);
+        RecordResult("ThreadTests.TestThreadSpinWait", ThreadTests.TestThreadSpinWait() == 1);
+        RecordResult("ThreadTests.TestThreadTimeout", ThreadTests.TestThreadTimeout() == 1);
+        RecordResult("ThreadTests.TestThreadStateEnum", ThreadTests.TestThreadStateEnum() == 1);
     }
 
     private static void RunCollectionTests()
@@ -8131,6 +8140,84 @@ public static class ThreadTests
     {
         // Sleep(0) should yield and return immediately
         ProtonOS.DDK.Kernel.Thread.Sleep(0);
+        return 1;
+    }
+
+    // =========================================================================
+    // System.Threading.Thread tests (the .NET-style Thread class)
+    // =========================================================================
+
+    /// <summary>
+    /// Test System.Threading.Thread.CurrentThread property.
+    /// </summary>
+    public static int TestThreadCurrentThread()
+    {
+        var thread = System.Threading.Thread.CurrentThread;
+        if (thread == null) return 0;
+        // ManagedThreadId should be positive
+        if (thread.ManagedThreadId < 1) return 0;
+        // Calling it again should return the same instance
+        var thread2 = System.Threading.Thread.CurrentThread;
+        if (thread2 != thread) return 0;
+        return 1;
+    }
+
+    /// <summary>
+    /// Test System.Threading.Thread.Sleep static method.
+    /// </summary>
+    public static int TestThreadSleepMethod()
+    {
+        // Sleep(0) should return immediately
+        System.Threading.Thread.Sleep(0);
+        // Sleep with TimeSpan should also work
+        System.Threading.Thread.Sleep(System.TimeSpan.Zero);
+        return 1;
+    }
+
+    /// <summary>
+    /// Test System.Threading.Thread.Yield static method.
+    /// </summary>
+    public static int TestThreadYieldMethod()
+    {
+        // Yield should return true (we always "yielded")
+        bool result = System.Threading.Thread.Yield();
+        return result ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test System.Threading.Thread.SpinWait static method.
+    /// </summary>
+    public static int TestThreadSpinWait()
+    {
+        // SpinWait should not crash
+        System.Threading.Thread.SpinWait(100);
+        return 1;
+    }
+
+    /// <summary>
+    /// Test System.Threading.Timeout constants.
+    /// Note: This just tests that the static field can be accessed without error.
+    /// </summary>
+    public static int TestThreadTimeout()
+    {
+        // Just verify the constant exists and has expected value
+        int infinite = System.Threading.Timeout.Infinite;
+        return (infinite == -1) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test System.Threading.ThreadState enum values.
+    /// Note: Verify enum values can be used and compared.
+    /// </summary>
+    public static int TestThreadStateEnum()
+    {
+        // Just verify we can reference the enum type
+        // and compare enum values directly without casting
+        var running = System.Threading.ThreadState.Running;
+        var unstarted = System.Threading.ThreadState.Unstarted;
+        // Running != Unstarted should be true
+        if (running == unstarted)
+            return 0;
         return 1;
     }
 }

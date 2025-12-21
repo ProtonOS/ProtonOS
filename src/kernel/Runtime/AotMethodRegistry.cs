@@ -259,6 +259,9 @@ public static unsafe class AotMethodRegistry
         // Register GC methods (for Dispose pattern support)
         RegisterGCMethods();
 
+        // Thread methods for thread management
+        RegisterThreadMethods();
+
         _initialized = true;
 
         int count;
@@ -1129,6 +1132,48 @@ public static unsafe class AotMethodRegistry
             "System.GC", "Collect",
             (nint)(delegate*<void>)&GCHelpers.Collect,
             0, ReturnKind.Void, false, false);
+    }
+
+    /// <summary>
+    /// Register System.Threading.Thread methods for thread management.
+    /// </summary>
+    private static void RegisterThreadMethods()
+    {
+        // Thread.Sleep(int) - static method, 1 parameter, returns void
+        Register(
+            "System.Threading.Thread", "Sleep",
+            (nint)(delegate*<int, void>)&ThreadHelpers.Sleep_Int,
+            1, ReturnKind.Void, false, false);
+
+        // Thread.Sleep(TimeSpan) - static method, 1 parameter (struct passed as 8-byte value), returns void
+        Register(
+            "System.Threading.Thread", "Sleep",
+            (nint)(delegate*<TimeSpan, void>)&ThreadHelpers.Sleep_TimeSpan,
+            1, ReturnKind.Void, false, false);
+
+        // Thread.Yield() - static method, 0 parameters, returns bool
+        Register(
+            "System.Threading.Thread", "Yield",
+            (nint)(delegate*<bool>)&ThreadHelpers.Yield,
+            0, ReturnKind.Int32, false, false);
+
+        // Thread.SpinWait(int) - static method, 1 parameter, returns void
+        Register(
+            "System.Threading.Thread", "SpinWait",
+            (nint)(delegate*<int, void>)&ThreadHelpers.SpinWait,
+            1, ReturnKind.Void, false, false);
+
+        // Thread.get_CurrentThread - static property getter, returns Thread reference
+        Register(
+            "System.Threading.Thread", "get_CurrentThread",
+            (nint)(delegate*<System.Threading.Thread?>)&ThreadHelpers.get_CurrentThread,
+            0, ReturnKind.IntPtr, false, false);
+
+        // Thread.get_ManagedThreadId - instance property getter, returns int
+        Register(
+            "System.Threading.Thread", "get_ManagedThreadId",
+            (nint)(delegate*<System.Threading.Thread, int>)&ThreadHelpers.get_ManagedThreadId,
+            0, ReturnKind.Int32, true, false);
     }
 
     /// <summary>
@@ -3107,5 +3152,100 @@ public static class GCHelpers
     public static void Collect()
     {
         // No-op - no garbage collector in bare-metal environment
+    }
+}
+
+/// <summary>
+/// Helper methods for System.Threading.Thread AOT registration.
+/// </summary>
+public static class ThreadHelpers
+{
+    // Thread-local storage for current Thread object
+    // We create one Thread object per kernel thread and cache it
+    private static System.Threading.Thread? s_cachedThread;
+    private static uint s_cachedThreadId;
+
+    /// <summary>
+    /// Sleep for the specified number of milliseconds.
+    /// </summary>
+    public static void Sleep_Int(int millisecondsTimeout)
+    {
+        if (millisecondsTimeout < -1)
+            throw new ArgumentOutOfRangeException(nameof(millisecondsTimeout));
+
+        if (millisecondsTimeout == -1)
+        {
+            // Infinite sleep - sleep in chunks
+            while (true)
+                ProtonOS.Threading.Scheduler.Sleep(uint.MaxValue);
+        }
+
+        ProtonOS.Threading.Scheduler.Sleep((uint)millisecondsTimeout);
+    }
+
+    /// <summary>
+    /// Sleep for the specified TimeSpan.
+    /// </summary>
+    public static void Sleep_TimeSpan(TimeSpan timeout)
+    {
+        long ms = (long)timeout.TotalMilliseconds;
+        if (ms < -1 || ms > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        Sleep_Int((int)ms);
+    }
+
+    /// <summary>
+    /// Yield execution to another thread.
+    /// </summary>
+    public static bool Yield()
+    {
+        ProtonOS.Threading.Scheduler.Yield();
+        return true;
+    }
+
+    /// <summary>
+    /// Spin wait for the specified number of iterations.
+    /// </summary>
+    public static void SpinWait(int iterations)
+    {
+        for (int i = 0; i < iterations; i++)
+        {
+            // Just a tight loop
+        }
+    }
+
+    /// <summary>
+    /// Get the current thread.
+    /// </summary>
+    public static System.Threading.Thread? get_CurrentThread()
+    {
+        uint currentId = ProtonOS.Threading.Scheduler.GetCurrentThreadId();
+
+        // Check if we already have a cached Thread for this kernel thread
+        if (s_cachedThread != null && s_cachedThreadId == currentId)
+            return s_cachedThread;
+
+        // Create a new Thread object for this kernel thread
+        // Note: We use a simple approach - create a Thread with just the ID
+        s_cachedThread = CreateThreadForCurrentKernelThread(currentId);
+        s_cachedThreadId = currentId;
+        return s_cachedThread;
+    }
+
+    /// <summary>
+    /// Get the ManagedThreadId of a Thread.
+    /// </summary>
+    public static int get_ManagedThreadId(System.Threading.Thread thread)
+    {
+        return thread.ManagedThreadId;
+    }
+
+    /// <summary>
+    /// Create a Thread object representing the current kernel thread.
+    /// </summary>
+    private static System.Threading.Thread CreateThreadForCurrentKernelThread(uint threadId)
+    {
+        // Use the internal factory method in Thread class
+        return System.Threading.Thread.CreateForKernelThread((int)threadId);
     }
 }

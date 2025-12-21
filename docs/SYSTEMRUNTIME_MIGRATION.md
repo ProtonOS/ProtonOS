@@ -72,7 +72,7 @@ Required for async/await support.
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Task` / `Task<T>` | 460 | **Migrated** | Core async support (4 tests passing - 576 total) |
+| `Task` / `Task<T>` | 460 | **Migrated** | Core async support (4 tests) |
 | `ValueTask` / `ValueTask<T>` | 219 | **Migrated** | Allocation-free async (3 tests) |
 | `TaskCompletionSource<T>` | 86 | **Migrated** | Manual task completion |
 | `TaskStatus` | 35 | **Migrated** | Enum |
@@ -172,7 +172,7 @@ korlib already has partial reflection support. These types may need merging or r
 
 | Type | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `Thread` | 197 | Not Started | Thread representation |
+| `Thread` | 197 | **Migrated** | Full Thread class: CurrentThread, Sleep, Yield, SpinWait, ThreadState enum, Timeout (582 tests) |
 | `Interlocked` | 195 | Migrated | korlib has full implementation |
 
 ---

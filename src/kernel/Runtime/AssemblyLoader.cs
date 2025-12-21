@@ -4714,11 +4714,18 @@ public static unsafe class AssemblyLoader
                 name[19] == 'L' && name[20] == 'i' && name[21] == 'b' && name[22] == 0)
                 return true;
 
-            // "System.Threading"
+            // "System.Threading" or "System.Threading.*"
             if (name[7] == 'T' && name[8] == 'h' && name[9] == 'r' && name[10] == 'e' &&
                 name[11] == 'a' && name[12] == 'd' && name[13] == 'i' && name[14] == 'n' &&
-                name[15] == 'g' && name[16] == 0)
-                return true;
+                name[15] == 'g')
+            {
+                // "System.Threading" (exact match)
+                if (name[16] == 0)
+                    return true;
+                // "System.Threading.Thread" or any other System.Threading.* assembly
+                if (name[16] == '.')
+                    return true;
+            }
 
             // "System.Collections"
             if (name[7] == 'C' && name[8] == 'o' && name[9] == 'l' && name[10] == 'l' &&
