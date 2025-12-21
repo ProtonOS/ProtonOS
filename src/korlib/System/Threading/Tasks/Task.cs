@@ -284,6 +284,110 @@ namespace System.Threading.Tasks
             }
             return task;
         }
+
+        /// <summary>Creates a continuation that executes when the target Task completes.</summary>
+        public Task ContinueWith(Action<Task> continuationAction)
+        {
+            if (continuationAction == null) throw new ArgumentNullException(nameof(continuationAction));
+
+            var tcs = new TaskCompletionSource<object?>();
+
+            Action continuation = () =>
+            {
+                try
+                {
+                    continuationAction(this);
+                    tcs.SetResult(null);
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            };
+
+            if (IsCompleted)
+            {
+                continuation();
+            }
+            else
+            {
+                lock (_lock)
+                {
+                    if (IsCompleted)
+                    {
+                        continuation();
+                    }
+                    else
+                    {
+                        _continuations ??= new List<Action>();
+                        _continuations.Add(continuation);
+                    }
+                }
+            }
+
+            return tcs.Task;
+        }
+
+        /// <summary>Creates a task that will complete when all of the supplied tasks have completed.</summary>
+        public static Task WhenAll(params Task[] tasks)
+        {
+            if (tasks == null) throw new ArgumentNullException(nameof(tasks));
+            if (tasks.Length == 0) return CompletedTask;
+
+            var tcs = new TaskCompletionSource<object?>();
+            int remaining = tasks.Length;
+            List<Exception>? exceptions = null;
+            object lockObj = new object();
+
+            for (int i = 0; i < tasks.Length; i++)
+            {
+                tasks[i].ContinueWith(t =>
+                {
+                    lock (lockObj)
+                    {
+                        if (t.IsFaulted && t._exception != null)
+                        {
+                            exceptions ??= new List<Exception>();
+                            exceptions.Add(t._exception);
+                        }
+
+                        remaining--;
+                        if (remaining == 0)
+                        {
+                            if (exceptions != null)
+                            {
+                                tcs.SetException(new AggregateException(exceptions));
+                            }
+                            else
+                            {
+                                tcs.SetResult(null);
+                            }
+                        }
+                    }
+                });
+            }
+
+            return tcs.Task;
+        }
+
+        /// <summary>Creates a task that will complete when any of the supplied tasks have completed.</summary>
+        public static Task<Task> WhenAny(params Task[] tasks)
+        {
+            if (tasks == null) throw new ArgumentNullException(nameof(tasks));
+            if (tasks.Length == 0) throw new ArgumentException("At least one task is required");
+
+            var tcs = new TaskCompletionSource<Task>();
+
+            for (int i = 0; i < tasks.Length; i++)
+            {
+                tasks[i].ContinueWith(t =>
+                {
+                    tcs.TrySetResult(t);
+                });
+            }
+
+            return tcs.Task;
+        }
     }
 
     /// <summary>

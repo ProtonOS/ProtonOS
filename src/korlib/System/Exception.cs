@@ -14,6 +14,21 @@ public class Exception
     public virtual string? Message => _message;
     public Exception? InnerException => _innerException;
 
+    /// <summary>Returns the root cause of this exception by traversing the InnerException chain.</summary>
+    public virtual Exception GetBaseException()
+    {
+        Exception? inner = InnerException;
+        Exception result = this;
+
+        while (inner != null)
+        {
+            result = inner;
+            inner = inner.InnerException;
+        }
+
+        return result;
+    }
+
     public Exception()
     {
         _message = null;

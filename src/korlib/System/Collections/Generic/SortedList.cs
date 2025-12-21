@@ -50,6 +50,29 @@ namespace System.Collections.Generic
             _comparer = comparer ?? Comparer<TKey>.Default;
         }
 
+        /// <summary>Initializes a new instance of the SortedList class that contains elements copied from the specified IDictionary.</summary>
+        public SortedList(IDictionary<TKey, TValue> dictionary) : this(dictionary, null)
+        {
+        }
+
+        /// <summary>Initializes a new instance of the SortedList class that contains elements copied from the specified IDictionary and uses the specified comparer.</summary>
+        public SortedList(IDictionary<TKey, TValue> dictionary, IComparer<TKey>? comparer)
+            : this(dictionary != null ? dictionary.Count : 0, comparer)
+        {
+            if (dictionary == null) throw new ArgumentNullException(nameof(dictionary));
+
+            // Copy the keys and values
+            int count = dictionary.Count;
+            if (count > 0)
+            {
+                // First, copy all keys and values
+                foreach (var kvp in dictionary)
+                {
+                    Add(kvp.Key, kvp.Value);
+                }
+            }
+        }
+
         /// <summary>Gets or sets the capacity of the SortedList.</summary>
         public int Capacity
         {

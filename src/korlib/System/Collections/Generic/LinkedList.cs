@@ -20,6 +20,19 @@ namespace System.Collections.Generic
         {
         }
 
+        /// <summary>
+        /// Initializes a new instance of the LinkedList class that contains elements copied from the specified IEnumerable.
+        /// </summary>
+        public LinkedList(IEnumerable<T> collection)
+        {
+            if (collection == null) throw new ArgumentNullException(nameof(collection));
+
+            foreach (T item in collection)
+            {
+                AddLast(item);
+            }
+        }
+
         /// <summary>Gets the number of nodes actually contained in the LinkedList.</summary>
         public int Count => _count;
 

@@ -133,5 +133,37 @@ namespace System
                 throw new AggregateException("One or more errors occurred.", unhandled);
             }
         }
+
+        /// <summary>Returns the root cause of this exception.</summary>
+        public override Exception GetBaseException()
+        {
+            Exception? back = this;
+            Exception? backGrandparent = back;
+
+            while (back.InnerException != null)
+            {
+                back = back.InnerException;
+                if (back.InnerException != null)
+                {
+                    backGrandparent = back;
+                }
+            }
+
+            // If we have an AggregateException with a single inner exception, drill down
+            if (back is AggregateException agg && agg._innerExceptions.Count == 1)
+            {
+                return agg._innerExceptions[0].GetBaseException();
+            }
+
+            return back;
+        }
+
+        /// <summary>Creates and returns a string representation of the current exception.</summary>
+        public override string ToString()
+        {
+            // Note: Avoid accessing _innerExceptions.Count here as ReadOnlyCollection<T>
+            // uses interface dispatch internally which requires runtime support.
+            return base.ToString() ?? "AggregateException";
+        }
     }
 }
