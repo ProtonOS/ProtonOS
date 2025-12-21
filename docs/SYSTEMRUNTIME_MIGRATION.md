@@ -4,9 +4,9 @@ This document tracks the migration of types from the deprecated `src/SystemRunti
 
 ## Overview
 
-As of December 2024, System.Runtime.dll has been fully deprecated. All type resolution now flows through korlib via virtual assembly mapping. The System.Runtime source code is retained for reference as types are incrementally migrated to korlib.
+As of December 2024, **migration is complete**. All types from System.Runtime have been migrated to korlib. The System.Runtime source code (`src/SystemRuntime/`) is retained for historical reference only.
 
-**Total: ~11,600 lines of code across 51 files**
+**599 tests passing** - Full coverage of collections, async/await, reflection, threading, and utilities.
 
 ## Migration Status Legend
 
@@ -219,17 +219,17 @@ The kernel size is not a significant concern given the available capacity. UEFI 
 4. ~~All collection interfaces~~ - IEnumerable, IEnumerator, ICollection, IList, etc.
 5. ~~`BitConverter`, `HashCode`~~ - Utility types for binary conversion and hash combining
 
-### Medium Priority (Complete)
-6. ~~`Queue<T>`, `Stack<T>`~~ - Basic operations work (Enqueue/Dequeue, Push/Pop, Contains, Clear), foreach disabled
+### Medium Priority ✅ COMPLETE
+6. ~~`Queue<T>`, `Stack<T>`~~ - Full operations with foreach support
 7. ~~`TimeSpan`~~ - Fully working
 8. ~~`Guid`~~ - Fully working (parsing, equality, comparison)
-9. ~~`HashSet<T>`~~ - Basic operations work (Add, Remove, Contains, Clear), foreach disabled
-10. `DateTime` - Time handling (not started)
+9. ~~`HashSet<T>`~~ - Full operations with foreach support
+10. ~~`DateTime`~~ - Fully working
 
-### Lower Priority (migrate when needed)
-11. Async/Tasks infrastructure - Only when async/await support is required
-12. `LinkedList<T>`, `SortedList<TKey,TValue>` - Less commonly used
-13. Reflection types - Only for advanced scenarios
+### Lower Priority ✅ COMPLETE
+11. ~~Async/Tasks infrastructure~~ - Full async/await support
+12. ~~`LinkedList<T>`, `SortedList<TKey,TValue>`~~ - Fully migrated
+13. ~~Reflection types~~ - Complete coverage including Assembly, MethodInfo, CustomAttributeData
 
 ---
 
@@ -356,3 +356,6 @@ Note: Some repeated type resolution log messages may appear during JIT compilati
 - **2024-12**: Added RuntimeHandles operators, created Activator.cs with ObjectHandle
 - **2024-12**: Added supporting types: Version, Stream, TypeFilter, PortableExecutableKinds, ImageFileMachine, ResourceLocation, AssemblyNameFlags, ManifestResourceInfo
 - **2024-12**: korlib now has complete coverage of System.Runtime reflection types
+- **2024-12**: Fixed newobj shadow space for 4-arg constructors (5th arg overwriting eval stack)
+- **2024-12**: Added Version, AssemblyName, RuntimeHandle, CustomAttribute, Activator tests (599 tests)
+- **2024-12**: **MIGRATION COMPLETE** - All System.Runtime types migrated to korlib
