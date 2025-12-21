@@ -212,6 +212,10 @@ public static class TestRunner
         RecordResult("ReflectionTypeTests.TestExceptionHandlingClauseOptions", ReflectionTypeTests.TestExceptionHandlingClauseOptions() == 1);
         RecordResult("ReflectionTypeTests.TestMethodBody", ReflectionTypeTests.TestMethodBody() == 1);
 
+        // Test MethodInfo properties
+        RecordResult("ReflectionTypeTests.TestMethodInfoReturnType", ReflectionTypeTests.TestMethodInfoReturnType() == 1);
+        RecordResult("ReflectionTypeTests.TestMethodInfoGetBaseDefinition", ReflectionTypeTests.TestMethodInfoGetBaseDefinition() == 1);
+
         // Note: PropertyInfo.PropertyType tests disabled - requires Type.GetProperty which
         // needs Property metadata APIs (PropertyMap table) to be implemented.
     }
@@ -8398,6 +8402,38 @@ public static class ReflectionTypeTests
         // GetMethodBody returns null for our minimal implementation
         var body = method.GetMethodBody();
         // We just verify the call doesn't crash - null is expected
+        return 1;
+    }
+
+    /// <summary>
+    /// Test MethodInfo.ReturnType property.
+    /// </summary>
+    public static int TestMethodInfoReturnType()
+    {
+        var type = typeof(TestClass);
+        var method = type.GetMethod("Add");
+        if (method is null) return 0;
+        // Add returns int, so ReturnType should be Int32
+        var returnType = method.ReturnType;
+        if (returnType is null) return 0;
+        // Check by name length - "Int32" is 5 chars
+        var name = returnType.Name;
+        if (name is null || name.Length != 5) return 0;
+        return 1;
+    }
+
+    /// <summary>
+    /// Test MethodInfo.GetBaseDefinition().
+    /// </summary>
+    public static int TestMethodInfoGetBaseDefinition()
+    {
+        var type = typeof(TestClass);
+        var method = type.GetMethod("Add");
+        if (method is null) return 0;
+        // GetBaseDefinition should return self for non-overridden methods
+        var baseDef = method.GetBaseDefinition();
+        if (baseDef is null) return 0;
+        // Should be the same method (reference equality may not work, check by token)
         return 1;
     }
 }

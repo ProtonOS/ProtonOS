@@ -251,9 +251,54 @@ namespace System.Reflection
     public abstract class MethodInfo : MethodBase
     {
         public override MemberTypes MemberType => MemberTypes.Method;
-        public virtual Type ReturnType => null!;
-        public abstract MethodInfo GetBaseDefinition();
+
+        /// <summary>Gets the return parameter of the method.</summary>
+        public virtual ParameterInfo? ReturnParameter => null;
+
+        /// <summary>Gets the return type of this method.</summary>
+        public virtual Type ReturnType => typeof(void);
+
+        /// <summary>Gets the custom attributes for the return type.</summary>
         public abstract ICustomAttributeProvider ReturnTypeCustomAttributes { get; }
+
+        /// <summary>Returns the MethodInfo object for the method on the direct or indirect base class in which the method was first declared.</summary>
+        public abstract MethodInfo GetBaseDefinition();
+
+        /// <summary>Returns a MethodInfo object that represents a generic method definition from which the current method can be constructed.</summary>
+        public virtual MethodInfo GetGenericMethodDefinition()
+        {
+            throw new InvalidOperationException("This method is not generic.");
+        }
+
+        /// <summary>Substitutes the elements of an array of types for the type parameters of the current generic method definition.</summary>
+        public virtual MethodInfo MakeGenericMethod(params Type[] typeArguments)
+        {
+            throw new InvalidOperationException("This method is not a generic method definition.");
+        }
+
+        /// <summary>Creates a delegate of the specified type from this method.</summary>
+        public virtual Delegate CreateDelegate(Type delegateType)
+        {
+            throw new NotSupportedException();
+        }
+
+        /// <summary>Creates a delegate of the specified type with the specified target from this method.</summary>
+        public virtual Delegate CreateDelegate(Type delegateType, object? target)
+        {
+            throw new NotSupportedException();
+        }
+
+        /// <summary>Creates a delegate of type T from this method.</summary>
+        public T CreateDelegate<T>() where T : Delegate
+        {
+            return (T)CreateDelegate(typeof(T));
+        }
+
+        /// <summary>Creates a delegate of type T with the specified target from this method.</summary>
+        public T CreateDelegate<T>(object? target) where T : Delegate
+        {
+            return (T)CreateDelegate(typeof(T), target);
+        }
 
         public static bool operator ==(MethodInfo? left, MethodInfo? right)
         {
@@ -278,11 +323,21 @@ namespace System.Reflection
     /// </summary>
     public abstract class ConstructorInfo : MethodBase
     {
+        /// <summary>Represents the name of the class constructor method as it is stored in metadata.</summary>
         public const string ConstructorName = ".ctor";
+
+        /// <summary>Represents the name of the type constructor method as it is stored in metadata.</summary>
         public const string TypeConstructorName = ".cctor";
 
         public override MemberTypes MemberType => MemberTypes.Constructor;
 
+        /// <summary>Invokes the constructor with the specified parameters.</summary>
+        public object Invoke(object?[]? parameters)
+        {
+            return Invoke(BindingFlags.Default, null, parameters, null)!;
+        }
+
+        /// <summary>When implemented in a derived class, invokes the constructor with the specified arguments.</summary>
         public abstract object Invoke(BindingFlags invokeAttr, Binder? binder,
             object?[]? parameters, CultureInfo? culture);
 

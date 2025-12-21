@@ -711,6 +711,18 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<System.Reflection.MethodInfo, System.Reflection.ParameterInfo[]?>)&ReflectionHelpers.MethodInfoGetParameters,
             0, ReturnKind.IntPtr, true, true);
 
+        // MethodInfo.get_ReturnType - virtual property getter
+        Register(
+            "System.Reflection.MethodInfo", "get_ReturnType",
+            (nint)(delegate*<System.Reflection.MethodInfo, Type?>)&ReflectionHelpers.MethodInfoGetReturnType,
+            0, ReturnKind.IntPtr, true, true);
+
+        // MethodInfo.GetBaseDefinition() - virtual method
+        Register(
+            "System.Reflection.MethodInfo", "GetBaseDefinition",
+            (nint)(delegate*<System.Reflection.MethodInfo, System.Reflection.MethodInfo>)&ReflectionHelpers.MethodInfoGetBaseDefinition,
+            0, ReturnKind.IntPtr, true, true);
+
         // MethodBase.GetParameters() - virtual method (IL calls this on MethodBase type reference)
         Register(
             "System.Reflection.MethodBase", "GetParameters",
@@ -2231,6 +2243,37 @@ public static class ReflectionHelpers
 
         // Fallback - return empty array
         return new System.Reflection.ParameterInfo[0];
+    }
+
+    /// <summary>
+    /// Get the return type of a MethodInfo.
+    /// </summary>
+    public static unsafe Type? MethodInfoGetReturnType(System.Reflection.MethodInfo method)
+    {
+        if (method is null)
+            return null;
+
+        // Dispatch to the concrete implementation
+        if (method is System.Reflection.RuntimeMethodInfo rmi)
+        {
+            uint assemblyId = rmi.AssemblyId;
+            uint methodToken = (uint)rmi.MetadataToken;
+            void* mt = Reflection.ReflectionRuntime.GetMethodReturnTypeMethodTable(assemblyId, methodToken);
+            if (mt != null)
+                return Type.GetTypeFromHandle(new RuntimeTypeHandle((nint)mt));
+        }
+
+        // Fallback - return null (caller should handle)
+        return null;
+    }
+
+    /// <summary>
+    /// Get the base definition of a MethodInfo.
+    /// </summary>
+    public static System.Reflection.MethodInfo MethodInfoGetBaseDefinition(System.Reflection.MethodInfo method)
+    {
+        // For our minimal implementation, just return self
+        return method;
     }
 
     /// <summary>

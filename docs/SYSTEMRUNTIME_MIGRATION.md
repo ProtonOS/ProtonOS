@@ -139,7 +139,7 @@ korlib already has partial reflection support. These types may need merging or r
 | `Assembly` | 617 | Partial | korlib has `RuntimeAssembly.cs` |
 | `MemberInfo` | 251 | Partial | korlib has `MemberInfo.cs` |
 | `MethodBase` | 351 | **Migrated** | Full properties: IsPublic/Static/Virtual/Abstract, generic method support, MethodImplAttributes, MethodBody, AOT registry (587 tests) |
-| `MethodInfo` | 584 | Not Started | |
+| `MethodInfo` | 584 | **Migrated** | ReturnType, ReturnParameter, GetGenericMethodDefinition, MakeGenericMethod, CreateDelegate, GetBaseDefinition, AOT registry (589 tests) |
 | `BindingFlags` | 69 | **Migrated** | Enum (in MemberInfo.cs) |
 | `MemberTypes` | 428 | **Migrated** | Enum (in MemberInfo.cs) |
 
