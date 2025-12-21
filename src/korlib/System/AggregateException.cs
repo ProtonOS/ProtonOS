@@ -161,8 +161,9 @@ namespace System
         /// <summary>Creates and returns a string representation of the current exception.</summary>
         public override string ToString()
         {
-            // Note: Avoid accessing _innerExceptions.Count here as ReadOnlyCollection<T>
-            // uses interface dispatch internally which requires runtime support.
+            // Note: Full ToString with inner exceptions requires interface dispatch in ReadOnlyCollection
+            // which needs RhpInitialDynamicInterfaceDispatch support. For now, use base implementation.
+            // TODO: Implement proper AOT interface dispatch support
             return base.ToString() ?? "AggregateException";
         }
     }

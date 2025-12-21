@@ -13,12 +13,8 @@
 // [18]  _usNumInterfaces (2 bytes)
 // [20]  _uHashCode (4 bytes)
 // [24]  VTable[0..NumVtableSlots-1] (8 bytes each)
-// [24 + NumVtableSlots*8]  InterfaceMap[0..NumInterfaces-1] (16 bytes each)
-//
-// InterfaceMapEntry Layout:
-// [0]  InterfaceMT* (8 bytes) - pointer to interface's MethodTable
-// [8]  StartSlot (2 bytes) - first vtable slot for this interface's methods
-// [10] Padding (6 bytes)
+// [24 + NumVtableSlots*8]  InterfaceMap[0..NumInterfaces-1] (8 bytes each, just MethodTable*)
+// [24 + NumVtableSlots*8 + NumInterfaces*8]  Optional fields (TypeManager, WritableData, DispatchMap, etc.)
 
 using System.Runtime.InteropServices;
 
@@ -41,8 +37,8 @@ public static class MTFlags
     /// <summary>Type has a finalizer that should be called when collected.</summary>
     public const uint HasFinalizer = 0x00100000;
 
-    /// <summary>Type has optional fields (MethodTable is variable size).</summary>
-    public const uint HasOptionalFields = 0x00040000;
+    /// <summary>Type has a dispatch map for interface method resolution.</summary>
+    public const uint HasDispatchMap = 0x00040000;
 
     /// <summary>Type is an array.</summary>
     public const uint IsArray = 0x00080000;
@@ -70,8 +66,212 @@ public static class MTFlags
 }
 
 /// <summary>
-/// Entry in the interface map stored after the vtable in MethodTable.
-/// Maps an interface type to the starting vtable slot for its methods.
+/// NativeAOT dispatch cell type (from rhbinder.h).
+/// </summary>
+public enum DispatchCellType : ushort
+{
+    InterfaceAndSlot = 0x0,
+    MetadataToken = 0x1,
+    VTableOffset = 0x2,
+}
+
+/// <summary>
+/// NativeAOT InterfaceDispatchCacheHeader structure (from rhbinder.h).
+/// Contains cached interface type and slot information.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct InterfaceDispatchCacheHeader
+{
+    public MethodTable* m_pInterfaceType;
+    public uint m_slotIndexOrMetadataTokenEncoded;
+
+    // Encoding flags for m_slotIndexOrMetadataTokenEncoded
+    public const uint CH_TypeAndSlotIndex = 0x0;
+    public const uint CH_MetadataToken = 0x1;
+    public const uint CH_Mask = 0x3;
+    public const uint CH_Shift = 0x2;
+
+    public DispatchCellInfo GetDispatchCellInfo()
+    {
+        DispatchCellInfo cellInfo = default;
+        uint encoded = m_slotIndexOrMetadataTokenEncoded;
+
+        if ((encoded & CH_Mask) == CH_TypeAndSlotIndex)
+        {
+            cellInfo.CellType = DispatchCellType.InterfaceAndSlot;
+            cellInfo.InterfaceType = m_pInterfaceType;
+            cellInfo.InterfaceSlot = (ushort)(encoded >> (int)CH_Shift);
+        }
+        else if ((encoded & CH_Mask) == CH_MetadataToken)
+        {
+            cellInfo.CellType = DispatchCellType.MetadataToken;
+            cellInfo.MetadataToken = encoded >> (int)CH_Shift;
+        }
+        cellInfo.HasCache = 1;
+        return cellInfo;
+    }
+}
+
+/// <summary>
+/// Information extracted from an InterfaceDispatchCell.
+/// </summary>
+public unsafe struct DispatchCellInfo
+{
+    public DispatchCellType CellType;
+    public MethodTable* InterfaceType;
+    public ushort InterfaceSlot;
+    public byte HasCache;
+    public uint MetadataToken;
+    public uint VTableOffset;
+}
+
+/// <summary>
+/// NativeAOT InterfaceDispatchCell structure (from rhbinder.h).
+/// One of these is allocated per interface call site.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct InterfaceDispatchCell
+{
+    /// <summary>Call this code to execute the interface dispatch.</summary>
+    public nuint m_pStub;
+
+    /// <summary>
+    /// Context used by the stub above. Has complex encoding:
+    /// - If low 2 bits are set: initial dispatch, encodes interface/slot
+    /// - If low 2 bits are 0 and value >= 0x1000: cache pointer
+    /// - If low 2 bits are 0 and value < 0x1000: vtable offset
+    /// </summary>
+    public nuint m_pCache;
+
+    // Cache pointer encoding flags
+    public const nuint IDC_CachePointerIsInterfaceRelativePointer = 0x3;
+    public const nuint IDC_CachePointerIsIndirectedInterfaceRelativePointer = 0x2;
+    public const nuint IDC_CachePointerIsInterfacePointerOrMetadataToken = 0x1;
+    public const nuint IDC_CachePointerPointsAtCache = 0x0;
+    public const nuint IDC_CachePointerMask = 0x3;
+    public const nuint IDC_MaxVTableOffsetPlusOne = 0x1000;
+
+    /// <summary>
+    /// Parse this dispatch cell to extract interface type and slot information.
+    /// </summary>
+    public DispatchCellInfo GetDispatchCellInfo()
+    {
+        nuint cachePointerValue = m_pCache;
+        DispatchCellInfo cellInfo = default;
+
+        // Check for VTable offset (value < 0x1000 and low bits are 0)
+        if (cachePointerValue < IDC_MaxVTableOffsetPlusOne &&
+            (cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerPointsAtCache)
+        {
+            cellInfo.VTableOffset = (uint)cachePointerValue;
+            cellInfo.CellType = DispatchCellType.VTableOffset;
+            cellInfo.HasCache = 1;
+            return cellInfo;
+        }
+
+        // Check for cache pointer (low bits are 0, value >= 0x1000)
+        if ((cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerPointsAtCache)
+        {
+            // It's a cache pointer - read the InterfaceDispatchCacheHeader
+            InterfaceDispatchCacheHeader* cacheHeader = (InterfaceDispatchCacheHeader*)cachePointerValue;
+            return cacheHeader->GetDispatchCellInfo();
+        }
+
+        // Otherwise, walk to the terminator cell to get slot and flags
+        fixed (InterfaceDispatchCell* self = &this)
+        {
+            InterfaceDispatchCell* currentCell = self;
+            while (currentCell->m_pStub != 0)
+            {
+                currentCell++;
+            }
+            nuint cachePointerValueFlags = currentCell->m_pCache;
+
+            // Cell type is in bits 16-31, slot is in bits 0-15
+            cellInfo.CellType = (DispatchCellType)(cachePointerValueFlags >> 16);
+            cellInfo.InterfaceSlot = (ushort)cachePointerValueFlags;
+        }
+
+        if (cellInfo.CellType == DispatchCellType.InterfaceAndSlot)
+        {
+            // Extract interface type based on encoding
+            if ((cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerIsInterfacePointerOrMetadataToken)
+            {
+                // Direct interface pointer with low bit set
+                cellInfo.InterfaceType = (MethodTable*)(cachePointerValue & ~IDC_CachePointerMask);
+            }
+            else if ((cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerIsInterfaceRelativePointer ||
+                     (cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerIsIndirectedInterfaceRelativePointer)
+            {
+                // Relative pointer to interface
+                fixed (nuint* pCache = &m_pCache)
+                {
+                    nuint interfacePointerValue = (nuint)pCache + (nuint)(int)cachePointerValue;
+                    interfacePointerValue &= ~IDC_CachePointerMask;
+                    if ((cachePointerValue & IDC_CachePointerMask) == IDC_CachePointerIsInterfaceRelativePointer)
+                    {
+                        cellInfo.InterfaceType = (MethodTable*)interfacePointerValue;
+                    }
+                    else
+                    {
+                        cellInfo.InterfaceType = *(MethodTable**)interfacePointerValue;
+                    }
+                }
+            }
+        }
+        else if (cellInfo.CellType == DispatchCellType.MetadataToken)
+        {
+            cellInfo.MetadataToken = (uint)(cachePointerValue >> 2);
+        }
+
+        return cellInfo;
+    }
+}
+
+/// <summary>
+/// Entry in a DispatchMap mapping interface method to implementation.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct DispatchMapEntry
+{
+    /// <summary>Index into the InterfaceMap array.</summary>
+    public ushort _usInterfaceIndex;
+
+    /// <summary>Slot number within the interface.</summary>
+    public ushort _usInterfaceMethodSlot;
+
+    /// <summary>Implementation vtable slot (or sealed virtual slot offset).</summary>
+    public ushort _usImplMethodSlot;
+}
+
+/// <summary>
+/// DispatchMap structure for mapping interface methods to implementations.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct DispatchMap
+{
+    private ushort _standardEntryCount;
+    private ushort _defaultEntryCount;
+    private ushort _standardStaticEntryCount;
+    private ushort _defaultStaticEntryCount;
+    private DispatchMapEntry _firstEntry;
+
+    public uint NumStandardEntries => _standardEntryCount;
+    public uint NumDefaultEntries => _defaultEntryCount;
+
+    public DispatchMapEntry* GetEntry(int index)
+    {
+        fixed (DispatchMapEntry* pFirst = &_firstEntry)
+        {
+            return pFirst + index;
+        }
+    }
+}
+
+/// <summary>
+/// Interface map entry for kernel-generated types (JIT/dynamic types).
+/// Note: AOT-compiled types from bflat use a different layout (just MethodTable**)
+/// with DispatchMap for method slot resolution.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct InterfaceMapEntry
@@ -79,7 +279,7 @@ public unsafe struct InterfaceMapEntry
     /// <summary>Pointer to the interface's MethodTable.</summary>
     public MethodTable* InterfaceMT;
 
-    /// <summary>Starting vtable slot index for this interface's methods.</summary>
+    /// <summary>Starting vtable slot index for this interface's methods (kernel types only).</summary>
     public ushort StartSlot;
 
     /// <summary>Padding to align to 16 bytes.</summary>
@@ -156,6 +356,9 @@ public unsafe struct MethodTable
 
     /// <summary>Whether this type has a component size (array or string).</summary>
     public bool HasComponentSize => (CombinedFlags & MTFlags.HasComponentSize) != 0;
+
+    /// <summary>Whether this type has a dispatch map for interface resolution.</summary>
+    public bool HasDispatchMap => (CombinedFlags & MTFlags.HasDispatchMap) != 0;
 
     /// <summary>Get the component size for arrays/strings.</summary>
     public ushort ComponentSize => _usComponentSize;
@@ -268,7 +471,8 @@ public unsafe struct MethodTable
     public bool HasVariance => (CombinedFlags & MTFlags.HasVariance) != 0;
 
     /// <summary>
-    /// Get a pointer to the interface map (immediately follows vtable).
+    /// Get a pointer to the interface map as InterfaceMapEntry* (for kernel-generated types).
+    /// Kernel types use 16-byte InterfaceMapEntry with StartSlot field.
     /// </summary>
     public InterfaceMapEntry* GetInterfaceMapPtr()
     {
@@ -276,6 +480,19 @@ public unsafe struct MethodTable
         {
             // Interface map is after the vtable
             return (InterfaceMapEntry*)((byte*)self + HeaderSize + _usNumVtableSlots * sizeof(nint));
+        }
+    }
+
+    /// <summary>
+    /// Get a pointer to the interface map as MethodTable** (for AOT-compiled types).
+    /// AOT types from NativeAOT/bflat use simple MethodTable* array.
+    /// </summary>
+    public MethodTable** GetAotInterfaceMapPtr()
+    {
+        fixed (MethodTable* self = &this)
+        {
+            // Interface map is after the vtable
+            return (MethodTable**)((byte*)self + HeaderSize + _usNumVtableSlots * sizeof(nint));
         }
     }
 
@@ -288,45 +505,141 @@ public unsafe struct MethodTable
     }
 
     /// <summary>
-    /// Find an interface in the interface map.
+    /// Get the byte offset from the start of the MethodTable to optional fields.
+    /// Optional fields come after the interface map.
+    /// AOT types use 8-byte interface entries, kernel types use 16-byte InterfaceMapEntry.
     /// </summary>
-    /// <param name="interfaceMT">The interface MethodTable to find.</param>
-    /// <returns>The InterfaceMapEntry if found, null otherwise.</returns>
-    public InterfaceMapEntry* FindInterface(MethodTable* interfaceMT)
+    public int GetOptionalFieldsOffset()
     {
-        if (_usNumInterfaces == 0)
+        // AOT types have HasDispatchMap, kernel types don't
+        int interfaceEntrySize = HasDispatchMap ? sizeof(nint) : InterfaceMapEntry.Size;
+        return GetInterfaceMapOffset() + _usNumInterfaces * interfaceEntrySize;
+    }
+
+    /// <summary>
+    /// Get the dispatch map pointer (if HasDispatchMap is true).
+    /// The dispatch map is stored after TypeManager indirection and WritableData pointers.
+    /// </summary>
+    public DispatchMap* GetDispatchMap()
+    {
+        if (!HasDispatchMap)
             return null;
 
-        InterfaceMapEntry* map = GetInterfaceMapPtr();
-        for (int i = 0; i < _usNumInterfaces; i++)
+        fixed (MethodTable* self = &this)
         {
-            if (map[i].InterfaceMT == interfaceMT)
-                return &map[i];
+            // Optional fields offset + TypeManagerIndirection (8) + WritableData (8) = DispatchMap
+            byte* pOptional = (byte*)self + GetOptionalFieldsOffset();
+            // Skip TypeManagerIndirection pointer
+            pOptional += sizeof(nint);
+            // Skip WritableData pointer
+            pOptional += sizeof(nint);
+            // Now we're at the dispatch map relative pointer (for static types)
+            // Read the relative pointer to get the dispatch map
+            int relativeOffset = *(int*)pOptional;
+            return (DispatchMap*)(pOptional + relativeOffset);
         }
-        return null;
+    }
+
+    /// <summary>
+    /// Find an interface in the interface map by index.
+    /// Handles both AOT types (MethodTable**) and kernel types (InterfaceMapEntry*).
+    /// </summary>
+    /// <param name="index">Index into the interface map.</param>
+    /// <returns>The interface MethodTable, or null if out of bounds.</returns>
+    public MethodTable* GetInterface(int index)
+    {
+        if (index < 0 || index >= _usNumInterfaces)
+            return null;
+
+        if (HasDispatchMap)
+        {
+            // AOT type - simple MethodTable* array
+            MethodTable** map = GetAotInterfaceMapPtr();
+            return map[index];
+        }
+        else
+        {
+            // Kernel type - InterfaceMapEntry array
+            InterfaceMapEntry* map = GetInterfaceMapPtr();
+            return map[index].InterfaceMT;
+        }
+    }
+
+    /// <summary>
+    /// Find an interface in the interface map and return its index.
+    /// Handles both AOT types and kernel types.
+    /// </summary>
+    /// <param name="interfaceMT">The interface MethodTable to find.</param>
+    /// <returns>The index in the interface map, or -1 if not found.</returns>
+    public int FindInterfaceIndex(MethodTable* interfaceMT)
+    {
+        if (_usNumInterfaces == 0)
+            return -1;
+
+        if (HasDispatchMap)
+        {
+            // AOT type - simple MethodTable* array
+            MethodTable** map = GetAotInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                if (map[i] == interfaceMT)
+                    return i;
+            }
+        }
+        else
+        {
+            // Kernel type - InterfaceMapEntry array
+            InterfaceMapEntry* map = GetInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                if (map[i].InterfaceMT == interfaceMT)
+                    return i;
+            }
+        }
+        return -1;
     }
 
     /// <summary>
     /// Find an interface that is variant-compatible with the target interface.
     /// This handles covariance/contravariance for generic interfaces.
+    /// Returns the index, or -1 if not found.
     /// </summary>
-    public InterfaceMapEntry* FindVariantCompatibleInterface(MethodTable* targetInterfaceMT)
+    public int FindVariantCompatibleInterfaceIndex(MethodTable* targetInterfaceMT)
     {
         if (_usNumInterfaces == 0 || targetInterfaceMT == null)
-            return null;
+            return -1;
 
-        InterfaceMapEntry* map = GetInterfaceMapPtr();
-        for (int i = 0; i < _usNumInterfaces; i++)
+        if (HasDispatchMap)
         {
-            MethodTable* implInterface = map[i].InterfaceMT;
-            if (implInterface == targetInterfaceMT)
-                return &map[i];  // Exact match
+            // AOT type - simple MethodTable* array
+            MethodTable** map = GetAotInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                MethodTable* implInterface = map[i];
+                if (implInterface == targetInterfaceMT)
+                    return i;  // Exact match
 
-            // Check variance compatibility
-            if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
-                return &map[i];  // Variant-compatible
+                // Check variance compatibility
+                if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
+                    return i;  // Variant-compatible
+            }
         }
-        return null;
+        else
+        {
+            // Kernel type - InterfaceMapEntry array
+            InterfaceMapEntry* map = GetInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                MethodTable* implInterface = map[i].InterfaceMT;
+                if (implInterface == targetInterfaceMT)
+                    return i;  // Exact match
+
+                // Check variance compatibility
+                if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
+                    return i;  // Variant-compatible
+            }
+        }
+        return -1;
     }
 
     /// <summary>
@@ -334,23 +647,49 @@ public unsafe struct MethodTable
     /// </summary>
     public bool ImplementsInterface(MethodTable* interfaceMT)
     {
-        return FindInterface(interfaceMT) != null;
+        return FindInterfaceIndex(interfaceMT) >= 0;
     }
 
     /// <summary>
     /// Get the vtable slot for an interface method.
-    /// Handles variance - if exact interface not found, checks for variant-compatible interfaces.
+    /// For AOT types: uses dispatch map.
+    /// For kernel types: uses InterfaceMapEntry.StartSlot + methodSlot.
     /// </summary>
     /// <param name="interfaceMT">The interface MethodTable.</param>
-    /// <param name="methodIndex">The method index within the interface (0-based).</param>
-    /// <returns>The vtable slot index, or -1 if interface not found.</returns>
-    public int GetInterfaceMethodSlot(MethodTable* interfaceMT, int methodIndex)
+    /// <param name="methodSlot">The method slot within the interface (0-based).</param>
+    /// <returns>The implementation vtable slot index, or -1 if not found.</returns>
+    public int GetInterfaceMethodSlot(MethodTable* interfaceMT, int methodSlot)
     {
-        // Try exact match first, then fall back to variant-compatible match
-        InterfaceMapEntry* entry = FindVariantCompatibleInterface(interfaceMT);
-        if (entry == null)
+        // Find the interface index in the interface map
+        int interfaceIndex = FindVariantCompatibleInterfaceIndex(interfaceMT);
+        if (interfaceIndex < 0)
             return -1;
-        return entry->StartSlot + methodIndex;
+
+        // AOT types use dispatch map
+        if (HasDispatchMap)
+        {
+            DispatchMap* dispatchMap = GetDispatchMap();
+            if (dispatchMap != null)
+            {
+                // Search the dispatch map for matching entry
+                uint numEntries = dispatchMap->NumStandardEntries + dispatchMap->NumDefaultEntries;
+                for (uint i = 0; i < numEntries; i++)
+                {
+                    DispatchMapEntry* entry = dispatchMap->GetEntry((int)i);
+                    if (entry->_usInterfaceIndex == interfaceIndex &&
+                        entry->_usInterfaceMethodSlot == methodSlot)
+                    {
+                        return entry->_usImplMethodSlot;
+                    }
+                }
+            }
+            // Dispatch map lookup failed
+            return -1;
+        }
+
+        // Kernel types use InterfaceMapEntry with StartSlot
+        InterfaceMapEntry* map = GetInterfaceMapPtr();
+        return map[interfaceIndex].StartSlot + methodSlot;
     }
 
     /// <summary>
@@ -389,10 +728,9 @@ public unsafe struct MethodTable
                 // Check variance compatibility for generic interfaces
                 // Iterate all implemented interfaces and see if any are variant-compatible
                 int numInterfaces = _usNumInterfaces;
-                InterfaceMapEntry* map = GetInterfaceMapPtr();
                 for (int i = 0; i < numInterfaces; i++)
                 {
-                    MethodTable* implInterface = map[i].InterfaceMT;
+                    MethodTable* implInterface = GetInterface(i);
                     if (implInterface != null && implInterface->IsVariantCompatibleWith(targetType))
                         return true;
                 }
@@ -402,10 +740,9 @@ public unsafe struct MethodTable
                 while (parent != null)
                 {
                     int parentNumInterfaces = parent->_usNumInterfaces;
-                    InterfaceMapEntry* parentMap = parent->GetInterfaceMapPtr();
                     for (int i = 0; i < parentNumInterfaces; i++)
                     {
-                        MethodTable* implInterface = parentMap[i].InterfaceMT;
+                        MethodTable* implInterface = parent->GetInterface(i);
                         if (implInterface != null && implInterface->IsVariantCompatibleWith(targetType))
                             return true;
                     }
@@ -496,10 +833,12 @@ public unsafe struct MethodTable
 
     /// <summary>
     /// Calculate the total size of a MethodTable with the given vtable and interface counts.
+    /// Note: This only includes the fixed portion. Optional fields (dispatch map, etc.) are extra.
     /// </summary>
     public static int CalculateTotalSize(int numVtableSlots, int numInterfaces)
     {
-        return HeaderSize + (numVtableSlots * sizeof(nint)) + (numInterfaces * InterfaceMapEntry.Size);
+        // Interface map is just MethodTable** (8 bytes per interface)
+        return HeaderSize + (numVtableSlots * sizeof(nint)) + (numInterfaces * sizeof(nint));
     }
 }
 
@@ -546,49 +885,56 @@ public static unsafe class TypeHelpers
             return null;
 
         MethodTable* objectMT = *(MethodTable**)obj;
+
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
 
         if (slot < 0)
-        {
-            // Debug: interface not found
-            DebugConsole.Write("[GetInterfaceMethod] obj=0x");
-            DebugConsole.WriteHex((ulong)obj);
-            DebugConsole.Write(" objMT=0x");
-            DebugConsole.WriteHex((ulong)objectMT);
-            DebugConsole.Write(" ifaceMT=0x");
-            DebugConsole.WriteHex((ulong)interfaceMT);
-            DebugConsole.Write(" idx=");
-            DebugConsole.WriteDecimal((uint)methodIndex);
-            DebugConsole.Write(" numIfaces=");
-            DebugConsole.WriteDecimal(objectMT->_usNumInterfaces);
-            DebugConsole.WriteLine(" NOT FOUND");
-
-            // Show what interfaces are actually in the map
-            InterfaceMapEntry* map = objectMT->GetInterfaceMapPtr();
-            for (int i = 0; i < objectMT->_usNumInterfaces; i++)
-            {
-                DebugConsole.Write("  map[");
-                DebugConsole.WriteDecimal((uint)i);
-                DebugConsole.Write("] = 0x");
-                DebugConsole.WriteHex((ulong)map[i].InterfaceMT);
-                DebugConsole.Write(" slot=");
-                DebugConsole.WriteDecimal((uint)map[i].StartSlot);
-                DebugConsole.WriteLine();
-            }
-
             return null;
-        }
 
         // Ensure the vtable slot is compiled (may be lazy-compiled)
         // Use the return value which handles out-of-bounds vtable slots (e.g., for sealed types like String)
         nint methodCode = JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);
 
-        DebugConsole.Write("[GetInterfaceMethod] slot=");
-        DebugConsole.WriteDecimal((uint)slot);
-        DebugConsole.Write(" code=0x");
-        DebugConsole.WriteHex((ulong)methodCode);
-        DebugConsole.WriteLine();
-
         return (void*)methodCode;
     }
+
+    /// <summary>
+    /// Resolve interface method for AOT dynamic dispatch.
+    /// Called by RhpInitialDynamicInterfaceDispatch assembly stub.
+    /// This is the entry point that parses the dispatch cell.
+    /// </summary>
+    /// <param name="obj">The object to dispatch on (this pointer)</param>
+    /// <param name="pDispatchCell">Pointer to the InterfaceDispatchCell</param>
+    [UnmanagedCallersOnly(EntryPoint = "RhpResolveInterfaceMethod")]
+    public static void* RhpResolveInterfaceMethod(void* obj, InterfaceDispatchCell* pDispatchCell)
+    {
+        if (obj == null || pDispatchCell == null)
+            return null;
+
+        // Parse the dispatch cell to get interface type and slot
+        DispatchCellInfo cellInfo = pDispatchCell->GetDispatchCellInfo();
+
+        if (cellInfo.CellType == DispatchCellType.VTableOffset)
+        {
+            // Direct vtable offset - just read from the vtable
+            MethodTable* objectMT = *(MethodTable**)obj;
+            nint* vtable = (nint*)((byte*)objectMT + MethodTable.HeaderSize);
+            int slotIndex = (int)(cellInfo.VTableOffset / (uint)sizeof(nint));
+            return (void*)vtable[slotIndex];
+        }
+        else if (cellInfo.CellType == DispatchCellType.InterfaceAndSlot)
+        {
+            // Interface dispatch - use dispatch map lookup
+            MethodTable* interfaceMT = cellInfo.InterfaceType;
+            int methodSlot = cellInfo.InterfaceSlot;
+
+            if (interfaceMT == null)
+                return null;
+
+            return GetInterfaceMethod(obj, interfaceMT, methodSlot);
+        }
+
+        return null;
+    }
+
 }

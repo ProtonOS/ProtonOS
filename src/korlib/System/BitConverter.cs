@@ -214,4 +214,36 @@ public static class BitConverter
     {
         return *(double*)&value;
     }
+
+    /// <summary>
+    /// Converts a half-precision floating-point value to a 16-bit signed integer.
+    /// </summary>
+    public static unsafe short HalfToInt16Bits(Half value)
+    {
+        return *(short*)&value;
+    }
+
+    /// <summary>
+    /// Converts a 16-bit signed integer to a half-precision floating-point value.
+    /// </summary>
+    public static unsafe Half Int16BitsToHalf(short value)
+    {
+        return *(Half*)&value;
+    }
+
+    /// <summary>
+    /// Converts a half-precision floating-point value to a 16-bit unsigned integer.
+    /// </summary>
+    public static unsafe ushort HalfToUInt16Bits(Half value)
+    {
+        return *(ushort*)&value;
+    }
+
+    /// <summary>
+    /// Converts a 16-bit unsigned integer to a half-precision floating-point value.
+    /// </summary>
+    public static unsafe Half UInt16BitsToHalf(ushort value)
+    {
+        return *(Half*)&value;
+    }
 }

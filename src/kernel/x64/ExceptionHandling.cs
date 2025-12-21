@@ -358,6 +358,13 @@ public static unsafe class ExceptionHandling
         {
             // Unhandled exception - fatal
             DebugConsole.WriteLine("[EH] FATAL: Unhandled managed exception!");
+
+            // Print exception type MT
+            MethodTable* exMT = *(MethodTable**)exceptionObject;
+            DebugConsole.Write("[EH] Exception type MT: 0x");
+            DebugConsole.WriteHex((ulong)exMT);
+            DebugConsole.WriteLine();
+
             DebugConsole.Write("[EH] Exception object at: 0x");
             DebugConsole.WriteHex((ulong)exceptionObject);
             DebugConsole.WriteLine();

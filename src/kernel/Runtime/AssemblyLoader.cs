@@ -7321,6 +7321,94 @@ public static unsafe class AssemblyLoader
     // ============================================================================
 
     // ============================================================================
+    // MT Canonicalization for AOT Stelemref Fix
+    // ============================================================================
+
+    // Canonical MTs for key types (captured when first encountered)
+    private static MethodTable* _canonicalObjectMT;
+    private static MethodTable* _canonicalExceptionMT;
+
+    /// <summary>
+    /// Canonicalize a MethodTable to fix AOT duplicate MT issues.
+    /// AOT compiler can generate multiple MTs for the same type, causing
+    /// stelemref type checks to fail. This function returns the canonical MT.
+    /// </summary>
+    private static MethodTable* CanonicalizeMethodTable(MethodTable* mt)
+    {
+        if (mt == null)
+            return null;
+
+        // Return as-is if already canonical
+        if (mt == _canonicalExceptionMT || mt == _canonicalObjectMT)
+            return mt;
+
+        // Lazy initialization: capture canonical Object MT
+        if (_canonicalObjectMT == null)
+        {
+            // Find a type whose parent is null (i.e., Object)
+            if (mt->_relatedType == null)
+            {
+                _canonicalObjectMT = mt;
+                return mt;
+            }
+        }
+
+        // Check if mt looks like Exception and register as canonical
+        // Exception has: Object as direct parent, is reference type, and has a specific base size
+        // Exception base size: MT ptr (8) + _message (8) + _innerException (8) + _hResult (4) + padding = ~32+ bytes
+        if (_canonicalExceptionMT == null)
+        {
+            // Exception has Object as direct parent (parent->_relatedType == null)
+            // and is a reference type (not value type)
+            // and has a base size >= 32 (Exception has several fields)
+            if (mt->_relatedType != null &&
+                mt->_relatedType->_relatedType == null &&
+                !mt->IsValueType &&
+                mt->_uBaseSize >= 32)  // Exception has at least 3 reference fields + 1 int
+            {
+                // This could be Exception - register as canonical
+                _canonicalExceptionMT = mt;
+                return mt;
+            }
+        }
+
+        // Check if mt is a duplicate of Exception
+        if (_canonicalExceptionMT != null && IsExceptionDuplicate(mt))
+        {
+            return _canonicalExceptionMT;
+        }
+
+        return mt;
+    }
+
+    /// <summary>
+    /// Check if mt appears to be a duplicate of Exception.
+    /// </summary>
+    private static bool IsExceptionDuplicate(MethodTable* mt)
+    {
+        if (mt == _canonicalExceptionMT)
+            return false;
+
+        // Check base size matches Exception
+        if (mt->_uBaseSize != _canonicalExceptionMT->_uBaseSize)
+            return false;
+
+        // Must be a reference type
+        if (mt->IsValueType)
+            return false;
+
+        // Parent should be Object (parent of parent is null)
+        if (mt->_relatedType == null)
+            return false;
+
+        if (mt->_relatedType->_relatedType != null)
+            return false;
+
+        // Looks like an Exception duplicate
+        return true;
+    }
+
+    // ============================================================================
     // Array MethodTable Creation for newarr
     // ============================================================================
 
@@ -7396,14 +7484,21 @@ public static unsafe class AssemblyLoader
             return null;
         }
 
+        // Canonicalize element type to fix AOT duplicate MT issue.
+        // AOT compiler generates duplicate MTs for the same type (e.g., Exception).
+        // We need to use the canonical MT that matches what's in object inheritance chains.
+        // NOTE: This only helps JIT-created arrays. AOT-created arrays use inline allocation
+        // that bypasses this code path entirely.
+        MethodTable* canonicalElementMT = CanonicalizeMethodTable(elementMT);
+
         // Initialize array MT
         arrayMT->_usComponentSize = elementSize;
         // Set IsArray flag (bit 19 of combined flags, which is bit 3 of _usFlags)
         arrayMT->_usFlags = (ushort)((MTFlags.IsArray | MTFlags.HasComponentSize) >> 16);
         // Array base size: MT ptr (8) + length field (8) = 16 bytes
         arrayMT->_uBaseSize = 16;
-        // _relatedType points to element type's MethodTable
-        arrayMT->_relatedType = elementMT;
+        // _relatedType points to canonicalized element type's MethodTable
+        arrayMT->_relatedType = canonicalElementMT;
         arrayMT->_usNumVtableSlots = 0;
         arrayMT->_usNumInterfaces = 0;
         arrayMT->_uHashCode = (uint)(ulong)elementMT;  // Use element MT address as hash

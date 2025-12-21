@@ -537,8 +537,16 @@ namespace Internal.Runtime.CompilerHelpers
             if (obj == null)
                 goto assigningNull;
 
-            if (elementType != obj.m_pMethodTable)
-                Environment.FailFast(null); /* covariance */
+            // Walk the type hierarchy to check if obj's type is assignable to elementType
+            System.Runtime.MethodTable* objType = obj.m_pMethodTable;
+            while (objType != null)
+            {
+                if (objType == elementType)
+                    goto doWrite;
+                objType = objType->_relatedType;
+            }
+            // Type mismatch - obj doesn't inherit from element type
+            throw new ArrayTypeMismatchException();
 
 doWrite:
             element = obj;
@@ -565,7 +573,7 @@ assigningNull:
         [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
         static extern System.Runtime.MethodTable** PalAllocObject(uint size);
 
-        static unsafe System.Runtime.MethodTable** AllocObject(uint size)
+        internal static unsafe System.Runtime.MethodTable** AllocObject(uint size)
         {
             // Use kernel's heap allocator (returns zeroed memory)
             System.Runtime.MethodTable** result = PalAllocObject(size);

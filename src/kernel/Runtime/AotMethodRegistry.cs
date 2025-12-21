@@ -241,6 +241,9 @@ public static unsafe class AotMethodRegistry
         // Register well-known Int32 methods
         RegisterInt32Methods();
 
+        // Register well-known primitive methods (UInt16, etc.)
+        RegisterPrimitiveMethods();
+
         // Register well-known Exception methods
         RegisterExceptionMethods();
 
@@ -509,6 +512,21 @@ public static unsafe class AotMethodRegistry
             "System.String", "Replace",
             (nint)(delegate*<string, char, char, string>)&StringHelpers.ReplaceChar,
             2, ReturnKind.IntPtr, true, false);
+
+        // String.Contains(string) - 1 parameter, HasThis=true, returns bool
+        Register(
+            "System.String", "Contains",
+            (nint)(delegate*<string, string, bool>)&StringHelpers.Contains,
+            1, ReturnKind.Int32, true, false);
+
+        // String.IndexOf(string) - 1 parameter, HasThis=true, returns int
+        // NOTE: IndexOf(char) overload is NOT registered because the AOT lookup
+        // can't distinguish it from IndexOf(string) (both have 1 param).
+        // Use "x".IndexOf("W") instead of "x".IndexOf('W') in JIT code.
+        Register(
+            "System.String", "IndexOf",
+            (nint)(delegate*<string, string, int>)&StringHelpers.IndexOfString,
+            1, ReturnKind.Int32, true, false);
     }
 
     /// <summary>
@@ -798,6 +816,24 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register primitive type methods (UInt16, Int16, etc.)
+    /// </summary>
+    private static void RegisterPrimitiveMethods()
+    {
+        // UInt16.CompareTo(UInt16) - instance method on boxed/unboxed value type
+        Register(
+            "System.UInt16", "CompareTo",
+            (nint)(delegate*<nint, ushort, int>)&PrimitiveHelpers.UInt16_CompareTo,
+            1, ReturnKind.Int32, true, false);
+
+        // Int16.CompareTo(Int16)
+        Register(
+            "System.Int16", "CompareTo",
+            (nint)(delegate*<nint, short, int>)&PrimitiveHelpers.Int16_CompareTo,
+            1, ReturnKind.Int32, true, false);
+    }
+
+    /// <summary>
     /// Register Exception constructor methods for JIT code.
     /// These allow JIT-compiled code to call newobj for exception types.
     /// </summary>
@@ -935,6 +971,24 @@ public static unsafe class AotMethodRegistry
         Register(
             "System.AggregateException", "get_InnerExceptions",
             (nint)(delegate*<AggregateException, System.Collections.ObjectModel.ReadOnlyCollection<Exception>>)&ExceptionHelpers.AggregateException_get_InnerExceptions,
+            0, ReturnKind.IntPtr, true, false);
+
+        // AggregateException.Flatten method
+        Register(
+            "System.AggregateException", "Flatten",
+            (nint)(delegate*<AggregateException, AggregateException>)&ExceptionHelpers.AggregateException_Flatten,
+            0, ReturnKind.IntPtr, true, false);
+
+        // Exception.Message property getter
+        Register(
+            "System.Exception", "get_Message",
+            (nint)(delegate*<Exception, string?>)&ExceptionHelpers.Exception_get_Message,
+            0, ReturnKind.IntPtr, true, false);
+
+        // Exception.InnerException property getter
+        Register(
+            "System.Exception", "get_InnerException",
+            (nint)(delegate*<Exception, Exception?>)&ExceptionHelpers.Exception_get_InnerException,
             0, ReturnKind.IntPtr, true, false);
 
         // ReadOnlyCollection<T>.Count property getter (works for any T since layout is same)
@@ -1876,7 +1930,7 @@ public static unsafe class StringHelpers
     }
 
     /// <summary>
-    /// Helper method to find substring in string.
+    /// Helper method to find substring in string (internal use).
     /// </summary>
     private static int IndexOf(string s, string value, int startIndex)
     {
@@ -1901,6 +1955,41 @@ public static unsafe class StringHelpers
                 }
             }
             if (match) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Wrapper for String.Contains(string).
+    /// Returns true if the specified value occurs within this string.
+    /// </summary>
+    public static bool Contains(string s, string value)
+    {
+        return IndexOfString(s, value) >= 0;
+    }
+
+    /// <summary>
+    /// Wrapper for String.IndexOf(string).
+    /// Returns the zero-based index of the first occurrence of value, or -1.
+    /// </summary>
+    public static int IndexOfString(string s, string value)
+    {
+        return IndexOf(s, value, 0);
+    }
+
+    /// <summary>
+    /// Wrapper for String.IndexOf(char).
+    /// Returns the zero-based index of the first occurrence of character, or -1.
+    /// </summary>
+    public static int IndexOfChar(string s, char value)
+    {
+        if (s == null)
+            return -1;
+
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == value)
+                return i;
         }
         return -1;
     }
@@ -2103,6 +2192,41 @@ public static unsafe class Int32Helpers
             int* valuePtr = (int*)thisPtr;
             return *valuePtr;
         }
+    }
+}
+
+/// <summary>
+/// Wrapper methods for primitive type operations (UInt16, Int16, etc.).
+/// NOTE: For small primitives (2 bytes), we can't safely detect boxed vs byref
+/// by reading 8 bytes (would read garbage from stack). We assume byref (direct call
+/// on local/field) which is the common case. Boxed calls should be rare.
+/// </summary>
+public static unsafe class PrimitiveHelpers
+{
+    /// <summary>
+    /// UInt16.CompareTo(UInt16) - compares this value to another.
+    /// </summary>
+    public static int UInt16_CompareTo(nint thisPtr, ushort other)
+    {
+        // Read value directly - assume byref (most common for value type methods)
+        ushort thisValue = *(ushort*)thisPtr;
+
+        if (thisValue < other) return -1;
+        if (thisValue > other) return 1;
+        return 0;
+    }
+
+    /// <summary>
+    /// Int16.CompareTo(Int16) - compares this value to another.
+    /// </summary>
+    public static int Int16_CompareTo(nint thisPtr, short other)
+    {
+        // Read value directly - assume byref (most common for value type methods)
+        short thisValue = *(short*)thisPtr;
+
+        if (thisValue < other) return -1;
+        if (thisValue > other) return 1;
+        return 0;
     }
 }
 
@@ -2879,6 +3003,11 @@ public static class ExceptionHelpers
     public static AggregateException Ctor_AggregateException_String(string? message) => new AggregateException(message);
     public static AggregateException Ctor_AggregateException_String_ExceptionArray(string? message, Exception[] innerExceptions) => new AggregateException(message, innerExceptions);
     public static System.Collections.ObjectModel.ReadOnlyCollection<Exception> AggregateException_get_InnerExceptions(AggregateException ex) => ex.InnerExceptions;
+    public static AggregateException AggregateException_Flatten(AggregateException ex) => ex.Flatten();
+
+    // Exception property getters
+    public static string? Exception_get_Message(Exception ex) => ex.Message;
+    public static Exception? Exception_get_InnerException(Exception ex) => ex.InnerException;
 
     // TaskCanceledException
     public static System.Threading.Tasks.TaskCanceledException Ctor_TaskCanceledException() => new System.Threading.Tasks.TaskCanceledException();

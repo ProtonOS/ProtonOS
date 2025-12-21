@@ -1683,3 +1683,68 @@ global get_ap_startup_data
 get_ap_startup_data:
     mov rax, AP_TRAMPOLINE_BASE + (ap_trampoline_data - ap_trampoline_start)
     ret
+
+;; ==================== Interface Dispatch Support ====================
+;; Required by NativeAOT for dynamic interface dispatch
+
+extern RhpResolveInterfaceMethod ; C# interface method resolver
+
+; void RhpInitialDynamicInterfaceDispatch()
+; Called when interface dispatch cache is empty.
+; R11 = interface dispatch cell address (InterfaceDispatchCell*)
+; RCX = 'this' object pointer
+; Other args in RDX, R8, R9, stack
+;
+; The dispatch cell layout (from NativeAOT rhbinder.h):
+;   [0] = m_pStub  (code pointer, initially points here)
+;   [8] = m_pCache (encoded interface type and slot, or cache pointer)
+;
+; m_pCache encoding:
+;   - If low 2 bits == 1: interface pointer is (m_pCache & ~3), slot in terminator cell
+;   - If low 2 bits == 0 and value < 0x1000: vtable offset
+;   - If low 2 bits == 0 and value >= 0x1000: cache pointer
+;   - Slot number is stored in terminator cell (m_pStub == 0)
+;
+; We call RhpResolveInterfaceMethod(object, dispatchCell) which parses the cell
+; and returns the function pointer. Then we call through it, preserving all args.
+global RhpInitialDynamicInterfaceDispatch
+RhpInitialDynamicInterfaceDispatch:
+    ; Save all argument registers (we need to call the resolver then call the target)
+    ; Stack layout after pushes:
+    ;   [rsp+40] = rcx (this)
+    ;   [rsp+32] = rdx
+    ;   [rsp+24] = r8
+    ;   [rsp+16] = r9
+    ;   [rsp+8]  = r10
+    ;   [rsp+0]  = r11 (dispatch cell)
+    push rcx        ; this (also 1st arg)
+    push rdx        ; 2nd arg
+    push r8         ; 3rd arg
+    push r9         ; 4th arg
+    push r10        ; caller-saved
+    push r11        ; dispatch cell pointer (save for later)
+
+    ; Set up arguments for resolver
+    ; RCX = this (already has it!)
+    ; RDX = dispatch cell pointer (R11)
+    mov rdx, r11
+
+    ; Call resolver: void* RhpResolveInterfaceMethod(void* obj, InterfaceDispatchCell* pCell)
+    sub rsp, 32             ; shadow space
+    call RhpResolveInterfaceMethod
+    add rsp, 32
+
+    ; RAX now contains the function pointer to call
+    ; Save it temporarily
+    mov r11, rax
+
+    ; Restore all argument registers
+    pop rax         ; discard saved r11
+    pop rax         ; discard saved r10 (dispatch cell no longer needed)
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+
+    ; Tail-call to the resolved method
+    jmp r11
