@@ -110,9 +110,9 @@ build/x64/
 
 ```
 src/
-├── korlib/              # Kernel runtime library (from bflat zerolib)
+├── korlib/              # Kernel runtime library (derived from bflat zerolib)
 │   ├── Internal/        # Runtime internals, startup
-│   └── System/          # Core types (Object, String, Array, Reflection, etc.)
+│   └── System/          # Core types (Object, String, Array, Collections, etc.)
 ├── kernel/              # Kernel implementation
 │   ├── Kernel.cs        # Entry point
 │   ├── Exports/         # DDK and reflection exports for JIT code
@@ -122,27 +122,33 @@ src/
 │   ├── Runtime/         # PE loader, metadata reader, JIT compiler
 │   ├── Threading/       # Scheduler, threads, per-CPU state
 │   └── x64/             # x64-specific (GDT, IDT, APIC, SMP, assembly)
-├── ddk/                 # Driver Development Kit (loaded by JIT)
-│   ├── Platform/        # DMA, PCI, ACPI access for drivers
-│   ├── Drivers/         # Driver manager, device enumeration
-│   └── Kernel/          # Kernel service exports (Memory, Debug, etc.)
+├── ddk/                 # Driver Development Kit (JIT-loaded)
 ├── drivers/             # Device drivers (JIT-compiled)
 │   └── shared/
 │       ├── virtio/      # VirtIO common infrastructure
 │       └── storage/     # Block device drivers (virtio-blk)
-├── SystemRuntime/       # Deprecated - reference code only (korlib handles all types)
-└── FullTest/            # JIT test assembly (605 tests, runs on boot)
+├── TestSupport/         # Cross-assembly test helpers
+└── FullTest/            # JIT test assembly (runs on boot)
+
+tools/
+├── runtime/             # ProtonOS/runtime submodule (NativeAOT ILCompiler)
+└── bflat/               # ProtonOS/bflat submodule (C# AOT compiler)
 ```
 
 ## How It Works
 
-ProtonOS uses [bflat](https://github.com/bflattened/bflat) to compile C# directly to a native UEFI executable with `--stdlib:none`. This means:
+ProtonOS uses [bflat](https://flattened.net) to compile C# directly to a native UEFI executable with `--stdlib:none`. This means:
 
 1. **No .NET runtime dependency** - The kernel IS the runtime
 2. **Direct hardware access** - `unsafe` code and P/Invoke to assembly
 3. **Full control** - Custom object layout, GC, exception handling
 
-The ~1700 lines of assembly (`native.asm`) handle only what C# cannot:
+The kernel is AOT-compiled, but can load and JIT-compile standard .NET assemblies at runtime. This enables:
+- Driver hot-loading without recompilation
+- Test suites that run on the bare metal
+- Future plugin/module support
+
+The ~1750 lines of assembly (`native.asm`) handle only what C# cannot:
 - Port I/O (`in`/`out` instructions)
 - Control registers (CR0, CR3, CR4)
 - Descriptor tables (GDT, IDT, TSS)
@@ -153,11 +159,12 @@ Everything else is C#.
 
 ## Documentation
 
-- [Architecture Reference](docs/ARCHITECTURE.md) - Detailed system design
-- [JIT Test Coverage](docs/JIT_TEST_COVERAGE.md) - Comprehensive IL opcode and feature coverage
+See the [docs/](docs/) directory for detailed documentation including:
+
+- [Architecture Reference](docs/ARCHITECTURE.md) - System design and memory layout
+- [JIT Test Coverage](docs/JIT_TEST_COVERAGE.md) - IL opcode and feature coverage
 - [korlib Plan](docs/KORLIB_PLAN.md) - Runtime library roadmap
-- [System.Runtime Migration](docs/SYSTEMRUNTIME_MIGRATION.md) - Type migration status and JIT fixes
-- [Allocation Limits](docs/ALLOCATION_LIMITS.md) - Registry and allocator documentation
+- [DDK Plan](docs/DDK_PLAN.md) - Driver development kit design
 
 ## Contributing
 
@@ -175,4 +182,5 @@ This means:
 ## Acknowledgments
 
 - [bflat](https://github.com/bflattened/bflat) - The C# Native AOT compiler that makes this possible
+- [bflattened/runtime](https://github.com/bflattened/runtime) - NativeAOT runtime fork that bflat is built on
 - [.NET Runtime](https://github.com/dotnet/runtime) - Reference for runtime internals
