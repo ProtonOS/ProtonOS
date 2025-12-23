@@ -159,10 +159,7 @@ Everything else is C#.
 
 ## Documentation
 
-See the [docs/](docs/) directory for detailed documentation including:
-
 - [Architecture Reference](docs/ARCHITECTURE.md) - System design and memory layout
-- [JIT Test Coverage](docs/JIT_TEST_COVERAGE.md) - IL opcode and feature coverage
 - [korlib Plan](docs/KORLIB_PLAN.md) - Runtime library roadmap
 - [DDK Plan](docs/DDK_PLAN.md) - Driver development kit design
 
