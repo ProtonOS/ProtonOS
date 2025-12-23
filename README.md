@@ -90,11 +90,13 @@ The install script supports Ubuntu/Debian, Fedora, and Arch Linux.
 
 ### Toolchain
 
-- **[ProtonOS/bflat](https://github.com/ProtonOS/bflat)** - Fork of bflat with custom ILCompiler
-- **[ProtonOS/runtime](https://github.com/ProtonOS/runtime)** - Fork of bflattened/runtime with AOT fixes
-- **dotnet** - Builds driver and test assemblies as standard .NET DLLs
+The kernel is compiled using a custom build of [bflat](https://flattened.net), a C# native AOT compiler:
+
+- **[ProtonOS/runtime](https://github.com/ProtonOS/runtime)** - Fork of bflattened/runtime with fixes for array element type symbols in NativeAOT
+- **[ProtonOS/bflat](https://github.com/ProtonOS/bflat)** - Fork of bflat configured to use locally-built ILCompiler from ProtonOS/runtime
 - **NASM** - Assembles low-level x64 code (interrupts, context switch)
 - **lld-link** - Links final UEFI PE executable
+- **.NET SDK 10** - Builds driver and test assemblies as standard .NET DLLs for JIT loading
 
 ### Output
 
