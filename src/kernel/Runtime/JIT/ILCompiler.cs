@@ -5106,14 +5106,22 @@ public unsafe struct ILCompiler
         if (method.NativeCode != null)
         {
             // Direct call - we already know the target address
-            if (_debugAssemblyId == 1)  // korlib
-            {
-                DebugConsole.Write("[JIT call] direct tok=0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" native=0x");
-                DebugConsole.WriteHex((ulong)method.NativeCode);
-                DebugConsole.WriteLine();
-            }
+            // Debug for all assemblies to trace call targets
+            DebugConsole.Write("[JIT call] direct asm=");
+            DebugConsole.WriteDecimal((uint)_debugAssemblyId);
+            DebugConsole.Write(" tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" native=0x");
+            DebugConsole.WriteHex((ulong)method.NativeCode);
+            DebugConsole.WriteLine();
+
+            // Debug: emit INT3 before Object..ctor calls to catch the crash point
+            // INT3 = 0xCC
+            // if (token == 0x0A000019 && _debugAssemblyId == 6)  // Object..ctor in FullTest
+            // {
+            //     _code.EmitByte(0xCC);  // INT3
+            // }
+
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)method.NativeCode);
         }
         else if (method.RegistryEntry != null)
@@ -5945,6 +5953,20 @@ public unsafe struct ILCompiler
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
             return false;
+        }
+
+        // Debug: Trace callvirt method resolution
+        if (method.IsVirtual && method.VtableSlot >= 0)
+        {
+            DebugConsole.Write("[callvirt] tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" isVirt=Y slot=");
+            DebugConsole.WriteDecimal((uint)method.VtableSlot);
+            DebugConsole.Write(" isIface=");
+            DebugConsole.Write(method.IsInterfaceMethod ? "Y" : "N");
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)method.MethodTable);
+            DebugConsole.WriteLine();
         }
 
         // Special case: delegate Invoke
@@ -8826,13 +8848,31 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileNewobj(uint token)
     {
+        DebugConsole.Write("[JIT newobj] token=0x");
+        DebugConsole.WriteHex(token);
+        DebugConsole.WriteLine();
+
         // Try to resolve as a registered constructor
         ResolvedMethod ctor;
         bool resolved = ResolveMethod(token, out ctor);
 
-        // Special case: Factory-style constructors (like String..ctor)
-        // These have NativeCode but no MethodTable - they allocate and return the object themselves
-        if (resolved && ctor.IsValid && ctor.NativeCode != null && ctor.MethodTable == null && !ctor.HasThis)
+        DebugConsole.Write("[JIT newobj] resolved=");
+        DebugConsole.Write(resolved ? "Y" : "N");
+        if (resolved)
+        {
+            DebugConsole.Write(" valid=");
+            DebugConsole.Write(ctor.IsValid ? "Y" : "N");
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)ctor.MethodTable);
+            DebugConsole.Write(" code=0x");
+            DebugConsole.WriteHex((ulong)ctor.NativeCode);
+        }
+        DebugConsole.WriteLine();
+
+        // Special case: Factory-style constructors (like String..ctor, Exception..ctor)
+        // These are registered with HasThis=false - they allocate and return the object themselves
+        // The factory pattern is indicated by !HasThis, not by MethodTable being null
+        if (resolved && ctor.IsValid && ctor.NativeCode != null && !ctor.HasThis)
         {
             // Factory method: just call it with the args and it returns the new object
             int factoryArgs = ctor.ArgCount;
@@ -8950,6 +8990,18 @@ public unsafe struct ILCompiler
             // So temp must be at -(CalleeSaveSize + (_localCount+1)*64) or lower.
             int newobjTempOffset = -(X64Emitter.CalleeSaveSize + (_localCount + 1) * 64);
 
+            // Debug: trace newobj temp offset for DisposableTests
+            if (_debugAssemblyId == 6 && mt != null && mt->NumVtableSlots == 4)
+            {
+                DebugConsole.Write("[newobj] tempOff=");
+                DebugConsole.WriteDecimal((uint)(-newobjTempOffset));
+                DebugConsole.Write(" locals=");
+                DebugConsole.WriteDecimal((uint)_localCount);
+                DebugConsole.Write(" stackAdj=");
+                DebugConsole.WriteDecimal((uint)_stackAdjust);
+                DebugConsole.WriteLine();
+            }
+
             if (isValueType)
             {
                 // VALUE TYPE: Allocate space on stack, call constructor
@@ -9023,6 +9075,14 @@ public unsafe struct ILCompiler
                 X64Emitter.MovRR(ref _code, VReg.R1, VReg.R0);
             }
 
+            // Debug: Check if IsDelegate is incorrectly set
+            if (mt->IsDelegate)
+            {
+                DebugConsole.Write("[JIT newobj] WARNING: MT 0x");
+                DebugConsole.WriteHex((ulong)mt);
+                DebugConsole.WriteLine(" has IsDelegate=true but wasn't handled by delegate path!");
+            }
+
             // Step 3: Call the constructor with 'this' in RCX
             // x64 calling convention: RCX=this, RDX=arg0, R8=arg1, R9=arg2, stack=arg3+
 
@@ -9048,12 +9108,36 @@ public unsafe struct ILCompiler
 
             if (ctor.NativeCode == null)
             {
-                // DebugConsole.WriteLine("[JIT newobj] ERROR: ctor.NativeCode is null!");
+                DebugConsole.Write("[JIT newobj] ERROR: ctor.NativeCode is null! MT=0x");
+                DebugConsole.WriteHex((ulong)ctor.MethodTable);
+                DebugConsole.WriteLine();
                 return false;
             }
 
+            // Debug: trace constructor call address
+            DebugConsole.Write("[JIT newobj] Calling ctor at 0x");
+            DebugConsole.WriteHex((ulong)ctor.NativeCode);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)ctor.MethodTable);
+            DebugConsole.WriteLine();
+
+            // Debug: dump code bytes before ctor call
+            int preCtorPos = _code.Position;
+
             X64Emitter.MovRI64(ref _code, VReg.R0, (ulong)ctor.NativeCode);
             X64Emitter.CallR(ref _code, VReg.R0);
+
+            // Debug: dump the ctor call bytes
+            int postCtorPos = _code.Position;
+            DebugConsole.Write("[JIT newobj] code bytes: ");
+            byte* codePtr = _code.Code;
+            for (int i = preCtorPos; i < postCtorPos && i < preCtorPos + 20; i++)
+            {
+                DebugConsole.WriteHex((ulong)codePtr[i]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+
             RecordSafePoint();
 
             // Restore RSP after the shadow space reservation

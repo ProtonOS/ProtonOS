@@ -4,3 +4,6 @@
 [submodule "dotnet"]
 	path = dotnet
 	url = https://github.com/dotnet/runtime.git
+[submodule "tools/runtime"]
+	path = tools/runtime
+	url = https://github.com/ProtonOS/runtime.git

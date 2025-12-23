@@ -375,6 +375,9 @@ public static unsafe class MetadataIntegration
         public const uint StackOverflowException = 0xF000002D;
         public const uint AggregateException = 0xF000002E;
         public const uint TaskCanceledException = 0xF000002F;
+        public const uint ArrayTypeMismatchException = 0xF0000050;
+        public const uint InvalidProgramException = 0xF0000051;
+        public const uint TypeLoadException = 0xF0000052;
 
         // Reflection types - for GetType() support
         public const uint Type = 0xF0000030;
@@ -391,7 +394,8 @@ public static unsafe class MetadataIntegration
         public const uint RuntimeFieldHandle = 0xF0000045;
 
         // Interface types - for using statement / IDisposable support
-        public const uint IDisposable = 0xF0000050;
+        // Note: 0xF0000050 is taken by ArrayTypeMismatchException above
+        public const uint IDisposable = 0xF0000080;
         // Note: IEnumerable/IEnumerator are NOT well-known types because their methods
         // need to be resolved from korlib metadata (for interface dispatch).
         // They are resolved via korlib fallback in ResolveTypeRef.
@@ -894,6 +898,24 @@ public static unsafe class MetadataIntegration
         var taskCanceledEx = new System.Threading.Tasks.TaskCanceledException();
         MethodTable* taskCanceledExMT = (MethodTable*)taskCanceledEx.m_pMethodTable;
         if (taskCanceledExMT != null && RegisterType(WellKnownTypes.TaskCanceledException, taskCanceledExMT))
+            count++;
+
+        // ArrayTypeMismatchException
+        var arrayTypeMismatchEx = new ArrayTypeMismatchException();
+        MethodTable* arrayTypeMismatchExMT = (MethodTable*)arrayTypeMismatchEx.m_pMethodTable;
+        if (arrayTypeMismatchExMT != null && RegisterType(WellKnownTypes.ArrayTypeMismatchException, arrayTypeMismatchExMT))
+            count++;
+
+        // InvalidProgramException
+        var invalidProgEx = new InvalidProgramException();
+        MethodTable* invalidProgExMT = (MethodTable*)invalidProgEx.m_pMethodTable;
+        if (invalidProgExMT != null && RegisterType(WellKnownTypes.InvalidProgramException, invalidProgExMT))
+            count++;
+
+        // TypeLoadException
+        var typeLoadEx = new TypeLoadException();
+        MethodTable* typeLoadExMT = (MethodTable*)typeLoadEx.m_pMethodTable;
+        if (typeLoadExMT != null && RegisterType(WellKnownTypes.TypeLoadException, typeLoadExMT))
             count++;
 
         return count;
@@ -2107,7 +2129,46 @@ public static unsafe class MetadataIntegration
             }
         }
 
-        if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry, useCharPtrVariant))
+        // Special handling for AggregateException constructors with 2 params
+        // Need to distinguish (string, Exception[]) from (string, List<Exception>) from (string, Exception)
+        bool useListVariant = false;
+        bool useSingleExceptionVariant = false;
+        if (NameEquals(typeName, "System.AggregateException") && NameEquals(memberName, ".ctor") && paramCount == 2)
+        {
+            int pos = sigPos;  // Continue from where param count was decoded
+            // Skip return type
+            pos++;
+            // Skip first param (string)
+            if (sig[pos] == 0x0E)  // ELEMENT_TYPE_STRING
+                pos++;
+            else if (sig[pos] == 0x12)  // ELEMENT_TYPE_CLASS
+            {
+                pos++;
+                // Skip compressed TypeRef/TypeDef token
+                while ((sig[pos] & 0x80) != 0) pos++;
+                pos++;
+            }
+            // Now at second param - check type:
+            // 0x1D = SZARRAY (Exception[]) - default array variant
+            // 0x15 = GENERICINST (List<Exception>) - list variant
+            // 0x12 = CLASS (single Exception) - single exception variant
+            DebugConsole.Write("[AotMemberRef] AggregateException..ctor second param type = 0x");
+            DebugConsole.WriteHex(sig[pos]);
+            DebugConsole.WriteLine();
+            if (sig[pos] == 0x15)  // GENERICINST - List<Exception>
+            {
+                useListVariant = true;
+                DebugConsole.WriteLine("[AotMemberRef] AggregateException..ctor detected List variant");
+            }
+            else if (sig[pos] == 0x12)  // CLASS - single Exception
+            {
+                useSingleExceptionVariant = true;
+                DebugConsole.WriteLine("[AotMemberRef] AggregateException..ctor detected single Exception variant");
+            }
+            // else 0x1D = SZARRAY - array variant (default)
+        }
+
+        if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry, useCharPtrVariant, useListVariant, useSingleExceptionVariant))
         {
             DebugConsole.Write("[AotMemberRef] Found AOT method: ");
             WriteByteString(typeName);
@@ -2137,12 +2198,7 @@ public static unsafe class MetadataIntegration
             // For constructors, we need to provide the MethodTable so that newobj can allocate
             // For value types: allocate stack space
             // For reference types: allocate heap object via RhpNewFast
-            if (NameEquals(typeName, "System.ArgIterator"))
-                result.MethodTable = _argIteratorMT;
-            else if (NameEquals(typeName, "System.Object"))
-                result.MethodTable = LookupType(WellKnownTypes.Object);
-            else
-                result.MethodTable = null;
+            result.MethodTable = GetMethodTableForTypeName(typeName);
             result.IsInterfaceMethod = false;
             result.InterfaceMT = null;
             result.InterfaceMethodSlot = 0;
@@ -2534,7 +2590,25 @@ public static unsafe class MetadataIntegration
         // interface dispatch info so callvirt can resolve at runtime
         MethodTable* interfaceMT;
         short interfaceSlot;
-        if (AssemblyLoader.IsInterfaceMethod(_currentAssemblyId, token, out interfaceMT, out interfaceSlot))
+        bool isIface = AssemblyLoader.IsInterfaceMethod(_currentAssemblyId, token, out interfaceMT, out interfaceSlot);
+        // Debug: trace interface method check for get_Item
+        if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+        {
+            uint rowId = token & 0x00FFFFFF;
+            uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, rowId);
+            byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+            if (name != null && name[0] == 'g' && name[1] == 'e' && name[2] == 't' && name[3] == '_')
+            {
+                DebugConsole.Write("[MemberRef] IsIface tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" = ");
+                DebugConsole.Write(isIface ? "Y" : "N");
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)interfaceMT);
+                DebugConsole.WriteLine();
+            }
+        }
+        if (isIface)
         {
             result.IsValid = true;
             result.IsInterfaceMethod = true;
@@ -2751,6 +2825,32 @@ public static unsafe class MetadataIntegration
 
         bool success = false;
 
+        // Debug: Trace get_Item resolution
+        if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+        {
+            uint nameIdx = MetadataReader.GetMethodDefName(ref *_tablesHeader, ref *_tableSizes, methodRowId);
+            byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+            if (name != null && name[0] == 'g' && name[1] == 'e' && name[2] == 't' && name[3] == '_')
+            {
+                DebugConsole.Write("[ResolveMDef] get_* method=0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.Write(" asm=");
+                DebugConsole.WriteDecimal(targetAsmId);
+                DebugConsole.Write(" info=");
+                DebugConsole.WriteHex((ulong)info);
+                if (info != null)
+                {
+                    DebugConsole.Write(" isComp=");
+                    DebugConsole.Write(info->IsCompiled ? "Y" : "N");
+                    DebugConsole.Write(" isVirt=");
+                    DebugConsole.Write(info->IsVirtual ? "Y" : "N");
+                    DebugConsole.Write(" slot=");
+                    DebugConsole.WriteDecimal((uint)(ushort)info->VtableSlot);
+                }
+                DebugConsole.WriteLine();
+            }
+        }
+
         if (info != null && info->IsCompiled)
         {
             // Method already compiled
@@ -2768,6 +2868,25 @@ public static unsafe class MetadataIntegration
             result.InterfaceMethodSlot = info->InterfaceMethodSlot;
             result.RegistryEntry = info;
             TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
+
+            // If the registry says IsVirtual with a high vtable slot (>=3) and we have native code,
+            // prefer direct call over vtable dispatch. NativeAOT optimizes vtables and may not
+            // include interface implementation slots. Slots 0-2 are the standard Object virtuals
+            // (ToString, GetHashCode, Equals) which are always present.
+            if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
+            {
+                DebugConsole.Write("[ResolveMDef] Downgrade slot=");
+                DebugConsole.WriteDecimal((uint)result.VtableSlot);
+                DebugConsole.Write(" to direct call for tok=0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.Write(" code=0x");
+                DebugConsole.WriteHex((ulong)result.NativeCode);
+                DebugConsole.WriteLine();
+                // Use direct call instead of vtable dispatch
+                result.IsVirtual = false;
+                result.VtableSlot = -1;
+            }
+
             success = true;
         }
         else
@@ -2941,6 +3060,23 @@ public static unsafe class MetadataIntegration
         if (success)
         {
             ParseVarargInfo(_currentAssemblyId, token, ref result);
+
+            // Debug: Trace get_Item resolution result
+            if (_tablesHeader != null && _tableSizes != null && _metadataRoot != null)
+            {
+                uint nameIdx = MetadataReader.GetMethodDefName(ref *_tablesHeader, ref *_tableSizes, methodRowId);
+                byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+                if (name != null && name[0] == 'g' && name[1] == 'e' && name[2] == 't' && name[3] == '_')
+                {
+                    DebugConsole.Write("[ResolveMDef] get_* result: isVirt=");
+                    DebugConsole.Write(result.IsVirtual ? "Y" : "N");
+                    DebugConsole.Write(" slot=");
+                    DebugConsole.WriteDecimal((uint)(ushort)result.VtableSlot);
+                    DebugConsole.Write(" code=0x");
+                    DebugConsole.WriteHex((ulong)result.NativeCode);
+                    DebugConsole.WriteLine();
+                }
+            }
         }
 
         return success;
@@ -4994,6 +5130,72 @@ public static unsafe class MetadataIntegration
                 return false;
         }
         return name[expected.Length] == 0;
+    }
+
+    /// <summary>
+    /// Get the MethodTable for a type given its full name (e.g., "System.AggregateException").
+    /// Used when resolving AOT constructors to provide the MethodTable for newobj allocation.
+    /// </summary>
+    private static void* GetMethodTableForTypeName(byte* typeName)
+    {
+        // Special case for ArgIterator - uses cached MT
+        if (NameEquals(typeName, "System.ArgIterator"))
+            return _argIteratorMT;
+
+        // Map well-known type names to their tokens
+        uint wellKnownToken = 0;
+
+        if (NameEquals(typeName, "System.Object"))
+            wellKnownToken = WellKnownTypes.Object;
+        else if (NameEquals(typeName, "System.String"))
+            wellKnownToken = WellKnownTypes.String;
+        else if (NameEquals(typeName, "System.Exception"))
+            wellKnownToken = WellKnownTypes.Exception;
+        else if (NameEquals(typeName, "System.ArgumentException"))
+            wellKnownToken = WellKnownTypes.ArgumentException;
+        else if (NameEquals(typeName, "System.ArgumentNullException"))
+            wellKnownToken = WellKnownTypes.ArgumentNullException;
+        else if (NameEquals(typeName, "System.ArgumentOutOfRangeException"))
+            wellKnownToken = WellKnownTypes.ArgumentOutOfRangeException;
+        else if (NameEquals(typeName, "System.InvalidOperationException"))
+            wellKnownToken = WellKnownTypes.InvalidOperationException;
+        else if (NameEquals(typeName, "System.NotSupportedException"))
+            wellKnownToken = WellKnownTypes.NotSupportedException;
+        else if (NameEquals(typeName, "System.NotImplementedException"))
+            wellKnownToken = WellKnownTypes.NotImplementedException;
+        else if (NameEquals(typeName, "System.IndexOutOfRangeException"))
+            wellKnownToken = WellKnownTypes.IndexOutOfRangeException;
+        else if (NameEquals(typeName, "System.NullReferenceException"))
+            wellKnownToken = WellKnownTypes.NullReferenceException;
+        else if (NameEquals(typeName, "System.InvalidCastException"))
+            wellKnownToken = WellKnownTypes.InvalidCastException;
+        else if (NameEquals(typeName, "System.FormatException"))
+            wellKnownToken = WellKnownTypes.FormatException;
+        else if (NameEquals(typeName, "System.DivideByZeroException"))
+            wellKnownToken = WellKnownTypes.DivideByZeroException;
+        else if (NameEquals(typeName, "System.OverflowException"))
+            wellKnownToken = WellKnownTypes.OverflowException;
+        else if (NameEquals(typeName, "System.AggregateException"))
+            wellKnownToken = WellKnownTypes.AggregateException;
+        else if (NameEquals(typeName, "System.Delegate"))
+            wellKnownToken = WellKnownTypes.Delegate;
+        else if (NameEquals(typeName, "System.MulticastDelegate"))
+            wellKnownToken = WellKnownTypes.MulticastDelegate;
+        else if (NameEquals(typeName, "System.Type"))
+            wellKnownToken = WellKnownTypes.Type;
+        else if (NameEquals(typeName, "System.RuntimeType"))
+            wellKnownToken = WellKnownTypes.RuntimeType;
+        else if (NameEquals(typeName, "System.ValueType"))
+            wellKnownToken = WellKnownTypes.ValueType;
+        else if (NameEquals(typeName, "System.Enum"))
+            wellKnownToken = WellKnownTypes.Enum;
+        else if (NameEquals(typeName, "System.Array"))
+            wellKnownToken = WellKnownTypes.Array;
+
+        if (wellKnownToken != 0)
+            return LookupType(wellKnownToken);
+
+        return null;
     }
 
     /// <summary>

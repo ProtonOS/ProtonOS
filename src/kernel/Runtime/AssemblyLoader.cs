@@ -1727,6 +1727,42 @@ public static unsafe class AssemblyLoader
         if (rowId == 0 || rowId > asm->Tables.RowCounts[(int)MetadataTableId.TypeDef])
             return null;
 
+        // CRITICAL: For korlib TypeDefs, check if this is a well-known type that should use
+        // the AOT registered MethodTable. This prevents duplicate MTs for Exception, etc.
+        // which would cause stelemref type checks to fail when AOT objects are stored in
+        // JIT-created arrays (e.g., AOT InvalidOperationException into JIT List<Exception>).
+        if (asm->IsCoreLib)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, rowId);
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, rowId);
+            byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* typeNs = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            // Only check System namespace types
+            if (typeNs != null && IsSystemNamespace(typeNs))
+            {
+                uint wellKnownToken = GetWellKnownTypeToken(typeName);
+                if (wellKnownToken != 0)
+                {
+                    MethodTable* aotMT = JIT.MetadataIntegration.LookupType(wellKnownToken);
+                    if (aotMT != null)
+                    {
+                        // Register this AOT MT under the korlib TypeDef token for future lookups
+                        asm->Types.Register(token, aotMT);
+
+                        DebugConsole.Write("[TypeUnify] ");
+                        for (int i = 0; typeName != null && typeName[i] != 0 && i < 32; i++)
+                            DebugConsole.WriteChar((char)typeName[i]);
+                        DebugConsole.Write(" -> AOT MT 0x");
+                        DebugConsole.WriteHex((ulong)aotMT);
+                        DebugConsole.WriteLine();
+
+                        return aotMT;
+                    }
+                }
+            }
+        }
+
         // Get type metadata
         uint typeDefFlags = MetadataReader.GetTypeDefFlags(ref asm->Tables, ref asm->Sizes, rowId);
         CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, rowId);
@@ -3332,6 +3368,14 @@ public static unsafe class AssemblyLoader
 
             if (interfaceMT != null)
             {
+                DebugConsole.Write("[PopGenIfaceMap] ifaceIdx=");
+                DebugConsole.WriteDecimal((uint)mapIndex);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)interfaceMT);
+                DebugConsole.Write(" tag=");
+                DebugConsole.WriteDecimal(tag);
+                DebugConsole.WriteLine();
+
                 map[mapIndex].InterfaceMT = interfaceMT;
                 map[mapIndex].StartSlot = currentSlot;
 
@@ -5037,6 +5081,14 @@ public static unsafe class AssemblyLoader
                     name[13] == 'c' && name[14] == 'e' && name[15] == 'p' && name[16] == 't' &&
                     name[17] == 'i' && name[18] == 'o' && name[19] == 'n' && name[20] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.InvalidCastException;
+                // InvalidProgramException
+                if (name[1] == 'n' && name[2] == 'v' && name[3] == 'a' && name[4] == 'l' &&
+                    name[5] == 'i' && name[6] == 'd' && name[7] == 'P' && name[8] == 'r' &&
+                    name[9] == 'o' && name[10] == 'g' && name[11] == 'r' && name[12] == 'a' &&
+                    name[13] == 'm' && name[14] == 'E' && name[15] == 'x' && name[16] == 'c' &&
+                    name[17] == 'e' && name[18] == 'p' && name[19] == 't' && name[20] == 'i' &&
+                    name[21] == 'o' && name[22] == 'n' && name[23] == 0)
+                    return JIT.MetadataIntegration.WellKnownTypes.InvalidProgramException;
                 // Note: IEnumerable/IEnumerator are NOT well-known types.
                 // They're interfaces defined in korlib that need metadata resolution
                 // for proper interface dispatch. They're resolved via korlib fallback.
@@ -5139,8 +5191,19 @@ public static unsafe class AssemblyLoader
                     name[17] == 'n' && name[18] == 0)
                     return JIT.MetadataIntegration.WellKnownTypes.AggregateException;
                 // Array
-                if (name[1] == 'r' && name[2] == 'r' && name[3] == 'a' && name[4] == 'y' && name[5] == 0)
-                    return JIT.MetadataIntegration.WellKnownTypes.Array;
+                if (name[1] == 'r' && name[2] == 'r' && name[3] == 'a' && name[4] == 'y')
+                {
+                    if (name[5] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.Array;
+                    // ArrayTypeMismatchException
+                    if (name[5] == 'T' && name[6] == 'y' && name[7] == 'p' && name[8] == 'e' &&
+                        name[9] == 'M' && name[10] == 'i' && name[11] == 's' && name[12] == 'm' &&
+                        name[13] == 'a' && name[14] == 't' && name[15] == 'c' && name[16] == 'h' &&
+                        name[17] == 'E' && name[18] == 'x' && name[19] == 'c' && name[20] == 'e' &&
+                        name[21] == 'p' && name[22] == 't' && name[23] == 'i' && name[24] == 'o' &&
+                        name[25] == 'n' && name[26] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.ArrayTypeMismatchException;
+                }
                 if (name[1] == 'r' && name[2] == 'g')
                 {
                     // ArgIterator
@@ -5219,7 +5282,7 @@ public static unsafe class AssemblyLoader
                     return JIT.MetadataIntegration.WellKnownTypes.MulticastDelegate;
                 break;
 
-            case (byte)'T':  // Type, TypedReference, TaskCanceledException
+            case (byte)'T':  // Type, TypedReference, TaskCanceledException, TypeLoadException
                 if (name[1] == 'y' && name[2] == 'p' && name[3] == 'e')
                 {
                     if (name[4] == 0)
@@ -5229,6 +5292,12 @@ public static unsafe class AssemblyLoader
                         name[8] == 'e' && name[9] == 'r' && name[10] == 'e' && name[11] == 'n' &&
                         name[12] == 'c' && name[13] == 'e' && name[14] == 0)
                         return JIT.MetadataIntegration.WellKnownTypes.TypedReference;
+                    // TypeLoadException
+                    if (name[4] == 'L' && name[5] == 'o' && name[6] == 'a' && name[7] == 'd' &&
+                        name[8] == 'E' && name[9] == 'x' && name[10] == 'c' && name[11] == 'e' &&
+                        name[12] == 'p' && name[13] == 't' && name[14] == 'i' && name[15] == 'o' &&
+                        name[16] == 'n' && name[17] == 0)
+                        return JIT.MetadataIntegration.WellKnownTypes.TypeLoadException;
                 }
                 // TaskCanceledException
                 if (name[1] == 'a' && name[2] == 's' && name[3] == 'k' && name[4] == 'C' &&
@@ -6015,6 +6084,11 @@ public static unsafe class AssemblyLoader
             // Get the instantiated interface MT for proper interface dispatch
             // Use ResolveTypeSpec to get/create the generic instantiation MT
             interfaceMT = ResolveTypeSpec(sourceAsm, 0x1B000000 | typeSpecRow);
+            DebugConsole.Write("[IsIfaceMethod] TypeSpec resolved MT=0x");
+            DebugConsole.WriteHex((ulong)interfaceMT);
+            DebugConsole.Write(" typeSpecRow=");
+            DebugConsole.WriteDecimal(typeSpecRow);
+            DebugConsole.WriteLine();
         }
         else
         {
@@ -7975,6 +8049,26 @@ public static unsafe class AssemblyLoader
 
                         if (info != null && info->Token != 0)
                         {
+                            // First check if this method has AOT native code available
+                            // For generic methods, prefer AOT code over JIT compilation when available
+                            JIT.CompiledMethodInfo* regInfo = JIT.CompiledMethodRegistry.Lookup(info->Token, info->AssemblyId);
+                            if (regInfo != null)
+                            {
+                                if (regInfo->IsCompiled && regInfo->NativeCode != null)
+                                {
+                                    // Use AOT code instead of JIT compiling
+                                    dstVtable[i] = (nint)regInfo->NativeCode;
+                                    DebugConsole.Write("[GenInst] AOT slot ");
+                                    DebugConsole.WriteDecimal((uint)i);
+                                    DebugConsole.Write(" = 0x");
+                                    DebugConsole.WriteHex((ulong)regInfo->NativeCode);
+                                    DebugConsole.Write(" for MT=0x");
+                                    DebugConsole.WriteHex((ulong)instMT);
+                                    DebugConsole.WriteLine();
+                                    continue;  // Skip JIT compilation
+                                }
+                            }
+
                             // Set up type context for JIT compilation
                             int savedContext = JIT.MetadataIntegration.GetTypeTypeArgCount();
                             MethodTable** savedArgs = stackalloc MethodTable*[savedContext > 0 ? savedContext : 1];

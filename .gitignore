@@ -24,6 +24,9 @@ bin/
 *.runtimeconfig.json
 *.pdb
 
+# Local NuGet packages (built by make deps)
+tools/nuget-local/
+
 # Editor/IDE
 .vscode/
 .idea/

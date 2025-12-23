@@ -527,6 +527,27 @@ namespace Internal.Runtime.CompilerHelpers
             public object Value;
         }
 
+        [DllImport("*", EntryPoint = "Debug_PrintHex", CallingConvention = CallingConvention.Cdecl)]
+        private static extern unsafe void Debug_PrintHex(byte* prefix, ulong value);
+
+        private static unsafe void DebugStelemRefMismatch(System.Runtime.MethodTable* elementType, System.Runtime.MethodTable* objType)
+        {
+            // Use static byte arrays for string literals
+            byte* prefixElem = stackalloc byte[] { (byte)'s', (byte)'t', (byte)'e', (byte)'l', (byte)'e', (byte)'m', (byte)' ', (byte)'a', (byte)'r', (byte)'r', (byte)'a', (byte)'y', (byte)'E', (byte)'l', (byte)'e', (byte)'m', (byte)'M', (byte)'T', (byte)'=', 0 };
+            byte* prefixObj = stackalloc byte[] { (byte)'s', (byte)'t', (byte)'e', (byte)'l', (byte)'e', (byte)'m', (byte)' ', (byte)'o', (byte)'b', (byte)'j', (byte)'M', (byte)'T', (byte)'=', 0 };
+            byte* prefixHier = stackalloc byte[] { (byte)' ', (byte)' ', (byte)'h', (byte)'i', (byte)'e', (byte)'r', (byte)'a', (byte)'r', (byte)'c', (byte)'h', (byte)'y', (byte)'=', 0 };
+
+            Debug_PrintHex(prefixElem, (ulong)elementType);
+            Debug_PrintHex(prefixObj, (ulong)objType);
+
+            // Walk and print the full hierarchy
+            while (objType != null)
+            {
+                Debug_PrintHex(prefixHier, (ulong)objType);
+                objType = objType->_relatedType;
+            }
+        }
+
         [RuntimeExport("RhpStelemRef")]
         public static unsafe void StelemRef(Array array, nint index, object obj)
         {
@@ -539,6 +560,7 @@ namespace Internal.Runtime.CompilerHelpers
 
             // Walk the type hierarchy to check if obj's type is assignable to elementType
             System.Runtime.MethodTable* objType = obj.m_pMethodTable;
+            System.Runtime.MethodTable* originalObjType = objType;  // Save for debug
             while (objType != null)
             {
                 if (objType == elementType)
@@ -546,6 +568,8 @@ namespace Internal.Runtime.CompilerHelpers
                 objType = objType->_relatedType;
             }
             // Type mismatch - obj doesn't inherit from element type
+            // Debug: print the element type MT and the object's type hierarchy
+            DebugStelemRefMismatch(elementType, originalObjType);
             throw new ArrayTypeMismatchException();
 
 doWrite:

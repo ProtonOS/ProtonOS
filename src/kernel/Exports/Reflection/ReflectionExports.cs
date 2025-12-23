@@ -345,6 +345,23 @@ public static unsafe class ReflectionExports
         ProtonOS.Platform.DebugConsole.WriteLine();
     }
 
+    /// <summary>
+    /// Print a debug message with a hex value (for pointer/MT debugging).
+    /// </summary>
+    [RuntimeExport("Debug_PrintHex")]
+    public static void PrintHex(byte* prefix, ulong value)
+    {
+        ProtonOS.Platform.DebugConsole.Write("[korlib] ");
+        while (*prefix != 0)
+        {
+            ProtonOS.Platform.DebugConsole.WriteChar((char)*prefix);
+            prefix++;
+        }
+        ProtonOS.Platform.DebugConsole.Write("0x");
+        ProtonOS.Platform.DebugConsole.WriteHex(value);
+        ProtonOS.Platform.DebugConsole.WriteLine();
+    }
+
     // ========================================================================
     // Boxing/Allocation APIs
     // ========================================================================

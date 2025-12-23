@@ -154,63 +154,58 @@ install_dotnet() {
 
     info "Installing .NET SDK $version..."
 
-    if [ "$PKG_MGR" = "apt" ]; then
-        # Add Microsoft package repository if not present
-        if [ ! -f /etc/apt/sources.list.d/microsoft-prod.list ]; then
-            info "Adding Microsoft package repository..."
-            # Get Ubuntu/Debian version
-            . /etc/os-release
-            case "$ID" in
-                ubuntu)
-                    $SUDO apt install -y wget
-                    wget -q "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/packages-microsoft-prod.deb
-                    $SUDO dpkg -i /tmp/packages-microsoft-prod.deb
-                    rm /tmp/packages-microsoft-prod.deb
-                    ;;
-                debian)
-                    $SUDO apt install -y wget
-                    wget -q "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb" -O /tmp/packages-microsoft-prod.deb
-                    $SUDO dpkg -i /tmp/packages-microsoft-prod.deb
-                    rm /tmp/packages-microsoft-prod.deb
-                    ;;
-                *)
-                    warn "Unknown Debian-based distro: $ID. Using install script."
-                    install_dotnet_script "$version"
-                    return
-                    ;;
-            esac
-            $SUDO apt update
-        fi
-
-        $SUDO apt install -y "dotnet-sdk-${version}"
-    else
-        # Use Microsoft's install script for other distros
-        install_dotnet_script "$version"
-    fi
+    # .NET 10 is in preview - must use install script (not in stable repos)
+    # For stable versions (8.x, 9.x), we could use apt, but the install script
+    # works universally and handles preview versions correctly
+    install_dotnet_script "$version"
 }
 
 # Install .NET using Microsoft's install script
 install_dotnet_script() {
     local version="$1"
+    local install_dir
+
+    # Use system location for root, user location otherwise
+    if [ "$EUID" -eq 0 ]; then
+        install_dir="/usr/share/dotnet"
+    else
+        install_dir="$HOME/.dotnet"
+    fi
+
     info "Using Microsoft install script for .NET SDK $version..."
+    info "Install location: $install_dir"
 
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
     chmod +x /tmp/dotnet-install.sh
 
-    # Install to user directory
-    /tmp/dotnet-install.sh --channel "$version" --install-dir "$HOME/.dotnet"
+    /tmp/dotnet-install.sh --channel "$version" --install-dir "$install_dir"
     rm /tmp/dotnet-install.sh
 
-    # Add to PATH if not already there
-    if [[ ":$PATH:" != *":$HOME/.dotnet:"* ]]; then
-        echo 'export PATH="$HOME/.dotnet:$PATH"' >> "$HOME/.bashrc"
-        export PATH="$HOME/.dotnet:$PATH"
-        warn "Added ~/.dotnet to PATH. Run 'source ~/.bashrc' or start a new shell."
+    # Set up environment
+    export DOTNET_ROOT="$install_dir"
+    export PATH="$install_dir:$PATH"
+
+    # Add to shell config if not already there
+    local shell_rc="$HOME/.bashrc"
+    if [[ ":$PATH:" != *":$install_dir:"* ]] || ! grep -q "DOTNET_ROOT" "$shell_rc" 2>/dev/null; then
+        {
+            echo ""
+            echo "# .NET SDK"
+            echo "export DOTNET_ROOT=\"$install_dir\""
+            echo "export PATH=\"$install_dir:\$PATH\""
+        } >> "$shell_rc"
+        warn "Added dotnet to PATH in ~/.bashrc. Run 'source ~/.bashrc' or start a new shell."
     fi
 }
 
 # Install dotnet-ildasm tool
 install_ildasm() {
+    # Ensure dotnet tools are in PATH
+    local tools_path="$HOME/.dotnet/tools"
+    if [[ ":$PATH:" != *":$tools_path:"* ]]; then
+        export PATH="$tools_path:$PATH"
+    fi
+
     if dotnet tool list -g 2>/dev/null | grep -q "dotnet-ildasm"; then
         info "dotnet-ildasm already installed"
     else

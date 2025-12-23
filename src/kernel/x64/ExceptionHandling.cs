@@ -359,11 +359,33 @@ public static unsafe class ExceptionHandling
             // Unhandled exception - fatal
             DebugConsole.WriteLine("[EH] FATAL: Unhandled managed exception!");
 
-            // Print exception type MT
+            // Print exception type MT and try to get type name
             MethodTable* exMT = *(MethodTable**)exceptionObject;
             DebugConsole.Write("[EH] Exception type MT: 0x");
             DebugConsole.WriteHex((ulong)exMT);
             DebugConsole.WriteLine();
+
+            // Try to get type name from reflection runtime
+            uint assemblyId = 0, typeToken = 0;
+            ProtonOS.Runtime.Reflection.ReflectionRuntime.GetTypeInfo(exMT, &assemblyId, &typeToken);
+            if (assemblyId != 0 && typeToken != 0)
+            {
+                byte* typeName = ProtonOS.Runtime.Reflection.ReflectionRuntime.GetTypeName(assemblyId, typeToken);
+                byte* typeNs = ProtonOS.Runtime.Reflection.ReflectionRuntime.GetTypeNamespace(assemblyId, typeToken);
+                DebugConsole.Write("[EH] Type: ");
+                if (typeNs != null && *typeNs != 0)
+                {
+                    for (int i = 0; typeNs[i] != 0 && i < 64; i++)
+                        DebugConsole.WriteChar((char)typeNs[i]);
+                    DebugConsole.WriteChar('.');
+                }
+                if (typeName != null)
+                {
+                    for (int i = 0; typeName[i] != 0 && i < 64; i++)
+                        DebugConsole.WriteChar((char)typeName[i]);
+                }
+                DebugConsole.WriteLine();
+            }
 
             DebugConsole.Write("[EH] Exception object at: 0x");
             DebugConsole.WriteHex((ulong)exceptionObject);

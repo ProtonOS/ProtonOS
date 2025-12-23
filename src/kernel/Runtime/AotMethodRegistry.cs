@@ -852,6 +852,12 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<string?, Exception>)&ExceptionHelpers.Ctor_Exception_String,
             1, ReturnKind.IntPtr, false, false);
 
+        // Exception(string, Exception) - 2 parameters
+        Register(
+            "System.Exception", ".ctor",
+            (nint)(delegate*<string?, Exception?, Exception>)&ExceptionHelpers.Ctor_Exception_String_Exception,
+            2, ReturnKind.IntPtr, false, false);
+
         // ArgumentException constructors
         Register(
             "System.ArgumentException", ".ctor",
@@ -967,6 +973,18 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<string?, Exception[], AggregateException>)&ExceptionHelpers.Ctor_AggregateException_String_ExceptionArray,
             2, ReturnKind.IntPtr, false, false);
 
+        // Use special ".ctor$list" name to distinguish from (string, Exception[]) variant
+        Register(
+            "System.AggregateException", ".ctor$list",
+            (nint)(delegate*<string?, System.Collections.Generic.List<Exception>, AggregateException>)&ExceptionHelpers.Ctor_AggregateException_String_ListException,
+            2, ReturnKind.IntPtr, false, false);
+
+        // Use special ".ctor$single" name for (string, Exception) variant - single inner exception
+        Register(
+            "System.AggregateException", ".ctor$single",
+            (nint)(delegate*<string?, Exception, AggregateException>)&ExceptionHelpers.Ctor_AggregateException_String_Exception,
+            2, ReturnKind.IntPtr, false, false);
+
         // AggregateException.InnerExceptions property getter
         Register(
             "System.AggregateException", "get_InnerExceptions",
@@ -996,6 +1014,12 @@ public static unsafe class AotMethodRegistry
             "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Count",
             (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
             0, ReturnKind.Int32, true, false);
+
+        // ReadOnlyCollection<Exception> constructor
+        Register(
+            "System.Collections.ObjectModel.ReadOnlyCollection`1", ".ctor",
+            (nint)(delegate*<System.Collections.Generic.IList<Exception>, System.Collections.ObjectModel.ReadOnlyCollection<Exception>>)&CollectionHelpers.ReadOnlyCollectionException_Ctor,
+            1, ReturnKind.IntPtr, false, false);
 
         // TaskCanceledException constructors
         Register(
@@ -1334,10 +1358,10 @@ public static unsafe class AotMethodRegistry
     /// Uses three-tier lookup: exact match, open generic, legacy arg-count.
     /// </summary>
     public static bool TryLookup(byte* typeName, byte* methodName, byte argCount, out AotMethodEntry entry,
-                                  bool isCharPtrVariant = false)
+                                  bool isCharPtrVariant = false, bool isListVariant = false, bool isSingleExceptionVariant = false)
     {
         // Legacy lookup - use extended lookup with no signature/instantiation
-        return TryLookupEx(typeName, methodName, argCount, 0, 0, out entry, isCharPtrVariant);
+        return TryLookupEx(typeName, methodName, argCount, 0, 0, out entry, isCharPtrVariant, isListVariant, isSingleExceptionVariant);
     }
 
     /// <summary>
@@ -1349,7 +1373,7 @@ public static unsafe class AotMethodRegistry
     /// </summary>
     public static bool TryLookupEx(byte* typeName, byte* methodName, byte argCount,
                                     ulong signatureHash, uint instantiationHash,
-                                    out AotMethodEntry entry, bool isCharPtrVariant = false)
+                                    out AotMethodEntry entry, bool isCharPtrVariant = false, bool isListVariant = false, bool isSingleExceptionVariant = false)
     {
         entry = default;
 
@@ -1360,8 +1384,14 @@ public static unsafe class AotMethodRegistry
         ulong methodHash = HashBytes(methodName);
 
         // For char* variant constructors, look for the special ".ctor$ptr" entry
+        // For List<> variant constructors (e.g., AggregateException), look for ".ctor$list"
+        // For single Exception variant constructors (e.g., AggregateException(string, Exception)), look for ".ctor$single"
         ulong methodHashPtrVariant = isCharPtrVariant ? HashString(".ctor$ptr") : 0;
-        ulong targetMethodHash = isCharPtrVariant ? methodHashPtrVariant : methodHash;
+        ulong methodHashListVariant = isListVariant ? HashString(".ctor$list") : 0;
+        ulong methodHashSingleVariant = isSingleExceptionVariant ? HashString(".ctor$single") : 0;
+        ulong targetMethodHash = isCharPtrVariant ? methodHashPtrVariant :
+                                 (isListVariant ? methodHashListVariant :
+                                 (isSingleExceptionVariant ? methodHashSingleVariant : methodHash));
 
         // Tier 1: Exact match (including signature and instantiation)
         if (signatureHash != 0)
@@ -2961,6 +2991,7 @@ public static class ExceptionHelpers
     // Exception
     public static Exception Ctor_Exception() => new Exception();
     public static Exception Ctor_Exception_String(string? message) => new Exception(message);
+    public static Exception Ctor_Exception_String_Exception(string? message, Exception? innerException) => new Exception(message, innerException);
 
     // ArgumentException
     public static ArgumentException Ctor_ArgumentException() => new ArgumentException();
@@ -3001,7 +3032,12 @@ public static class ExceptionHelpers
     // AggregateException
     public static AggregateException Ctor_AggregateException() => new AggregateException();
     public static AggregateException Ctor_AggregateException_String(string? message) => new AggregateException(message);
+    public static AggregateException Ctor_AggregateException_String_Exception(string? message, Exception innerException)
+    {
+        return new AggregateException(message, innerException);
+    }
     public static AggregateException Ctor_AggregateException_String_ExceptionArray(string? message, Exception[] innerExceptions) => new AggregateException(message, innerExceptions);
+    public static AggregateException Ctor_AggregateException_String_ListException(string? message, System.Collections.Generic.List<Exception> innerExceptions) => new AggregateException(message, innerExceptions);
     public static System.Collections.ObjectModel.ReadOnlyCollection<Exception> AggregateException_get_InnerExceptions(AggregateException ex) => ex.InnerExceptions;
     public static AggregateException AggregateException_Flatten(AggregateException ex) => ex.Flatten();
 
@@ -3413,6 +3449,15 @@ public static unsafe class CollectionHelpers
         byte* listBytes = (byte*)listPtr;
         int size = *(int*)(listBytes + 16);  // Skip MT (8) + _items (8), get _size (4)
         return size;
+    }
+
+    /// <summary>
+    /// Create a new ReadOnlyCollection&lt;Exception&gt; wrapping the given list.
+    /// </summary>
+    public static System.Collections.ObjectModel.ReadOnlyCollection<Exception> ReadOnlyCollectionException_Ctor(System.Collections.Generic.IList<Exception> list)
+    {
+        // Simply create a new ReadOnlyCollection wrapping the list
+        return new System.Collections.ObjectModel.ReadOnlyCollection<Exception>(list);
     }
 }
 
