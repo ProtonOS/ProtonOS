@@ -22,7 +22,9 @@ endif
 # Tools
 NASM := nasm
 LD := lld-link
-BFLAT := bflat
+# Use local bflat build with custom ILCompiler (for testing fixes)
+# To use system bflat, change to: BFLAT := bflat
+BFLAT := dotnet $(CURDIR)/tools/bflat/src/bflat/bin/Release/net10.0/bflat.dll
 
 # Tool flags
 NASM_FLAGS := -f $(NASM_FORMAT)
@@ -84,7 +86,7 @@ VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
 VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
 
 # Targets
-.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run
+.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run deps
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -177,6 +179,28 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(D
 
 clean:
 	rm -rf build/
+
+# Build bflat toolchain dependencies (runtime + bflat)
+# Run this after cloning or when runtime/bflat changes
+RUNTIME_DIR := tools/runtime
+BFLAT_DIR := tools/bflat
+NUGET_LOCAL := tools/nuget-local
+ILC_VERSION := 10.0.0-local.2
+
+deps:
+	@echo "Building runtime..."
+	cd $(RUNTIME_DIR) && TreatWarningsAsErrors=false ./build.sh \
+		clr.nativeaotlibs+clr.nativeaotruntime+clr.alljits+clr.tools \
+		-c Release -arch x64 /p:GenerateDocumentationFile=false
+	@echo "Packing ILCompiler..."
+	cd $(RUNTIME_DIR) && ./dotnet.sh pack bflat/pack/ILCompiler.Compiler.nuproj \
+		-p:Version=$(ILC_VERSION) \
+		-p:IntermediateOutputPath=artifacts/bin/coreclr/linux.x64.Release/ilc/
+	@mkdir -p $(NUGET_LOCAL)
+	cp $(RUNTIME_DIR)/artifacts/packages/Release/Shipping/BFlat.Compiler.$(ILC_VERSION).nupkg $(NUGET_LOCAL)/
+	@echo "Building bflat..."
+	cd $(BFLAT_DIR) && dotnet build src/bflat -c Release
+	@echo "Dependencies built successfully."
 
 # Run in QEMU
 run: image
