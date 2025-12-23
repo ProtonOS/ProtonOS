@@ -86,7 +86,7 @@ VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
 VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
 
 # Targets
-.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run deps
+.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run deps install-deps check-deps
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -180,14 +180,19 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(D
 clean:
 	rm -rf build/
 
-# Build bflat toolchain dependencies (runtime + bflat)
-# Run this after cloning or when runtime/bflat changes
+# Toolchain directories
 RUNTIME_DIR := tools/runtime
 BFLAT_DIR := tools/bflat
 NUGET_LOCAL := tools/nuget-local
 ILC_VERSION := 10.0.0-local.2
 
-deps:
+# Install system dependencies (requires sudo)
+install-deps:
+	@tools/install-deps.sh
+
+# Build bflat toolchain (runtime + bflat)
+# Run after install-deps, or when runtime/bflat changes
+deps: check-deps
 	@echo "Building runtime..."
 	cd $(RUNTIME_DIR) && TreatWarningsAsErrors=false ./build.sh \
 		clr.nativeaotlibs+clr.nativeaotruntime+clr.alljits+clr.tools \
@@ -201,6 +206,16 @@ deps:
 	@echo "Building bflat..."
 	cd $(BFLAT_DIR) && dotnet build src/bflat -c Release
 	@echo "Dependencies built successfully."
+
+# Quick dependency check (no install, just verify)
+check-deps:
+	@echo "Checking dependencies..."
+	@command -v dotnet >/dev/null || (echo "ERROR: dotnet not found. Run 'make install-deps'" && exit 1)
+	@dotnet --list-sdks | grep -q "^10\." || (echo "ERROR: .NET SDK 10.x not found. Run 'make install-deps'" && exit 1)
+	@command -v clang >/dev/null || (echo "ERROR: clang not found. Run 'make install-deps'" && exit 1)
+	@command -v cmake >/dev/null || (echo "ERROR: cmake not found. Run 'make install-deps'" && exit 1)
+	@command -v nasm >/dev/null || (echo "ERROR: nasm not found. Run 'make install-deps'" && exit 1)
+	@echo "All dependencies found."
 
 # Run in QEMU
 run: image

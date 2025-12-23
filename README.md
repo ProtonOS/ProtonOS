@@ -68,22 +68,17 @@ The JIT runs a comprehensive test suite on boot: **605 tests passing**
 
 ## Building
 
-### Prerequisites
-
-- **.NET SDK 10.0** - For building bflat and test assemblies
-- **NASM** - x86-64 assembler
-- **LLD** - LLVM linker (lld-link)
-- **QEMU** - Emulation with OVMF firmware
-- **mtools** - FAT filesystem utilities (mformat, mcopy)
-
 ### First-Time Setup
 
-ProtonOS uses a custom fork of bflat with fixes for our AOT scenarios. Build the toolchain once:
+ProtonOS uses a custom fork of bflat with fixes for our AOT scenarios.
 
 ```bash
 git submodule update --init --recursive
-make deps     # Build runtime and bflat (~10-15 min first time)
+make install-deps  # Install system packages and .NET SDK 10 (requires sudo)
+make deps          # Build runtime and bflat (~10-15 min first time)
 ```
+
+The install script supports Ubuntu/Debian, Fedora, and Arch Linux.
 
 ### Build and Run
 
