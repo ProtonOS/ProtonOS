@@ -8,7 +8,6 @@ BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
 TEST_DIR := src/FullTest
-# SystemRuntime removed - BCL types provided by korlib, test types in TestSupport
 
 # Output files
 ifeq ($(ARCH),x64)
