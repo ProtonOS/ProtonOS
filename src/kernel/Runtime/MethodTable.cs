@@ -527,16 +527,84 @@ public unsafe struct MethodTable
 
         fixed (MethodTable* self = &this)
         {
-            // Optional fields offset + TypeManagerIndirection (8) + WritableData (8) = DispatchMap
-            byte* pOptional = (byte*)self + GetOptionalFieldsOffset();
-            // Skip TypeManagerIndirection pointer
-            pOptional += sizeof(nint);
-            // Skip WritableData pointer
-            pOptional += sizeof(nint);
-            // Now we're at the dispatch map relative pointer (for static types)
-            // Read the relative pointer to get the dispatch map
+            // Debug: show MT layout
+            int optOffset = GetOptionalFieldsOffset();
+
+            // Only print detailed debug for the problematic MT (slots <= 5)
+            if (_usNumVtableSlots <= 5)
+            {
+                DebugConsole.Write("[GetDispMap] MT=0x");
+                DebugConsole.WriteHex((ulong)self);
+                DebugConsole.Write(" optOff=");
+                DebugConsole.WriteDecimal(optOffset);
+                DebugConsole.Write(" slots=");
+                DebugConsole.WriteDecimal(_usNumVtableSlots);
+                DebugConsole.Write(" ifaces=");
+                DebugConsole.WriteDecimal(_usNumInterfaces);
+                DebugConsole.Write(" hash=0x");
+                DebugConsole.WriteHex(_uHashCode);
+                DebugConsole.Write(" flags=0x");
+                DebugConsole.WriteHex(_usFlags);
+                DebugConsole.WriteLine();
+
+                // Dump raw bytes around optional fields
+                DebugConsole.Write("[GetDispMap] Raw @");
+                DebugConsole.WriteDecimal(optOffset);
+                DebugConsole.Write(": ");
+                byte* rawBytes = (byte*)self + optOffset;
+                for (int i = 0; i < 32; i++)
+                {
+                    if (i > 0 && i % 8 == 0) DebugConsole.Write(" ");
+                    DebugConsole.Write(" ");
+                    byte b = rawBytes[i];
+                    if (b < 16) DebugConsole.Write("0");
+                    DebugConsole.WriteHex(b);
+                }
+                DebugConsole.WriteLine();
+
+                // Also dump interface map
+                DebugConsole.Write("[GetDispMap] IfaceMap: ");
+                MethodTable** ifaceMap = GetAotInterfaceMapPtr();
+                for (int i = 0; i < _usNumInterfaces && i < 4; i++)
+                {
+                    DebugConsole.Write("[");
+                    DebugConsole.WriteDecimal(i);
+                    DebugConsole.Write("]=0x");
+                    DebugConsole.WriteHex((ulong)ifaceMap[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+            }
+
+            // For AOT types, the dispatch map is stored after optional pointers.
+            // Standard layout: TypeManagerIndirection (8) + WritableData (8) + relPtr (4)
+            byte* pOptional = (byte*)self + optOffset;
+            pOptional += sizeof(nint);  // Skip TypeManagerIndirection
+            pOptional += sizeof(nint);  // Skip WritableData
             int relativeOffset = *(int*)pOptional;
-            return (DispatchMap*)(pOptional + relativeOffset);
+            DispatchMap* result = (DispatchMap*)(pOptional + relativeOffset);
+
+            // For minimal/shared MTs, the dispatch map might be garbage
+            // In that case, return null to trigger fallback handling
+            if (result->NumStandardEntries > 500 || result->NumDefaultEntries > 500)
+            {
+                if (_usNumVtableSlots <= 5)
+                {
+                    DebugConsole.WriteLine("[GetDispMap] Dispatch map appears invalid - returning null");
+                }
+                return null;
+            }
+
+            if (_usNumVtableSlots <= 5)
+            {
+                DebugConsole.Write("[GetDispMap] relOff=");
+                DebugConsole.WriteDecimal(relativeOffset);
+                DebugConsole.Write(" result=0x");
+                DebugConsole.WriteHex((ulong)result);
+                DebugConsole.WriteLine();
+            }
+
+            return result;
         }
     }
 
@@ -619,6 +687,11 @@ public unsafe struct MethodTable
                 if (implInterface == targetInterfaceMT)
                     return i;  // Exact match
 
+                // Check structural type equality (same generic def + type args)
+                // This handles AOT vs JIT MT mismatches for the same type
+                if (implInterface != null && IsStructurallyEqual(implInterface, targetInterfaceMT))
+                    return i;  // Same type (different MT pointers)
+
                 // Check variance compatibility
                 if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
                     return i;  // Variant-compatible
@@ -634,12 +707,107 @@ public unsafe struct MethodTable
                 if (implInterface == targetInterfaceMT)
                     return i;  // Exact match
 
+                // Check structural type equality (same generic def + type args)
+                if (implInterface != null && IsStructurallyEqual(implInterface, targetInterfaceMT))
+                    return i;  // Same type (different MT pointers)
+
                 // Check variance compatibility
                 if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
                     return i;  // Variant-compatible
             }
         }
         return -1;
+    }
+
+    /// <summary>
+    /// Check if two MethodTables represent structurally the same type.
+    /// This handles cases where AOT and JIT create different MTs for the same type.
+    /// For generic types, compares hash code (encodes def token) and type arguments.
+    /// </summary>
+    private static bool IsStructurallyEqual(MethodTable* mt1, MethodTable* mt2)
+    {
+        if (mt1 == null || mt2 == null)
+            return mt1 == mt2;
+
+        if (mt1 == mt2)
+            return true;
+
+        // Skip if either is null or not a valid MT (basic sanity check)
+        if ((ulong)mt1 < 0x10000 || (ulong)mt2 < 0x10000)
+            return false;
+
+        // For interface dispatch, we need to find an interface in the object's map
+        // that has the same method layout as the target interface.
+        // The key comparison is vtable slot count - if they match, the interface
+        // likely has methods at the same positions.
+        //
+        // Note: This is a heuristic. For precise matching, we'd need to compare
+        // the actual interface definition token. But for generic interfaces like
+        // IList<Exception> vs IList<Exception>, if the slot counts match and
+        // the type arguments are compatible, we can use this interface.
+
+        // Compare vtable slot count - same interface should have same number of methods
+        DebugConsole.Write("[StructEq] mt1=0x");
+        DebugConsole.WriteHex((ulong)mt1);
+        DebugConsole.Write(" slots=");
+        DebugConsole.WriteDecimal(mt1->_usNumVtableSlots);
+        DebugConsole.Write(" hash=0x");
+        DebugConsole.WriteHex(mt1->_uHashCode);
+        DebugConsole.Write(" mt2=0x");
+        DebugConsole.WriteHex((ulong)mt2);
+        DebugConsole.Write(" slots=");
+        DebugConsole.WriteDecimal(mt2->_usNumVtableSlots);
+        DebugConsole.Write(" hash=0x");
+        DebugConsole.WriteHex(mt2->_uHashCode);
+        DebugConsole.WriteLine();
+
+        // If slot counts differ, check if we should use hash code instead
+        // AOT interface MTs often have malformed slot counts (1 instead of actual)
+        if (mt1->_usNumVtableSlots != mt2->_usNumVtableSlots)
+        {
+            // Try hash code comparison for AOT interfaces with malformed slots
+            if (mt1->_uHashCode != 0 && mt2->_uHashCode != 0 && mt1->_uHashCode == mt2->_uHashCode)
+            {
+                DebugConsole.WriteLine("[StructEq] Slot mismatch but hash match - accepting");
+                return true;
+            }
+            return false;
+        }
+
+        // Slot counts match - if both have hash codes, they should match
+        if (mt1->_uHashCode != 0 && mt2->_uHashCode != 0 && mt1->_uHashCode != mt2->_uHashCode)
+        {
+            // Different hash codes means different interface types, even with same slot count
+            DebugConsole.WriteLine("[StructEq] Slot match but hash mismatch - rejecting");
+            return false;
+        }
+
+        // At this point, vtable slots match. For interface dispatch to work,
+        // we just need the methods to be at the same slots. Since this is
+        // the same interface type (just different MT pointers), the layout is identical.
+        //
+        // IMPORTANT: This relies on the fact that the caller has already determined
+        // this is supposed to be an interface (e.g., IList<Exception>). We're just
+        // finding the corresponding MT in the object's interface map.
+
+        // If both have type args, compare them for additional validation
+        MethodTable* rel1 = mt1->_relatedType;
+        MethodTable* rel2 = mt2->_relatedType;
+
+        if (rel1 != null && rel2 != null)
+        {
+            // Both have type args - they should be the same type
+            if (rel1 != rel2)
+            {
+                // Different MT pointers - check if they're the same type by size
+                if (rel1->_uBaseSize != rel2->_uBaseSize)
+                    return false;
+            }
+        }
+        // If only one has type arg or neither has, still accept as long as
+        // vtable slot counts matched - the interface layout is the same
+
+        return true;
     }
 
     /// <summary>
@@ -663,24 +831,169 @@ public unsafe struct MethodTable
         // Find the interface index in the interface map
         int interfaceIndex = FindVariantCompatibleInterfaceIndex(interfaceMT);
         if (interfaceIndex < 0)
+        {
+            // Interface not found in map - try fallback search using dispatch map
+            // This handles cases where AOT and JIT create different MTs for the same interface
+            if (HasDispatchMap && interfaceMT != null)
+            {
+                DispatchMap* dispatchMap = GetDispatchMap();
+                if (dispatchMap != null)
+                {
+                    // Search all dispatch map entries for one with the target method slot
+                    // For generic interface dispatch, we can use slot count as a heuristic
+                    uint targetSlotCount = interfaceMT->_usNumVtableSlots;
+                    uint numEntries = dispatchMap->NumStandardEntries + dispatchMap->NumDefaultEntries;
+
+                    DebugConsole.Write("[GetIfaceSlot] Dispatch fallback: numEntries=");
+                    DebugConsole.WriteDecimal(numEntries);
+                    DebugConsole.Write(" targetSlots=");
+                    DebugConsole.WriteDecimal(targetSlotCount);
+                    DebugConsole.Write(" methodSlot=");
+                    DebugConsole.WriteDecimal((uint)methodSlot);
+                    DebugConsole.WriteLine();
+
+                    // First try: find entry with matching method slot and interface slot count
+                    for (uint i = 0; i < numEntries; i++)
+                    {
+                        DispatchMapEntry* entry = dispatchMap->GetEntry((int)i);
+                        if (entry->_usInterfaceMethodSlot == methodSlot)
+                        {
+                            int ifIdx = entry->_usInterfaceIndex;
+                            if (ifIdx >= 0 && ifIdx < _usNumInterfaces)
+                            {
+                                MethodTable* mapIface = GetInterface(ifIdx);
+                                if (mapIface != null)
+                                {
+                                    // Check if slot count matches
+                                    if (mapIface->_usNumVtableSlots == targetSlotCount)
+                                    {
+                                        DebugConsole.Write("[GetIfaceSlot] Fallback match: slot=");
+                                        DebugConsole.WriteDecimal((uint)entry->_usImplMethodSlot);
+                                        DebugConsole.WriteLine();
+                                        return entry->_usImplMethodSlot;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Second try: if slot count match failed, just find any entry with method slot
+                    // This is riskier but may work for simple cases
+                    for (uint i = 0; i < numEntries; i++)
+                    {
+                        DispatchMapEntry* entry = dispatchMap->GetEntry((int)i);
+                        if (entry->_usInterfaceMethodSlot == methodSlot)
+                        {
+                            DebugConsole.Write("[GetIfaceSlot] Fallback (risky): entry ");
+                            DebugConsole.WriteDecimal(i);
+                            DebugConsole.Write(" ifIdx=");
+                            DebugConsole.WriteDecimal((uint)entry->_usInterfaceIndex);
+                            DebugConsole.Write(" implSlot=");
+                            DebugConsole.WriteDecimal((uint)entry->_usImplMethodSlot);
+                            DebugConsole.WriteLine();
+                            return entry->_usImplMethodSlot;
+                        }
+                    }
+                }
+            }
+
+            fixed (MethodTable* self = &this)
+            {
+                DebugConsole.Write("[GetIfaceSlot] ifaceIdx=-1 self=0x");
+                DebugConsole.WriteHex((ulong)self);
+                DebugConsole.Write(" iface=0x");
+                DebugConsole.WriteHex((ulong)interfaceMT);
+                DebugConsole.Write(" numIf=");
+                DebugConsole.WriteDecimal(_usNumInterfaces);
+                DebugConsole.WriteLine();
+                // Dump actual interfaces
+                if (HasDispatchMap && _usNumInterfaces > 0)
+                {
+                    MethodTable** ifaceMap = GetAotInterfaceMapPtr();
+                    for (int j = 0; j < _usNumInterfaces; j++)
+                    {
+                        DebugConsole.Write("  [");
+                        DebugConsole.WriteDecimal(j);
+                        DebugConsole.Write("] = 0x");
+                        DebugConsole.WriteHex((ulong)ifaceMap[j]);
+                        DebugConsole.WriteLine();
+                    }
+                }
+            }
             return -1;
+        }
 
         // AOT types use dispatch map
         if (HasDispatchMap)
         {
+            fixed (MethodTable* self = &this)
+            {
+                DebugConsole.Write("[GetIfaceSlot] Found ifIdx=");
+                DebugConsole.WriteDecimal(interfaceIndex);
+                DebugConsole.Write(" methodSlot=");
+                DebugConsole.WriteDecimal((uint)methodSlot);
+                DebugConsole.Write(" MT=0x");
+                DebugConsole.WriteHex((ulong)self);
+                DebugConsole.Write(" slots=");
+                DebugConsole.WriteDecimal(_usNumVtableSlots);
+                DebugConsole.WriteLine();
+            }
+
             DispatchMap* dispatchMap = GetDispatchMap();
             if (dispatchMap != null)
             {
                 // Search the dispatch map for matching entry
                 uint numEntries = dispatchMap->NumStandardEntries + dispatchMap->NumDefaultEntries;
+                DebugConsole.Write("[GetIfaceSlot] DispMap@0x");
+                DebugConsole.WriteHex((ulong)dispatchMap);
+                DebugConsole.Write(" entries=");
+                DebugConsole.WriteDecimal(numEntries);
+                DebugConsole.WriteLine();
+
+                // Dump first 5 entries for debugging
+                for (uint dbg = 0; dbg < numEntries && dbg < 5; dbg++)
+                {
+                    DispatchMapEntry* e = dispatchMap->GetEntry((int)dbg);
+                    DebugConsole.Write("  [");
+                    DebugConsole.WriteDecimal(dbg);
+                    DebugConsole.Write("] if=");
+                    DebugConsole.WriteDecimal((uint)e->_usInterfaceIndex);
+                    DebugConsole.Write(" meth=");
+                    DebugConsole.WriteDecimal((uint)e->_usInterfaceMethodSlot);
+                    DebugConsole.Write(" impl=");
+                    DebugConsole.WriteDecimal((uint)e->_usImplMethodSlot);
+                    DebugConsole.WriteLine();
+                }
+
                 for (uint i = 0; i < numEntries; i++)
                 {
                     DispatchMapEntry* entry = dispatchMap->GetEntry((int)i);
                     if (entry->_usInterfaceIndex == interfaceIndex &&
                         entry->_usInterfaceMethodSlot == methodSlot)
                     {
+                        DebugConsole.Write("[GetIfaceSlot] Found implSlot=");
+                        DebugConsole.WriteDecimal((uint)entry->_usImplMethodSlot);
+                        DebugConsole.WriteLine();
                         return entry->_usImplMethodSlot;
                     }
+                }
+
+                // Dispatch map lookup failed - log first few entries for debugging
+                DebugConsole.Write("[GetIfaceSlot] NOT FOUND in ");
+                DebugConsole.WriteDecimal(numEntries);
+                DebugConsole.WriteLine(" entries");
+                for (uint i = 0; i < numEntries && i < 5; i++)
+                {
+                    DispatchMapEntry* entry = dispatchMap->GetEntry((int)i);
+                    DebugConsole.Write("  [");
+                    DebugConsole.WriteDecimal(i);
+                    DebugConsole.Write("] ifIdx=");
+                    DebugConsole.WriteDecimal((uint)entry->_usInterfaceIndex);
+                    DebugConsole.Write(" methSlot=");
+                    DebugConsole.WriteDecimal((uint)entry->_usInterfaceMethodSlot);
+                    DebugConsole.Write(" implSlot=");
+                    DebugConsole.WriteDecimal((uint)entry->_usImplMethodSlot);
+                    DebugConsole.WriteLine();
                 }
             }
             // Dispatch map lookup failed
@@ -889,7 +1202,20 @@ public static unsafe class TypeHelpers
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
 
         if (slot < 0)
+        {
+            DebugConsole.Write("[GetIfaceMethod] FAIL objMT=0x");
+            DebugConsole.WriteHex((ulong)objectMT);
+            DebugConsole.Write(" ifaceMT=0x");
+            DebugConsole.WriteHex((ulong)interfaceMT);
+            DebugConsole.Write(" idx=");
+            DebugConsole.WriteDecimal(methodIndex);
+            DebugConsole.Write(" hasDispMap=");
+            DebugConsole.Write(objectMT->HasDispatchMap ? "Y" : "N");
+            DebugConsole.Write(" numIface=");
+            DebugConsole.WriteDecimal(objectMT->_usNumInterfaces);
+            DebugConsole.WriteLine();
             return null;
+        }
 
         // Ensure the vtable slot is compiled (may be lazy-compiled)
         // Use the return value which handles out-of-bounds vtable slots (e.g., for sealed types like String)

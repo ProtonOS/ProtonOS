@@ -95,7 +95,8 @@ namespace System
                 var current = exceptionsToFlatten[lastIndex];
                 exceptionsToFlatten.RemoveAt(lastIndex);
 
-                for (int i = 0; i < current._innerExceptions.Count; i++)
+                int innerCount = current._innerExceptions.Count;
+                for (int i = 0; i < innerCount; i++)
                 {
                     var inner = current._innerExceptions[i];
                     if (inner is AggregateException aggregate)

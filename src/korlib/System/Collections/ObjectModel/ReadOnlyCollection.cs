@@ -10,7 +10,10 @@ namespace System.Collections.ObjectModel
     /// </summary>
     public class ReadOnlyCollection<T> : IList<T>, IReadOnlyList<T>, IList
     {
+        // Use List<T> directly to avoid interface dispatch issues in AOT scenarios.
+        // The _list field is kept for API compatibility but we prefer _concreteList when available.
         private readonly IList<T> _list;
+        private readonly List<T>? _concreteList;
 
         /// <summary>Initializes a new instance of the ReadOnlyCollection class that is a read-only wrapper around the specified list.</summary>
         public ReadOnlyCollection(IList<T> list)
@@ -18,25 +21,27 @@ namespace System.Collections.ObjectModel
             if (list == null)
                 throw new ArgumentNullException(nameof(list));
             _list = list;
+            // If it's actually a List<T>, store a direct reference to avoid interface dispatch
+            _concreteList = list as List<T>;
         }
 
         /// <summary>Gets the element at the specified index.</summary>
-        public T this[int index] => _list[index];
+        public T this[int index] => _concreteList != null ? _concreteList[index] : _list[index];
 
         T IList<T>.this[int index]
         {
-            get => _list[index];
+            get => _concreteList != null ? _concreteList[index] : _list[index];
             set => throw new NotSupportedException("Collection is read-only");
         }
 
         object? IList.this[int index]
         {
-            get => _list[index];
+            get => _concreteList != null ? _concreteList[index] : _list[index];
             set => throw new NotSupportedException("Collection is read-only");
         }
 
         /// <summary>Gets the number of elements contained in the ReadOnlyCollection.</summary>
-        public int Count => _list.Count;
+        public int Count => _concreteList != null ? _concreteList.Count : _list.Count;
 
         /// <summary>Gets the IList that the ReadOnlyCollection wraps.</summary>
         protected IList<T> Items => _list;
@@ -48,7 +53,7 @@ namespace System.Collections.ObjectModel
         object ICollection.SyncRoot => this;  // Simplified - avoid pattern matching
 
         /// <summary>Determines whether an element is in the ReadOnlyCollection.</summary>
-        public bool Contains(T value) => _list.Contains(value);
+        public bool Contains(T value) => _concreteList != null ? _concreteList.Contains(value) : _list.Contains(value);
 
         bool IList.Contains(object? value)
         {
@@ -58,7 +63,13 @@ namespace System.Collections.ObjectModel
         }
 
         /// <summary>Copies the entire ReadOnlyCollection to a compatible one-dimensional Array.</summary>
-        public void CopyTo(T[] array, int index) => _list.CopyTo(array, index);
+        public void CopyTo(T[] array, int index)
+        {
+            if (_concreteList != null)
+                _concreteList.CopyTo(array, index);
+            else
+                _list.CopyTo(array, index);
+        }
 
         void ICollection.CopyTo(Array array, int index)
         {
@@ -73,12 +84,12 @@ namespace System.Collections.ObjectModel
         }
 
         /// <summary>Returns an enumerator that iterates through the ReadOnlyCollection.</summary>
-        public IEnumerator<T> GetEnumerator() => _list.GetEnumerator();
+        public IEnumerator<T> GetEnumerator() => _concreteList != null ? _concreteList.GetEnumerator() : _list.GetEnumerator();
 
-        IEnumerator IEnumerable.GetEnumerator() => _list.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => _concreteList != null ? _concreteList.GetEnumerator() : _list.GetEnumerator();
 
         /// <summary>Searches for the specified object and returns the zero-based index of the first occurrence.</summary>
-        public int IndexOf(T value) => _list.IndexOf(value);
+        public int IndexOf(T value) => _concreteList != null ? _concreteList.IndexOf(value) : _list.IndexOf(value);
 
         int IList.IndexOf(object? value)
         {
