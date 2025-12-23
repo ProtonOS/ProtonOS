@@ -44,7 +44,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **562 tests passing**
+The JIT runs a comprehensive test suite on boot: **605 tests passing**
 
 ### Supported C# Features
 
@@ -70,12 +70,20 @@ The JIT runs a comprehensive test suite on boot: **562 tests passing**
 
 ### Prerequisites
 
-- **bflat** - C# to Native AOT compiler ([bflat.io](https://flattened.net))
-- **.NET SDK 10.0** - For building test assemblies
+- **.NET SDK 10.0** - For building bflat and test assemblies
 - **NASM** - x86-64 assembler
 - **LLD** - LLVM linker (lld-link)
 - **QEMU** - Emulation with OVMF firmware
 - **mtools** - FAT filesystem utilities (mformat, mcopy)
+
+### First-Time Setup
+
+ProtonOS uses a custom fork of bflat with fixes for our AOT scenarios. Build the toolchain once:
+
+```bash
+git submodule update --init --recursive
+make deps     # Build runtime and bflat (~10-15 min first time)
+```
 
 ### Build and Run
 
@@ -87,7 +95,8 @@ The JIT runs a comprehensive test suite on boot: **562 tests passing**
 
 ### Toolchain
 
-- **bflat 10.0.0** - Compiles kernel C# to native UEFI executable
+- **[ProtonOS/bflat](https://github.com/ProtonOS/bflat)** - Fork of bflat with custom ILCompiler
+- **[ProtonOS/runtime](https://github.com/ProtonOS/runtime)** - Fork of bflattened/runtime with AOT fixes
 - **dotnet** - Builds driver and test assemblies as standard .NET DLLs
 - **NASM** - Assembles low-level x64 code (interrupts, context switch)
 - **lld-link** - Links final UEFI PE executable
@@ -125,7 +134,7 @@ src/
 │       ├── virtio/      # VirtIO common infrastructure
 │       └── storage/     # Block device drivers (virtio-blk)
 ├── SystemRuntime/       # Deprecated - reference code only (korlib handles all types)
-└── FullTest/            # JIT test assembly (525 tests, runs on boot)
+└── FullTest/            # JIT test assembly (605 tests, runs on boot)
 ```
 
 ## How It Works
