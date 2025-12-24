@@ -3058,27 +3058,35 @@ public static unsafe class PrimitiveHelpers
 /// </summary>
 public static class ReflectionHelpers
 {
-    // MethodInfo equality - reference comparison
+    // MethodInfo equality - compare by metadata token (same method = same token)
     public static bool MethodInfoEquals(System.Reflection.MethodInfo? left, System.Reflection.MethodInfo? right)
     {
         if (left is null)
             return right is null;
         if (right is null)
             return false;
-        return ReferenceEquals(left, right);
+        // Reference equality first (fast path)
+        if (ReferenceEquals(left, right))
+            return true;
+        // Compare by metadata token - same method has same token
+        return left.MetadataToken == right.MetadataToken;
     }
 
     public static bool MethodInfoNotEquals(System.Reflection.MethodInfo? left, System.Reflection.MethodInfo? right)
         => !MethodInfoEquals(left, right);
 
-    // MethodBase equality - reference comparison
+    // MethodBase equality - compare by metadata token (same method = same token)
     public static bool MethodBaseEquals(System.Reflection.MethodBase? left, System.Reflection.MethodBase? right)
     {
         if (left is null)
             return right is null;
         if (right is null)
             return false;
-        return ReferenceEquals(left, right);
+        // Reference equality first (fast path)
+        if (ReferenceEquals(left, right))
+            return true;
+        // Compare by metadata token - same method has same token
+        return left.MetadataToken == right.MetadataToken;
     }
 
     public static bool MethodBaseNotEquals(System.Reflection.MethodBase? left, System.Reflection.MethodBase? right)
