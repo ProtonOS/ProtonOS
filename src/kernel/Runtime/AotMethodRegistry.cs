@@ -718,6 +718,18 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<System.Reflection.MethodInfo?, System.Reflection.MethodInfo?, bool>)&ReflectionHelpers.MethodInfoNotEquals,
             2, ReturnKind.Int32, false, false);
 
+        // MethodBase.op_Equality - static, reference comparison
+        Register(
+            "System.Reflection.MethodBase", "op_Equality",
+            (nint)(delegate*<System.Reflection.MethodBase?, System.Reflection.MethodBase?, bool>)&ReflectionHelpers.MethodBaseEquals,
+            2, ReturnKind.Int32, false, false);
+
+        // MethodBase.op_Inequality - static, reference comparison
+        Register(
+            "System.Reflection.MethodBase", "op_Inequality",
+            (nint)(delegate*<System.Reflection.MethodBase?, System.Reflection.MethodBase?, bool>)&ReflectionHelpers.MethodBaseNotEquals,
+            2, ReturnKind.Int32, false, false);
+
         // FieldInfo.op_Equality - static, reference comparison
         Register(
             "System.Reflection.FieldInfo", "op_Equality",
@@ -1192,6 +1204,12 @@ public static unsafe class AotMethodRegistry
             "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Count",
             (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
             0, ReturnKind.Int32, true, false);
+
+        // ReadOnlyCollection<T>.get_Item indexer (works for any T since it delegates to underlying list)
+        Register(
+            "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Item",
+            (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int, Exception?>)&CollectionHelpers.ReadOnlyCollectionException_get_Item,
+            1, ReturnKind.IntPtr, true, false);
 
         // ReadOnlyCollection<Exception> constructor
         Register(
@@ -3053,6 +3071,19 @@ public static class ReflectionHelpers
     public static bool MethodInfoNotEquals(System.Reflection.MethodInfo? left, System.Reflection.MethodInfo? right)
         => !MethodInfoEquals(left, right);
 
+    // MethodBase equality - reference comparison
+    public static bool MethodBaseEquals(System.Reflection.MethodBase? left, System.Reflection.MethodBase? right)
+    {
+        if (left is null)
+            return right is null;
+        if (right is null)
+            return false;
+        return ReferenceEquals(left, right);
+    }
+
+    public static bool MethodBaseNotEquals(System.Reflection.MethodBase? left, System.Reflection.MethodBase? right)
+        => !MethodBaseEquals(left, right);
+
     // FieldInfo equality - reference comparison
     public static bool FieldInfoEquals(System.Reflection.FieldInfo? left, System.Reflection.FieldInfo? right)
     {
@@ -4223,6 +4254,18 @@ public static unsafe class CollectionHelpers
         byte* listBytes = (byte*)listPtr;
         int size = *(int*)(listBytes + 16);  // Skip MT (8) + _items (8), get _size (4)
         return size;
+    }
+
+    /// <summary>
+    /// Get an item from a ReadOnlyCollection&lt;Exception&gt; by index.
+    /// ReadOnlyCollection layout: [MT 8] [_list reference 8]
+    /// The underlying list implements IList&lt;T&gt; and we call its indexer.
+    /// </summary>
+    public static Exception? ReadOnlyCollectionException_get_Item(System.Collections.ObjectModel.ReadOnlyCollection<Exception> collection, int index)
+    {
+        // ReadOnlyCollection wraps an IList<T> and just delegates to it
+        // Use the collection's indexer directly since it's the simplest approach
+        return collection[index];
     }
 
     /// <summary>
