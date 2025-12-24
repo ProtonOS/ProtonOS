@@ -4,6 +4,7 @@
 using System;
 using System.Runtime.InteropServices;
 using ProtonOS.DDK.Drivers;
+using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Platform;
 using ProtonOS.DDK.Storage;
 using ProtonOS.Drivers.Virtio;
@@ -13,11 +14,16 @@ namespace ProtonOS.Drivers.Storage.VirtioBlk;
 /// <summary>
 /// Virtio block request header.
 /// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
+[StructLayout(LayoutKind.Explicit, Size = 16)]
 public struct VirtioBlkReqHeader
 {
+    [FieldOffset(0)]
     public VirtioBlkReqType Type;   // Request type
+
+    [FieldOffset(4)]
     public uint Reserved;            // Reserved (was ioprio)
+
+    [FieldOffset(8)]
     public ulong Sector;             // Starting sector for read/write
 }
 
@@ -105,30 +111,68 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
 
     public int Read(ulong startBlock, uint blockCount, byte* buffer)
     {
+        Debug.Write("[VirtioBlkDevice.Read] start=");
+        Debug.WriteHex((uint)startBlock);
+        Debug.Write(" count=");
+        Debug.WriteHex(blockCount);
+        Debug.Write(" buffer=");
+        Debug.WriteHex((ulong)buffer);
+        Debug.WriteLine();
+
         if (buffer == null || blockCount == 0)
+        {
+            Debug.WriteLine("[VirtioBlkDevice.Read] Invalid parameter");
             return (int)BlockResult.InvalidParameter;
+        }
 
         if (startBlock + blockCount > _capacity)
+        {
+            Debug.WriteLine("[VirtioBlkDevice.Read] Block out of range");
             return (int)BlockResult.InvalidParameter;
+        }
 
         if (!_initialized)
+        {
+            Debug.WriteLine("[VirtioBlkDevice.Read] Not initialized");
             return (int)BlockResult.NotReady;
+        }
 
         // Get request queue
         var queue = GetQueue(RequestQueue);
         if (queue == null)
+        {
+            Debug.WriteLine("[VirtioBlkDevice.Read] Queue is null");
             return (int)BlockResult.NotReady;
+        }
 
         // Calculate total bytes
         uint totalBytes = blockCount * _blkSize;
+        Debug.Write("[VirtioBlkDevice.Read] totalBytes=");
+        Debug.WriteHex(totalBytes);
+        Debug.WriteLine();
 
         // Allocate DMA buffer for data
         var dataBuffer = DMA.Allocate(totalBytes);
         if (!dataBuffer.IsValid)
+        {
+            Debug.WriteLine("[VirtioBlkDevice.Read] DMA.Allocate failed");
             return (int)BlockResult.IoError;
+        }
+
+        Debug.Write("[VirtioBlkDevice.Read] DMA buffer phys=");
+        Debug.WriteHex(dataBuffer.PhysicalAddress);
+        Debug.Write(" virt=");
+        Debug.WriteHex((ulong)dataBuffer.VirtualAddress);
+        Debug.WriteLine();
 
         try
         {
+            Debug.Write("[VirtioBlkDevice.Read] headerBuffer valid=");
+            Debug.WriteHex(_headerBuffer.IsValid ? 1u : 0u);
+            Debug.Write(" phys=");
+            Debug.WriteHex(_headerBuffer.PhysicalAddress);
+            Debug.WriteLine();
+
             // Setup request header
             var header = (VirtioBlkReqHeader*)_headerBuffer.VirtualAddress;
             header->Type = VirtioBlkReqType.In;
@@ -140,8 +184,10 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
 
             // Allocate 3 descriptors: header (device-read), data (device-write), status (device-write)
             int descHead = queue.AllocateDescriptors(3);
+            Debug.WriteLine("[VirtioBlkDevice.Read] descHead={0}", descHead);
             if (descHead < 0)
             {
+                Debug.WriteLine("[VirtioBlkDevice.Read] AllocateDescriptors failed");
                 DMA.Free(ref dataBuffer);
                 return (int)BlockResult.IoError;
             }
@@ -166,14 +212,17 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
             NotifyQueue(RequestQueue);
 
             // Poll for completion
+            Debug.WriteLine("[VirtioBlkDevice.Read] Polling for completion...");
             int timeout = 10000000;
             while (!queue.HasUsedBuffers() && --timeout > 0)
             {
                 // Busy wait
             }
 
+            Debug.WriteLine("[VirtioBlkDevice.Read] Poll done, timeout={0}", timeout);
             if (timeout <= 0)
             {
+                Debug.WriteLine("[VirtioBlkDevice.Read] Timeout!");
                 queue.FreeDescriptors(descHead);
                 DMA.Free(ref dataBuffer);
                 return (int)BlockResult.Timeout;
@@ -182,24 +231,31 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
             // Get completion
             uint len;
             int usedDesc = queue.PopUsed(out len);
+            Debug.WriteLine("[VirtioBlkDevice.Read] usedDesc={0} len={1}", usedDesc, len);
             queue.FreeDescriptors(usedDesc);
 
             // Check status
             byte status = *_statusBuffer.AsBytes;
+            Debug.WriteLine("[VirtioBlkDevice.Read] status={0}", status);
             if (status != (byte)VirtioBlkStatus.Ok)
             {
+                Debug.WriteLine("[VirtioBlkDevice.Read] Status check FAILED");
                 DMA.Free(ref dataBuffer);
                 return (int)BlockResult.IoError;
             }
 
+            Debug.WriteLine("[VirtioBlkDevice.Read] Copying data...");
             // Copy data to user buffer
             DMA.CopyFrom(dataBuffer, buffer, totalBytes);
+            Debug.WriteLine("[VirtioBlkDevice.Read] Copy done, freeing buffer");
             DMA.Free(ref dataBuffer);
 
+            Debug.WriteLine("[VirtioBlkDevice.Read] Returning success");
             return (int)blockCount;
         }
         catch
         {
+            Debug.WriteLine("[VirtioBlkDevice.Read] EXCEPTION caught");
             DMA.Free(ref dataBuffer);
             return (int)BlockResult.IoError;
         }
@@ -207,6 +263,16 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
 
     public int Write(ulong startBlock, uint blockCount, byte* buffer)
     {
+        Debug.Write("[VirtioBlkDevice.Write] start64=");
+        Debug.WriteHex(startBlock);
+        Debug.Write(" startHi=");
+        Debug.WriteHex((uint)(startBlock >> 32));
+        Debug.Write(" startLo=");
+        Debug.WriteHex((uint)startBlock);
+        Debug.Write(" count=");
+        Debug.WriteHex(blockCount);
+        Debug.WriteLine();
+
         if (buffer == null || blockCount == 0)
             return (int)BlockResult.InvalidParameter;
 
@@ -239,9 +305,48 @@ public unsafe class VirtioBlkDevice : VirtioDevice, IBlockDevice
 
             // Setup request header
             var header = (VirtioBlkReqHeader*)_headerBuffer.VirtualAddress;
+
+            // Debug: show sector before assignment
+            Debug.Write("[Write] Before: sector=");
+            Debug.WriteHex(header->Sector);
+            Debug.WriteLine();
+
             header->Type = VirtioBlkReqType.Out;
             header->Reserved = 0;
             header->Sector = startBlock;
+
+            // Debug: show sector after assignment
+            Debug.Write("[Write] After: sector=");
+            Debug.WriteHex(header->Sector);
+            Debug.Write(" startBlock=");
+            Debug.WriteHex(startBlock);
+            Debug.WriteLine();
+
+            // Check actual offset of Sector field
+            byte* headerBase = (byte*)header;
+            byte* sectorAddr = (byte*)&header->Sector;
+            long sectorOffset = sectorAddr - headerBase;
+            Debug.Write("[Write] Sector offset=");
+            Debug.WriteDecimal((int)sectorOffset);
+            Debug.Write(" sectorAddr=");
+            Debug.WriteHex((ulong)sectorAddr);
+            Debug.WriteLine();
+
+            // Dump raw header bytes 0-15
+            Debug.Write("[Write.hdr] 0-7: ");
+            for (int i = 0; i < 8; i++)
+            {
+                Debug.WriteHex(headerBase[i]);
+                Debug.Write(" ");
+            }
+            Debug.WriteLine();
+            Debug.Write("[Write.hdr] 8-15: ");
+            for (int i = 8; i < 16; i++)
+            {
+                Debug.WriteHex(headerBase[i]);
+                Debug.Write(" ");
+            }
+            Debug.WriteLine();
 
             // Clear status
             *_statusBuffer.AsBytes = 0xFF;

@@ -1841,6 +1841,15 @@ public unsafe struct ILCompiler
                 {
                     uint token = *(uint*)(_il + _ilOffset);
                     _ilOffset += 4;
+                    // DEBUG: trace all stfld opcodes for VirtIO (asm 4)
+                    if (_debugAssemblyId == 4)
+                    {
+                        DebugConsole.Write("[STFLD-OP] asm=4 tok=0x");
+                        DebugConsole.WriteHex(token);
+                        DebugConsole.Write(" mtd=0x");
+                        DebugConsole.WriteHex(_debugMethodToken);
+                        DebugConsole.WriteLine();
+                    }
                     return CompileStfld(token);
                 }
             case ILOpcode.Ldsfld:
@@ -2384,9 +2393,14 @@ public unsafe struct ILCompiler
             X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, offset);
         }
 
-        // Default: push as Int32 (primitives, references)
+        // Push result - use typeSize to determine if 32-bit or 64-bit
+        // CRITICAL: conv.u/conv.i check srcIs32Bit based on EvalStackEntry.Kind
+        // If we always push Int32, 64-bit values will be incorrectly zero-extended!
         X64Emitter.Push(ref _code, VReg.R0);
-        PushEntry(EvalStackEntry.Int32);
+        if (typeSize == 8)
+            PushEntry(EvalStackEntry.NativeInt);  // 64-bit: I8, U8, I, U, references
+        else
+            PushEntry(EvalStackEntry.Int32);  // 32-bit or unknown
         // if (debugBind)
         // {
         //     // DebugConsole.Write("[BindDbg] ldloc.4 cached depth=");
@@ -4141,9 +4155,31 @@ public unsafe struct ILCompiler
             // Pop two values, compare, branch based on condition
             PopReg(VReg.R2);  // Second operand
             PopR0();  // First operand
-            // Use 32-bit comparison for proper signed int32 semantics
-            // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
-            X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+
+            // Determine if we need 64-bit or 32-bit comparison
+            // Use 64-bit for: NativeInt, Int64, ObjectRef, or large ValueTypes (pointers)
+            // Use 32-bit for Int32 to get proper signed semantics (-5 < 0)
+            // NOTE: Use RawSize (actual type size) not ByteSize (stack-aligned size, always 8)
+            bool need64Bit = entry1.Kind == EvalStackKind.NativeInt ||
+                            entry1.Kind == EvalStackKind.Int64 ||
+                            entry1.Kind == EvalStackKind.ObjectRef ||
+                            entry2.Kind == EvalStackKind.NativeInt ||
+                            entry2.Kind == EvalStackKind.Int64 ||
+                            entry2.Kind == EvalStackKind.ObjectRef ||
+                            entry1.RawSize > 4 ||
+                            entry2.RawSize > 4;
+
+            if (need64Bit)
+            {
+                // 64-bit comparison for pointers and longs
+                X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
+            }
+            else
+            {
+                // Use 32-bit comparison for proper signed int32 semantics
+                // This ensures -5 < 0 works correctly (64-bit would see 0x00000000FFFFFFFB as positive)
+                X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+            }
         }
 
         int patchOffset = X64Emitter.JccRel32(ref _code, cc);
@@ -4189,6 +4225,11 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
         }
 
+        // Check operand types BEFORE popping to determine comparison width
+        EvalStackEntry entry1 = PeekEntryAt(1);  // First operand (deeper in stack)
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Second operand (top of stack)
+        bool use32Bit = IsInt32Like(entry1) && IsInt32Like(entry2);
+
         PopReg(VReg.R2);  // Second operand
         PopR0();  // First operand
 
@@ -4199,7 +4240,12 @@ public unsafe struct ILCompiler
             DebugConsole.WriteLine();
         }
 
-        X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
+        // Use 32-bit comparison for Int32 operands to handle sign/zero extension differences
+        // This ensures uint32 (0xFFFFFFFF zero-extended) equals int32 -1 (sign-extended)
+        if (use32Bit)
+            X64Emitter.CmpRR32(ref _code, VReg.R0, VReg.R2);
+        else
+            X64Emitter.CmpRR(ref _code, VReg.R0, VReg.R2);
 
         // SETE sets AL to 1 if equal, 0 otherwise
         // setcc r/m8: 0F 94 /0 (mod=11, reg=0, r/m=AL)
@@ -4919,11 +4965,32 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 3 && !needsHiddenBuffer)
         {
-            // Three args: pop to R8, RDX, RCX
-            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
-            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
-            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            PopEntry(); PopEntry(); PopEntry();
+            // Three args: check if arg0 is a large struct
+            EvalStackEntry arg2Entry = PeekEntryAt(0);  // TOS = arg2
+            EvalStackEntry arg1Entry = PeekEntryAt(1);  // TOS-1 = arg1
+            EvalStackEntry arg0Entry = PeekEntryAt(2);  // TOS-2 = arg0
+
+            if (arg0Entry.ByteSize > 8)
+            {
+                // arg0 is a large struct: pass by pointer in RCX
+                // Stack layout: [RSP] = arg2 (8), [RSP+8] = arg1 (8), [RSP+16] = struct (arg0Size)
+                // Pop arg2 and arg1, leave struct on stack
+                X64Emitter.Pop(ref _code, VReg.R3);   // R8 = arg2
+                X64Emitter.Pop(ref _code, VReg.R2);   // RDX = arg1
+                PopEntry(); PopEntry(); PopEntry();
+
+                // Now struct is at TOS - will pass pointer in RCX after shadow space
+                largeStructArgBytes = arg0Entry.ByteSize;
+                needsLargeStructPtrInRcx = true;
+            }
+            else
+            {
+                // All small args: pop to R8, RDX, RCX
+                X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+                X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+                X64Emitter.Pop(ref _code, VReg.R1);   // arg0
+                PopEntry(); PopEntry(); PopEntry();
+            }
         }
         else if (totalArgs == 3 && needsHiddenBuffer)
         {
@@ -5240,12 +5307,8 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Int32:
-                // Return value in EAX (zero-extended in RAX)
-                // Sign-extend to maintain IL semantics for signed int32
-                // movsxd rax, eax
-                _code.EmitByte(0x48);  // REX.W
-                _code.EmitByte(0x63);  // MOVSXD
-                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                // Return value in EAX (automatically zero-extended in RAX by x64 architecture)
+                // Do NOT sign-extend - let IL conv.* opcodes handle signedness if needed
                 X64Emitter.Push(ref _code, VReg.R0);
                 PushEntry(EvalStackEntry.Int32);
                 break;
@@ -6318,9 +6381,7 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Int32:
-                _code.EmitByte(0x48);  // REX.W
-                _code.EmitByte(0x63);  // MOVSXD
-                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                // Return value in EAX (automatically zero-extended in RAX by x64 architecture)
                 X64Emitter.Push(ref _code, VReg.R0);
                 PushEntry(EvalStackEntry.Int32);
                 break;
@@ -6507,9 +6568,7 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Int32:
-                _code.EmitByte(0x48);  // REX.W
-                _code.EmitByte(0x63);  // MOVSXD
-                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                // Return value in EAX (automatically zero-extended in RAX by x64 architecture)
                 X64Emitter.Push(ref _code, VReg.R0);
                 PushEntry(EvalStackEntry.Int32);
                 break;
@@ -6725,10 +6784,7 @@ public unsafe struct ILCompiler
                 break;
 
             case ReturnKind.Int32:
-                // Sign-extend EAX to RAX
-                _code.EmitByte(0x48);  // REX.W
-                _code.EmitByte(0x63);  // MOVSXD
-                _code.EmitByte(0xC0);  // ModRM: RAX, EAX
+                // Return value in EAX (automatically zero-extended in RAX by x64 architecture)
                 X64Emitter.Push(ref _code, VReg.R0);
                 PushEntry(EvalStackEntry.Int32);
                 break;
@@ -7805,6 +7861,16 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileStfld(uint token)
     {
+        // DEBUG: unconditionally trace stfld entry for VirtIO
+        if (_debugAssemblyId == 4)
+        {
+            DebugConsole.Write("[CS] tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" resolver=");
+            DebugConsole.WriteDecimal(_fieldResolver != null ? 1U : 0U);
+            DebugConsole.WriteLine();
+        }
+
         int offset;
         int size;
         bool isFieldTypeValueType = true;  // Default to true (safer)
@@ -7830,6 +7896,16 @@ public unsafe struct ILCompiler
         else
         {
             DecodeFieldToken(token, out offset, out size, out _);
+            // DEBUG: Log when field resolver fails (fallback to DecodeFieldToken)
+            DebugConsole.Write("[stfld-FALLBACK] token=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" -> off=");
+            DebugConsole.WriteDecimal(offset);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(size);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(_debugAssemblyId);
+            DebugConsole.WriteLine();
         }
 
         // CRITICAL: For reference-type fields (class fields), force size=8 (pointer)
@@ -8957,20 +9033,34 @@ public unsafe struct ILCompiler
             // We need to save them because we'll call RhpNewFast first (for ref types)
             // For simplicity, move them to callee-saved registers (we saved them in prologue)
             // RBX, R12, R13, R14 are callee-saved
-            // Max 4 args for now (beyond that would need stack spill)
+            // Support up to 8 args: 4 in registers, 4 more in stack slots
 
-            if (ctorArgs > 4)
+            if (ctorArgs > 8)
             {
-                DebugConsole.WriteLine("[JIT] newobj: too many constructor args (max 4)");
+                DebugConsole.WriteLine("[JIT] newobj: too many constructor args (max 8)");
                 return false;
             }
 
-            // Pop args into temp registers (in reverse order since last arg is on top)
-            // Args will go: arg0->RBX, arg1->R12, arg2->R13, arg3->R14
+            // Calculate temp stack offset for extra args (beyond 4)
+            // We use frame slots after locals for extra args
+            int extraArgBaseOffset = -(X64Emitter.CalleeSaveSize + (_localCount + 2) * 64);
+
+            // Pop args into temp registers/stack (in reverse order since last arg is on top)
+            // Args 0-3 go to registers: arg0->R7, arg1->R8, arg2->R9, arg3->R10
+            // Args 4-7 go to stack slots at extraArgBaseOffset
             VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10 };
             for (int i = ctorArgs - 1; i >= 0; i--)
             {
-                X64Emitter.Pop(ref _code, tempRegs[i]);
+                if (i < 4)
+                {
+                    X64Emitter.Pop(ref _code, tempRegs[i]);
+                }
+                else
+                {
+                    // Pop to RAX then store to stack slot
+                    X64Emitter.Pop(ref _code, VReg.R0);
+                    X64Emitter.MovMR(ref _code, VReg.FP, extraArgBaseOffset + (i - 4) * 8, VReg.R0);
+                }
                 PopEntry();
             }
 
@@ -8979,9 +9069,11 @@ public unsafe struct ILCompiler
             // (e.g., from 'dup' in object initializers). These items are at [RSP] and above.
             // When we call RhpNewFast/constructor, the callee's shadow space overlaps this!
             // Fix: move RSP down to put live data safely below shadow space.
-            // For 4-arg constructors (5 physical args with 'this'), we also need space
-            // for the 5th arg at [RSP+32], so reserve 40 bytes instead of 32.
-            int shadowReserve = ctorArgs >= 4 ? 40 : 32;
+            // For constructors with 4+ args, we need space for extra args on stack:
+            // - Shadow space is always 32 bytes
+            // - arg3 goes at [RSP+32], arg4 at [RSP+40], etc.
+            int extraStackArgs = ctorArgs > 3 ? ctorArgs - 3 : 0;
+            int shadowReserve = 32 + extraStackArgs * 8;
             X64Emitter.SubRI(ref _code, VReg.SP, shadowReserve);
 
             // newobjTempOffset must be AFTER all local variable slots.
@@ -9099,11 +9191,17 @@ public unsafe struct ILCompiler
                 X64Emitter.MovRR(ref _code, VReg.R4, VReg.R9);
             if (ctorArgs >= 4)
             {
-                // Push 4th arg to stack (shadow space slot)
-                // Actually for x64, we use stack slot at RSP+32 for 5th arg
-                // But since constructor has 'this' as hidden first arg,
-                // arg3 is the 5th param, goes to stack
-                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R10);  // shadow space [rsp+32]
+                // arg3 is the 5th param (with 'this'), goes to [RSP+32]
+                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R10);
+            }
+            // Args 4-7 were saved to temp stack slots, load them to call stack
+            for (int i = 4; i < ctorArgs; i++)
+            {
+                // Load from temp slot at extraArgBaseOffset + (i-4)*8
+                X64Emitter.MovRM(ref _code, VReg.R0, VReg.FP, extraArgBaseOffset + (i - 4) * 8);
+                // Store to call stack at [RSP + 32 + (i-3)*8]
+                // arg4 -> RSP+40, arg5 -> RSP+48, etc.
+                X64Emitter.MovMR(ref _code, VReg.SP, 32 + (i - 3) * 8, VReg.R0);
             }
 
             if (ctor.NativeCode == null)

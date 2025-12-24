@@ -29,6 +29,8 @@ public static unsafe class Kernel
     private static ulong _virtioDriverSize;
     private static byte* _virtioBlkDriverBytes;
     private static ulong _virtioBlkDriverSize;
+    private static byte* _fatDriverBytes;
+    private static ulong _fatDriverSize;
 
     // korlib IL assembly (for JIT generic instantiation and token-based AOT lookup)
     private static byte* _korlibBytes;
@@ -40,6 +42,7 @@ public static unsafe class Kernel
     private static uint _ddkId;
     private static uint _virtioDriverId;
     private static uint _virtioBlkDriverId;
+    private static uint _fatDriverId;
     private static uint _korlibId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
@@ -227,6 +230,11 @@ public static unsafe class Kernel
             _virtioBlkDriverId = AssemblyLoader.Load(_virtioBlkDriverBytes, _virtioBlkDriverSize);
         }
 
+        if (_fatDriverBytes != null)
+        {
+            _fatDriverId = AssemblyLoader.Load(_fatDriverBytes, _fatDriverSize);
+        }
+
         // Register the test assembly with AssemblyLoader (depends on TestSupport and DDK)
         if (_testAssemblyBytes != null)
         {
@@ -291,6 +299,7 @@ public static unsafe class Kernel
         // Load driver assemblies from /drivers/
         _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
         _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
+        _fatDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
 
         // Load korlib.dll (IL assembly for JIT generic instantiation)
         _korlibBytes = UEFIFS.ReadFileAscii("\\korlib.dll", out _korlibSize);
@@ -1010,5 +1019,121 @@ public static unsafe class Kernel
         }
 
         DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} driver(s)", boundCount));
+
+        // Test virtio I/O if a driver was bound
+        if (boundCount > 0)
+        {
+            TestVirtioIO(virtioBlkEntryToken);
+        }
+    }
+
+    /// <summary>
+    /// Test virtio block device I/O by calling VirtioBlkEntry.TestRead().
+    /// </summary>
+    private static void TestVirtioIO(uint virtioBlkEntryToken)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[VirtioIO] Testing virtio block device...");
+
+        // Find TestRead method
+        uint testReadToken = AssemblyLoader.FindMethodDefByName(_virtioBlkDriverId, virtioBlkEntryToken, "TestRead");
+        if (testReadToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Could not find TestRead method");
+            return;
+        }
+
+        // JIT compile TestRead method
+        DebugConsole.WriteLine("[VirtioIO] JIT compiling VirtioBlkEntry.TestRead...");
+        var testReadResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioBlkDriverId, testReadToken);
+        if (!testReadResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Failed to JIT compile TestRead");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[VirtioIO] TestRead at 0x{0}",
+            ((ulong)testReadResult.CodeAddress).ToString("X", null)));
+
+        // Call TestRead
+        var testReadFunc = (delegate* unmanaged<int>)testReadResult.CodeAddress;
+        int result = testReadFunc();
+
+        if (result == 1)
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestRead PASSED!");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestRead FAILED!");
+            return;  // Don't continue if read fails
+        }
+
+        // Find TestWrite method
+        uint testWriteToken = AssemblyLoader.FindMethodDefByName(_virtioBlkDriverId, virtioBlkEntryToken, "TestWrite");
+        if (testWriteToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Could not find TestWrite method");
+            return;
+        }
+
+        // JIT compile TestWrite method
+        DebugConsole.WriteLine("[VirtioIO] JIT compiling VirtioBlkEntry.TestWrite...");
+        var testWriteResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioBlkDriverId, testWriteToken);
+        if (!testWriteResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Failed to JIT compile TestWrite");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[VirtioIO] TestWrite at 0x{0}",
+            ((ulong)testWriteResult.CodeAddress).ToString("X", null)));
+
+        // Call TestWrite
+        var testWriteFunc = (delegate* unmanaged<int>)testWriteResult.CodeAddress;
+        int writeResult = testWriteFunc();
+
+        if (writeResult == 1)
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestWrite PASSED!");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestWrite FAILED!");
+            return;  // Don't continue if write fails
+        }
+
+        // Find TestFatMount method
+        uint testFatMountToken = AssemblyLoader.FindMethodDefByName(_virtioBlkDriverId, virtioBlkEntryToken, "TestFatMount");
+        if (testFatMountToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Could not find TestFatMount method");
+            return;
+        }
+
+        // JIT compile TestFatMount method
+        DebugConsole.WriteLine("[VirtioIO] JIT compiling VirtioBlkEntry.TestFatMount...");
+        var testFatMountResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioBlkDriverId, testFatMountToken);
+        if (!testFatMountResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioIO] ERROR: Failed to JIT compile TestFatMount");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[VirtioIO] TestFatMount at 0x{0}",
+            ((ulong)testFatMountResult.CodeAddress).ToString("X", null)));
+
+        // Call TestFatMount
+        var testFatMountFunc = (delegate* unmanaged<int>)testFatMountResult.CodeAddress;
+        int fatMountResult = testFatMountFunc();
+
+        if (fatMountResult == 1)
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestFatMount PASSED!");
+        }
+        else
+        {
+            DebugConsole.WriteLine("[VirtioIO] TestFatMount FAILED!");
+        }
     }
 }

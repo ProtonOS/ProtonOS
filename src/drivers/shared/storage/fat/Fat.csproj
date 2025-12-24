@@ -3,8 +3,8 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <AssemblyName>ProtonOS.Drivers.VirtioBlk</AssemblyName>
-    <RootNamespace>ProtonOS.Drivers.Storage.VirtioBlk</RootNamespace>
+    <AssemblyName>ProtonOS.Drivers.Fat</AssemblyName>
+    <RootNamespace>ProtonOS.Drivers.Storage.Fat</RootNamespace>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -14,8 +14,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../../../ddk/DDK.csproj" />
-    <ProjectReference Include="../../virtio/Virtio.csproj" />
-    <ProjectReference Include="../fat/Fat.csproj" />
   </ItemGroup>
 
 </Project>

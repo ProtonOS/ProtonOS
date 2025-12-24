@@ -500,18 +500,20 @@ public static unsafe class AotMethodRegistry
             4, ReturnKind.IntPtr, false, false);
 
         // String.Replace(string, string) - 2 parameters (oldValue, newValue), HasThis=true
-        // NOTE: This is registered FIRST so it's found before Replace(char, char) in arg-count lookup.
-        // The Guid(string) constructor uses Replace(string, string) to remove dashes.
-        Register(
+        // Signature hash distinguishes from Replace(char, char)
+        RegisterWithSignature(
             "System.String", "Replace",
             (nint)(delegate*<string, string, string?, string>)&StringHelpers.ReplaceString,
-            2, ReturnKind.IntPtr, true, false);
+            2, ReturnKind.IntPtr, true, false,
+            ComputeSignatureHash(ELEMENT_TYPE_STRING, ELEMENT_TYPE_STRING));
 
         // String.Replace(char, char) - 2 parameters (oldChar, newChar), HasThis=true
-        Register(
+        // Signature hash distinguishes from Replace(string, string)
+        RegisterWithSignature(
             "System.String", "Replace",
             (nint)(delegate*<string, char, char, string>)&StringHelpers.ReplaceChar,
-            2, ReturnKind.IntPtr, true, false);
+            2, ReturnKind.IntPtr, true, false,
+            ComputeSignatureHash(ELEMENT_TYPE_CHAR, ELEMENT_TYPE_CHAR));
 
         // String.Contains(string) - 1 parameter, HasThis=true, returns bool
         Register(
@@ -527,6 +529,36 @@ public static unsafe class AotMethodRegistry
             "System.String", "IndexOf",
             (nint)(delegate*<string, string, int>)&StringHelpers.IndexOfString,
             1, ReturnKind.Int32, true, false);
+
+        // String.StartsWith(string) - 1 parameter, HasThis=true, returns bool
+        Register(
+            "System.String", "StartsWith",
+            (nint)(delegate*<string, string, bool>)&StringHelpers.StartsWith,
+            1, ReturnKind.Int32, true, false);
+
+        // String.EndsWith(string) - 1 parameter, HasThis=true, returns bool
+        Register(
+            "System.String", "EndsWith",
+            (nint)(delegate*<string, string, bool>)&StringHelpers.EndsWith,
+            1, ReturnKind.Int32, true, false);
+
+        // String.LastIndexOf(char) - 1 parameter, HasThis=true, returns int
+        Register(
+            "System.String", "LastIndexOf",
+            (nint)(delegate*<string, char, int>)&StringHelpers.LastIndexOfChar,
+            1, ReturnKind.Int32, true, false);
+
+        // String.Substring(int, int) - 2 parameters, HasThis=true, returns string
+        Register(
+            "System.String", "Substring",
+            (nint)(delegate*<string, int, int, string>)&StringHelpers.Substring,
+            2, ReturnKind.IntPtr, true, false);
+
+        // String.Substring(int) - 1 parameter, HasThis=true, returns string
+        Register(
+            "System.String", "Substring",
+            (nint)(delegate*<string, int, string>)&StringHelpers.SubstringFrom,
+            1, ReturnKind.IntPtr, true, false);
     }
 
     /// <summary>
@@ -813,6 +845,12 @@ public static unsafe class AotMethodRegistry
             "System.Int32", "GetHashCode",
             (nint)(delegate*<nint, int>)&Int32Helpers.GetHashCode,
             0, ReturnKind.Int32, true, true);  // virtual method
+
+        // Int32.CompareTo(int) - compares this value to another
+        Register(
+            "System.Int32", "CompareTo",
+            (nint)(delegate*<nint, int, int>)&Int32Helpers.CompareTo,
+            1, ReturnKind.Int32, true, false);
     }
 
     /// <summary>
@@ -831,6 +869,146 @@ public static unsafe class AotMethodRegistry
             "System.Int16", "CompareTo",
             (nint)(delegate*<nint, short, int>)&PrimitiveHelpers.Int16_CompareTo,
             1, ReturnKind.Int32, true, false);
+
+        // =========================================================================
+        // ToString methods for all primitive types (virtual override, called via vtable)
+        // =========================================================================
+
+        // Byte.ToString() - 0 parameters, HasThis=true, IsVirtual=true
+        Register(
+            "System.Byte", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Byte_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // SByte.ToString()
+        Register(
+            "System.SByte", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.SByte_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Boolean.ToString()
+        Register(
+            "System.Boolean", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Boolean_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Char.ToString()
+        Register(
+            "System.Char", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Char_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Int16.ToString()
+        Register(
+            "System.Int16", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Int16_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // UInt16.ToString()
+        Register(
+            "System.UInt16", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt16_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Int64.ToString()
+        Register(
+            "System.Int64", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Int64_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // UInt64.ToString()
+        Register(
+            "System.UInt64", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt64_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // UInt32.ToString()
+        Register(
+            "System.UInt32", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt32_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // IntPtr.ToString()
+        Register(
+            "System.IntPtr", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.IntPtr_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // UIntPtr.ToString()
+        Register(
+            "System.UIntPtr", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.UIntPtr_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Single.ToString()
+        Register(
+            "System.Single", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Single_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // Double.ToString()
+        Register(
+            "System.Double", "ToString",
+            (nint)(delegate*<nint, string>)&PrimitiveHelpers.Double_ToString,
+            0, ReturnKind.IntPtr, true, true);
+
+        // =========================================================================
+        // GetHashCode methods for all primitive types
+        // =========================================================================
+
+        // Byte.GetHashCode()
+        Register(
+            "System.Byte", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.Byte_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // SByte.GetHashCode()
+        Register(
+            "System.SByte", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.SByte_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // Boolean.GetHashCode()
+        Register(
+            "System.Boolean", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.Boolean_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // Char.GetHashCode()
+        Register(
+            "System.Char", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.Char_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // Int16.GetHashCode()
+        Register(
+            "System.Int16", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.Int16_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // UInt16.GetHashCode()
+        Register(
+            "System.UInt16", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt16_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // Int64.GetHashCode()
+        Register(
+            "System.Int64", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.Int64_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // UInt64.GetHashCode()
+        Register(
+            "System.UInt64", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt64_GetHashCode,
+            0, ReturnKind.Int32, true, true);
+
+        // UInt32.GetHashCode()
+        Register(
+            "System.UInt32", "GetHashCode",
+            (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt32_GetHashCode,
+            0, ReturnKind.Int32, true, true);
     }
 
     /// <summary>
@@ -1318,6 +1496,23 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register an AOT method with signature hash for overload resolution.
+    /// Use this when multiple overloads have the same parameter count.
+    /// </summary>
+    /// <param name="signatureHash">Hash computed from parameter element types using ComputeSignatureHash()</param>
+    private static void RegisterWithSignature(string typeName, string methodName, nint nativeCode,
+                                               byte argCount, ReturnKind returnKind, bool hasThis, bool isVirtual,
+                                               ulong signatureHash, ushort returnStructSize = 0)
+    {
+        AotMethodFlags flags = AotMethodFlags.None;
+        if (hasThis) flags |= AotMethodFlags.HasThis;
+        if (isVirtual) flags |= AotMethodFlags.IsVirtual;
+
+        RegisterEx(typeName, methodName, nativeCode, argCount, returnKind,
+                   (byte)returnStructSize, flags, signatureHash, 0, 0, 0);
+    }
+
+    /// <summary>
     /// Register an AOT method with full control over all fields.
     /// </summary>
     private static void RegisterEx(string typeName, string methodName, nint nativeCode,
@@ -1362,6 +1557,15 @@ public static unsafe class AotMethodRegistry
     {
         // Legacy lookup - use extended lookup with no signature/instantiation
         return TryLookupEx(typeName, methodName, argCount, 0, 0, out entry, isCharPtrVariant, isListVariant, isSingleExceptionVariant);
+    }
+
+    /// <summary>
+    /// Look up an AOT method with signature hash for proper overload resolution.
+    /// </summary>
+    public static bool TryLookupWithSignature(byte* typeName, byte* methodName, byte argCount,
+                                               ulong signatureHash, out AotMethodEntry entry)
+    {
+        return TryLookupEx(typeName, methodName, argCount, signatureHash, 0, out entry, false, false, false);
     }
 
     /// <summary>
@@ -1640,6 +1844,223 @@ public static unsafe class AotMethodRegistry
                 return false;
         }
         return bytes[str.Length] == 0;
+    }
+
+    // ==========================================================================
+    // Signature Hash Computation
+    // ==========================================================================
+    // ECMA-335 Element Types for signature matching
+    public const byte ELEMENT_TYPE_VOID = 0x01;
+    public const byte ELEMENT_TYPE_BOOLEAN = 0x02;
+    public const byte ELEMENT_TYPE_CHAR = 0x03;
+    public const byte ELEMENT_TYPE_I1 = 0x04;
+    public const byte ELEMENT_TYPE_U1 = 0x05;
+    public const byte ELEMENT_TYPE_I2 = 0x06;
+    public const byte ELEMENT_TYPE_U2 = 0x07;
+    public const byte ELEMENT_TYPE_I4 = 0x08;
+    public const byte ELEMENT_TYPE_U4 = 0x09;
+    public const byte ELEMENT_TYPE_I8 = 0x0A;
+    public const byte ELEMENT_TYPE_U8 = 0x0B;
+    public const byte ELEMENT_TYPE_R4 = 0x0C;
+    public const byte ELEMENT_TYPE_R8 = 0x0D;
+    public const byte ELEMENT_TYPE_STRING = 0x0E;
+    public const byte ELEMENT_TYPE_PTR = 0x0F;
+    public const byte ELEMENT_TYPE_BYREF = 0x10;
+    public const byte ELEMENT_TYPE_VALUETYPE = 0x11;
+    public const byte ELEMENT_TYPE_CLASS = 0x12;
+    public const byte ELEMENT_TYPE_VAR = 0x13;
+    public const byte ELEMENT_TYPE_ARRAY = 0x14;
+    public const byte ELEMENT_TYPE_GENERICINST = 0x15;
+    public const byte ELEMENT_TYPE_TYPEDBYREF = 0x16;
+    public const byte ELEMENT_TYPE_I = 0x18;
+    public const byte ELEMENT_TYPE_U = 0x19;
+    public const byte ELEMENT_TYPE_OBJECT = 0x1C;
+    public const byte ELEMENT_TYPE_SZARRAY = 0x1D;
+    public const byte ELEMENT_TYPE_MVAR = 0x1E;
+
+    /// <summary>
+    /// Compute a signature hash from an array of element types.
+    /// Used when registering AOT methods with known parameter types.
+    /// </summary>
+    public static ulong ComputeSignatureHash(params byte[] elementTypes)
+    {
+        ulong hash = 5381;
+        foreach (var t in elementTypes)
+        {
+            hash = ((hash << 5) + hash) ^ t;
+        }
+        return hash;
+    }
+
+    /// <summary>
+    /// Compute a signature hash from a raw IL signature blob.
+    /// Used by MetadataIntegration when looking up methods.
+    /// </summary>
+    /// <param name="sig">Pointer to signature blob</param>
+    /// <param name="sigLen">Length of signature blob</param>
+    /// <returns>Hash of parameter element types</returns>
+    public static ulong ComputeSignatureHashFromBlob(byte* sig, int sigLen)
+    {
+        if (sig == null || sigLen < 2)
+            return 0;
+
+        int pos = 0;
+
+        // Skip calling convention byte
+        pos++;
+
+        // Read parameter count (compressed uint)
+        int paramCount = 0;
+        if ((sig[pos] & 0x80) == 0)
+        {
+            paramCount = sig[pos++];
+        }
+        else if ((sig[pos] & 0xC0) == 0x80)
+        {
+            paramCount = ((sig[pos] & 0x3F) << 8) | sig[pos + 1];
+            pos += 2;
+        }
+        else
+        {
+            // 4-byte encoding - unlikely for param count
+            pos += 4;
+        }
+
+        // Skip return type
+        pos = SkipType(sig, pos, sigLen);
+        if (pos < 0) return 0;
+
+        // Hash parameter types
+        ulong hash = 5381;
+        for (int i = 0; i < paramCount && pos < sigLen; i++)
+        {
+            byte elemType = sig[pos];
+            hash = ((hash << 5) + hash) ^ elemType;
+            pos = SkipType(sig, pos, sigLen);
+            if (pos < 0) break;
+        }
+
+        return hash;
+    }
+
+    /// <summary>
+    /// Skip a type in a signature blob, returning the new position.
+    /// Returns -1 on error.
+    /// </summary>
+    private static int SkipType(byte* sig, int pos, int sigLen)
+    {
+        if (pos >= sigLen) return -1;
+
+        byte elemType = sig[pos++];
+
+        switch (elemType)
+        {
+            // Primitive types - just the element type byte
+            case ELEMENT_TYPE_VOID:
+            case ELEMENT_TYPE_BOOLEAN:
+            case ELEMENT_TYPE_CHAR:
+            case ELEMENT_TYPE_I1:
+            case ELEMENT_TYPE_U1:
+            case ELEMENT_TYPE_I2:
+            case ELEMENT_TYPE_U2:
+            case ELEMENT_TYPE_I4:
+            case ELEMENT_TYPE_U4:
+            case ELEMENT_TYPE_I8:
+            case ELEMENT_TYPE_U8:
+            case ELEMENT_TYPE_R4:
+            case ELEMENT_TYPE_R8:
+            case ELEMENT_TYPE_STRING:
+            case ELEMENT_TYPE_OBJECT:
+            case ELEMENT_TYPE_I:
+            case ELEMENT_TYPE_U:
+            case ELEMENT_TYPE_TYPEDBYREF:
+                return pos;
+
+            // PTR or BYREF - followed by another type
+            case ELEMENT_TYPE_PTR:
+            case ELEMENT_TYPE_BYREF:
+            case ELEMENT_TYPE_SZARRAY:
+                return SkipType(sig, pos, sigLen);
+
+            // CLASS or VALUETYPE - followed by compressed TypeDefOrRef token
+            case ELEMENT_TYPE_CLASS:
+            case ELEMENT_TYPE_VALUETYPE:
+                return SkipCompressedToken(sig, pos, sigLen);
+
+            // VAR or MVAR - followed by compressed index
+            case ELEMENT_TYPE_VAR:
+            case ELEMENT_TYPE_MVAR:
+                return SkipCompressedUint(sig, pos, sigLen);
+
+            // GENERICINST - GenericInst (CLASS | VALUETYPE) TypeDefOrRef GenArgCount Type*
+            case ELEMENT_TYPE_GENERICINST:
+                pos++;  // Skip CLASS or VALUETYPE
+                pos = SkipCompressedToken(sig, pos, sigLen);  // Skip type token
+                if (pos < 0) return -1;
+                // Read generic arg count
+                int genArgCount = 0;
+                if (pos < sigLen && (sig[pos] & 0x80) == 0)
+                    genArgCount = sig[pos++];
+                else if (pos + 1 < sigLen && (sig[pos] & 0xC0) == 0x80)
+                {
+                    genArgCount = ((sig[pos] & 0x3F) << 8) | sig[pos + 1];
+                    pos += 2;
+                }
+                // Skip each generic argument type
+                for (int i = 0; i < genArgCount && pos > 0; i++)
+                    pos = SkipType(sig, pos, sigLen);
+                return pos;
+
+            // ARRAY - Type ArrayShape
+            case ELEMENT_TYPE_ARRAY:
+                pos = SkipType(sig, pos, sigLen);  // Element type
+                if (pos < 0) return -1;
+                // Skip ArrayShape - this is complex, simplified for now
+                // Rank (compressed uint)
+                pos = SkipCompressedUint(sig, pos, sigLen);
+                if (pos < 0) return -1;
+                // NumSizes (compressed uint) + sizes
+                int numSizes = 0;
+                if (pos < sigLen && (sig[pos] & 0x80) == 0)
+                    numSizes = sig[pos++];
+                for (int i = 0; i < numSizes; i++)
+                    pos = SkipCompressedUint(sig, pos, sigLen);
+                if (pos < 0) return -1;
+                // NumLoBounds (compressed uint) + lobounds
+                int numLoBounds = 0;
+                if (pos < sigLen && (sig[pos] & 0x80) == 0)
+                    numLoBounds = sig[pos++];
+                for (int i = 0; i < numLoBounds; i++)
+                    pos = SkipCompressedUint(sig, pos, sigLen);
+                return pos;
+
+            default:
+                // Unknown type - try to continue
+                return pos;
+        }
+    }
+
+    /// <summary>
+    /// Skip a compressed TypeDefOrRef token.
+    /// </summary>
+    private static int SkipCompressedToken(byte* sig, int pos, int sigLen)
+    {
+        return SkipCompressedUint(sig, pos, sigLen);
+    }
+
+    /// <summary>
+    /// Skip a compressed unsigned integer.
+    /// </summary>
+    private static int SkipCompressedUint(byte* sig, int pos, int sigLen)
+    {
+        if (pos >= sigLen) return -1;
+
+        if ((sig[pos] & 0x80) == 0)
+            return pos + 1;
+        else if ((sig[pos] & 0xC0) == 0x80)
+            return pos + 2;
+        else
+            return pos + 4;
     }
 }
 
@@ -2023,6 +2444,111 @@ public static unsafe class StringHelpers
         }
         return -1;
     }
+
+    /// <summary>
+    /// Wrapper for String.StartsWith(string).
+    /// Returns true if this string starts with the specified prefix.
+    /// </summary>
+    public static bool StartsWith(string s, string value)
+    {
+        if (s == null || value == null)
+            return false;
+        if (value.Length > s.Length)
+            return false;
+        if (value.Length == 0)
+            return true;
+
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (s[i] != value[i])
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Wrapper for String.EndsWith(string).
+    /// Returns true if this string ends with the specified suffix.
+    /// </summary>
+    public static bool EndsWith(string s, string value)
+    {
+        if (s == null || value == null)
+            return false;
+        if (value.Length > s.Length)
+            return false;
+        if (value.Length == 0)
+            return true;
+
+        int offset = s.Length - value.Length;
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (s[offset + i] != value[i])
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Wrapper for String.LastIndexOf(char).
+    /// Returns the zero-based index of the last occurrence of character, or -1.
+    /// </summary>
+    public static int LastIndexOfChar(string s, char value)
+    {
+        if (s == null)
+            return -1;
+
+        for (int i = s.Length - 1; i >= 0; i--)
+        {
+            if (s[i] == value)
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Wrapper for String.Substring(int startIndex, int length).
+    /// Returns a substring starting at the specified index with the specified length.
+    /// </summary>
+    public static string Substring(string s, int startIndex, int length)
+    {
+        if (s == null)
+            return "";
+        if (startIndex < 0)
+            startIndex = 0;
+        if (startIndex >= s.Length)
+            return "";
+        if (length <= 0)
+            return "";
+        if (startIndex + length > s.Length)
+            length = s.Length - startIndex;
+
+        // Allocate new string with correct length
+        char* chars = stackalloc char[length + 1];
+        for (int i = 0; i < length; i++)
+        {
+            chars[i] = s[startIndex + i];
+        }
+        chars[length] = '\0';
+
+        return new string(chars, 0, length);
+    }
+
+    /// <summary>
+    /// Wrapper for String.Substring(int startIndex).
+    /// Returns a substring starting at the specified index to the end.
+    /// </summary>
+    public static string SubstringFrom(string s, int startIndex)
+    {
+        if (s == null)
+            return "";
+        if (startIndex < 0)
+            startIndex = 0;
+        if (startIndex >= s.Length)
+            return "";
+
+        int length = s.Length - startIndex;
+        return Substring(s, startIndex, length);
+    }
 }
 
 /// <summary>
@@ -2223,6 +2749,35 @@ public static unsafe class Int32Helpers
             return *valuePtr;
         }
     }
+
+    /// <summary>
+    /// Wrapper for Int32.CompareTo(int) - compares this int to another.
+    /// Returns -1 if less than, 0 if equal, 1 if greater than.
+    /// </summary>
+    public static int CompareTo(nint thisPtr, int other)
+    {
+        if (thisPtr == 0)
+            return -1;
+
+        // Read the first 8 bytes to detect boxed vs byref
+        ulong firstQword = *(ulong*)thisPtr;
+        int thisValue;
+
+        if (firstQword > 0x100000)
+        {
+            // Boxed object: value at offset 8
+            thisValue = *(int*)(thisPtr + 8);
+        }
+        else
+        {
+            // Byref: value at offset 0
+            thisValue = *(int*)thisPtr;
+        }
+
+        if (thisValue < other) return -1;
+        if (thisValue > other) return 1;
+        return 0;
+    }
 }
 
 /// <summary>
@@ -2257,6 +2812,225 @@ public static unsafe class PrimitiveHelpers
         if (thisValue < other) return -1;
         if (thisValue > other) return 1;
         return 0;
+    }
+
+    // =========================================================================
+    // ToString helpers for primitive types - called via vtable dispatch on boxed values
+    // For boxed objects: thisPtr points to [MethodTable*][value]
+    // The value is at offset 8 (after the 8-byte MethodTable pointer)
+    // =========================================================================
+
+    /// <summary>
+    /// Byte.ToString() - formats unsigned 8-bit integer.
+    /// </summary>
+    public static string Byte_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        byte value = *(byte*)(thisPtr + 8);
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// SByte.ToString() - formats signed 8-bit integer.
+    /// </summary>
+    public static string SByte_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        sbyte value = *(sbyte*)(thisPtr + 8);
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// Boolean.ToString() - returns "True" or "False".
+    /// </summary>
+    public static string Boolean_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "False";
+        bool value = *(bool*)(thisPtr + 8);
+        return value ? "True" : "False";
+    }
+
+    /// <summary>
+    /// Char.ToString() - returns single character as string.
+    /// </summary>
+    public static string Char_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "\0";
+        char value = *(char*)(thisPtr + 8);
+        return new string(value, 1);
+    }
+
+    /// <summary>
+    /// Int16.ToString() - formats signed 16-bit integer.
+    /// </summary>
+    public static string Int16_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        short value = *(short*)(thisPtr + 8);
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// UInt16.ToString() - formats unsigned 16-bit integer.
+    /// </summary>
+    public static string UInt16_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        ushort value = *(ushort*)(thisPtr + 8);
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// Int64.ToString() - formats signed 64-bit integer.
+    /// </summary>
+    public static string Int64_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        long value = *(long*)(thisPtr + 8);
+        return System.Int64.FormatInt64(value);
+    }
+
+    /// <summary>
+    /// UInt64.ToString() - formats unsigned 64-bit integer.
+    /// </summary>
+    public static string UInt64_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        ulong value = *(ulong*)(thisPtr + 8);
+        return System.UInt64.FormatUInt64(value);
+    }
+
+    /// <summary>
+    /// UInt32.ToString() - formats unsigned 32-bit integer.
+    /// </summary>
+    public static string UInt32_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        uint value = *(uint*)(thisPtr + 8);
+        return System.UInt32.FormatUInt32(value);
+    }
+
+    /// <summary>
+    /// IntPtr.ToString() - formats native integer.
+    /// </summary>
+    public static string IntPtr_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        nint value = *(nint*)(thisPtr + 8);
+        return System.Int64.FormatInt64((long)value);
+    }
+
+    /// <summary>
+    /// UIntPtr.ToString() - formats unsigned native integer.
+    /// </summary>
+    public static string UIntPtr_ToString(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        nuint value = *(nuint*)(thisPtr + 8);
+        return System.UInt64.FormatUInt64((ulong)value);
+    }
+
+    /// <summary>
+    /// Single.ToString() - placeholder for float formatting.
+    /// </summary>
+    public static string Single_ToString(nint thisPtr)
+    {
+        return "Single";  // TODO: Implement proper float formatting
+    }
+
+    /// <summary>
+    /// Double.ToString() - placeholder for double formatting.
+    /// </summary>
+    public static string Double_ToString(nint thisPtr)
+    {
+        return "Double";  // TODO: Implement proper double formatting
+    }
+
+    // =========================================================================
+    // GetHashCode helpers for primitive types
+    // =========================================================================
+
+    /// <summary>
+    /// Byte.GetHashCode() - returns the byte value itself.
+    /// </summary>
+    public static int Byte_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(byte*)(thisPtr + 8);
+    }
+
+    /// <summary>
+    /// SByte.GetHashCode() - returns the sbyte value itself.
+    /// </summary>
+    public static int SByte_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(sbyte*)(thisPtr + 8);
+    }
+
+    /// <summary>
+    /// Boolean.GetHashCode() - returns 1 for true, 0 for false.
+    /// </summary>
+    public static int Boolean_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(bool*)(thisPtr + 8) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Char.GetHashCode() - returns the char value itself.
+    /// </summary>
+    public static int Char_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(char*)(thisPtr + 8);
+    }
+
+    /// <summary>
+    /// Int16.GetHashCode() - returns the short value itself.
+    /// </summary>
+    public static int Int16_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(short*)(thisPtr + 8);
+    }
+
+    /// <summary>
+    /// UInt16.GetHashCode() - returns the ushort value itself.
+    /// </summary>
+    public static int UInt16_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(ushort*)(thisPtr + 8);
+    }
+
+    /// <summary>
+    /// Int64.GetHashCode() - returns XOR of high and low 32 bits.
+    /// </summary>
+    public static int Int64_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        long value = *(long*)(thisPtr + 8);
+        return (int)value ^ (int)(value >> 32);
+    }
+
+    /// <summary>
+    /// UInt64.GetHashCode() - returns XOR of high and low 32 bits.
+    /// </summary>
+    public static int UInt64_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        ulong value = *(ulong*)(thisPtr + 8);
+        return (int)value ^ (int)(value >> 32);
+    }
+
+    /// <summary>
+    /// UInt32.GetHashCode() - returns the uint value itself.
+    /// </summary>
+    public static int UInt32_GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return (int)*(uint*)(thisPtr + 8);
     }
 }
 

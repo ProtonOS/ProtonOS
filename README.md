@@ -41,10 +41,11 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | Reflection API (types, methods, fields, invoke) | Complete |
 | Driver Development Kit (DDK) | In Progress |
 | VirtIO drivers | In Progress |
+| FAT filesystem driver | In Progress |
 
 ### JIT Test Results
 
-The JIT runs a comprehensive test suite on boot: **605 tests passing**
+The JIT runs a comprehensive test suite on boot: **619 tests passing**
 
 ### Supported C# Features
 
@@ -126,7 +127,7 @@ src/
 ├── drivers/             # Device drivers (JIT-compiled)
 │   └── shared/
 │       ├── virtio/      # VirtIO common infrastructure
-│       └── storage/     # Block device drivers (virtio-blk)
+│       └── storage/     # Block device drivers (virtio-blk, FAT)
 ├── TestSupport/         # Cross-assembly test helpers
 └── FullTest/            # JIT test assembly (runs on boot)
 

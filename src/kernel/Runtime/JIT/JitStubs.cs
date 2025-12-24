@@ -200,6 +200,7 @@ public static unsafe class JitStubs
         // NativeAOT may optimize away vtable slots for sealed types (e.g., String.GetHashCode)
         // In such cases, we need to look up the method from the AOT registry instead
         MethodTable* mt = (MethodTable*)methodTable;
+
         if (vtableSlot >= mt->_usNumVtableSlots)
         {
             // Slot is out of bounds - try to find the method from AOT registry
@@ -279,6 +280,8 @@ public static unsafe class JitStubs
 
         // If slot already has code, we're done (fast path)
         // Note: AOT methods will already have their addresses in the vtable
+        // Primitive types have their ToString/Equals/GetHashCode slots pre-filled
+        // during initialization in RegisterPrimitiveViaArrayAllocation.
         if (currentSlotCode != 0)
             return currentSlotCode;
 

@@ -62,6 +62,9 @@ public static class TestRunner
         // Memory tests (unsafe pointer patterns - similar to Span<T> operations)
         RunMemoryTests();
 
+        // Pointer field tests (test stfld/ldfld with pointer types - VirtIO bug scenario)
+        RunPointerFieldTests();
+
         // Span<T> tests (actual Span usage with SpanHelpers)
         RunSpanTests();
 
@@ -177,6 +180,11 @@ public static class TestRunner
 
         // Iterator tests - custom IEnumerable/IEnumerator implementations
         RunIteratorTests();
+
+        // JIT regression tests - tests for known JIT issues that were found and fixed
+        Debug.WriteLine("[PHASE] Starting JIT Regression tests...");
+        RunJitRegressionTests();
+        Debug.WriteLine("[PHASE] JIT Regression tests complete");
 
         return (_passCount << 16) | _failCount;
     }
@@ -316,6 +324,21 @@ public static class TestRunner
         RecordResult("IteratorTests.TestForeachCustomCount", IteratorTests.TestForeachCustomCount() == 3);
         RecordResult("IteratorTests.TestForeachCustomEmpty", IteratorTests.TestForeachCustomEmpty() == 1);
         RecordResult("IteratorTests.TestForeachCustomBreak", IteratorTests.TestForeachCustomBreak() == 6);
+    }
+
+    private static void RunJitRegressionTests()
+    {
+        // Issue 1: String.Replace(char, char) crashes when called from JIT'd code
+        RecordResult("JitRegressionTests.TestStringReplaceChar", JitRegressionTests.TestStringReplaceChar() == 1);
+
+        // Issue 2: Combined assignment-null-check in while condition fails
+        RecordResult("JitRegressionTests.TestAssignmentInWhileCondition", JitRegressionTests.TestAssignmentInWhileCondition() == 3);
+
+        // Issue 3: Class constructor with >4 args (struct works, class might not)
+        RecordResult("JitRegressionTests.TestClassCtorManyArgs", JitRegressionTests.TestClassCtorManyArgs() == 21);
+
+        // Verify struct with 5 args still works (baseline)
+        RecordResult("JitRegressionTests.TestStructCtorManyArgs", JitRegressionTests.TestStructCtorManyArgs() == 15);
     }
 
     private static void RunUtilityTests()
@@ -1035,6 +1058,20 @@ public static class TestRunner
         RecordResult("MemoryTests.TestPointerSum", MemoryTests.TestPointerSum() == 150);
         RecordResult("MemoryTests.TestStackAlloc", MemoryTests.TestStackAlloc() == 10);
         RecordResult("MemoryTests.TestPointerComparison", MemoryTests.TestPointerComparison() == 5);
+    }
+
+    private static void RunPointerFieldTests()
+    {
+        RecordResult("PointerFieldTests.TestSimplePointerField", PointerFieldTests.TestSimplePointerField() == 42);
+        RecordResult("PointerFieldTests.TestUlongToPointerViaIntPtr", PointerFieldTests.TestUlongToPointerViaIntPtr() == 123);
+        RecordResult("PointerFieldTests.TestHighAddressPointer", PointerFieldTests.TestHighAddressPointer() == 165);
+        RecordResult("PointerFieldTests.TestNintField", PointerFieldTests.TestNintField() == 55);
+        RecordResult("PointerFieldTests.TestNuintField", PointerFieldTests.TestNuintField() == 77);
+        RecordResult("PointerFieldTests.TestVoidPointerField", PointerFieldTests.TestVoidPointerField() == 33);
+        RecordResult("PointerFieldTests.TestVirtioPattern", PointerFieldTests.TestVirtioPattern() == 200);
+        RecordResult("PointerFieldTests.TestVirtioPatternWithDups", PointerFieldTests.TestVirtioPatternWithDups() == 201);
+        RecordResult("PointerFieldTests.TestVirtioPatternFromArray", PointerFieldTests.TestVirtioPatternFromArray() == 202);
+        RecordResult("PointerFieldTests.TestHighAddressConversion", PointerFieldTests.TestHighAddressConversion() == 1);
     }
 
     private static void RunSpanTests()
@@ -2829,6 +2866,280 @@ public static unsafe class MemoryTests
                 count++;
             return count;  // 5
         }
+    }
+}
+
+// =============================================================================
+// Pointer Field Tests - Test storing/loading pointers to class fields
+// This specifically tests the VirtIO bug scenario where ulong -> byte* via IntPtr
+// produces 0 when stored to a field
+// =============================================================================
+
+/// <summary>
+/// Test class with pointer fields - used to test stfld/ldfld with pointer types
+/// </summary>
+public unsafe class PointerFieldTestClass
+{
+    public byte* PtrField;
+    public nint NintField;
+    public nuint NuintField;
+    public void* VoidPtrField;
+}
+
+public static unsafe class PointerFieldTests
+{
+    /// <summary>
+    /// Test storing a simple pointer from stackalloc to a field
+    /// </summary>
+    public static int TestSimplePointerField()
+    {
+        var obj = new PointerFieldTestClass();
+        byte* data = stackalloc byte[4];
+        data[0] = 42;
+
+        obj.PtrField = data;
+
+        return obj.PtrField[0];  // Should be 42
+    }
+
+    /// <summary>
+    /// Test storing a ulong-derived pointer to a field via IntPtr
+    /// This is the exact pattern that fails in VirtIO driver
+    /// </summary>
+    public static int TestUlongToPointerViaIntPtr()
+    {
+        var obj = new PointerFieldTestClass();
+
+        // Simulate a high virtual address (like 0xFFFF800800000000)
+        // We'll use a real stackalloc address to test
+        byte* data = stackalloc byte[4];
+        data[0] = 123;
+
+        // Convert to ulong and back via IntPtr (same as VirtIO code)
+        ulong addr = (ulong)data;
+        System.IntPtr ptr = (System.IntPtr)(long)addr;
+
+        obj.PtrField = (byte*)ptr;
+
+        // Debug: show what we're storing vs reading
+        ulong stored = (ulong)obj.PtrField;
+
+        // Verify the pointer is correct
+        return obj.PtrField[0];  // Should be 123
+    }
+
+    /// <summary>
+    /// Test the actual high-address scenario using the kernel's higher-half mapping
+    /// Note: This uses a real stackalloc which should be in the higher-half
+    /// </summary>
+    public static int TestHighAddressPointer()
+    {
+        var obj = new PointerFieldTestClass();
+
+        // stackalloc in JIT should be in the higher-half (0xFFFF8000...)
+        byte* data = stackalloc byte[4];
+        data[0] = 99;
+        data[1] = 88;
+        data[2] = 77;
+        data[3] = 66;
+
+        // Store directly
+        obj.PtrField = data;
+
+        // Read back and verify
+        return obj.PtrField[0] + obj.PtrField[3];  // 99 + 66 = 165
+    }
+
+    /// <summary>
+    /// Test nint (IntPtr) field storage and retrieval
+    /// </summary>
+    public static int TestNintField()
+    {
+        var obj = new PointerFieldTestClass();
+
+        byte* data = stackalloc byte[4];
+        data[0] = 55;
+
+        obj.NintField = (nint)data;
+
+        byte* readBack = (byte*)obj.NintField;
+        return readBack[0];  // Should be 55
+    }
+
+    /// <summary>
+    /// Test nuint (UIntPtr) field storage and retrieval
+    /// </summary>
+    public static int TestNuintField()
+    {
+        var obj = new PointerFieldTestClass();
+
+        byte* data = stackalloc byte[4];
+        data[0] = 77;
+
+        obj.NuintField = (nuint)data;
+
+        byte* readBack = (byte*)obj.NuintField;
+        return readBack[0];  // Should be 77
+    }
+
+    /// <summary>
+    /// Test void* field storage and retrieval
+    /// </summary>
+    public static int TestVoidPointerField()
+    {
+        var obj = new PointerFieldTestClass();
+
+        int* data = stackalloc int[2];
+        data[0] = 11;
+        data[1] = 22;
+
+        obj.VoidPtrField = data;
+
+        int* readBack = (int*)obj.VoidPtrField;
+        return readBack[0] + readBack[1];  // 11 + 22 = 33
+    }
+
+    /// <summary>
+    /// Test the full VirtIO pattern: ulong + uint offset -> IntPtr -> byte*
+    /// </summary>
+    public static int TestVirtioPattern()
+    {
+        var obj = new PointerFieldTestClass();
+
+        // Simulate BAR base address + offset calculation
+        byte* baseData = stackalloc byte[100];
+        baseData[50] = 200;  // Value at offset 50
+
+        ulong baseAddr = (ulong)baseData;
+        uint offset = 50;
+
+        // This is exactly what VirtIO does
+        ulong virtAddr = baseAddr + offset;
+        long asLong = (long)virtAddr;
+        System.IntPtr ptr = (System.IntPtr)asLong;
+
+        obj.PtrField = (byte*)ptr;
+
+        // Read back and verify
+        return obj.PtrField[0];  // Should be 200
+    }
+
+    /// <summary>
+    /// Test the VirtIO pattern with Debug.WriteHex calls in between (mimics actual VirtIO IL)
+    /// This tests if the dup operations work correctly with intermediate function calls.
+    /// </summary>
+    public static int TestVirtioPatternWithDups()
+    {
+        var obj = new PointerFieldTestClass();
+
+        // Simulate BAR base address + offset calculation
+        byte* baseData = stackalloc byte[100];
+        baseData[50] = 201;  // Value at offset 50
+
+        ulong barAddr = (ulong)baseData;
+        uint offset = 50;
+
+        // This is the EXACT pattern from VirtIO ProcessCapability:
+        // Load barAddr and offset, add them, then do many dup/print operations
+        // before finally converting to pointer and storing
+
+        ulong virtAddr = barAddr + offset;
+
+        // These Debug.WriteHex calls insert dup operations just like VirtIO
+        Debug.WriteHex((uint)(virtAddr >> 32));  // high part
+        Debug.WriteHex((uint)virtAddr);           // low part
+
+        // More dup operations to extract parts
+        uint highPart = (uint)(virtAddr >> 32);
+        uint lowPart = (uint)virtAddr;
+        Debug.WriteHex(0xBEEF0001u);
+        Debug.WriteHex(highPart);
+        Debug.WriteHex(lowPart);
+
+        // Now convert to pointer (this is where the value might get lost)
+        nint ptr = (nint)(long)virtAddr;
+        obj.PtrField = (byte*)ptr;
+
+        // Debug: print the stored pointer
+        Debug.WriteHex(0xBEEF0002u);
+        Debug.WriteHex((uint)((ulong)obj.PtrField >> 32));
+        Debug.WriteHex((uint)(ulong)obj.PtrField);
+
+        // Read back and verify
+        return obj.PtrField[0];  // Should be 201
+    }
+
+    /// <summary>
+    /// Test the VirtIO pattern with barAddr loaded from an array (exact VirtIO pattern)
+    /// This mimics the ldelem.i8 + stloc + ldloc sequence in VirtIO
+    /// </summary>
+    public static int TestVirtioPatternFromArray()
+    {
+        var obj = new PointerFieldTestClass();
+
+        // Create array of virtual addresses (like VirtIO's _barVirtAddr)
+        ulong[] barVirtAddr = new ulong[6];
+
+        // Allocate data and store address in array
+        byte* baseData = stackalloc byte[100];
+        baseData[50] = 202;  // Value at offset 50
+        barVirtAddr[0] = (ulong)baseData;
+
+        // Now do exactly what VirtIO does:
+        // ldelem.i8 -> stloc.0 (barAddr)
+        // ldloc.0 + ldarg.3 + conv.u8 + add -> virtAddr
+        ulong barAddr = barVirtAddr[0];  // ldelem.i8 + stloc
+        uint offset = 50;
+
+        // Print barAddr for debugging
+        Debug.WriteHex(0xDADA0001u);
+        Debug.WriteHex((uint)(barAddr >> 32));
+        Debug.WriteHex((uint)barAddr);
+
+        // ldloc.0 + ldarg + conv.u8 + add
+        ulong virtAddr = barAddr + offset;
+
+        Debug.WriteHex(0xDADA0002u);
+        Debug.WriteHex((uint)(virtAddr >> 32));
+        Debug.WriteHex((uint)virtAddr);
+
+        // Convert and store (exactly like VirtIO)
+        nint ptr = (nint)(long)virtAddr;
+        obj.PtrField = (byte*)ptr;
+
+        Debug.WriteHex(0xDADA0003u);
+        Debug.WriteHex((uint)((ulong)obj.PtrField >> 32));
+        Debug.WriteHex((uint)(ulong)obj.PtrField);
+
+        // Read back and verify
+        return obj.PtrField[0];  // Should be 202
+    }
+
+    /// <summary>
+    /// Test with explicit high address (like VirtIO's 0xFFFF8008...)
+    /// This tests if the issue is with high addresses specifically
+    /// </summary>
+    public static int TestHighAddressConversion()
+    {
+        // Simulate a high address like 0xFFFF800800000000
+        ulong highAddr = 0xFFFF800812340000UL;
+        uint offset = 0x50;
+        ulong virtAddr = highAddr + offset;
+
+        Debug.WriteHex(0xEEEE0001u);
+        Debug.WriteHex((uint)(virtAddr >> 32));
+        Debug.WriteHex((uint)virtAddr);
+
+        // Convert to pointer (this is where VirtIO fails)
+        nint ptr = (nint)(long)virtAddr;
+
+        Debug.WriteHex(0xEEEE0002u);
+        Debug.WriteHex((uint)((ulong)(void*)ptr >> 32));
+        Debug.WriteHex((uint)(ulong)(void*)ptr);
+
+        // Check if the conversion preserved the high bits
+        ulong result = (ulong)(void*)ptr;
+        return (result == virtAddr) ? 1 : 0;  // Should be 1 if preserved
     }
 }
 
@@ -11037,6 +11348,115 @@ public static class CollectionTests
         if (!set1.Overlaps(set2)) return 0;  // Should overlap (share 2)
         if (set1.Overlaps(set3)) return 0;   // Should not overlap
         return 1;
+    }
+}
+
+// =============================================================================
+// JIT Regression Tests - Tests for known JIT issues that were found and fixed
+// =============================================================================
+
+// Helper class for testing class constructors with many args
+public class ManyArgClass
+{
+    public int A, B, C, D, E, F;
+
+    public ManyArgClass(int a, int b, int c, int d, int e, int f)
+    {
+        A = a;
+        B = b;
+        C = c;
+        D = d;
+        E = e;
+        F = f;
+    }
+}
+
+// Helper class for testing assignment-null-check pattern
+public class SimpleIterator
+{
+    private int _current;
+    private int _max;
+
+    public SimpleIterator(int max)
+    {
+        _current = 0;
+        _max = max;
+    }
+
+    public string? GetNext()
+    {
+        if (_current >= _max)
+            return null;
+        _current++;
+        return "item" + _current.ToString();
+    }
+}
+
+public static class JitRegressionTests
+{
+    /// <summary>
+    /// Issue 1: String.Replace(char, char) crashes when called from JIT'd code
+    /// The AOT method is found but crashes at offset 0x2B in the function.
+    /// Suspected calling convention mismatch for instance methods.
+    /// </summary>
+    public static int TestStringReplaceChar()
+    {
+        string input = "a\\b\\c";
+        Debug.WriteLine("[JitRegr] Testing char replace on: " + input);
+
+        // This is the pattern that crashed in FatFileSystem.NormalizePath
+        string result = input.Replace('\\', '/');
+
+        Debug.WriteLine("[JitRegr] Result: " + result);
+        if (result == "a/b/c")
+            return 1;
+        return 0;
+    }
+
+    /// <summary>
+    /// Issue 2: Combined assignment-null-check in while condition fails.
+    /// Pattern: while ((x = func()) != null) { ... }
+    /// The loop exits immediately even when func() returns non-null.
+    /// </summary>
+    public static int TestAssignmentInWhileCondition()
+    {
+        var iter = new SimpleIterator(3);
+        int count = 0;
+        string? item;
+
+        // This pattern failed in FatDirectoryHandle - loop exited immediately
+        while ((item = iter.GetNext()) != null)
+        {
+            Debug.WriteLine("[JitRegr] Got item: " + item);
+            count++;
+        }
+
+        Debug.WriteLine("[JitRegr] Total count: " + count.ToString());
+        return count;  // Should be 3
+    }
+
+    /// <summary>
+    /// Issue 3: Class constructor with >4 args fails with "too many constructor args (max 4)"
+    /// Struct constructors work (tested by BoxingTests.TestNewObjManyArgs), but class might not.
+    /// </summary>
+    public static int TestClassCtorManyArgs()
+    {
+        // This pattern failed for FatFileHandle which had 7 constructor args
+        var obj = new ManyArgClass(1, 2, 3, 4, 5, 6);
+        int sum = obj.A + obj.B + obj.C + obj.D + obj.E + obj.F;
+        Debug.WriteLine("[JitRegr] Class sum: " + sum.ToString());
+        return sum;  // Should be 21
+    }
+
+    /// <summary>
+    /// Baseline test: Struct constructor with 5 args should still work.
+    /// </summary>
+    public static int TestStructCtorManyArgs()
+    {
+        var s = new MultiFieldStruct(1, 2, 3, 4, 5);
+        int sum = s.A + s.B + s.C + s.D + s.E;
+        Debug.WriteLine("[JitRegr] Struct sum: " + sum.ToString());
+        return sum;  // Should be 15
     }
 }
 

@@ -959,6 +959,35 @@ public static unsafe class Tier0JIT
                 if (typeSize != null)
                     typeSize[i] = 8;
             }
+            else if (elemType == 0x0F) // ELEMENT_TYPE_PTR
+            {
+                // Pointer types (void*, byte*, VirtqDesc*, etc.) - 8 bytes on x64
+                // CRITICAL: Must set typeSize=8 so ldloc pushes NativeInt, not Int32
+                // Otherwise conv.u8 will incorrectly zero-extend and lose high bits
+                isValueType[i] = false;  // Pointers are not value types
+                if (typeSize != null)
+                    typeSize[i] = 8;
+                // Skip the pointed-to type
+                SkipTypeSig(ref ptr, end);
+            }
+            else if (elemType == 0x1B) // ELEMENT_TYPE_FNPTR
+            {
+                // Function pointer - 8 bytes on x64
+                isValueType[i] = false;
+                if (typeSize != null)
+                    typeSize[i] = 8;
+                // Skip the method signature (complex, but just skip to next local)
+                // Function pointer signatures are variable length; skip until we hit the next local
+                // This is a simplified skip - works for most cases
+                while (ptr < end && *ptr != 0x07 && *ptr != 0x45 && *ptr != 0x10)
+                {
+                    if (*ptr == 0x0F || *ptr == 0x1D || *ptr == 0x15 || *ptr == 0x11 || *ptr == 0x12 || *ptr == 0x1C)
+                        break;  // Hit another complex type marker
+                    if (*ptr >= 0x02 && *ptr <= 0x1C)
+                        break;  // Hit a simple type marker
+                    ptr++;
+                }
+            }
             else if (elemType == 0x1D) // ELEMENT_TYPE_SZARRAY
             {
                 // DebugConsole.Write(" SZARRAY");

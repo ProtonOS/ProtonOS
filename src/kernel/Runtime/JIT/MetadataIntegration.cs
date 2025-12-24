@@ -534,6 +534,11 @@ public static unsafe class MetadataIntegration
     private const int NumVtableSlots = 3;  // Slot 0: ToString, Slot 1: Equals, Slot 2: GetHashCode
     private const int MethodTableWithVtableSize = MethodTable.HeaderSize + (NumVtableSlots * 8);  // 24 + 24 = 48 bytes
 
+    // Store Object.ToString/Equals/GetHashCode addresses for comparison when resolving primitive overrides
+    private static nint _objectToString;
+    private static nint _objectEquals;
+    private static nint _objectGetHashCode;
+
     /// <summary>
     /// Get a MethodTable pointer from the buffer at the given index.
     /// </summary>
@@ -556,6 +561,156 @@ public static unsafe class MetadataIntegration
         byte* bufferEnd = _primitiveMethodTableBuffer + (NumPrimitiveTypes * MethodTableWithVtableSize);
 
         return mtAddr >= bufferStart && mtAddr < bufferEnd;
+    }
+
+    /// <summary>
+    /// Get the primitive type index for a MethodTable.
+    /// Returns -1 if not a primitive type.
+    /// Index mapping: 0=Int32, 1=Int64, 2=Boolean, 3=Byte, 4=Char, 5=Double,
+    ///                6=Single, 7=Int16, 8=UInt16, 9=UInt32, 10=UInt64,
+    ///                11=IntPtr, 12=UIntPtr, 13=SByte
+    /// </summary>
+    public static int GetPrimitiveIndex(MethodTable* mt)
+    {
+        if (_primitiveMethodTableBuffer == null || mt == null)
+            return -1;
+
+        byte* mtAddr = (byte*)mt;
+        byte* bufferStart = _primitiveMethodTableBuffer;
+        byte* bufferEnd = _primitiveMethodTableBuffer + (NumPrimitiveTypes * MethodTableWithVtableSize);
+
+        if (mtAddr < bufferStart || mtAddr >= bufferEnd)
+            return -1;
+
+        return (int)((mtAddr - bufferStart) / MethodTableWithVtableSize);
+    }
+
+    /// <summary>
+    /// Get primitive type name by index.
+    /// Index mapping: 0=Int32, 1=Int64, 2=Boolean, 3=Byte, 4=Char, 5=Double,
+    ///                6=Single, 7=Int16, 8=UInt16, 9=UInt32, 10=UInt64,
+    ///                11=IntPtr, 12=UIntPtr, 13=SByte
+    /// </summary>
+    private static string GetPrimitiveTypeName(int index)
+    {
+        if (index == 0) return "Int32";
+        if (index == 1) return "Int64";
+        if (index == 2) return "Boolean";
+        if (index == 3) return "Byte";
+        if (index == 4) return "Char";
+        if (index == 5) return "Double";
+        if (index == 6) return "Single";
+        if (index == 7) return "Int16";
+        if (index == 8) return "UInt16";
+        if (index == 9) return "UInt32";
+        if (index == 10) return "UInt64";
+        if (index == 11) return "IntPtr";
+        if (index == 12) return "UIntPtr";
+        if (index == 13) return "SByte";
+        return null;
+    }
+
+    /// <summary>
+    /// Try to resolve a primitive's virtual method override from korlib.
+    /// This is called when a primitive's vtable slot contains Object's method
+    /// but the actual primitive has an override defined in korlib.
+    /// </summary>
+    /// <param name="mt">The primitive MethodTable</param>
+    /// <param name="vtableSlot">The vtable slot (0=ToString, 1=Equals, 2=GetHashCode)</param>
+    /// <param name="currentSlotValue">The current value in the slot</param>
+    /// <returns>The compiled override method address, or 0 if not found</returns>
+    public static nint TryResolvePrimitiveVirtualOverride(MethodTable* mt, int vtableSlot, nint currentSlotValue)
+    {
+        // NOTE: This function is no longer actively used. Primitive vtable slots are now
+        // pre-filled with the correct methods during initialization in RegisterPrimitiveViaArrayAllocation.
+        // Kept for potential future debugging or edge cases.
+
+        // Check if this is a primitive with Object's method in the slot
+        int primIndex = GetPrimitiveIndex(mt);
+        if (primIndex < 0 || primIndex > 13)
+            return 0;
+
+        // Check if current value is Object's method (the fallback we want to replace)
+        nint objectMethod = 0;
+        if (vtableSlot == 0) objectMethod = _objectToString;
+        else if (vtableSlot == 1) objectMethod = _objectEquals;
+        else if (vtableSlot == 2) objectMethod = _objectGetHashCode;
+
+        if (objectMethod == 0 || currentSlotValue != objectMethod)
+            return 0;  // Not using Object's fallback, no need to resolve
+
+        // Get method name for the slot
+        byte* methodNameBytes = null;
+        if (vtableSlot == 0)
+        {
+            // "ToString\0"
+            byte* buf = stackalloc byte[16];
+            buf[0] = (byte)'T'; buf[1] = (byte)'o'; buf[2] = (byte)'S'; buf[3] = (byte)'t';
+            buf[4] = (byte)'r'; buf[5] = (byte)'i'; buf[6] = (byte)'n'; buf[7] = (byte)'g';
+            buf[8] = 0;
+            methodNameBytes = buf;
+        }
+        else if (vtableSlot == 1)
+        {
+            // "Equals\0"
+            byte* buf = stackalloc byte[16];
+            buf[0] = (byte)'E'; buf[1] = (byte)'q'; buf[2] = (byte)'u'; buf[3] = (byte)'a';
+            buf[4] = (byte)'l'; buf[5] = (byte)'s'; buf[6] = 0;
+            methodNameBytes = buf;
+        }
+        else if (vtableSlot == 2)
+        {
+            // "GetHashCode\0"
+            byte* buf = stackalloc byte[16];
+            buf[0] = (byte)'G'; buf[1] = (byte)'e'; buf[2] = (byte)'t'; buf[3] = (byte)'H';
+            buf[4] = (byte)'a'; buf[5] = (byte)'s'; buf[6] = (byte)'h'; buf[7] = (byte)'C';
+            buf[8] = (byte)'o'; buf[9] = (byte)'d'; buf[10] = (byte)'e'; buf[11] = 0;
+            methodNameBytes = buf;
+        }
+
+        if (methodNameBytes == null)
+            return 0;
+
+        string typeName = GetPrimitiveTypeName(primIndex);
+        if (typeName == null)
+            return 0;
+
+        // Get korlib assembly
+        var korlib = AssemblyLoader.GetCoreLib();
+        if (korlib == null)
+            return 0;
+
+        // Find the TypeDef for this primitive in korlib
+        uint typeDefToken = AssemblyLoader.FindTypeDefByFullName(korlib->AssemblyId, "System", typeName);
+        if (typeDefToken == 0)
+            return 0;
+
+        uint methodToken = FindMethodByName(korlib->AssemblyId, typeDefToken, methodNameBytes);
+        if (methodToken == 0)
+            return 0;
+
+        // Compile the method
+        var result = Tier0JIT.CompileMethod(korlib->AssemblyId, methodToken);
+        if (!result.Success || result.CodeAddress == null)
+        {
+            return 0;
+        }
+
+        nint nativeCode = (nint)result.CodeAddress;
+
+        // Update the primitive's vtable slot with the compiled override
+        nint* vtable = mt->GetVtablePtr();
+        vtable[vtableSlot] = nativeCode;
+
+        return nativeCode;
+    }
+
+    /// <summary>
+    /// Check if a vtable slot value is Object.ToString (used to detect fallback).
+    /// </summary>
+    public static bool IsObjectToString(nint slotValue)
+    {
+        return slotValue == _objectToString;
     }
 
     /// <summary>
@@ -622,6 +777,11 @@ public static unsafe class MetadataIntegration
         nint objectToString = AotMethodRegistry.LookupByName("System.Object", "ToString");
         nint objectEquals = AotMethodRegistry.LookupByName("System.Object", "Equals");
         nint objectGetHashCode = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+
+        // Store for later comparison when resolving primitive korlib overrides
+        _objectToString = objectToString;
+        _objectEquals = objectEquals;
+        _objectGetHashCode = objectGetHashCode;
 
         DebugConsole.Write("[MetaInt] AOT vtable ptrs: ToString=0x");
         DebugConsole.WriteHex((ulong)objectToString);
@@ -1709,10 +1869,20 @@ public static unsafe class MetadataIntegration
         result.IsStatic = isStatic;
 
         // Check if the field type itself is a value type
-        // ElementType.ValueType = 0x11, plus primitives (0x02-0x0D) are also value types
+        // Value types include:
+        // - 0x02-0x0D: primitives (Boolean, Char, I1, U1, I2, U2, I4, U4, I8, U8, R4, R8)
+        // - 0x0F: Ptr (*T) - pointers are value types (contain value, not reference)
+        // - 0x11: ValueType (struct)
+        // - 0x18: I (IntPtr/nint)
+        // - 0x19: U (UIntPtr/nuint)
+        // - 0x1B: FnPtr (function pointer)
         // GENERICINST (0x15) can be either value type or ref type - check the gen kind
         bool fieldIsValueType = (elementType == 0x11) ||
-                                 (elementType >= 0x02 && elementType <= 0x0D);
+                                 (elementType >= 0x02 && elementType <= 0x0D) ||
+                                 (elementType == 0x0F) ||  // Ptr
+                                 (elementType == 0x18) ||  // IntPtr
+                                 (elementType == 0x19) ||  // UIntPtr
+                                 (elementType == 0x1B);    // FnPtr
 
         // For GENERICINST (0x15), check if it's a value type instantiation
         // Signature: 0x15 <genKind> <typeDefOrRef> <argCount> <args...>
@@ -2168,7 +2338,35 @@ public static unsafe class MetadataIntegration
             // else 0x1D = SZARRAY - array variant (default)
         }
 
-        if (AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out AotMethodEntry entry, useCharPtrVariant, useListVariant, useSingleExceptionVariant))
+        // Compute signature hash from the IL signature blob for proper overload resolution
+        ulong signatureHash = AotMethodRegistry.ComputeSignatureHashFromBlob(sig, (int)sigLen);
+
+        // For methods that use variant names (constructors with special overloads),
+        // use the legacy lookup with variant flags instead of signature hash.
+        // This is because those methods are registered with variant names like ".ctor$single"
+        // rather than with signature hashes.
+        bool useVariantLookup = useCharPtrVariant || useListVariant || useSingleExceptionVariant;
+
+        bool found;
+        AotMethodEntry entry;
+        if (useVariantLookup)
+        {
+            // Use legacy lookup with variant flags for constructors with special overloads
+            found = AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out entry, useCharPtrVariant, useListVariant, useSingleExceptionVariant);
+        }
+        else
+        {
+            // Try lookup with signature hash first (for methods with overloads like String.Replace)
+            found = AotMethodRegistry.TryLookupWithSignature(typeName, memberName, paramCount, signatureHash, out entry);
+
+            // Fall back to legacy lookup if signature hash didn't match
+            if (!found)
+            {
+                found = AotMethodRegistry.TryLookup(typeName, memberName, paramCount, out entry, false, false, false);
+            }
+        }
+
+        if (found)
         {
             DebugConsole.Write("[AotMemberRef] Found AOT method: ");
             WriteByteString(typeName);

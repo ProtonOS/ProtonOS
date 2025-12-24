@@ -37,14 +37,13 @@ public class MountPoint
 /// </summary>
 public static class VFS
 {
-    private static List<MountPoint> _mounts = new();
-    private static readonly object _lock = new();
+    private static List<MountPoint>? _mounts;
     private static bool _initialized;
 
     /// <summary>
     /// All active mount points.
     /// </summary>
-    public static IReadOnlyList<MountPoint> MountPoints => _mounts;
+    public static IReadOnlyList<MountPoint> MountPoints => _mounts ?? new List<MountPoint>();
 
     /// <summary>
     /// Initialize the VFS.
@@ -74,10 +73,13 @@ public static class VFS
         path = NormalizePath(path);
 
         // Check if already mounted
-        foreach (var m in _mounts)
+        if (_mounts != null)
         {
-            if (m.Path == path)
-                return FileResult.AlreadyExists;
+            foreach (var m in _mounts)
+            {
+                if (m.Path == path)
+                    return FileResult.AlreadyExists;
+            }
         }
 
         // Mount the filesystem
@@ -85,13 +87,24 @@ public static class VFS
         if (result != FileResult.Success)
             return result;
 
-        // Add mount point
-        lock (_lock)
-        {
-            _mounts.Add(new MountPoint(path, fileSystem, device, readOnly));
+        // Add mount point (no lock for now - single-threaded testing)
+        if (_mounts == null)
+            _mounts = new List<MountPoint>();
+        _mounts.Add(new MountPoint(path, fileSystem, device, readOnly));
 
-            // Sort by path length (longest first) for correct matching
-            _mounts.Sort((a, b) => b.Path.Length.CompareTo(a.Path.Length));
+        // Sort by path length (longest first) for correct matching
+        // Use simple bubble sort to avoid complex delegate code
+        for (int i = 0; i < _mounts.Count - 1; i++)
+        {
+            for (int j = 0; j < _mounts.Count - 1 - i; j++)
+            {
+                if (_mounts[j].Path.Length < _mounts[j + 1].Path.Length)
+                {
+                    var temp = _mounts[j];
+                    _mounts[j] = _mounts[j + 1];
+                    _mounts[j + 1] = temp;
+                }
+            }
         }
 
         return FileResult.Success;
@@ -104,20 +117,20 @@ public static class VFS
     {
         path = NormalizePath(path);
 
-        lock (_lock)
-        {
-            for (int i = 0; i < _mounts.Count; i++)
-            {
-                if (_mounts[i].Path == path)
-                {
-                    var mount = _mounts[i];
-                    var result = mount.FileSystem.Unmount();
-                    if (result != FileResult.Success)
-                        return result;
+        if (_mounts == null)
+            return FileResult.NotFound;
 
-                    _mounts.RemoveAt(i);
-                    return FileResult.Success;
-                }
+        for (int i = 0; i < _mounts.Count; i++)
+        {
+            if (_mounts[i].Path == path)
+            {
+                var mount = _mounts[i];
+                var result = mount.FileSystem.Unmount();
+                if (result != FileResult.Success)
+                    return result;
+
+                _mounts.RemoveAt(i);
+                return FileResult.Success;
             }
         }
 
@@ -130,6 +143,9 @@ public static class VFS
     public static MountPoint? FindMount(string path)
     {
         path = NormalizePath(path);
+
+        if (_mounts == null)
+            return null;
 
         // Mounts are sorted longest-first, so first match is most specific
         foreach (var mount in _mounts)

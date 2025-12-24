@@ -22,4 +22,5 @@ dotnet ildasm build/x64/TestSupport.dll -o build/x64/TestSupport.il 2>/dev/null 
 dotnet ildasm build/x64/ProtonOS.DDK.dll -o build/x64/ProtonOS.DDK.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Virtio.dll -o build/x64/ProtonOS.Drivers.Virtio.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Drivers.VirtioBlk.il 2>/dev/null || true
-echo "IL disassembly complete: FullTest.il, TestSupport.il, ProtonOS.DDK.il, ProtonOS.Drivers.Virtio.il, ProtonOS.Drivers.VirtioBlk.il"
+dotnet ildasm build/x64/ProtonOS.Drivers.Fat.dll -o build/x64/ProtonOS.Drivers.Fat.il 2>/dev/null || true
+echo "IL disassembly complete: FullTest.il, TestSupport.il, ProtonOS.DDK.il, ProtonOS.Drivers.Virtio.il, ProtonOS.Drivers.VirtioBlk.il, ProtonOS.Drivers.Fat.il"
