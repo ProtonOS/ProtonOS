@@ -15,27 +15,15 @@ TEST_DISK="${BUILD_DIR}/test.img"
 # Check for boot image
 if [ ! -f "$IMG_FILE" ]; then
     echo "Error: Boot image not found: $IMG_FILE"
-    echo "Run 'make image' first"
+    echo "Run './build.sh' first"
     exit 1
 fi
 
-# Create test disk if it doesn't exist
+# Check for test disk
 if [ ! -f "$TEST_DISK" ]; then
-    echo "Creating test disk image..."
-    # Create 64MB FAT32 disk image (FAT32 needs at least ~33MB)
-    dd if=/dev/zero of="$TEST_DISK" bs=1M count=64 status=none
-    mformat -i "$TEST_DISK" -F -v TESTDISK ::
-    # Create a test file
-    TMPFILE="$SCRIPT_DIR/build/hello.txt"
-    echo "Hello from ProtonOS test disk!" > "$TMPFILE"
-    echo "This is a test file for virtio-blk driver testing." >> "$TMPFILE"
-    mcopy -i "$TEST_DISK" "$TMPFILE" ::/hello.txt
-    # Create a directory with more files
-    mmd -i "$TEST_DISK" ::/testdir
-    echo "File in subdirectory" > "$TMPFILE"
-    mcopy -i "$TEST_DISK" "$TMPFILE" ::/testdir/subfile.txt
-    rm -f "$TMPFILE"
-    echo "Test disk created: $TEST_DISK"
+    echo "Error: Test disk not found: $TEST_DISK"
+    echo "Run './build.sh' first"
+    exit 1
 fi
 
 # Find OVMF firmware

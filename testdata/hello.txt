@@ -1,0 +1,2 @@
+Hello from ProtonOS test disk!
+This is a test file for virtio-blk driver testing.
