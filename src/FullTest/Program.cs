@@ -9351,16 +9351,36 @@ public static class UtilityTests
     /// <summary>Tests Queue basic operations</summary>
     public static int TestQueueBasic()
     {
+        Debug.Write("[Queue] Start\n");
         var queue = new System.Collections.Generic.Queue<int>();
+        Debug.Write("[Queue] Created, Count=");
+        Debug.WriteDecimal(queue.Count);
+        Debug.Write("\n");
+
+        Debug.Write("[Queue] About to Enqueue(1)\n");
         queue.Enqueue(1);
+        Debug.Write("[Queue] Enqueue(1)\n");
         queue.Enqueue(2);
+        Debug.Write("[Queue] Enqueue(2)\n");
         queue.Enqueue(3);
+        Debug.Write("[Queue] Enqueue(3)\n");
 
         if (queue.Count != 3) return 0;
-        if (queue.Dequeue() != 1) return 0;
-        if (queue.Dequeue() != 2) return 0;
+        Debug.Write("[Queue] Count ok\n");
+        int v1 = queue.Dequeue();
+        Debug.Write("[Queue] Dequeue returned: ");
+        Debug.WriteDecimal(v1);
+        Debug.Write("\n");
+        if (v1 != 1) return 0;
+        int v2 = queue.Dequeue();
+        Debug.Write("[Queue] Dequeue2 returned: ");
+        Debug.WriteDecimal(v2);
+        Debug.Write("\n");
+        if (v2 != 2) return 0;
         if (queue.Count != 1) return 0;
+        Debug.Write("[Queue] About to Peek\n");
         if (queue.Peek() != 3) return 0;
+        Debug.Write("[Queue] Peek ok\n");
         if (queue.Count != 1) return 0;  // Peek doesn't remove
 
         return 1;
@@ -10490,20 +10510,28 @@ public static class UtilityTests
         // Test Count first
         if (roc.Count != 3) return 0;
 
-        // Test indexer access via the underlying list to avoid interface dispatch issues
-        // The ReadOnlyCollection indexer delegates to the underlying IList, which triggers
-        // interface dispatch. For now, test that we can access the underlying data.
-        // Direct indexer access (roc[i]) causes JIT interface dispatch issues.
+        Debug.WriteLine("[ROC-Indexer] About to call roc[0]");
 
-        // Verify the list items are accessible via the original list
-        if (!ReferenceEquals(list[0], ex1)) return 0;
-        if (!ReferenceEquals(list[1], ex2)) return 0;
-        if (!ReferenceEquals(list[2], ex3)) return 0;
+        // Test direct indexer access - this triggers interface dispatch
+        // roc[i] calls ReadOnlyCollection.get_Item which uses IList<T>.get_Item
+        var item0 = roc[0];
+        Debug.WriteLine("[ROC-Indexer] Got roc[0]");
+
+        if (!ReferenceEquals(item0, ex1)) return 0;
+        Debug.WriteLine("[ROC-Indexer] roc[0] matches ex1");
+
+        var item1 = roc[1];
+        if (!ReferenceEquals(item1, ex2)) return 0;
+        Debug.WriteLine("[ROC-Indexer] roc[1] matches ex2");
+
+        var item2 = roc[2];
+        if (!ReferenceEquals(item2, ex3)) return 0;
+        Debug.WriteLine("[ROC-Indexer] roc[2] matches ex3");
 
         // Verify message content
-        if (list[0].Message != "Error 1") return 0;
-        if (list[1].Message != "Error 2") return 0;
-        if (list[2].Message != "Error 3") return 0;
+        if (item0.Message != "Error 1") return 0;
+        if (item1.Message != "Error 2") return 0;
+        if (item2.Message != "Error 3") return 0;
 
         return 1;
     }

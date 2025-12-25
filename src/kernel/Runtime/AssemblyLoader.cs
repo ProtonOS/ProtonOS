@@ -1440,6 +1440,10 @@ public static unsafe class AssemblyLoader
     /// Normalize a generic type definition token to a canonical form for cache consistency.
     /// TypeRef tokens are resolved to TypeDef tokens to ensure the same type always
     /// maps to the same cache key regardless of how it's referenced.
+    ///
+    /// IMPORTANT: Normalized token format uses (assemblyId + 2) << 24 to avoid collision
+    /// with raw metadata token table IDs (0x01=TypeRef, 0x02=TypeDef). This ensures
+    /// korlib (assembly ID 1) uses 0x03xxxxxx, not 0x01xxxxxx.
     /// </summary>
     private static uint NormalizeGenericDefToken(LoadedAssembly* asm, uint token)
     {
@@ -1449,8 +1453,8 @@ public static unsafe class AssemblyLoader
         // TypeDef tokens are already canonical
         if (table == 0x02)
         {
-            // Include assembly ID to make it globally unique
-            return (asm->AssemblyId << 24) | row;
+            // Include assembly ID + 2 to make it globally unique and avoid table ID collision
+            return ((asm->AssemblyId + 2) << 24) | row;
         }
 
         // TypeRef - resolve to TypeDef in target assembly
@@ -1460,8 +1464,8 @@ public static unsafe class AssemblyLoader
             uint targetToken = 0;
             if (ResolveTypeRefToTypeDef(asm, row, out targetAsm, out targetToken))
             {
-                // Return normalized token with target assembly ID
-                uint normalized = (targetAsm->AssemblyId << 24) | (targetToken & 0x00FFFFFF);
+                // Return normalized token with target assembly ID + 2
+                uint normalized = ((targetAsm->AssemblyId + 2) << 24) | (targetToken & 0x00FFFFFF);
                 DebugConsole.Write("[Normalize] TypeRef row=");
                 DebugConsole.WriteDecimal(row);
                 DebugConsole.Write(" asm=");
@@ -1479,8 +1483,8 @@ public static unsafe class AssemblyLoader
             DebugConsole.WriteLine(" FAILED");
         }
 
-        // TypeSpec or failed resolution - return original with assembly context
-        return (asm->AssemblyId << 24) | row;
+        // TypeSpec or failed resolution - return original with assembly context + 2
+        return ((asm->AssemblyId + 2) << 24) | row;
     }
 
     /// <summary>
@@ -3061,6 +3065,35 @@ public static unsafe class AssemblyLoader
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// Count approximate vtable slots for a type by counting its methods.
+    /// For generic instantiations when genDefMT is not available.
+    /// Returns base class slots (3 for Object) + method count from this type.
+    /// </summary>
+    private static ushort CountVtableSlotsForType(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Start with Object's 3 virtual methods
+        ushort slots = 3;
+
+        // Get the method range for this TypeDef
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint methodEnd;
+        if (typeDefRow < asm->Tables.RowCounts[(int)MetadataTableId.TypeDef])
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1);
+        else
+            methodEnd = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+
+        // Count methods (rough approximation - not all may be virtual)
+        if (methodEnd > methodStart)
+            slots += (ushort)(methodEnd - methodStart);
+
+        // Add interface method slots
+        ushort interfaceSlots = CountInterfaceMethodSlots(asm, typeDefRow);
+        slots += interfaceSlots;
+
+        return slots;
     }
 
     /// <summary>
@@ -5007,9 +5040,11 @@ public static unsafe class AssemblyLoader
     /// </summary>
     private static bool IsNullableGenericDef(uint genDefToken)
     {
-        // Normalized token format: (assemblyId << 24) | typeDefRow
-        uint asmId = genDefToken >> 24;
+        // Normalized token format: ((assemblyId + 2) << 24) | typeDefRow
+        // We add 2 to avoid collision with TypeRef (0x01) and TypeDef (0x02) table IDs
+        uint tokenTable = genDefToken >> 24;
         uint typeDefRow = genDefToken & 0x00FFFFFF;
+        uint asmId = tokenTable >= 3 ? tokenTable - 2 : 0;
 
         if (asmId == 0 || typeDefRow == 0)
             return false;
@@ -5472,6 +5507,19 @@ public static unsafe class AssemblyLoader
                 ref sourceAsm->Tables, ref sourceAsm->Sizes, classRef.RowId);
             byte* typeSpecSig = MetadataReader.GetBlob(ref sourceAsm->Metadata, typeSpecIdx, out uint typeSpecLen);
 
+            // Debug: show blob index and blob heap info
+            DebugConsole.Write("[ResolveMemberRefField] TypeSpec row=");
+            DebugConsole.WriteDecimal(classRef.RowId);
+            DebugConsole.Write(" blobIdx=0x");
+            DebugConsole.WriteHex(typeSpecIdx);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(sourceAsm->AssemblyId);
+            DebugConsole.Write(" blobHeap=0x");
+            DebugConsole.WriteHex((ulong)sourceAsm->Metadata.BlobHeap);
+            DebugConsole.Write(" blobSize=");
+            DebugConsole.WriteDecimal(sourceAsm->Metadata.BlobHeapSize);
+            DebugConsole.WriteLine();
+
             if (typeSpecSig == null || typeSpecLen < 2)
             {
                 DebugConsole.Write("[ResolveMemberRefField] Invalid TypeSpec signature for row ");
@@ -5489,9 +5537,29 @@ public static unsafe class AssemblyLoader
                 // Parse the TypeDefOrRef coded index using proper CLI compressed int format
                 uint codedIdx = DecodeCompressedUInt(typeSpecSig, typeSpecLen, ref pos);
 
+                DebugConsole.Write("[ResolveMemberRef] TypeSpec row=");
+                DebugConsole.WriteDecimal(classRef.RowId);
+                DebugConsole.Write(" len=");
+                DebugConsole.WriteDecimal(typeSpecLen);
+                DebugConsole.Write(" codedIdx=");
+                DebugConsole.WriteDecimal(codedIdx);
+                DebugConsole.Write(" sig=");
+                for (uint i = 0; i < typeSpecLen && i < 10; i++)
+                {
+                    DebugConsole.WriteHex(typeSpecSig[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+
                 // Decode TypeDefOrRef: low 2 bits = table, rest = row
                 uint table = codedIdx & 0x03;
                 uint row = codedIdx >> 2;
+
+                DebugConsole.Write("  -> table=");
+                DebugConsole.WriteDecimal(table);
+                DebugConsole.Write(" row=");
+                DebugConsole.WriteDecimal(row);
+                DebugConsole.WriteLine();
 
                 if (table == 0) // TypeDef
                 {
@@ -5567,6 +5635,17 @@ public static unsafe class AssemblyLoader
         {
             fieldEnd = asm->Tables.RowCounts[(int)MetadataTableId.Field] + 1;
         }
+
+        DebugConsole.Write("[FindFieldDef] typeRow=");
+        DebugConsole.WriteDecimal(typeRow);
+        DebugConsole.Write(" fieldRange=");
+        DebugConsole.WriteDecimal(fieldStart);
+        DebugConsole.Write("..");
+        DebugConsole.WriteDecimal(fieldEnd);
+        DebugConsole.Write(" name='");
+        for (int i = 0; fieldName[i] != 0 && i < 30; i++)
+            DebugConsole.WriteChar((char)fieldName[i]);
+        DebugConsole.WriteLine("'");
 
         // Search fields in range
         for (uint fieldRow = fieldStart; fieldRow < fieldEnd; fieldRow++)
@@ -6037,6 +6116,21 @@ public static unsafe class AssemblyLoader
             uint typeSpecRow = classRef.RowId;
             uint sigIdx = MetadataReader.GetTypeSpecSignature(ref sourceAsm->Tables, ref sourceAsm->Sizes, typeSpecRow);
             byte* sig = MetadataReader.GetBlob(ref sourceAsm->Metadata, sigIdx, out uint sigLen);
+
+            // Debug: log TypeSpec processing
+            DebugConsole.Write("[IsIfaceMethod] TypeSpec classRef row=");
+            DebugConsole.WriteDecimal(typeSpecRow);
+            DebugConsole.Write(" sig=");
+            if (sig != null && sigLen > 0)
+            {
+                DebugConsole.WriteHex(sig[0]);
+                if (sigLen > 1) { DebugConsole.Write(" "); DebugConsole.WriteHex(sig[1]); }
+            }
+            DebugConsole.Write(" name=");
+            for (byte* p = memberName; *p != 0 && p < memberName + 20; p++)
+                DebugConsole.WriteChar((char)*p);
+            DebugConsole.WriteLine();
+
             if (sig == null || sigLen == 0)
                 return false;
 
@@ -6146,6 +6240,26 @@ public static unsafe class AssemblyLoader
             if (mName != null && StringEquals(memberName, mName))
             {
                 methodSlot = slot;
+
+                // Debug: log interface method detection
+                DebugConsole.Write("[IsIfaceMethod] TRUE token=0x");
+                DebugConsole.WriteHex(memberRefToken);
+                DebugConsole.Write(" ifaceMT=0x");
+                DebugConsole.WriteHex((ulong)interfaceMT);
+                if (interfaceMT != null)
+                {
+                    DebugConsole.Write(" slots=");
+                    DebugConsole.WriteDecimal(interfaceMT->_usNumVtableSlots);
+                    DebugConsole.Write(" hash=0x");
+                    DebugConsole.WriteHex(interfaceMT->_uHashCode);
+                }
+                DebugConsole.Write(" slot=");
+                DebugConsole.WriteDecimal((uint)slot);
+                DebugConsole.Write(" name=");
+                for (byte* p = memberName; *p != 0 && p < memberName + 30; p++)
+                    DebugConsole.WriteChar((char)*p);
+                DebugConsole.WriteLine();
+
                 return true;
             }
             slot++;
@@ -7817,28 +7931,35 @@ public static unsafe class AssemblyLoader
         LoadedAssembly* defAsm = null;
         uint defTypeDefToken = 0;
 
-        // Check if tokenTable is a valid loaded assembly ID (indicates normalized token)
-        // Assembly IDs start at 1, and we can check if it's a loaded assembly
-        // Note: This can be confusing because token table IDs (0x01=TypeRef, 0x02=TypeDef)
-        // overlap with low assembly IDs. We check if an assembly exists with that ID.
-        LoadedAssembly* potentialAsm = (tokenTable > 0 && tokenTable < MaxAssemblies) ? GetAssembly(tokenTable) : null;
+        // Check if tokenTable is a normalized token (assemblyId + 2 to avoid collision)
+        // Normalized tokens have format: ((assemblyId + 2) << 24) | row
+        // Raw metadata tokens have table IDs: 0x01=TypeRef, 0x02=TypeDef
+        // So normalized korlib (ID 1) uses 0x03, normalized FullTest (ID 7) uses 0x09, etc.
+        bool isRawMetadataToken = (tokenTable == 0x01 || tokenTable == 0x02);
+        // For normalized tokens, subtract 2 to get the real assembly ID
+        uint realAsmId = tokenTable >= 3 ? tokenTable - 2 : 0;
+        LoadedAssembly* potentialAsm = (!isRawMetadataToken && realAsmId > 0 && realAsmId < MaxAssemblies)
+            ? GetAssembly(realAsmId) : null;
 
-        DebugConsole.Write("[GetOrCreate] token=0x");
-        DebugConsole.WriteHex(genDefToken);
-        DebugConsole.Write(" table=");
-        DebugConsole.WriteDecimal(tokenTable);
-        DebugConsole.Write(" row=0x");
-        DebugConsole.WriteHex(defTypeDefRow);
-        DebugConsole.Write(" potAsm=");
-        DebugConsole.WriteHex((ulong)potentialAsm);
-        DebugConsole.WriteLine();
+        // Debug: only log for assembly 1 (korlib) tokens to reduce noise
+        // DebugConsole.Write("[GetOrCreate] token=0x");
+        // DebugConsole.WriteHex(genDefToken);
+        // DebugConsole.Write(" table=");
+        // DebugConsole.WriteDecimal(tokenTable);
+        // DebugConsole.Write(" row=0x");
+        // DebugConsole.WriteHex(defTypeDefRow);
+        // DebugConsole.Write(" isRaw=");
+        // DebugConsole.Write(isRawMetadataToken ? "Y" : "N");
+        // DebugConsole.Write(" potAsm=");
+        // DebugConsole.WriteHex((ulong)potentialAsm);
+        // DebugConsole.WriteLine();
 
         if (potentialAsm != null)  // Normalized token (asmId << 24 | row)
         {
             // Already normalized - extract assembly ID and row
             defAsm = potentialAsm;
             defTypeDefToken = 0x02000000 | defTypeDefRow;
-            genDefMT = ResolveType(tokenTable, defTypeDefToken);
+            genDefMT = ResolveType(realAsmId, defTypeDefToken);  // Use realAsmId, not tokenTable
         }
         else if (tokenTable == 0x02)  // Raw TypeDef token - use JIT compilation context
         {
@@ -7904,6 +8025,21 @@ public static unsafe class AssemblyLoader
             DebugConsole.Write("[GenInst] genDefMT is NULL for token 0x");
             DebugConsole.WriteHex(genDefToken);
             DebugConsole.WriteLine();
+
+            // When genDefMT is null, try to get interface count from metadata
+            if (defAsm != null && defTypeDefToken != 0)
+            {
+                uint typeDefRow = defTypeDefToken & 0x00FFFFFF;
+                numInterfaces = CountInterfacesForType(defAsm, typeDefRow);
+                numVtableSlots = CountVtableSlotsForType(defAsm, typeDefRow);
+                if (numVtableSlots < 3) numVtableSlots = 3;  // Minimum Object methods
+
+                DebugConsole.Write("[GenInst] From metadata: vtSlots=");
+                DebugConsole.WriteDecimal(numVtableSlots);
+                DebugConsole.Write(" ifaces=");
+                DebugConsole.WriteDecimal(numInterfaces);
+                DebugConsole.WriteLine();
+            }
         }
 
         // Create new instantiated MethodTable with vtable and interface map space
@@ -7983,14 +8119,25 @@ public static unsafe class AssemblyLoader
             }
 
             // Copy vtable entries from the generic definition
+            // IMPORTANT: For generic types, we must NOT copy AOT vtable slots for methods
+            // that might make interface calls on type parameters. AOT code has generic
+            // InterfaceDispatchCells (e.g., IList<T>) that don't match runtime-instantiated
+            // interfaces (e.g., IList<Exception>). Slots 0-2 are Object methods which are safe.
+            // For slots >= 3, leave them as 0 to force JIT compilation with correct type context.
             if (numVtableSlots > 0)
             {
                 nint* srcVtable = genDefMT->GetVtablePtr();
                 nint* dstVtable = instMT->GetVtablePtr();
-                for (int i = 0; i < numVtableSlots; i++)
+
+
+                // Only copy slots 0-2 (Object methods: ToString, Equals, GetHashCode)
+                // which don't have interface dispatch issues
+                int safeToCopy = numVtableSlots < 3 ? numVtableSlots : 3;
+                for (int i = 0; i < safeToCopy; i++)
                 {
                     dstVtable[i] = srcVtable[i];
                 }
+                // Slots >= 3 are left as 0 to force JIT compilation
 
                 // For reference types, ensure Object vtable entries (slots 0-2) are populated
                 // The open generic type's vtable might have empty inherited slots
@@ -8049,25 +8196,11 @@ public static unsafe class AssemblyLoader
 
                         if (info != null && info->Token != 0)
                         {
-                            // First check if this method has AOT native code available
-                            // For generic methods, prefer AOT code over JIT compilation when available
-                            JIT.CompiledMethodInfo* regInfo = JIT.CompiledMethodRegistry.Lookup(info->Token, info->AssemblyId);
-                            if (regInfo != null)
-                            {
-                                if (regInfo->IsCompiled && regInfo->NativeCode != null)
-                                {
-                                    // Use AOT code instead of JIT compiling
-                                    dstVtable[i] = (nint)regInfo->NativeCode;
-                                    DebugConsole.Write("[GenInst] AOT slot ");
-                                    DebugConsole.WriteDecimal((uint)i);
-                                    DebugConsole.Write(" = 0x");
-                                    DebugConsole.WriteHex((ulong)regInfo->NativeCode);
-                                    DebugConsole.Write(" for MT=0x");
-                                    DebugConsole.WriteHex((ulong)instMT);
-                                    DebugConsole.WriteLine();
-                                    continue;  // Skip JIT compilation
-                                }
-                            }
+                            // IMPORTANT: Do NOT use AOT code for methods on generic instantiations.
+                            // AOT code has generic InterfaceDispatchCells (e.g., IList<T>) that don't
+                            // match runtime-instantiated interfaces (e.g., IList<Exception>).
+                            // Always JIT compile with the correct type context to generate proper
+                            // interface dispatch code.
 
                             // Set up type context for JIT compilation
                             int savedContext = JIT.MetadataIntegration.GetTypeTypeArgCount();
@@ -8111,9 +8244,11 @@ public static unsafe class AssemblyLoader
             if (numInterfaces > 0)
             {
                 // Extract assembly ID and TypeDef row from normalized token
-                uint asmId = genDefToken >> 24;
+                // Normalized format: ((asmId + 2) << 24) | row, so we subtract 2 to get real asmId
+                uint tokenTableForIface = genDefToken >> 24;
                 uint typeDefRow = genDefToken & 0x00FFFFFF;
-                LoadedAssembly* defAsmInner = GetAssembly(asmId);
+                uint asmIdForIface = tokenTableForIface >= 3 ? tokenTableForIface - 2 : 0;
+                LoadedAssembly* defAsmInner = GetAssembly(asmIdForIface);
 
                 if (defAsmInner != null)
                 {
@@ -8227,17 +8362,101 @@ public static unsafe class AssemblyLoader
         }
         else
         {
-            // Default to reference type with object header size
-            instMT->_uBaseSize = 24;  // MT pointer (8) + sync block (8) + min fields (8)
-            instMT->_usFlags = 0;
-            instMT->_usNumVtableSlots = 3;
-            instMT->_usNumInterfaces = 0;
+            // genDefMT is null - we need to compute the size from metadata
+            ushort flags = 0;
+            instMT->_usNumVtableSlots = numVtableSlots;  // Already computed above
+            instMT->_usNumInterfaces = numInterfaces;    // Already computed above
+
+            // Compute instance size from metadata if we have the assembly info
+            if (defAsm != null && defTypeDefToken != 0)
+            {
+                uint typeDefRow = defTypeDefToken & 0x00FFFFFF;
+
+                // Check if this type is an interface
+                uint typeFlags = MetadataReader.GetTypeDefFlags(ref defAsm->Tables, ref defAsm->Sizes, typeDefRow);
+                const uint tdInterface = 0x20;
+                if ((typeFlags & 0x20) == tdInterface)
+                {
+                    flags |= (ushort)(MTFlags.IsInterface >> 16);
+                    DebugConsole.Write("[GenInst] Detected interface type from metadata, row=");
+                    DebugConsole.WriteDecimal(typeDefRow);
+                    DebugConsole.WriteLine();
+                }
+
+                // Check if this type extends MulticastDelegate (i.e., is a delegate)
+                CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref defAsm->Tables, ref defAsm->Sizes, typeDefRow);
+                if (extendsIdx.RowId != 0 && IsDelegateBase(defAsm, extendsIdx))
+                {
+                    flags |= (ushort)(MTFlags.IsDelegate >> 16);
+                    DebugConsole.Write("[GenInst] Detected delegate type from metadata, row=");
+                    DebugConsole.WriteDecimal(typeDefRow);
+                    DebugConsole.WriteLine();
+                }
+
+                // Set type context before computing size (for field type resolution)
+                int savedContextCnt = JIT.MetadataIntegration.GetTypeTypeArgCount();
+                MethodTable** savedCtxArgs = stackalloc MethodTable*[savedContextCnt > 0 ? savedContextCnt : 1];
+                for (int ctx = 0; ctx < savedContextCnt; ctx++)
+                    savedCtxArgs[ctx] = JIT.MetadataIntegration.GetTypeTypeArgMethodTable(ctx);
+
+                JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
+
+                // Compute the instance size with type context set
+                uint computedSize = ComputeInstanceSize(defAsm, typeDefRow, false);
+                instMT->_uBaseSize = computedSize;
+
+                DebugConsole.Write("[GenInst] No genDefMT - computed size: ");
+                DebugConsole.WriteDecimal(computedSize);
+                DebugConsole.WriteLine();
+
+                // Restore context
+                if (savedContextCnt > 0)
+                    JIT.MetadataIntegration.SetTypeTypeArgs(savedCtxArgs, savedContextCnt);
+                else
+                    JIT.MetadataIntegration.ClearTypeTypeArgs();
+            }
+            else
+            {
+                // Fallback: default reference type size
+                instMT->_uBaseSize = 24;  // MT pointer (8) + sync block (8) + min fields (8)
+                DebugConsole.WriteLine("[GenInst] WARN: No defAsm - using default size 24");
+            }
+
+            instMT->_usFlags = flags;
+            instMT->_usNumVtableSlots = numVtableSlots;
+            instMT->_usNumInterfaces = numInterfaces;
 
             // Set up default Object vtable entries
             nint* vtable = instMT->GetVtablePtr();
             vtable[0] = AotMethodRegistry.LookupByName("System.Object", "ToString");
             vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
             vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+
+            // Populate interface map if we have interfaces and assembly info
+            if (numInterfaces > 0 && defAsm != null && defTypeDefToken != 0)
+            {
+                uint typeDefRow = defTypeDefToken & 0x00FFFFFF;
+
+                // Set type context before populating interface map
+                int savedCtxCnt = JIT.MetadataIntegration.GetTypeTypeArgCount();
+                MethodTable** savedCtx = stackalloc MethodTable*[savedCtxCnt > 0 ? savedCtxCnt : 1];
+                for (int ctx = 0; ctx < savedCtxCnt; ctx++)
+                    savedCtx[ctx] = JIT.MetadataIntegration.GetTypeTypeArgMethodTable(ctx);
+
+                JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
+
+                PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, 3);
+
+                DebugConsole.Write("[GenInst] Populated ");
+                DebugConsole.WriteDecimal(numInterfaces);
+                DebugConsole.WriteLine(" interface(s) for genDefMT=null case");
+
+                // Restore context
+                if (savedCtxCnt > 0)
+                    JIT.MetadataIntegration.SetTypeTypeArgs(savedCtx, savedCtxCnt);
+                else
+                    JIT.MetadataIntegration.ClearTypeTypeArgs();
+            }
         }
 
         // Mark as value type if specified
@@ -8360,9 +8579,13 @@ public static unsafe class AssemblyLoader
                 // Found it - now resolve the generic definition token
                 uint genDefToken = _genericInstCacheDefTokens[i];
 
-                // The genDefToken is in normalized format: (asmId << 24) | typeDefRow
-                uint defAsmId = genDefToken >> 24;
+                // The genDefToken is in normalized format: ((asmId + 2) << 24) | typeDefRow
+                // We add 2 to the assembly ID to avoid collision with TypeRef (0x01) and TypeDef (0x02) table IDs
+                uint tokenTable = genDefToken >> 24;
                 uint defTypeDefRow = genDefToken & 0x00FFFFFF;
+
+                // Subtract 2 to get the real assembly ID
+                uint defAsmId = tokenTable >= 3 ? tokenTable - 2 : 0;
                 uint defTypeDefToken = 0x02000000 | defTypeDefRow;
 
                 // Resolve to get the generic definition MT

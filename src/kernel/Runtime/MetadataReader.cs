@@ -694,12 +694,28 @@ public unsafe struct TableSizes
 
         // Calculate table offsets (cumulative based on row counts and sizes)
         uint offset = 0;
+        bool debugTableOffsets = false;  // Disable for now
         for (int tableId = 0; tableId <= (int)MetadataTableId.MaxTableId; tableId++)
         {
             sizes.TableOffsets[tableId] = offset;
             if ((header.ValidTables & (1UL << tableId)) != 0)
             {
-                offset += header.RowCounts[tableId] * (uint)sizes.RowSizes[tableId];
+                uint tableSize = header.RowCounts[tableId] * (uint)sizes.RowSizes[tableId];
+                if (debugTableOffsets && tableId >= 17 && tableId <= 27)
+                {
+                    DebugConsole.Write("[TableOff] table=");
+                    DebugConsole.WriteDecimal(tableId);
+                    DebugConsole.Write(" rows=");
+                    DebugConsole.WriteDecimal(header.RowCounts[tableId]);
+                    DebugConsole.Write(" rowSize=");
+                    DebugConsole.WriteDecimal(sizes.RowSizes[tableId]);
+                    DebugConsole.Write(" offset=0x");
+                    DebugConsole.WriteHex(offset);
+                    DebugConsole.Write(" size=");
+                    DebugConsole.WriteDecimal(tableSize);
+                    DebugConsole.WriteLine();
+                }
+                offset += tableSize;
             }
         }
 
@@ -2270,7 +2286,33 @@ public static unsafe class MetadataReader
         if (row == null)
             return 0;
 
-        return ReadIndex(row, sizes.BlobIndexSize);
+        uint result = ReadIndex(row, sizes.BlobIndexSize);
+
+        // Debug: show what we're reading
+        if (rowId == 133)
+        {
+            DebugConsole.Write("[GetTypeSpecSig] row=");
+            DebugConsole.WriteDecimal(rowId);
+            DebugConsole.Write(" tableData=0x");
+            DebugConsole.WriteHex((ulong)tables.TableData);
+            DebugConsole.Write(" tableOff=0x");
+            DebugConsole.WriteHex((uint)sizes.TableOffsets[(int)MetadataTableId.TypeSpec]);
+            DebugConsole.Write(" rowSize=");
+            DebugConsole.WriteDecimal((uint)sizes.RowSizes[(int)MetadataTableId.TypeSpec]);
+            DebugConsole.Write(" rowPtr=0x");
+            DebugConsole.WriteHex((ulong)row);
+            DebugConsole.Write(" rawBytes=");
+            DebugConsole.WriteHex(row[0]);
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex(row[1]);
+            DebugConsole.Write(" blobIdx=0x");
+            DebugConsole.WriteHex(result);
+            DebugConsole.Write(" rowCount=");
+            DebugConsole.WriteDecimal(tables.RowCounts[(int)MetadataTableId.TypeSpec]);
+            DebugConsole.WriteLine();
+        }
+
+        return result;
     }
 
     // ============================================================================

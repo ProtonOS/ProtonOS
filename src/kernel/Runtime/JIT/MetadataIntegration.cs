@@ -3216,6 +3216,22 @@ public static unsafe class MetadataIntegration
                             result.InterfaceMethodSlot = info->InterfaceMethodSlot;
                             result.RegistryEntry = info;
                             TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
+
+                            // Apply same downgrade logic as for pre-compiled methods:
+                            // If high vtable slot (>=3) and we have native code, use direct call
+                            if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
+                            {
+                                DebugConsole.Write("[ResolveMDef-JIT] Downgrade slot=");
+                                DebugConsole.WriteDecimal((uint)result.VtableSlot);
+                                DebugConsole.Write(" to direct call for tok=0x");
+                                DebugConsole.WriteHex(methodToken);
+                                DebugConsole.Write(" code=0x");
+                                DebugConsole.WriteHex((ulong)result.NativeCode);
+                                DebugConsole.WriteLine();
+                                result.IsVirtual = false;
+                                result.VtableSlot = -1;
+                            }
+
                             success = true;
                         }
                         else
@@ -4609,9 +4625,27 @@ public static unsafe class MetadataIntegration
         // Get the type's Extends field
         CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref *_tablesHeader, ref *_tableSizes, typeDefRow);
 
+        // Debug: trace IsTypeDefValueType for rows around Queue (250-260 in korlib)
+        if (_currentAssemblyId == 1 && typeDefRow >= 250 && typeDefRow <= 260)
+        {
+            DebugConsole.Write("[IsTypeDefVT] row=");
+            DebugConsole.WriteDecimal(typeDefRow);
+            DebugConsole.Write(" ext.Table=");
+            DebugConsole.WriteDecimal((uint)extendsIdx.Table);
+            DebugConsole.Write(" ext.Row=");
+            DebugConsole.WriteDecimal(extendsIdx.RowId);
+        }
+
         // TypeDefOrRef: 0=TypeDef, 1=TypeRef, 2=TypeSpec
         if (extendsIdx.Table != MetadataTableId.TypeRef)
+        {
+            // Debug: show when returning false for non-TypeRef
+            if (_currentAssemblyId == 1 && typeDefRow >= 250 && typeDefRow <= 260)
+            {
+                DebugConsole.Write(" -> notTypeRef, ret FALSE\n");
+            }
             return false;
+        }
 
         // Get the TypeRef name and namespace
         uint nameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, extendsIdx.RowId);
@@ -4632,10 +4666,32 @@ public static unsafe class MetadataIntegration
         if (name[0] == 'V' && name[1] == 'a' && name[2] == 'l' && name[3] == 'u' &&
             name[4] == 'e' && name[5] == 'T' && name[6] == 'y' && name[7] == 'p' &&
             name[8] == 'e' && name[9] == 0)
+        {
+            if (_currentAssemblyId == 1 && typeDefRow >= 250 && typeDefRow <= 260)
+            {
+                DebugConsole.Write(" -> ValueType, ret TRUE\n");
+            }
             return true;
+        }
 
         if (name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0)
+        {
+            if (_currentAssemblyId == 1 && typeDefRow >= 250 && typeDefRow <= 260)
+            {
+                DebugConsole.Write(" -> Enum, ret TRUE\n");
+            }
             return true;
+        }
+
+        // Debug: show when returning false (not ValueType or Enum)
+        if (_currentAssemblyId == 1 && typeDefRow >= 250 && typeDefRow <= 260)
+        {
+            DebugConsole.Write(" -> ext=System.");
+            // Print first few chars of name
+            for (int i = 0; i < 10 && name[i] != 0; i++)
+                DebugConsole.WriteChar((char)name[i]);
+            DebugConsole.Write(", ret FALSE\n");
+        }
 
         return false;
     }

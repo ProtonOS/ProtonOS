@@ -203,8 +203,9 @@ public static unsafe class JitStubs
 
         if (vtableSlot >= mt->_usNumVtableSlots)
         {
-            // Slot is out of bounds - try to find the method from AOT registry
-            // This handles sealed types where NativeAOT devirtualized the vtable
+            // Slot is out of bounds - this could be:
+            // 1. A sealed virtual slot (for AOT types with HasDispatchMap)
+            // 2. A devirtualized method on sealed types like String
             DebugConsole.Write("[VTbounds] slot=");
             DebugConsole.WriteDecimal((uint)vtableSlot);
             DebugConsole.Write(" > numSlots=");
@@ -212,6 +213,41 @@ public static unsafe class JitStubs
             DebugConsole.Write(" MT=0x");
             DebugConsole.WriteHex((ulong)methodTable);
             DebugConsole.WriteLine();
+
+            // For AOT types with dispatch maps, out-of-bounds slots are sealed virtual slots.
+            // In NativeAOT, sealed slots table is pointed to by a RelPtr at offset 12 in optional fields
+            // (after TypeManagerIndirection, WritableData, and DispatchMap RelPtrs, each 4 bytes).
+            if (mt->HasDispatchMap)
+            {
+                int sealedSlotIndex = vtableSlot - mt->_usNumVtableSlots;
+                int optOffset = mt->GetOptionalFieldsOffset();
+
+                // SealedVirtualSlots RelPtr is at optOffset + 12
+                byte* sealedSlotsRelPtrAddr = (byte*)methodTable + optOffset + 12;
+                int sealedSlotsRelPtr = *(int*)sealedSlotsRelPtrAddr;
+                byte* sealedSlotsTable = sealedSlotsRelPtrAddr + sealedSlotsRelPtr;
+
+                // Each sealed slot is a 4-byte RelPtr in the table
+                byte* slotRelPtrAddr = sealedSlotsTable + sealedSlotIndex * 4;
+                int slotRelPtr = *(int*)slotRelPtrAddr;
+                nint sealedMethod = (nint)(slotRelPtrAddr + slotRelPtr);
+
+                DebugConsole.Write("[VTbounds] Sealed slot ");
+                DebugConsole.WriteDecimal(sealedSlotIndex);
+                DebugConsole.Write(" table=0x");
+                DebugConsole.WriteHex((ulong)sealedSlotsTable);
+                DebugConsole.Write(" slotRel=");
+                DebugConsole.WriteDecimal(slotRelPtr);
+                DebugConsole.Write(" -> 0x");
+                DebugConsole.WriteHex((ulong)sealedMethod);
+                DebugConsole.WriteLine();
+
+                if (sealedMethod != 0 && (ulong)sealedMethod >= 0x1DA00000 && (ulong)sealedMethod < 0x1DB00000)
+                {
+                    return sealedMethod;
+                }
+                // Invalid sealed slot address - fall through to other fallbacks
+            }
 
             // Look up the method by name from AOT registry for common Object virtuals
             // For sealed types like String, look up the type-specific override first

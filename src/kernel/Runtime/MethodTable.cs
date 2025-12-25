@@ -246,6 +246,8 @@ public struct DispatchMapEntry
 
 /// <summary>
 /// DispatchMap structure for mapping interface methods to implementations.
+/// In NativeAOT, sealed virtual slots are stored as 4-byte RelPtrs after the dispatch entries.
+/// Layout: Header(8) + Entries[n] + SealedVirtualSlots[]
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct DispatchMap
@@ -264,6 +266,29 @@ public unsafe struct DispatchMap
         fixed (DispatchMapEntry* pFirst = &_firstEntry)
         {
             return pFirst + index;
+        }
+    }
+
+    /// <summary>
+    /// Get a sealed virtual slot method address.
+    /// Sealed slots are stored as 4-byte RelPtrs after the dispatch map entries.
+    /// </summary>
+    /// <param name="sealedSlotIndex">Index into the sealed slots table (impl - numVtableSlots)</param>
+    /// <returns>The method address, or 0 if not found</returns>
+    public nint GetSealedVirtualSlot(int sealedSlotIndex)
+    {
+        fixed (DispatchMap* self = &this)
+        {
+            // Calculate offset to sealed slots: after header (8 bytes) + entries
+            int numEntries = _standardEntryCount + _defaultEntryCount;
+            int entriesSize = numEntries * 6;  // Each DispatchMapEntry is 6 bytes
+            int sealedSlotsOffset = 8 + entriesSize;
+
+            byte* sealedSlotBase = (byte*)self + sealedSlotsOffset + sealedSlotIndex * 4;
+            int relPtr = *(int*)sealedSlotBase;
+            nint methodAddr = (nint)(sealedSlotBase + relPtr);
+
+            return methodAddr;
         }
     }
 }
@@ -576,11 +601,11 @@ public unsafe struct MethodTable
                 DebugConsole.WriteLine();
             }
 
-            // For AOT types, the dispatch map is stored after optional pointers.
-            // Standard layout: TypeManagerIndirection (8) + WritableData (8) + relPtr (4)
+            // For AOT types, the dispatch map is stored after optional relative pointers.
+            // NativeAOT layout uses 4-byte RelPtr: TypeManagerIndirection (4) + WritableData (4) + DispatchMapRelPtr (4)
             byte* pOptional = (byte*)self + optOffset;
-            pOptional += sizeof(nint);  // Skip TypeManagerIndirection
-            pOptional += sizeof(nint);  // Skip WritableData
+            pOptional += sizeof(int);  // Skip TypeManagerIndirection (4-byte RelPtr)
+            pOptional += sizeof(int);  // Skip WritableData (4-byte RelPtr)
             int relativeOffset = *(int*)pOptional;
             DispatchMap* result = (DispatchMap*)(pOptional + relativeOffset);
 
@@ -590,7 +615,15 @@ public unsafe struct MethodTable
             {
                 if (_usNumVtableSlots <= 5)
                 {
-                    DebugConsole.WriteLine("[GetDispMap] Dispatch map appears invalid - returning null");
+                    DebugConsole.Write("[GetDispMap] Invalid? NumStd=");
+                    DebugConsole.WriteDecimal(result->NumStandardEntries);
+                    DebugConsole.Write(" NumDef=");
+                    DebugConsole.WriteDecimal(result->NumDefaultEntries);
+                    DebugConsole.Write(" relOff=");
+                    DebugConsole.WriteDecimal(relativeOffset);
+                    DebugConsole.Write(" @0x");
+                    DebugConsole.WriteHex((ulong)result);
+                    DebugConsole.WriteLine();
                 }
                 return null;
             }
@@ -701,20 +734,91 @@ public unsafe struct MethodTable
         {
             // Kernel type - InterfaceMapEntry array
             InterfaceMapEntry* map = GetInterfaceMapPtr();
+
+            // Debug: dump interface map for kernel types
+            fixed (MethodTable* self = &this)
+            {
+                DebugConsole.Write("[FindVarIface] Kernel type MT=0x");
+                DebugConsole.WriteHex((ulong)self);
+                DebugConsole.Write(" numIf=");
+                DebugConsole.WriteDecimal(_usNumInterfaces);
+                DebugConsole.Write(" target=0x");
+                DebugConsole.WriteHex((ulong)targetInterfaceMT);
+                if (targetInterfaceMT != null)
+                {
+                    DebugConsole.Write(" targetSlots=");
+                    DebugConsole.WriteDecimal(targetInterfaceMT->_usNumVtableSlots);
+                    DebugConsole.Write(" targetHash=0x");
+                    DebugConsole.WriteHex(targetInterfaceMT->_uHashCode);
+                }
+                DebugConsole.WriteLine();
+
+                for (int j = 0; j < _usNumInterfaces; j++)
+                {
+                    MethodTable* iface = map[j].InterfaceMT;
+                    DebugConsole.Write("  [");
+                    DebugConsole.WriteDecimal(j);
+                    DebugConsole.Write("] MT=0x");
+                    DebugConsole.WriteHex((ulong)iface);
+                    if (iface != null)
+                    {
+                        DebugConsole.Write(" slots=");
+                        DebugConsole.WriteDecimal(iface->_usNumVtableSlots);
+                        DebugConsole.Write(" hash=0x");
+                        DebugConsole.WriteHex(iface->_uHashCode);
+                        DebugConsole.Write(" startSlot=");
+                        DebugConsole.WriteDecimal(map[j].StartSlot);
+                    }
+                    DebugConsole.WriteLine();
+                }
+            }
+
+            // Track best candidate - when there are multiple matches (e.g., IEnumerable, IReadOnlyCollection,
+            // IReadOnlyList all with 1 slot), we want the most specific one (highest startSlot)
+            int bestCandidateIdx = -1;
+            int bestStartSlot = -1;
+
             for (int i = 0; i < _usNumInterfaces; i++)
             {
                 MethodTable* implInterface = map[i].InterfaceMT;
                 if (implInterface == targetInterfaceMT)
-                    return i;  // Exact match
+                    return i;  // Exact match - return immediately
 
                 // Check structural type equality (same generic def + type args)
                 if (implInterface != null && IsStructurallyEqual(implInterface, targetInterfaceMT))
-                    return i;  // Same type (different MT pointers)
+                {
+                    // Track this as a candidate, prefer higher startSlot (more specific interface)
+                    int curStartSlot = (int)map[i].StartSlot;
+                    if (curStartSlot > bestStartSlot)
+                    {
+                        bestCandidateIdx = i;
+                        bestStartSlot = curStartSlot;
+                    }
+                    continue;
+                }
 
                 // Check variance compatibility
                 if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
-                    return i;  // Variant-compatible
+                {
+                    // Also track variance matches, but prefer structural matches
+                    if (bestCandidateIdx < 0)
+                    {
+                        bestCandidateIdx = i;
+                        bestStartSlot = (int)map[i].StartSlot;
+                    }
+                }
             }
+
+            // Return best candidate (if any)
+            if (bestCandidateIdx >= 0)
+            {
+                DebugConsole.Write("[FindVarIface] Picked candidate idx=");
+                DebugConsole.WriteDecimal(bestCandidateIdx);
+                DebugConsole.Write(" startSlot=");
+                DebugConsole.WriteDecimal((uint)bestStartSlot);
+                DebugConsole.WriteLine();
+            }
+            return bestCandidateIdx;
         }
         return -1;
     }
@@ -774,6 +878,18 @@ public unsafe struct MethodTable
             return false;
         }
 
+        // Check for generic interface matching based on type arguments
+        MethodTable* rel1 = mt1->_relatedType;
+        MethodTable* rel2 = mt2->_relatedType;
+
+        // If one has _relatedType (generic with type arg) and the other doesn't (AOT without),
+        // accept as a candidate match since NativeAOT doesn't set _relatedType for interfaces
+        if ((rel1 != null && rel2 == null) || (rel1 == null && rel2 != null))
+        {
+            DebugConsole.WriteLine("[StructEq] One has type arg, other null (AOT/runtime mismatch) - candidate match");
+            return true;  // Accept as potential match
+        }
+
         // Slot counts match - if both have hash codes, they should match
         if (mt1->_uHashCode != 0 && mt2->_uHashCode != 0 && mt1->_uHashCode != mt2->_uHashCode)
         {
@@ -785,14 +901,6 @@ public unsafe struct MethodTable
         // At this point, vtable slots match. For interface dispatch to work,
         // we just need the methods to be at the same slots. Since this is
         // the same interface type (just different MT pointers), the layout is identical.
-        //
-        // IMPORTANT: This relies on the fact that the caller has already determined
-        // this is supposed to be an interface (e.g., IList<Exception>). We're just
-        // finding the corresponding MT in the object's interface map.
-
-        // If both have type args, compare them for additional validation
-        MethodTable* rel1 = mt1->_relatedType;
-        MethodTable* rel2 = mt2->_relatedType;
 
         if (rel1 != null && rel2 != null)
         {
@@ -1253,6 +1361,20 @@ public static unsafe class TypeHelpers
             // Interface dispatch - use dispatch map lookup
             MethodTable* interfaceMT = cellInfo.InterfaceType;
             int methodSlot = cellInfo.InterfaceSlot;
+
+            // Debug: trace AOT interface dispatch
+            DebugConsole.Write("[AOT-IfaceDisp] ifaceMT=0x");
+            DebugConsole.WriteHex((ulong)interfaceMT);
+            DebugConsole.Write(" slot=");
+            DebugConsole.WriteDecimal(methodSlot);
+            if (interfaceMT != null)
+            {
+                DebugConsole.Write(" slots=");
+                DebugConsole.WriteDecimal(interfaceMT->_usNumVtableSlots);
+                DebugConsole.Write(" hash=0x");
+                DebugConsole.WriteHex(interfaceMT->_uHashCode);
+            }
+            DebugConsole.WriteLine();
 
             if (interfaceMT == null)
                 return null;

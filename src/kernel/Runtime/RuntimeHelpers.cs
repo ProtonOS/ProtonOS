@@ -403,7 +403,28 @@ public static unsafe class RuntimeHelpers
             allocSize += 8;
         }
 
-        byte* result = (byte*)GCHeap.Alloc(allocSize);
+        // Use AllocZeroed to ensure all object fields are initialized to default values
+        // .NET expects newly allocated objects to have all fields zeroed
+        byte* result = (byte*)GCHeap.AllocZeroed(allocSize);
+
+        // Debug: verify zeroing worked for types with 3 vtable slots (like Queue<T>)
+        if (pMT->NumVtableSlots == 3 && !pMT->IsValueType && result != null)
+        {
+            // Check bytes at offsets 16-31 (after MT and _array pointers)
+            DebugConsole.Write("[RhpNewFast] Alloc MT=0x");
+            DebugConsole.WriteHex((ulong)pMT);
+            DebugConsole.Write(" size=");
+            DebugConsole.WriteDecimal(allocSize);
+            DebugConsole.Write(" bytes@24: ");
+            DebugConsole.WriteHex(result[24]);
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex(result[25]);
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex(result[26]);
+            DebugConsole.Write(" ");
+            DebugConsole.WriteHex(result[27]);
+            DebugConsole.WriteLine();
+        }
         if (result == null)
         {
             DebugConsole.Write("[RhpNewFast] ALLOC FAILED! MT=0x");

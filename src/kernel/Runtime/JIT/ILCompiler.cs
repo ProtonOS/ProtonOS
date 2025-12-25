@@ -6031,6 +6031,19 @@ public unsafe struct ILCompiler
             DebugConsole.WriteHex((ulong)method.MethodTable);
             DebugConsole.WriteLine();
         }
+        else
+        {
+            // Debug: trace direct callvirt (non-virtual or devirtualized)
+            DebugConsole.Write("[callvirt-direct] tok=0x");
+            DebugConsole.WriteHex(token);
+            DebugConsole.Write(" code=0x");
+            DebugConsole.WriteHex((ulong)method.NativeCode);
+            DebugConsole.Write(" args=");
+            DebugConsole.WriteDecimal((uint)method.ArgCount);
+            DebugConsole.Write(" hasThis=");
+            DebugConsole.Write(method.HasThis ? "Y" : "N");
+            DebugConsole.WriteLine();
+        }
 
         // Special case: delegate Invoke
         // Delegate.Invoke is a runtime-provided method - we emit inline dispatch code
@@ -6227,6 +6240,12 @@ public unsafe struct ILCompiler
 
             // Set up call to GetInterfaceMethod(obj, interfaceMT, methodIndex)
             // RCX already has 'this' (obj), no change needed
+            // Debug: Log what interface MT is being embedded
+            DebugConsole.Write("[JIT-IfaceDisp] Embedding ifaceMT=0x");
+            DebugConsole.WriteHex((ulong)method.InterfaceMT);
+            DebugConsole.Write(" slot=");
+            DebugConsole.WriteDecimal((uint)(method.InterfaceMethodSlot < 0 ? 0 : method.InterfaceMethodSlot));
+            DebugConsole.WriteLine();
             X64Emitter.MovRI64(ref _code, VReg.R2, (ulong)method.InterfaceMT);  // interfaceMT
             X64Emitter.MovRI32(ref _code, VReg.R3, method.InterfaceMethodSlot);  // methodIndex
 
