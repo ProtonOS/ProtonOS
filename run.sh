@@ -11,6 +11,7 @@ ARCH="${ARCH:-x64}"
 BUILD_DIR="build/${ARCH}"
 IMG_FILE="${BUILD_DIR}/boot.img"
 TEST_DISK="${BUILD_DIR}/test.img"
+SATA_DISK="${BUILD_DIR}/sata.img"
 
 # Check for boot image
 if [ ! -f "$IMG_FILE" ]; then
@@ -22,6 +23,13 @@ fi
 # Check for test disk
 if [ ! -f "$TEST_DISK" ]; then
     echo "Error: Test disk not found: $TEST_DISK"
+    echo "Run './build.sh' first"
+    exit 1
+fi
+
+# Check for SATA disk
+if [ ! -f "$SATA_DISK" ]; then
+    echo "Error: SATA disk not found: $SATA_DISK"
     echo "Run './build.sh' first"
     exit 1
 fi
@@ -53,7 +61,8 @@ rm -f "$LOG_FILE"
 
 echo "OVMF: $OVMF"
 echo "Boot image: $IMG_FILE"
-echo "Test disk: $TEST_DISK"
+echo "Test disk (virtio): $TEST_DISK"
+echo "SATA disk (AHCI): $SATA_DISK"
 echo ""
 echo "Serial output below (Ctrl+A, X to exit QEMU):"
 echo "=============================================="
@@ -61,6 +70,7 @@ echo "=============================================="
 # Use tee to write serial output to both stdout and log file
 # NUMA configuration: 2 nodes, 256MB each, CPUs 0-1 on node 0, CPUs 2-3 on node 1
 # virtio-blk-pci with disable-legacy=on forces modern virtio 1.0+ mode
+# Q35 chipset has built-in ICH9 AHCI controller; ide-hd attaches SATA disk to it
 qemu-system-x86_64 \
     -machine q35 \
     -cpu max \
@@ -75,6 +85,8 @@ qemu-system-x86_64 \
     -drive format=raw,file="$IMG_FILE" \
     -drive id=virtio-disk0,if=none,format=raw,file="$TEST_DISK" \
     -device virtio-blk-pci,drive=virtio-disk0,disable-legacy=on \
+    -drive id=sata-disk0,if=none,format=raw,file="$SATA_DISK" \
+    -device ide-hd,drive=sata-disk0,bus=ide.2 \
     -serial mon:stdio \
     -display none \
     -no-reboot \

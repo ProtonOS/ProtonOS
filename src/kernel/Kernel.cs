@@ -31,6 +31,8 @@ public static unsafe class Kernel
     private static ulong _virtioBlkDriverSize;
     private static byte* _fatDriverBytes;
     private static ulong _fatDriverSize;
+    private static byte* _ahciDriverBytes;
+    private static ulong _ahciDriverSize;
 
     // korlib IL assembly (for JIT generic instantiation and token-based AOT lookup)
     private static byte* _korlibBytes;
@@ -43,6 +45,7 @@ public static unsafe class Kernel
     private static uint _virtioDriverId;
     private static uint _virtioBlkDriverId;
     private static uint _fatDriverId;
+    private static uint _ahciDriverId;
     private static uint _korlibId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
@@ -235,6 +238,11 @@ public static unsafe class Kernel
             _fatDriverId = AssemblyLoader.Load(_fatDriverBytes, _fatDriverSize);
         }
 
+        if (_ahciDriverBytes != null)
+        {
+            _ahciDriverId = AssemblyLoader.Load(_ahciDriverBytes, _ahciDriverSize);
+        }
+
         // Register the test assembly with AssemblyLoader (depends on TestSupport and DDK)
         if (_testAssemblyBytes != null)
         {
@@ -300,6 +308,7 @@ public static unsafe class Kernel
         _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
         _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
         _fatDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
+        _ahciDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Ahci.dll", out _ahciDriverSize);
 
         // Load korlib.dll (IL assembly for JIT generic instantiation)
         _korlibBytes = UEFIFS.ReadFileAscii("\\korlib.dll", out _korlibSize);
@@ -1018,13 +1027,220 @@ public static unsafe class Kernel
             }
         }
 
-        DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} driver(s)", boundCount));
+        DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} VirtioBlk driver(s)", boundCount));
 
         // Test virtio I/O if a driver was bound
+        // TEMPORARILY DISABLED - VirtioBlk has a crash issue
+        // if (boundCount > 0)
+        // {
+        //     TestVirtioIO(virtioBlkEntryToken);
+        // }
+
+        // Now try AHCI driver
+        BindAhciDriver();
+    }
+
+    /// <summary>
+    /// Bind AHCI driver to detected AHCI controllers.
+    /// </summary>
+    private static void BindAhciDriver()
+    {
+        if (_ahciDriverId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[Drivers] No AHCI driver loaded, skipping AHCI binding");
+            return;
+        }
+
+        // Find AhciEntry type
+        uint ahciEntryToken = AssemblyLoader.FindTypeDefByFullName(
+            _ahciDriverId, "ProtonOS.Drivers.Storage.Ahci", "AhciEntry");
+
+        if (ahciEntryToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find AhciEntry type");
+            return;
+        }
+
+        // Find Probe method
+        uint probeToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "Probe");
+        if (probeToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find AHCI Probe method");
+            return;
+        }
+
+        // Find Bind method
+        uint bindToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "Bind");
+        if (bindToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find AHCI Bind method");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Found AhciEntry (0x{0}) Probe (0x{1}) Bind (0x{2})",
+            ahciEntryToken.ToString("X8", null), probeToken.ToString("X8", null), bindToken.ToString("X8", null)));
+
+        // JIT compile Probe method
+        DebugConsole.WriteLine("[Drivers] JIT compiling AhciEntry.Probe...");
+        var probeResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, probeToken);
+        if (!probeResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile AHCI Probe");
+            return;
+        }
+
+        // JIT compile Bind method
+        DebugConsole.WriteLine("[Drivers] JIT compiling AhciEntry.Bind...");
+        var bindResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, bindToken);
+        if (!bindResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile AHCI Bind");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] AHCI Probe at 0x{0} Bind at 0x{1}",
+            ((ulong)probeResult.CodeAddress).ToString("X", null), ((ulong)bindResult.CodeAddress).ToString("X", null)));
+
+        // Create function pointers - AHCI Probe takes (vendorId, deviceId, classCode, subclassCode, progIf)
+        var probeFunc = (delegate* unmanaged<ushort, ushort, byte, byte, byte, bool>)probeResult.CodeAddress;
+        var bindFunc = (delegate* unmanaged<byte, byte, byte, bool>)bindResult.CodeAddress;
+
+        // Iterate through detected PCI devices
+        int deviceCount = Platform.PCI.DeviceCount;
+        int boundCount = 0;
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Checking {0} PCI device(s) for AHCI...", deviceCount));
+
+        for (int i = 0; i < deviceCount; i++)
+        {
+            var device = Platform.PCI.GetDevice(i);
+            if (device == null)
+                continue;
+
+            // Try AHCI driver - pass class code info
+            bool probeSuccess = probeFunc(device->VendorId, device->DeviceId,
+                device->BaseClass, device->SubClass, device->ProgIF);
+
+            if (probeSuccess)
+            {
+                DebugConsole.WriteLine(string.Format("[Drivers] AHCI matched {0}:{1}.{2} (Class:{3}/{4}/{5})",
+                    device->Bus.ToString("X2", null), device->Device.ToString("X2", null), device->Function.ToString("X2", null),
+                    device->BaseClass.ToString("X2", null), device->SubClass.ToString("X2", null), device->ProgIF.ToString("X2", null)));
+
+                // Bind the driver
+                bool bindSuccess = bindFunc(device->Bus, device->Device, device->Function);
+                if (bindSuccess)
+                {
+                    DebugConsole.WriteLine("[Drivers]   AHCI Bind successful");
+                    boundCount++;
+                }
+                else
+                {
+                    DebugConsole.WriteLine("[Drivers]   AHCI Bind failed");
+                }
+            }
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} AHCI driver(s)", boundCount));
+
+        // Test AHCI I/O if a driver was bound
         if (boundCount > 0)
         {
-            TestVirtioIO(virtioBlkEntryToken);
+            TestAhciIO(ahciEntryToken);
         }
+    }
+
+    /// <summary>
+    /// Test AHCI block device I/O.
+    /// </summary>
+    private static void TestAhciIO(uint ahciEntryToken)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[AhciIO] Testing AHCI block device...");
+
+        // Find TestRead method
+        uint testReadToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestRead");
+        if (testReadToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestRead method");
+            return;
+        }
+
+        // JIT compile TestRead method
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestRead...");
+        var testReadResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testReadToken);
+        if (!testReadResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestRead");
+            return;
+        }
+
+        // Call TestRead
+        var testReadFunc = (delegate* unmanaged<int>)testReadResult.CodeAddress;
+        int readResult = testReadFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestRead returned {0}", readResult));
+
+        // Find TestWrite method
+        uint testWriteToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestWrite");
+        if (testWriteToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestWrite method");
+            return;
+        }
+
+        // JIT compile TestWrite method
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestWrite...");
+        var testWriteResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testWriteToken);
+        if (!testWriteResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestWrite");
+            return;
+        }
+
+        // Call TestWrite
+        var testWriteFunc = (delegate* unmanaged<int>)testWriteResult.CodeAddress;
+        int writeResult = testWriteFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestWrite returned {0}", writeResult));
+
+        // Test FAT mount on SATA device
+        uint testFatMountToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestFatMount");
+        if (testFatMountToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestFatMount method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestFatMount...");
+        var testFatMountResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testFatMountToken);
+        if (!testFatMountResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestFatMount");
+            return;
+        }
+
+        var testFatMountFunc = (delegate* unmanaged<int>)testFatMountResult.CodeAddress;
+        int fatMountResult = testFatMountFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestFatMount returned {0}", fatMountResult));
+
+        // Test FAT file read on SATA device
+        uint testFatReadToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestFatReadFile");
+        if (testFatReadToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestFatReadFile method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestFatReadFile...");
+        var testFatReadResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testFatReadToken);
+        if (!testFatReadResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestFatReadFile");
+            return;
+        }
+
+        var testFatReadFunc = (delegate* unmanaged<int>)testFatReadResult.CodeAddress;
+        int fatReadResult = testFatReadFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestFatReadFile returned {0}", fatReadResult));
     }
 
     /// <summary>

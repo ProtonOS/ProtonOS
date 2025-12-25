@@ -928,6 +928,12 @@ RhpThrowEx:
     int3                    ; R11 == context address, wrong!
 .rsp_value_ok:
 
+    ; DEBUG: Verify R11 (new RSP) is a reasonable stack address (>= 0x1000)
+    cmp r11, 0x1000
+    jae .rsp_not_small
+    int3                    ; R11 is too small to be a valid stack address!
+.rsp_not_small:
+
     ; DEBUG: Verify RAX is a valid code address (high bits should be 0x00000002 for JIT code)
     mov r8, rax
     shr r8, 32

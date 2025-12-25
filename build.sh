@@ -9,6 +9,7 @@ cd "$SCRIPT_DIR"
 ARCH="${ARCH:-x64}"
 BUILD_DIR="build/${ARCH}"
 TEST_DISK="${BUILD_DIR}/test.img"
+SATA_DISK="${BUILD_DIR}/sata.img"
 TESTDATA_DIR="$SCRIPT_DIR/testdata"
 
 # Kill any running QEMU instances
@@ -28,6 +29,7 @@ dotnet ildasm build/x64/ProtonOS.DDK.dll -o build/x64/ProtonOS.DDK.il 2>/dev/nul
 dotnet ildasm build/x64/ProtonOS.Drivers.Virtio.dll -o build/x64/ProtonOS.Drivers.Virtio.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Drivers.VirtioBlk.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Fat.dll -o build/x64/ProtonOS.Drivers.Fat.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.Ahci.dll -o build/x64/ProtonOS.Drivers.Ahci.il 2>/dev/null || true
 echo "IL disassembly complete"
 
 # Create test disk image for FAT filesystem testing
@@ -59,3 +61,17 @@ if [ -d "$TESTDATA_DIR" ]; then
     done
 fi
 echo "Test disk created: $TEST_DISK"
+
+# Create SATA disk image for AHCI testing (FAT formatted)
+echo "Creating SATA disk image..."
+dd if=/dev/zero of="$SATA_DISK" bs=1M count=64 status=none
+mformat -i "$SATA_DISK" -F -v SATADISK ::
+# Copy test files to SATA disk as well
+if [ -d "$TESTDATA_DIR" ]; then
+    for file in "$TESTDATA_DIR"/*; do
+        if [ -f "$file" ]; then
+            mcopy -i "$SATA_DISK" "$file" "::/$(basename "$file")"
+        fi
+    done
+fi
+echo "SATA disk created: $SATA_DISK"

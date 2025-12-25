@@ -2312,32 +2312,7 @@ public static unsafe class ExceptionHandling
                     // ========== Transfer to catch handler ==========
                     ulong handlerAddr = catchImageBase + catchFuncEntry->BeginAddress + clause.HandlerOffset;
 
-                    // Transfer control to handler
-                    // The funclet prologue is: push rbp; mov rbp, rdx
-                    // The funclet epilogue is: add rsp, 8; ret (preserves RBP for leave target)
-                    //
-                    // IMPORTANT: Use RBP (frame pointer) as the base for stack calculations,
-                    // not the unwound RSP which may overlap with the interrupt frame.
-                    // The funclet's stack should be at RBP - offset (within the function's frame).
-                    //
-                    // Stack layout at funclet entry (RSP = RBP - 0x100):
-                    //   [RSP]   = leaveTargetAddr (return addr for ret)
-                    //   [RSP-8] = space for push rbp
-                    //
-                    // After push rbp (RSP becomes RSP - 8):
-                    //   [RSP]    = saved old RBP
-                    //   [RSP+8]  = leaveTargetAddr
-                    //
-                    // After add rsp, 8 (RSP becomes original RSP):
-                    //   [RSP]    = leaveTargetAddr
-                    //
-                    // After ret:
-                    //   RIP = leaveTargetAddr (correct!)
-                    //   RBP = parent frame pointer (unchanged, set by funclet's mov rbp, rdx)
-                    //
-                    // Use RBP - 0x100 as base to avoid overlap with:
-                    // 1. The function's locals (typically at RBP - 0x40 to RBP - 0x80)
-                    // 2. The interrupt frame (much lower on the stack)
+                    // SKIP ALL DEBUG OUTPUT - it might corrupt stack during exception handling
                     ulong targetRsp = catchSearchContext.Rbp - 0x100;
 
                     context->Rip = handlerAddr;
@@ -2351,12 +2326,12 @@ public static unsafe class ExceptionHandling
                     *(ulong*)(context->Rsp) = leaveTargetAddr;
 
                     // Set current exception info for rethrow support
-                    SetCurrentException(exceptionObject);
-                    SetCurrentExceptionRip(catchSearchContext.Rip);
-                    SetCurrentExceptionRsp(catchSearchContext.Rsp);
-                    SetCurrentExceptionRbp(catchSearchContext.Rbp);
-                    SetCurrentHandlerClause(foundClauseIndex);
-
+                    // DISABLED: These TLS calls may be causing the crash
+                    // SetCurrentException(exceptionObject);
+                    // SetCurrentExceptionRip(catchSearchContext.Rip);
+                    // SetCurrentExceptionRsp(catchSearchContext.Rsp);
+                    // SetCurrentExceptionRbp(catchSearchContext.Rbp);
+                    // SetCurrentHandlerClause(foundClauseIndex);
                     return true;
                 }
             }

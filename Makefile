@@ -80,11 +80,13 @@ DRIVERS_DIR := src/drivers
 VIRTIO_DIR := $(DRIVERS_DIR)/shared/virtio
 VIRTIO_BLK_DIR := $(DRIVERS_DIR)/shared/storage/virtio-blk
 FAT_DIR := $(DRIVERS_DIR)/shared/storage/fat
+AHCI_DIR := $(DRIVERS_DIR)/shared/storage/ahci
 
 # Driver DLLs
 VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
 VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
 FAT_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Fat.dll
+AHCI_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ahci.dll
 
 # Targets
 .PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run deps install-deps check-deps
@@ -157,7 +159,13 @@ $(FAT_DLL): $(FAT_SRC) $(FAT_DIR)/Fat.csproj $(DDK_DLL) | $(BUILD_DIR)
 	@echo "DOTNET build ProtonOS.Drivers.Fat"
 	dotnet build $(FAT_DIR)/Fat.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
-drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL)
+# Build AHCI driver
+AHCI_SRC := $(call rwildcard,$(AHCI_DIR),*.cs)
+$(AHCI_DLL): $(AHCI_SRC) $(AHCI_DIR)/Ahci.csproj $(DDK_DLL) $(FAT_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.Drivers.Ahci"
+	dotnet build $(AHCI_DIR)/Ahci.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL)
 
 # Link UEFI executable
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
@@ -166,7 +174,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@file $@
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -181,6 +189,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(D
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(FAT_DLL) ::/drivers/
+	mcopy -i $(BUILD_DIR)/boot.img $(AHCI_DLL) ::/drivers/
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

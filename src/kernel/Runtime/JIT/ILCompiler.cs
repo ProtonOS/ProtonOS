@@ -681,6 +681,7 @@ public unsafe struct ILCompiler
     private bool* _argIsValueType;    // heap-allocated [MaxArgs] - true if arg is a value type
     private ushort* _localTypeSize;   // heap-allocated [MaxLocals] - size of local's type (for value types)
     private ushort* _argTypeSize;     // heap-allocated [MaxArgs] - size of arg's type (for value types)
+    private int* _localOffset;        // heap-allocated [MaxLocals] - pre-computed stack offset for each local
     private byte* _argFloatKind;      // heap-allocated [MaxArgs] - 0=not float, 4=float32, 8=float64
 
     // Return type tracking for struct return handling
@@ -718,7 +719,7 @@ public unsafe struct ILCompiler
     // funcletInfo = 32 funclets * 4 ints * 4 bytes = 512 bytes (doubled for filter clause support)
     // Finally call tracking: each entry is 2 ints (patchOffset, ehClauseIndex)
     private const int MaxFinallyCalls = 16;
-    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8) + 32; // 6528 bytes
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8) + 32 + 256; // 6784 bytes (+256 for _localOffset)
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -788,6 +789,7 @@ public unsafe struct ILCompiler
         compiler._localTypeSize = null;
         compiler._argTypeSize = null;
         compiler._argFloatKind = null;
+        compiler._localOffset = null;
         compiler._finallyCallPatches = null;
         compiler._finallyCallCount = 0;
 
@@ -813,6 +815,7 @@ public unsafe struct ILCompiler
             compiler._argTypeSize = (ushort*)(p + 6304);       // offset 6304, 64 bytes (MaxArgs * 2)
             compiler._finallyCallPatches = (int*)(p + 6368);   // offset 6368, 128 bytes (MaxFinallyCalls * 8)
             compiler._argFloatKind = (byte*)(p + 6496);        // offset 6496, 32 bytes (MaxArgs * 1)
+            compiler._localOffset = (int*)(p + 6528);            // offset 6528, 256 bytes (MaxLocals * 4)
         }
 
         // Create code buffer sized based on IL length
@@ -1080,8 +1083,8 @@ public unsafe struct ILCompiler
         {
             if ((_gcRefMask & (1UL << i)) != 0)
             {
-                // Local i is a GC reference at [rbp - (i+1)*8]
-                int offset = X64Emitter.GetLocalOffset(i);
+                // Local i is a GC reference
+                int offset = GetLocalOffset(i);
                 _gcInfo.AddStackSlot(offset);
             }
         }
@@ -1152,18 +1155,45 @@ public unsafe struct ILCompiler
     public int StackAdjust => _stackAdjust;
 
     /// <summary>
+    /// Get the stack offset for a local variable (pre-computed in Compile).
+    /// Returns negative offset from RBP.
+    /// </summary>
+    public int GetLocalOffset(int localIndex)
+    {
+        if (_localOffset != null && localIndex >= 0 && localIndex < _localCount)
+            return _localOffset[localIndex];
+        // Fallback to static calculation (should not happen after Compile starts)
+        return X64Emitter.GetLocalOffset(localIndex);
+    }
+
+    /// <summary>
     /// Compile the IL method to native code.
     /// Returns function pointer or null on failure.
     /// </summary>
     public void* Compile()
     {
-        // Emit prologue
-        // Calculate local space: localCount * 64 + evalStack space + struct return temp
-        // Use 64 bytes per local to support value type locals up to 64 bytes
-        // Note: Local sizes are parsed and stored in _localTypeSize but we use fixed
-        // 64-byte slots for simplicity. Variable-sized slots would save stack space
-        // but require refactoring GetLocalOffset and all call sites.
-        int localBytes = _localCount * 64 + 64;  // 64 bytes per local + eval stack
+        // Calculate local space based on actual type sizes
+        // Each local needs at least 64 bytes, but larger structs need more
+        // Pre-compute the stack offset for each local in _localOffset
+        int calleeSaveSize = X64Emitter.CalleeSaveSize; // 40 bytes (5 regs * 8)
+        int currentOffset = calleeSaveSize;
+
+        for (int i = 0; i < _localCount; i++)
+        {
+            // Get actual size for this local (from metadata parsing)
+            int size = (_localTypeSize != null) ? _localTypeSize[i] : 0;
+            // Minimum 64 bytes per slot, round up to 8-byte alignment
+            if (size < 64) size = 64;
+            else size = (size + 7) & ~7;  // Round up to 8
+
+            currentOffset += size;
+            // Store the offset (negative from RBP, points to START of slot)
+            if (_localOffset != null)
+                _localOffset[i] = -currentOffset;
+        }
+
+        // Add 64 bytes for eval stack scratch space
+        int localBytes = currentOffset - calleeSaveSize + 64;
         int structReturnTempBytes = 32;           // 32 bytes for struct return temps
         _structReturnTempOffset = -(localBytes + 16);  // First 16 bytes of the temp area
         _stackAdjust = X64Emitter.EmitPrologue(ref _code, localBytes + structReturnTempBytes);
@@ -2283,7 +2313,7 @@ public unsafe struct ILCompiler
     private bool CompileLdloc(int index)
     {
         // Locals are at negative offsets from RBP
-        int offset = X64Emitter.GetLocalOffset(index);
+        int offset = GetLocalOffset(index);
 
         // Check if this local is a value type - affects stack type marking
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
@@ -2489,7 +2519,7 @@ public unsafe struct ILCompiler
         // Large value type (>8 bytes): copy full struct from eval stack into local
         if (effectiveSize > 8 || stackByteSize > 8)
         {
-            int destOffset = X64Emitter.GetLocalOffset(index);
+            int destOffset = GetLocalOffset(index);
             int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
             // DebugConsole.Write("[stloc VT] idx=");
             // DebugConsole.WriteDecimal((uint)index);
@@ -2547,7 +2577,7 @@ public unsafe struct ILCompiler
         {
             X64Emitter.AddRI(ref _code, VReg.SP, entry.ByteSize - 8);
         }
-        int offset = X64Emitter.GetLocalOffset(index);
+        int offset = GetLocalOffset(index);
         X64Emitter.MovMR(ref _code, VReg.FP, offset, VReg.R0);
 
         // if (debugBind)
@@ -3908,7 +3938,7 @@ public unsafe struct ILCompiler
     private bool CompileLdloca(int index)
     {
         // Load address of local variable
-        int offset = X64Emitter.GetLocalOffset(index);
+        int offset = GetLocalOffset(index);
 
         // Debug: trace ldloca in TestDictForeach (token 0x060002E7)
         bool isDebugMethod = _debugAssemblyId == 6 && _debugMethodToken == 0x060002E7;
@@ -6293,12 +6323,8 @@ public unsafe struct ILCompiler
         {
             // Virtual dispatch: load function pointer from vtable
             // RCX contains 'this' at this point
-            DebugConsole.Write("[JIT] vtable dispatch: slot=");
-            DebugConsole.WriteDecimal((uint)method.VtableSlot);
-            DebugConsole.Write(" offset=0x");
+            // Skip verbose vtable dispatch logging unless debugging specific method
             int vtableOffset = ProtonOS.Runtime.MethodTable.HeaderSize + (method.VtableSlot * 8);
-            DebugConsole.WriteHex((uint)vtableOffset);
-            DebugConsole.WriteLine();
 
             // Call EnsureVtableSlotCompiled(objPtr, vtableSlot) to ensure the method is compiled
             // This stub returns the method address to call, which handles out-of-bounds vtable slots
@@ -7250,11 +7276,24 @@ public unsafe struct ILCompiler
             // In a funclet, leave exits by returning from the funclet.
             // The exception dispatch code sets up the return address to be
             // the leave target address.
-            // Funclet prolog did: push rbp; mov rbp, rdx
+            // Funclet prolog did: push rbp; mov rbp, rdx; push rbx; push r12-r15
             // We must NOT pop rbp because the leave target expects RBP to be
             // the parent frame pointer (which was set from RDX). Instead, we
-            // skip over the saved rbp on the stack.
-            // Emit: add rsp, 8; ret
+            // restore callee-saved registers then skip over the saved rbp.
+
+            // Restore callee-saved registers (5 registers * 8 bytes = 40 bytes)
+            // pop r15; pop r14; pop r13; pop r12; pop rbx
+            _code.EmitByte(0x41);  // pop r15
+            _code.EmitByte(0x5F);
+            _code.EmitByte(0x41);  // pop r14
+            _code.EmitByte(0x5E);
+            _code.EmitByte(0x41);  // pop r13
+            _code.EmitByte(0x5D);
+            _code.EmitByte(0x41);  // pop r12
+            _code.EmitByte(0x5C);
+            _code.EmitByte(0x5B);  // pop rbx
+
+            // add rsp, 8; ret - skip saved rbp
             _code.EmitByte(0x48);  // REX.W
             _code.EmitByte(0x83);  // add r/m64, imm8
             _code.EmitByte(0xC4);  // ModRM: reg=0 (add), r/m=4 (RSP)
@@ -7421,12 +7460,24 @@ public unsafe struct ILCompiler
         }
 
         // When compiling a funclet, we need to emit the funclet epilog:
-        // pop rbp; ret - to restore RBP and return.
+        // Restore callee-saved, then pop rbp; ret.
         // When compiling inline handler, just emit 'ret'.
         if (_compilingFunclet)
         {
+            // Restore callee-saved registers (5 registers)
+            // pop r15; pop r14; pop r13; pop r12; pop rbx
+            _code.EmitByte(0x41);  // pop r15
+            _code.EmitByte(0x5F);
+            _code.EmitByte(0x41);  // pop r14
+            _code.EmitByte(0x5E);
+            _code.EmitByte(0x41);  // pop r13
+            _code.EmitByte(0x5D);
+            _code.EmitByte(0x41);  // pop r12
+            _code.EmitByte(0x5C);
+            _code.EmitByte(0x5B);  // pop rbx
+
             // Funclet epilog: pop rbp; ret
-            // (matches prolog: push rbp; mov rbp, rdx)
+            // (matches prolog: push rbp; mov rbp, rdx; push callee-saves)
             _code.EmitByte(0x5D);  // pop rbp
         }
 
@@ -11690,6 +11741,21 @@ public unsafe struct ILCompiler
         // ========== Pass 1: Compile main method body (skip handlers) ==========
         _compilingFunclet = false;
 
+        // Pre-compute local variable offsets (CRITICAL for funclet local access!)
+        // This must match the layout used by GetLocalOffset.
+        // Without this, funclets would use offset 0 for all locals.
+        int calleeSaveSize = X64Emitter.CalleeSaveSize; // 40 bytes (5 regs * 8)
+        int currentOffset = calleeSaveSize;
+        for (int i = 0; i < _localCount; i++)
+        {
+            int size = (_localTypeSize != null) ? _localTypeSize[i] : 0;
+            if (size < 64) size = 64;
+            else size = (size + 7) & ~7;
+            currentOffset += size;
+            if (_localOffset != null)
+                _localOffset[i] = -currentOffset;
+        }
+
         // Emit main method prologue
         // Calculate local space: localCount * 64 + eval stack space
         // Use 64 bytes per local to support value type locals up to 64 bytes
@@ -11833,10 +11899,23 @@ public unsafe struct ILCompiler
                 // Emit funclet prolog:
                 // push rbp                    ; 1 byte (0x55) - save caller's RBP
                 // mov rbp, rdx                ; 3 bytes (0x48 0x89 0xD5) - set RBP to parent frame pointer
-                _code.EmitByte(0x55);
-                _code.EmitByte(0x48);
+                // Save callee-saved registers in case funclet body corrupts them:
+                // push rbx; push r12; push r13; push r14; push r15
+                _code.EmitByte(0x55);  // push rbp
+                _code.EmitByte(0x48);  // mov rbp, rdx
                 _code.EmitByte(0x89);
                 _code.EmitByte(0xD5);
+
+                // Save callee-saved registers (funclet must preserve these)
+                _code.EmitByte(0x53);  // push rbx
+                _code.EmitByte(0x41);  // push r12
+                _code.EmitByte(0x54);
+                _code.EmitByte(0x41);  // push r13
+                _code.EmitByte(0x55);
+                _code.EmitByte(0x41);  // push r14
+                _code.EmitByte(0x56);
+                _code.EmitByte(0x41);  // push r15
+                _code.EmitByte(0x57);
 
                 // Reset label tracking for funclet
                 _labelCount = 0;
@@ -11876,6 +11955,18 @@ public unsafe struct ILCompiler
                 PatchBranches();
 
                 // Emit funclet epilog (safety - endfinally/leave should have already emitted appropriate code)
+                // Restore callee-saved registers first, then handle RBP and return
+                // pop r15; pop r14; pop r13; pop r12; pop rbx
+                _code.EmitByte(0x41);  // pop r15
+                _code.EmitByte(0x5F);
+                _code.EmitByte(0x41);  // pop r14
+                _code.EmitByte(0x5E);
+                _code.EmitByte(0x41);  // pop r13
+                _code.EmitByte(0x5D);
+                _code.EmitByte(0x41);  // pop r12
+                _code.EmitByte(0x5C);
+                _code.EmitByte(0x5B);  // pop rbx
+
                 // For catch handlers, we use 'add rsp, 8; ret' to preserve RBP (parent frame pointer)
                 // For finally handlers, we use 'pop rbp; ret' to restore caller's RBP
                 if (isCatchHandler)
