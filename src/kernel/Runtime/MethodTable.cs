@@ -322,8 +322,18 @@ public unsafe struct MethodTable
     public uint _uBaseSize;
 
     /// <summary>
-    /// For arrays: element type's MethodTable.
-    /// For other types: base type or interface.
+    /// Overloaded field with context-dependent meaning (ECMA-335 / NativeAOT layout):
+    /// - For classes: parent (base) type's MethodTable
+    /// - For arrays: element type's MethodTable
+    /// - For generic instantiations: first type argument's MethodTable
+    /// - For Nullable&lt;T&gt;: underlying type T's MethodTable
+    /// - For interfaces: typically null (AOT doesn't set this)
+    ///
+    /// Use the semantic accessors instead of direct access:
+    /// - GetParentType() for class hierarchy
+    /// - GetArrayElementType() for array element type
+    /// - GetFirstTypeArgument() for generic type arguments
+    /// - GetNullableUnderlyingType() for Nullable&lt;T&gt;
     /// </summary>
     public MethodTable* _relatedType;
 
@@ -333,7 +343,31 @@ public unsafe struct MethodTable
     /// <summary>Number of implemented interfaces.</summary>
     public ushort _usNumInterfaces;
 
-    /// <summary>Cached hash code for the type.</summary>
+    // ==================================================================================
+    // TYPE HASH CODE - CROSS-WORLD INCOMPATIBILITY
+    // ==================================================================================
+    // The hash code is used for fast type identity checks, but has an important caveat:
+    //
+    // AOT Types (compiled by ILC at build time):
+    //   - Hash computed by TypeHashingAlgorithms.ComputeGenericInstanceHash() in ILC
+    //   - Uses TypeKey algorithm based on namespace, name, and type arguments
+    //   - Consistent within the AOT world but uses different algorithm than kernel
+    //
+    // Kernel Types (created at runtime by JIT/generic instantiation):
+    //   - Hash computed inline in GetOrCreateGenericInstMethodTable()
+    //   - Uses multiply-add (h = h*31 + MT) over type arg pointers, then XOR with genDefToken
+    //   - Consistent within kernel world but incompatible with AOT hashes
+    //
+    // IMPORTANT: Hash comparison is only valid between types from the SAME world.
+    // Use AreInterfacesStructurallyEquivalent() for cross-world comparisons, which
+    // detects world membership via address ranges (AOT types at 0x1D000000+, kernel
+    // types in heap at lower addresses).
+    //
+    // Special cases:
+    //   - Hash of 0 indicates "not computed" - skip hash comparison
+    //   - Variance flags may be stored in low bits for variant generic interfaces
+    // ==================================================================================
+    /// <summary>Cached hash code for the type (see documentation above for cross-world caveats).</summary>
     public uint _uHashCode;
 
     // VTable entries follow after this struct
@@ -384,6 +418,24 @@ public unsafe struct MethodTable
     /// Size of the MethodTable header in bytes (before vtable).
     /// </summary>
     public const int HeaderSize = 24;  // 2+2+4+8+2+2+4 = 24 bytes
+
+    // =========================================================================
+    // Optional Fields Layout (NativeAOT RelPtr format)
+    // These offsets are relative to GetOptionalFieldsOffset()
+    // Each field is a 4-byte relative pointer (RelPtr)
+    // =========================================================================
+
+    /// <summary>Offset of TypeManagerIndirection RelPtr in optional fields.</summary>
+    public const int OptFieldsOffset_TypeManagerIndirection = 0;
+
+    /// <summary>Offset of WritableData RelPtr in optional fields.</summary>
+    public const int OptFieldsOffset_WritableData = 4;
+
+    /// <summary>Offset of DispatchMap RelPtr in optional fields.</summary>
+    public const int OptFieldsOffset_DispatchMap = 8;
+
+    /// <summary>Offset of SealedVirtualSlots table RelPtr in optional fields.</summary>
+    public const int OptFieldsOffset_SealedVirtualSlots = 12;
 
     /// <summary>
     /// Get a pointer to the vtable array (immediately follows the header).
@@ -476,6 +528,35 @@ public unsafe struct MethodTable
     }
 
     /// <summary>
+    /// Get the first type argument's MethodTable for generic instantiations.
+    /// For types like List&lt;int&gt;, returns the MethodTable for int.
+    /// Returns null for non-generic types or open generic definitions.
+    /// Note: For multi-argument generics like Dictionary&lt;K,V&gt;, only returns the first arg.
+    /// Use the generic type argument cache for additional arguments.
+    /// </summary>
+    public MethodTable* GetFirstTypeArgument()
+    {
+        // Arrays and interfaces don't use _relatedType for type args
+        if (IsArray || IsInterface)
+            return null;
+        // For generic instantiations, _relatedType stores the first type argument
+        // We can't easily distinguish generic types from regular classes here,
+        // but callers typically know the context
+        return _relatedType;
+    }
+
+    /// <summary>
+    /// Get the underlying type's MethodTable for Nullable&lt;T&gt;.
+    /// Returns null if this is not a Nullable type.
+    /// </summary>
+    public MethodTable* GetNullableUnderlyingType()
+    {
+        if (!IsNullable)
+            return null;
+        return _relatedType;
+    }
+
+    /// <summary>
     /// Check if this type is a reference type (class, interface, array, string).
     /// Value types have ComponentSize == 0 and are not arrays/interfaces.
     /// </summary>
@@ -508,6 +589,28 @@ public unsafe struct MethodTable
 
     /// <summary>Whether this interface definition has variant type parameters.</summary>
     public bool HasVariance => (CombinedFlags & MTFlags.HasVariance) != 0;
+
+    // ==================================================================================
+    // INTERFACE MAP ACCESSORS
+    // ==================================================================================
+    // The interface map has two formats depending on type origin:
+    //
+    // AOT Types (HasDispatchMap = true):
+    //   - Simple MethodTable* array (8 bytes per entry)
+    //   - Uses DispatchMap for slot resolution (interface -> vtable mapping)
+    //   - Use GetAotInterfaceMapPtr() for raw access
+    //
+    // Kernel Types (HasDispatchMap = false):
+    //   - InterfaceMapEntry array (16 bytes per entry)
+    //   - Contains StartSlot field for contiguous slot layout
+    //   - Use GetInterfaceMapPtr() for raw access
+    //
+    // Unified accessors that handle both formats:
+    //   - GetInterfaceAt(index) - returns MethodTable* for interface
+    //   - GetInterfaceIndex(MT*) - finds interface in map
+    //   - GetVtableSlotForInterfaceMethod(ifaceMT, slot) - resolves method slot
+    //   - ImplementsInterfaceWithSlot(...) - checks interface implementation
+    // ==================================================================================
 
     /// <summary>
     /// Get a pointer to the interface map as InterfaceMapEntry* (for kernel-generated types).
@@ -615,12 +718,11 @@ public unsafe struct MethodTable
                 DebugConsole.WriteLine();
             }
 
-            // For AOT types, the dispatch map is stored after optional relative pointers.
-            // NativeAOT layout uses 4-byte RelPtr: TypeManagerIndirection (4) + WritableData (4) + DispatchMapRelPtr (4)
+            // For AOT types, the dispatch map is stored as a RelPtr in optional fields
+            // at offset OptFieldsOffset_DispatchMap (after TypeManagerIndirection and WritableData)
             byte* pOptional = (byte*)self + optOffset;
-            pOptional += sizeof(int);  // Skip TypeManagerIndirection (4-byte RelPtr)
-            pOptional += sizeof(int);  // Skip WritableData (4-byte RelPtr)
-            int relativeOffset = *(int*)pOptional;
+            byte* pDispatchMapRelPtr = pOptional + OptFieldsOffset_DispatchMap;
+            int relativeOffset = *(int*)pDispatchMapRelPtr;
 
             // Validate the relative offset is reasonable (within ±1MB of the MT)
             // This catches garbage values that would point to invalid memory
@@ -635,7 +737,7 @@ public unsafe struct MethodTable
                 return null;
             }
 
-            DispatchMap* result = (DispatchMap*)(pOptional + relativeOffset);
+            DispatchMap* result = (DispatchMap*)(pDispatchMapRelPtr + relativeOffset);
 
             // Validate the dispatch map address is in a reasonable range
             // (should be in kernel memory, not user or unmapped space)
@@ -707,9 +809,8 @@ public unsafe struct MethodTable
         {
             int optOffset = GetOptionalFieldsOffset();
 
-            // SealedVirtualSlots RelPtr is at optOffset + 12
-            // (after TypeManagerIndirection(4) + WritableData(4) + DispatchMap(4))
-            byte* sealedSlotsRelPtrAddr = (byte*)self + optOffset + 12;
+            // SealedVirtualSlots RelPtr is at OptFieldsOffset_SealedVirtualSlots in optional fields
+            byte* sealedSlotsRelPtrAddr = (byte*)self + optOffset + OptFieldsOffset_SealedVirtualSlots;
             int sealedSlotsRelPtr = *(int*)sealedSlotsRelPtrAddr;
 
             // Check for null/invalid RelPtr

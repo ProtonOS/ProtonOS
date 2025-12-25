@@ -9559,8 +9559,8 @@ public unsafe struct ILCompiler
                     isNullable = true;
                     DebugConsole.Write(" NULLABLE");
 
-                    // Get the inner type's MethodTable from _relatedType
-                    MethodTable* innerMt = mt->_relatedType;
+                    // Get the inner type's MethodTable (Nullable<T> -> T)
+                    MethodTable* innerMt = mt->GetNullableUnderlyingType();
                     if (innerMt != null)
                     {
                         innerMtAddress = (ulong)innerMt;
@@ -10164,8 +10164,8 @@ public unsafe struct ILCompiler
                         nullableSize = baseSize;
                     }
 
-                    // Get the inner type's MethodTable from _relatedType
-                    MethodTable* innerMt = mt->_relatedType;
+                    // Get the inner type's MethodTable (Nullable<T> -> T)
+                    MethodTable* innerMt = mt->GetNullableUnderlyingType();
                     if (innerMt != null)
                     {
                         innerMtAddress = (ulong)innerMt;

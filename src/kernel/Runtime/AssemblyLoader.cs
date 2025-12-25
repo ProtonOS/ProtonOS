@@ -582,6 +582,53 @@ public static unsafe class AssemblyLoader
     public const uint CoreLibAssemblyId = 1;
     public const uint KernelAssemblyId = 2;
 
+    // ============================================================================
+    // Token Normalization Helpers
+    // Normalized token format: ((assemblyId + 2) << 24) | row
+    // The +2 offset avoids collision with raw metadata table IDs (0x01=TypeRef, 0x02=TypeDef)
+    // ============================================================================
+
+    /// <summary>Offset added to assembly ID in normalized tokens to avoid table ID collision.</summary>
+    public const uint TokenNormalizationOffset = 2;
+
+    /// <summary>
+    /// Create a normalized token from an assembly ID and row number.
+    /// Normalized tokens are globally unique across assemblies.
+    /// </summary>
+    public static uint MakeNormalizedToken(uint assemblyId, uint row)
+    {
+        return ((assemblyId + TokenNormalizationOffset) << 24) | (row & 0x00FFFFFF);
+    }
+
+    /// <summary>
+    /// Check if a token is in normalized format (vs raw metadata token).
+    /// Raw tokens have table IDs 0x01 (TypeRef) or 0x02 (TypeDef).
+    /// Normalized tokens have table ID >= 0x03 (due to +2 offset).
+    /// </summary>
+    public static bool IsNormalizedToken(uint token)
+    {
+        uint tableId = token >> 24;
+        return tableId >= (TokenNormalizationOffset + 1);  // >= 3
+    }
+
+    /// <summary>
+    /// Decode a normalized token to get the assembly ID and row number.
+    /// Returns true if the token is normalized, false if it's a raw metadata token.
+    /// </summary>
+    public static bool TryDecodeNormalizedToken(uint token, out uint assemblyId, out uint row)
+    {
+        uint tableId = token >> 24;
+        if (tableId >= (TokenNormalizationOffset + 1))  // >= 3
+        {
+            assemblyId = tableId - TokenNormalizationOffset;
+            row = token & 0x00FFFFFF;
+            return true;
+        }
+        assemblyId = 0;
+        row = token & 0x00FFFFFF;
+        return false;
+    }
+
     private static LoadedAssembly* _assemblies;
     private static int _assemblyCount;
     private static uint _nextAssemblyId;
@@ -1450,11 +1497,10 @@ public static unsafe class AssemblyLoader
         uint table = token >> 24;
         uint row = token & 0x00FFFFFF;
 
-        // TypeDef tokens are already canonical
+        // TypeDef tokens are already canonical - normalize with assembly ID
         if (table == 0x02)
         {
-            // Include assembly ID + 2 to make it globally unique and avoid table ID collision
-            return ((asm->AssemblyId + 2) << 24) | row;
+            return MakeNormalizedToken(asm->AssemblyId, row);
         }
 
         // TypeRef - resolve to TypeDef in target assembly
@@ -1464,8 +1510,8 @@ public static unsafe class AssemblyLoader
             uint targetToken = 0;
             if (ResolveTypeRefToTypeDef(asm, row, out targetAsm, out targetToken))
             {
-                // Return normalized token with target assembly ID + 2
-                uint normalized = ((targetAsm->AssemblyId + 2) << 24) | (targetToken & 0x00FFFFFF);
+                // Return normalized token with target assembly
+                uint normalized = MakeNormalizedToken(targetAsm->AssemblyId, targetToken & 0x00FFFFFF);
                 DebugConsole.Write("[Normalize] TypeRef row=");
                 DebugConsole.WriteDecimal(row);
                 DebugConsole.Write(" asm=");
@@ -1483,8 +1529,8 @@ public static unsafe class AssemblyLoader
             DebugConsole.WriteLine(" FAILED");
         }
 
-        // TypeSpec or failed resolution - return original with assembly context + 2
-        return ((asm->AssemblyId + 2) << 24) | row;
+        // TypeSpec or failed resolution - return with current assembly context
+        return MakeNormalizedToken(asm->AssemblyId, row);
     }
 
     /// <summary>
@@ -5040,11 +5086,11 @@ public static unsafe class AssemblyLoader
     /// </summary>
     private static bool IsNullableGenericDef(uint genDefToken)
     {
-        // Normalized token format: ((assemblyId + 2) << 24) | typeDefRow
-        // We add 2 to avoid collision with TypeRef (0x01) and TypeDef (0x02) table IDs
-        uint tokenTable = genDefToken >> 24;
-        uint typeDefRow = genDefToken & 0x00FFFFFF;
-        uint asmId = tokenTable >= 3 ? tokenTable - 2 : 0;
+        // Decode the normalized token using helper
+        uint asmId;
+        uint typeDefRow;
+        if (!TryDecodeNormalizedToken(genDefToken, out asmId, out typeDefRow))
+            return false;
 
         if (asmId == 0 || typeDefRow == 0)
             return false;
@@ -7845,14 +7891,18 @@ public static unsafe class AssemblyLoader
     }
 
     // Cache for generic instantiation MethodTables
+    // Uses hash bucket index for O(1) average lookup instead of O(n) linear search
     private const int MaxGenericInstCache = 512;
     private const int MaxTypeArgsPerInst = 4;  // Support up to 4 type args per generic type
+    private const int NumHashBuckets = 256;    // Power of 2 for fast modulo
+    private const int HashBucketMask = NumHashBuckets - 1;
     private static uint* _genericInstCacheDefTokens;
     private static ulong* _genericInstCacheArgHashes;  // Hash of type arg MTs
     private static MethodTable** _genericInstCacheInstMTs;
     private static byte* _genericInstCacheTypeArgCounts;  // Number of type args per entry
     private static MethodTable** _genericInstCacheTypeArgs;  // Flat array: [entry0_arg0, entry0_arg1, ..., entry1_arg0, ...]
     private static int _genericInstCacheCount;
+    private static short* _genericInstHashBuckets;  // Hash bucket -> cache index, or -1 if empty
 
     /// <summary>
     /// Get or create a MethodTable for an instantiated generic type (e.g., List&lt;int&gt;).
@@ -7874,13 +7924,20 @@ public static unsafe class AssemblyLoader
             _genericInstCacheInstMTs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(MethodTable*)));
             _genericInstCacheTypeArgCounts = (byte*)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * sizeof(byte)));
             _genericInstCacheTypeArgs = (MethodTable**)HeapAllocator.AllocZeroed((ulong)(MaxGenericInstCache * MaxTypeArgsPerInst * sizeof(MethodTable*)));
+            _genericInstHashBuckets = (short*)HeapAllocator.Alloc((ulong)(NumHashBuckets * sizeof(short)));
             _genericInstCacheCount = 0;
 
             if (_genericInstCacheDefTokens == null || _genericInstCacheArgHashes == null || _genericInstCacheInstMTs == null ||
-                _genericInstCacheTypeArgCounts == null || _genericInstCacheTypeArgs == null)
+                _genericInstCacheTypeArgCounts == null || _genericInstCacheTypeArgs == null || _genericInstHashBuckets == null)
             {
                 DebugConsole.WriteLine("[AsmLoader] Failed to allocate generic inst cache");
                 return null;
+            }
+
+            // Initialize all hash buckets to -1 (empty)
+            for (int i = 0; i < NumHashBuckets; i++)
+            {
+                _genericInstHashBuckets[i] = -1;
             }
         }
 
@@ -7905,18 +7962,34 @@ public static unsafe class AssemblyLoader
         }
         DebugConsole.WriteLine("]");
 
-        // Check cache for existing instantiation
-        for (int i = 0; i < _genericInstCacheCount; i++)
+        // Compute bucket index for hash lookup (multiply-shift hash)
+        int bucket = (int)(((genDefToken ^ (uint)argHash ^ (uint)(argHash >> 32)) * 0x9E3779B9u) >> 24) & HashBucketMask;
+
+        // Check cache using hash bucket index (O(1) average case with linear probing)
+        int probeCount = 0;
+        int probeLimit = NumHashBuckets;  // Limit probes to avoid infinite loop if full
+        while (probeCount < probeLimit)
         {
-            if (_genericInstCacheDefTokens[i] == genDefToken && _genericInstCacheArgHashes[i] == argHash)
+            int idx = _genericInstHashBuckets[bucket];
+            if (idx < 0)
+            {
+                // Empty bucket - cache miss, stop probing
+                break;
+            }
+            if (_genericInstCacheDefTokens[idx] == genDefToken && _genericInstCacheArgHashes[idx] == argHash)
             {
                 DebugConsole.Write("[GenInst] CACHE HIT at ");
-                DebugConsole.WriteDecimal((uint)i);
-                DebugConsole.Write(" MT=0x");
-                DebugConsole.WriteHex((ulong)_genericInstCacheInstMTs[i]);
+                DebugConsole.WriteDecimal((uint)idx);
+                DebugConsole.Write(" (bucket ");
+                DebugConsole.WriteDecimal((uint)bucket);
+                DebugConsole.Write(") MT=0x");
+                DebugConsole.WriteHex((ulong)_genericInstCacheInstMTs[idx]);
                 DebugConsole.WriteLine();
-                return _genericInstCacheInstMTs[i];
+                return _genericInstCacheInstMTs[idx];
             }
+            // Linear probe to next bucket
+            bucket = (bucket + 1) & HashBucketMask;
+            probeCount++;
         }
 
         // Try to resolve the generic type definition to get base info
@@ -7931,15 +8004,11 @@ public static unsafe class AssemblyLoader
         LoadedAssembly* defAsm = null;
         uint defTypeDefToken = 0;
 
-        // Check if tokenTable is a normalized token (assemblyId + 2 to avoid collision)
-        // Normalized tokens have format: ((assemblyId + 2) << 24) | row
-        // Raw metadata tokens have table IDs: 0x01=TypeRef, 0x02=TypeDef
-        // So normalized korlib (ID 1) uses 0x03, normalized FullTest (ID 7) uses 0x09, etc.
-        bool isRawMetadataToken = (tokenTable == 0x01 || tokenTable == 0x02);
-        // For normalized tokens, subtract 2 to get the real assembly ID
-        uint realAsmId = tokenTable >= 3 ? tokenTable - 2 : 0;
-        LoadedAssembly* potentialAsm = (!isRawMetadataToken && realAsmId > 0 && realAsmId < MaxAssemblies)
-            ? GetAssembly(realAsmId) : null;
+        // Check if token is in normalized format using helper
+        uint normalizedAsmId;
+        bool isNormalized = TryDecodeNormalizedToken(genDefToken, out normalizedAsmId, out defTypeDefRow);
+        LoadedAssembly* potentialAsm = (isNormalized && normalizedAsmId > 0 && normalizedAsmId < MaxAssemblies)
+            ? GetAssembly(normalizedAsmId) : null;
 
         // Debug: only log for assembly 1 (korlib) tokens to reduce noise
         // DebugConsole.Write("[GetOrCreate] token=0x");
@@ -7959,7 +8028,7 @@ public static unsafe class AssemblyLoader
             // Already normalized - extract assembly ID and row
             defAsm = potentialAsm;
             defTypeDefToken = 0x02000000 | defTypeDefRow;
-            genDefMT = ResolveType(realAsmId, defTypeDefToken);  // Use realAsmId, not tokenTable
+            genDefMT = ResolveType(normalizedAsmId, defTypeDefToken);  // Use normalizedAsmId, not tokenTable
         }
         else if (tokenTable == 0x02)  // Raw TypeDef token - use JIT compilation context
         {
@@ -8070,6 +8139,21 @@ public static unsafe class AssemblyLoader
             for (int i = 0; i < argsToStore; i++)
             {
                 _genericInstCacheTypeArgs[baseIdx + i] = typeArgMTs[i];
+            }
+
+            // Add to hash bucket index for O(1) lookup
+            int insertBucket = (int)(((genDefToken ^ (uint)argHash ^ (uint)(argHash >> 32)) * 0x9E3779B9u) >> 24) & HashBucketMask;
+            int insertProbes = 0;
+            while (insertProbes < NumHashBuckets)
+            {
+                if (_genericInstHashBuckets[insertBucket] < 0)
+                {
+                    // Found empty slot
+                    _genericInstHashBuckets[insertBucket] = (short)cacheSlot;
+                    break;
+                }
+                insertBucket = (insertBucket + 1) & HashBucketMask;
+                insertProbes++;
             }
 
             _genericInstCacheCount++;
@@ -8243,11 +8327,10 @@ public static unsafe class AssemblyLoader
             // Populate interface map with instantiated interface MTs
             if (numInterfaces > 0)
             {
-                // Extract assembly ID and TypeDef row from normalized token
-                // Normalized format: ((asmId + 2) << 24) | row, so we subtract 2 to get real asmId
-                uint tokenTableForIface = genDefToken >> 24;
-                uint typeDefRow = genDefToken & 0x00FFFFFF;
-                uint asmIdForIface = tokenTableForIface >= 3 ? tokenTableForIface - 2 : 0;
+                // Extract assembly ID and TypeDef row from normalized token using helper
+                uint asmIdForIface;
+                uint typeDefRow;
+                TryDecodeNormalizedToken(genDefToken, out asmIdForIface, out typeDefRow);
                 LoadedAssembly* defAsmInner = GetAssembly(asmIdForIface);
 
                 if (defAsmInner != null)
@@ -8475,6 +8558,8 @@ public static unsafe class AssemblyLoader
         instMT->_relatedType = typeArgMTs[0];
 
         // Generate unique hash code for this instantiation
+        // NOTE: This algorithm differs from AOT (ILC) hash - see MethodTable._uHashCode docs
+        // for cross-world comparison caveats
         instMT->_uHashCode = (uint)(genDefToken ^ argHash ^ (argHash >> 32));
 
         // Log the cache slot used (caching was done early to break recursive loops)
@@ -8579,13 +8664,10 @@ public static unsafe class AssemblyLoader
                 // Found it - now resolve the generic definition token
                 uint genDefToken = _genericInstCacheDefTokens[i];
 
-                // The genDefToken is in normalized format: ((asmId + 2) << 24) | typeDefRow
-                // We add 2 to the assembly ID to avoid collision with TypeRef (0x01) and TypeDef (0x02) table IDs
-                uint tokenTable = genDefToken >> 24;
-                uint defTypeDefRow = genDefToken & 0x00FFFFFF;
-
-                // Subtract 2 to get the real assembly ID
-                uint defAsmId = tokenTable >= 3 ? tokenTable - 2 : 0;
+                // Decode the normalized token using helper
+                uint defAsmId;
+                uint defTypeDefRow;
+                TryDecodeNormalizedToken(genDefToken, out defAsmId, out defTypeDefRow);
                 uint defTypeDefToken = 0x02000000 | defTypeDefRow;
 
                 // Resolve to get the generic definition MT

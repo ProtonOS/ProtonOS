@@ -372,15 +372,16 @@ public static unsafe class JitStubs
                         MetadataIntegration.SetTypeTypeArgs(typeArgs, typeArgCount);
                         hasTypeContext = true;
                     }
-                    else if (instMT->_relatedType != null)
+                    else if (instMT->GetFirstTypeArgument() != null)
                     {
-                        // Fallback: use _relatedType for single type argument (legacy path)
-                        DebugConsole.Write("[JitStubs] VT legacy fallback MT=0x");
+                        // Fallback: use first type arg for single-argument generics
+                        MethodTable* firstArg = instMT->GetFirstTypeArgument();
+                        DebugConsole.Write("[JitStubs] VT single arg fallback MT=0x");
                         DebugConsole.WriteHex((ulong)instMT);
-                        DebugConsole.Write(" _relatedType=0x");
-                        DebugConsole.WriteHex((ulong)instMT->_relatedType);
+                        DebugConsole.Write(" typeArg=0x");
+                        DebugConsole.WriteHex((ulong)firstArg);
                         DebugConsole.WriteLine();
-                        typeArgs[0] = instMT->_relatedType;
+                        typeArgs[0] = firstArg;
                         MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
                         hasTypeContext = true;
                     }
@@ -583,8 +584,7 @@ public static unsafe class JitStubs
                     {
                         DebugConsole.WriteLine("[JitStubs] Could not find implementing method, checking base class");
                         // Try searching in parent classes (for inherited implementations)
-                        // Get the parent type from the MT's _relatedType
-                        MethodTable* parentMT = mt->_relatedType;
+                        MethodTable* parentMT = mt->GetParentType();
                         while (parentMT != null && implMethodToken == 0)
                         {
                             Reflection.ReflectionRuntime.LookupTypeInfo(parentMT, out uint parentAsmId, out uint parentTypeToken);
@@ -599,7 +599,7 @@ public static unsafe class JitStubs
                                     DebugConsole.WriteLine();
                                 }
                             }
-                            parentMT = parentMT->_relatedType;
+                            parentMT = parentMT->GetParentType();
                         }
                     }
 
@@ -633,14 +633,14 @@ public static unsafe class JitStubs
                             DebugConsole.Write(" args");
                             DebugConsole.WriteLine();
                         }
-                        else if (mt->_relatedType != null)
+                        else if (mt->GetFirstTypeArgument() != null)
                         {
-                            // Fallback for legacy path
-                            typeArgs[0] = mt->_relatedType;
+                            // Fallback: use first type arg from _relatedType
+                            typeArgs[0] = mt->GetFirstTypeArgument();
                             MetadataIntegration.SetTypeTypeArgs(typeArgs, 1);
                             hasTypeContext = true;
-                            DebugConsole.Write("[JitStubs] Set type context (legacy): T=0x");
-                            DebugConsole.WriteHex((ulong)mt->_relatedType);
+                            DebugConsole.Write("[JitStubs] Set type context (single arg): T=0x");
+                            DebugConsole.WriteHex((ulong)typeArgs[0]);
                             DebugConsole.WriteLine();
                         }
                     }
