@@ -51,9 +51,16 @@ public static class TestRunner
         RunObjectTests();
 
         // Array tests
+        Debug.WriteLine("[DBG] Before RunArrayTests");
         RunArrayTests();
+        Debug.WriteLine("[DBG] After RunArrayTests returned");
+        Debug.Write("[A");
+        Debug.Write("B");
+        Debug.Write("C");
+        Debug.WriteLine("]");
 
         // Foreach on arrays tests
+        Debug.WriteLine("[DBG] Before RunForeachTests");
         RunForeachTests();
 
         // Params array tests
@@ -381,11 +388,9 @@ public static class TestRunner
         RecordResult("UtilityTests.TestStackBasic", UtilityTests.TestStackBasic() == 1);
         RecordResult("UtilityTests.TestStackForeach", UtilityTests.TestStackForeach() == 1);
         RecordResult("UtilityTests.TestStackContainsClear", UtilityTests.TestStackContainsClear() == 1);
-        // ReadOnlyCollection tests - TEMPORARILY SKIPPED due to List<T> field layout issues in JIT
-        // TODO: Fix generic type field offset calculation
-        // RecordResult("UtilityTests.TestReadOnlyCollectionBasic", UtilityTests.TestReadOnlyCollectionBasic() == 1);
-        // RecordResult("UtilityTests.TestReadOnlyCollectionContainsIndexOf", UtilityTests.TestReadOnlyCollectionContainsIndexOf() == 1);
-        // RecordResult("UtilityTests.TestReadOnlyCollectionCopyTo", UtilityTests.TestReadOnlyCollectionCopyTo() == 1);
+        RecordResult("UtilityTests.TestReadOnlyCollectionBasic", UtilityTests.TestReadOnlyCollectionBasic() == 1);
+        RecordResult("UtilityTests.TestReadOnlyCollectionContainsIndexOf", UtilityTests.TestReadOnlyCollectionContainsIndexOf() == 1);
+        RecordResult("UtilityTests.TestReadOnlyCollectionCopyTo", UtilityTests.TestReadOnlyCollectionCopyTo() == 1);
         // Collection tests
         RecordResult("UtilityTests.TestCollectionBasic", UtilityTests.TestCollectionBasic() == 1);
         RecordResult("UtilityTests.TestCollectionInsertRemove", UtilityTests.TestCollectionInsertRemove() == 1);
@@ -506,31 +511,18 @@ public static class TestRunner
 
     private static void RunExceptionTests()
     {
-        Debug.WriteLine("[EXC] Running TestTryCatch...");
         RecordResult("ExceptionTests.TestTryCatch", ExceptionTests.TestTryCatch() == 42);
-        Debug.WriteLine("[EXC] Running TestTryFinally...");
         RecordResult("ExceptionTests.TestTryFinally", ExceptionTests.TestTryFinally() == 42);
-        Debug.WriteLine("[EXC] Running TestNestedTryCatch...");
         RecordResult("ExceptionTests.TestNestedTryCatch", ExceptionTests.TestNestedTryCatch() == 42);
-        Debug.WriteLine("[EXC] Running TestMultipleCatchFirst...");
         RecordResult("ExceptionTests.TestMultipleCatchFirst", ExceptionTests.TestMultipleCatchFirst() == 42);
-        Debug.WriteLine("[EXC] Running TestMultipleCatchSecond...");
         RecordResult("ExceptionTests.TestMultipleCatchSecond", ExceptionTests.TestMultipleCatchSecond() == 42);
-        Debug.WriteLine("[EXC] Running TestFinallyWithReturn...");
         RecordResult("ExceptionTests.TestFinallyWithReturn", ExceptionTests.TestFinallyWithReturn() == 42);
-        Debug.WriteLine("[EXC] Running TestFinallyWithExceptionCaught...");
         RecordResult("ExceptionTests.TestFinallyWithExceptionCaught", ExceptionTests.TestFinallyWithExceptionCaught() == 42);
-        Debug.WriteLine("[EXC] Running TestCatchWhenTrue...");
         RecordResult("ExceptionTests.TestCatchWhenTrue", ExceptionTests.TestCatchWhenTrue() == 42);
-        Debug.WriteLine("[EXC] Running TestCatchWhenFalse...");
         RecordResult("ExceptionTests.TestCatchWhenFalse", ExceptionTests.TestCatchWhenFalse() == 42);
-        Debug.WriteLine("[EXC] Running TestFinallyInLoopWithBreak...");
         RecordResult("ExceptionTests.TestFinallyInLoopWithBreak", ExceptionTests.TestFinallyInLoopWithBreak() == 42);
-        Debug.WriteLine("[EXC] Running TestFinallyInLoopWithContinue...");
         RecordResult("ExceptionTests.TestFinallyInLoopWithContinue", ExceptionTests.TestFinallyInLoopWithContinue() == 42);
-        Debug.WriteLine("[EXC] Running TestDivideByZero...");
         RecordResult("ExceptionTests.TestDivideByZero", ExceptionTests.TestDivideByZero() == 42);
-        Debug.WriteLine("[EXC] Running TestDivideByZeroModulo...");
         RecordResult("ExceptionTests.TestDivideByZeroModulo", ExceptionTests.TestDivideByZeroModulo() == 42);
     }
 
@@ -1016,16 +1008,19 @@ public static class TestRunner
 
     private static void RunArrayTests()
     {
+        Debug.WriteLine("[DBG] RunArrayTests: starting");
         RecordResult("ArrayTests.TestNewarr", ArrayTests.TestNewarr() == 10);
         RecordResult("ArrayTests.TestStelem", ArrayTests.TestStelem() == 42);
         RecordResult("ArrayTests.TestLdlen", ArrayTests.TestLdlen() == 5);
         RecordResult("ArrayTests.TestArraySum", ArrayTests.TestArraySum() == 15);
+        Debug.WriteLine("[DBG] RunArrayTests: half done");
         RecordResult("ArrayTests.TestArrayInitializer", ArrayTests.TestArrayInitializer() == 15);
         RecordResult("ArrayTests.TestByteArrayInitializer", ArrayTests.TestByteArrayInitializer() == 100);
         RecordResult("ArrayTests.TestBoundsCheckReadOverflow", ArrayTests.TestBoundsCheckReadOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
         RecordResult("ArrayTests.TestBoundsCheckValidLastIndex", ArrayTests.TestBoundsCheckValidLastIndex() == 42);
+        Debug.WriteLine("[DBG] RunArrayTests: done");
     }
 
     private static void RunForeachTests()
@@ -1202,6 +1197,10 @@ public static class TestRunner
         // Nested field out/ref tests (class.struct.field pattern)
         RecordResult("StructTests.TestNestedFieldOut", StructTests.TestNestedFieldOut() == 99);
         RecordResult("StructTests.TestNestedFieldRef", StructTests.TestNestedFieldRef() == 110);
+
+        // High-offset struct field tests (JIT bug repro - field at offset 120+)
+        RecordResult("StructTests.TestHighOffsetFieldViaPointer", StructTests.TestHighOffsetFieldViaPointer() == 0xDEAD);
+        RecordResult("StructTests.TestHighOffsetFieldDirect", StructTests.TestHighOffsetFieldDirect() == 0xBEEF);
 
         // Explicit layout struct tests (unions, [StructLayout(LayoutKind.Explicit)])
         RecordResult("ExplicitLayoutTests.TestUnionWriteIntReadBytes", ExplicitLayoutTests.TestUnionWriteIntReadBytes() == 10);
@@ -3974,6 +3973,24 @@ public struct InnerStruct
 }
 
 // =============================================================================
+// High-Offset Struct - Tests field access at large offsets (like ATA IDENTIFY)
+// This reproduces a JIT bug where struct field access via pointer returns wrong value
+// =============================================================================
+
+// Struct with field at offset 108
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Size = 116)]
+public struct HighOffsetStruct
+{
+    // Field at offset 108
+    [System.Runtime.InteropServices.FieldOffset(108)]
+    public uint FieldAt120;
+
+    // Field at offset 112
+    [System.Runtime.InteropServices.FieldOffset(112)]
+    public uint FieldAt124;
+}
+
+// =============================================================================
 // Explicit Layout Structs - for testing [StructLayout(LayoutKind.Explicit)]
 // =============================================================================
 
@@ -4407,6 +4424,40 @@ public static class StructTests
     private static void AddToInnerValue(ref int value)
     {
         value += 100;
+    }
+
+    // =========================================================================
+    // High-Offset Struct Field Tests
+    // Reproduces JIT bug where pointer->field access at high offsets returns 0
+    // =========================================================================
+
+    // Test accessing field at offset 108 via pointer to struct
+    // This is the bug seen in AHCI driver with AtaIdentifyData.TotalSectors28
+    public static unsafe int TestHighOffsetFieldViaPointer()
+    {
+        // Allocate struct on stack
+        HighOffsetStruct s = default;
+
+        // Write a known value using pointer arithmetic (this works)
+        byte* raw = (byte*)&s;
+        *(uint*)(raw + 108) = 0xDEAD;
+
+        // Now read it back using struct field access via pointer
+        // BUG: This returns 0 instead of 0xDEAD
+        HighOffsetStruct* ptr = &s;
+        return (int)ptr->FieldAt120;  // Expected: 0xDEAD (57005)
+    }
+
+    // Test accessing field at offset 120 without pointers (direct stack access)
+    public static unsafe int TestHighOffsetFieldDirect()
+    {
+        HighOffsetStruct s = default;
+
+        // Write via struct field directly
+        s.FieldAt120 = 0xBEEF;
+
+        // Read back via struct field directly
+        return (int)s.FieldAt120;  // Expected: 0xBEEF (48879)
     }
 }
 
@@ -9483,13 +9534,24 @@ public static class UtilityTests
     /// <summary>Tests ReadOnlyCollection basic creation and access</summary>
     public static int TestReadOnlyCollectionBasic()
     {
+        // Simplified test - call readOnly[0], [1], [2] in sequence without intervening calls
         var list = new System.Collections.Generic.List<int> { 10, 20, 30 };
         var readOnly = new System.Collections.ObjectModel.ReadOnlyCollection<int>(list);
 
-        if (readOnly.Count != 3) return 0;
-        if (readOnly[0] != 10) return 0;
-        if (readOnly[1] != 20) return 0;
-        if (readOnly[2] != 30) return 0;
+        Debug.Write("[ROC] simple: ro[0]=");
+        int v0 = readOnly[0];
+        Debug.WriteHex((uint)v0);
+        Debug.Write(" ro[1]=");
+        int v1 = readOnly[1];
+        Debug.WriteHex((uint)v1);
+        Debug.Write(" ro[2]=");
+        int v2 = readOnly[2];
+        Debug.WriteHex((uint)v2);
+        Debug.WriteLine();
+
+        if (v0 != 10) { Debug.WriteLine("[ROC] [0] fail"); return 0; }
+        if (v1 != 20) { Debug.Write("[ROC] [1] fail: "); Debug.WriteHex((uint)v1); Debug.WriteLine(); return 0; }
+        if (v2 != 30) { Debug.WriteLine("[ROC] [2] fail"); return 0; }
 
         return 1;
     }

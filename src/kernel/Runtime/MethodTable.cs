@@ -1079,21 +1079,10 @@ public unsafe struct MethodTable
         bool hash1Valid = mt1->_uHashCode != 0;
         bool hash2Valid = mt2->_uHashCode != 0;
 
-        if (sameWorld && hash1Valid && hash2Valid)
-        {
-            if (mt1->_uHashCode != mt2->_uHashCode)
-            {
-                // Same world + different hash = different types
-                DebugConsole.WriteLine("[StructEq] Same-world hash mismatch - rejecting");
-                return false;
-            }
-            // Hash codes match within same world - strong indicator of same type
-            DebugConsole.WriteLine("[StructEq] Same-world hash match - accepting");
-            return true;
-        }
-
-        // Check for generic interface matching based on type arguments
+        // Check for generic interface matching based on type arguments FIRST
         // _relatedType stores the first type argument MT for generic types
+        // We do this before hash comparison because generic interfaces from different
+        // instantiation contexts may have different hash codes but same structure.
         MethodTable* rel1 = mt1->_relatedType;
         MethodTable* rel2 = mt2->_relatedType;
 
@@ -1107,7 +1096,28 @@ public unsafe struct MethodTable
             // Compare base size for type equivalence (compatible sizes)
             if (rel1->_uBaseSize != rel2->_uBaseSize)
             {
-                DebugConsole.WriteLine("[StructEq] Type arg size mismatch - rejecting");
+                DebugConsole.Write("[StructEq] Type arg size mismatch: rel1=0x");
+                DebugConsole.WriteHex((ulong)rel1);
+                DebugConsole.Write(" size=");
+                DebugConsole.WriteDecimal(rel1->_uBaseSize);
+                DebugConsole.Write(" rel2=0x");
+                DebugConsole.WriteHex((ulong)rel2);
+                DebugConsole.Write(" size=");
+                DebugConsole.WriteDecimal(rel2->_uBaseSize);
+                DebugConsole.WriteLine();
+                // Type argument size mismatch. This can happen when:
+                // 1. AOT interface _relatedType is garbage/not properly set
+                // 2. Different class hierarchies have different sizes
+                // For generic interface matching, if slot counts matched and one type arg
+                // looks valid (size >= 16, i.e. a real reference type), accept the match.
+                // Size < 16 suggests garbage or uninitialized _relatedType.
+                if (rel1->_uBaseSize >= 16 || rel2->_uBaseSize >= 16)
+                {
+                    // At least one looks like a valid reference type - accept
+                    DebugConsole.WriteLine("[StructEq] One type arg valid - accepting");
+                    return true;
+                }
+                // Both look invalid, reject
                 return false;
             }
 

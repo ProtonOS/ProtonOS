@@ -26,8 +26,7 @@ namespace System.Collections.ObjectModel
         }
 
         /// <summary>Gets the element at the specified index.</summary>
-        // Simplified: always use interface dispatch to ensure proper JIT compilation
-        public T this[int index] => _list[index];
+        public T this[int index] => _concreteList != null ? _concreteList[index] : _list[index];
 
         T IList<T>.this[int index]
         {

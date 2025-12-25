@@ -1205,11 +1205,9 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
             0, ReturnKind.Int32, true, false);
 
-        // ReadOnlyCollection<T>.get_Item indexer (works for any T since it delegates to underlying list)
-        Register(
-            "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Item",
-            (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int, Exception?>)&CollectionHelpers.ReadOnlyCollectionException_get_Item,
-            1, ReturnKind.IntPtr, true, false);
+        // NOTE: ReadOnlyCollection<T>.get_Item is NOT registered here because the helper assumes
+        // reference types (8-byte elements). For value types like int (4-byte elements), the
+        // element offset calculation is wrong. Let the JIT compile this for each instantiation.
 
         // ReadOnlyCollection<Exception> constructor
         Register(
@@ -1539,6 +1537,13 @@ public static unsafe class AotMethodRegistry
                                     uint instantiationHash = 0, byte typeGenericArity = 0,
                                     byte methodGenericArity = 0)
     {
+        // Debug: trace entry
+        // DebugConsole.Write("[AOT RegEx] ");
+        // DebugConsole.Write(typeName);
+        // DebugConsole.Write(".");
+        // DebugConsole.Write(methodName);
+        // DebugConsole.WriteLine();
+
         ulong typeHash = HashString(typeName);
         ulong methodHash = HashString(methodName);
 
@@ -4245,35 +4250,60 @@ public static unsafe class CollectionHelpers
 {
     /// <summary>
     /// Get the Count of a ReadOnlyCollection&lt;T&gt;.
-    /// ReadOnlyCollection layout: [header 8] [_list reference 8]
-    /// The _list is a List&lt;T&gt; which has layout: [header 8] [_items 8] [_size 4] ...
-    /// Since we know AggregateException uses List&lt;Exception&gt;, we can access _size directly.
+    /// ReadOnlyCollection layout: [MT 8] [_list 8] [_concreteList 8]
+    /// The _concreteList is a List&lt;T&gt; which has layout: [MT 8] [_items 8] [_size 4] ...
     /// </summary>
     public static int ReadOnlyCollectionException_get_Count(System.Collections.ObjectModel.ReadOnlyCollection<Exception> collection)
     {
         // Access the underlying list directly via object layout
-        // ReadOnlyCollection has one field: _list (IList<T>)
-        // Object layout: [MethodTable* 8] [_list 8]
+        // ReadOnlyCollection has: [MT 8] [_list 8] [_concreteList 8]
+        // _concreteList at offset 16 is the concrete List<T>
         byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.As<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, nint>(ref collection);
-        nint listPtr = *(nint*)(objPtr + 8);  // Skip MT, get _list reference
+        nint concreteListPtr = *(nint*)(objPtr + 16);  // Skip MT (8) + _list (8), get _concreteList
 
-        // The underlying list is typically a List<T>
+        if (concreteListPtr == 0)
+        {
+            // Fall back to _list at offset 8
+            concreteListPtr = *(nint*)(objPtr + 8);
+        }
+
+        // The list is a List<T>
         // List<T> layout: [MT 8] [_items 8] [_size 4] ...
-        byte* listBytes = (byte*)listPtr;
+        byte* listBytes = (byte*)concreteListPtr;
         int size = *(int*)(listBytes + 16);  // Skip MT (8) + _items (8), get _size (4)
         return size;
     }
 
     /// <summary>
-    /// Get an item from a ReadOnlyCollection&lt;Exception&gt; by index.
-    /// ReadOnlyCollection layout: [MT 8] [_list reference 8]
-    /// The underlying list implements IList&lt;T&gt; and we call its indexer.
+    /// Get an item from a ReadOnlyCollection&lt;T&gt; by index.
+    /// ReadOnlyCollection layout: [MT 8] [_list 8] [_concreteList 8]
+    /// We access the underlying _concreteList (List&lt;T&gt;) directly via memory layout.
     /// </summary>
     public static Exception? ReadOnlyCollectionException_get_Item(System.Collections.ObjectModel.ReadOnlyCollection<Exception> collection, int index)
     {
-        // ReadOnlyCollection wraps an IList<T> and just delegates to it
-        // Use the collection's indexer directly since it's the simplest approach
-        return collection[index];
+        // Access the underlying list directly via object layout
+        // ReadOnlyCollection has: [MT 8] [_list 8] [_concreteList 8]
+        // _concreteList at offset 16 is the concrete List<T> (or null if IList was passed)
+        byte* objPtr = (byte*)System.Runtime.CompilerServices.Unsafe.As<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, nint>(ref collection);
+        nint concreteListPtr = *(nint*)(objPtr + 16);  // Skip MT (8) + _list (8), get _concreteList
+
+        if (concreteListPtr == 0)
+        {
+            // Fall back to _list (IList<T>) at offset 8
+            concreteListPtr = *(nint*)(objPtr + 8);
+        }
+
+        // The list is a List<T>
+        // List<T> layout: [MT 8] [_items 8] [_size 4] ...
+        byte* listBytes = (byte*)concreteListPtr;
+        nint itemsArrayPtr = *(nint*)(listBytes + 8);  // Skip MT, get _items array
+
+        // Array layout: [MT 8] [Length 8] [Elements...]
+        // For reference type arrays, elements are pointers at offset 16
+        byte* arrayBytes = (byte*)itemsArrayPtr;
+        nint* elements = (nint*)(arrayBytes + 16);  // Skip MT + Length
+
+        return System.Runtime.CompilerServices.Unsafe.As<nint, Exception?>(ref elements[index]);
     }
 
     /// <summary>
