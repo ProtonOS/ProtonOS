@@ -215,33 +215,19 @@ public static unsafe class JitStubs
             DebugConsole.WriteLine();
 
             // For AOT types with dispatch maps, out-of-bounds slots are sealed virtual slots.
-            // In NativeAOT, sealed slots table is pointed to by a RelPtr at offset 12 in optional fields
-            // (after TypeManagerIndirection, WritableData, and DispatchMap RelPtrs, each 4 bytes).
+            // Use MethodTable's centralized sealed slot lookup.
             if (mt->HasDispatchMap)
             {
                 int sealedSlotIndex = vtableSlot - mt->_usNumVtableSlots;
-                int optOffset = mt->GetOptionalFieldsOffset();
-
-                // SealedVirtualSlots RelPtr is at optOffset + 12
-                byte* sealedSlotsRelPtrAddr = (byte*)methodTable + optOffset + 12;
-                int sealedSlotsRelPtr = *(int*)sealedSlotsRelPtrAddr;
-                byte* sealedSlotsTable = sealedSlotsRelPtrAddr + sealedSlotsRelPtr;
-
-                // Each sealed slot is a 4-byte RelPtr in the table
-                byte* slotRelPtrAddr = sealedSlotsTable + sealedSlotIndex * 4;
-                int slotRelPtr = *(int*)slotRelPtrAddr;
-                nint sealedMethod = (nint)(slotRelPtrAddr + slotRelPtr);
+                nint sealedMethod = mt->GetSealedVirtualSlot(sealedSlotIndex);
 
                 DebugConsole.Write("[VTbounds] Sealed slot ");
                 DebugConsole.WriteDecimal(sealedSlotIndex);
-                DebugConsole.Write(" table=0x");
-                DebugConsole.WriteHex((ulong)sealedSlotsTable);
-                DebugConsole.Write(" slotRel=");
-                DebugConsole.WriteDecimal(slotRelPtr);
                 DebugConsole.Write(" -> 0x");
                 DebugConsole.WriteHex((ulong)sealedMethod);
                 DebugConsole.WriteLine();
 
+                // Validate the address is in the kernel code range
                 if (sealedMethod != 0 && (ulong)sealedMethod >= 0x1DA00000 && (ulong)sealedMethod < 0x1DB00000)
                 {
                     return sealedMethod;

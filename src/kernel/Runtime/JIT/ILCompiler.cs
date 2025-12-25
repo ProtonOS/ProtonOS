@@ -5650,10 +5650,11 @@ public unsafe struct ILCompiler
                     // DebugConsole.WriteHex((ulong)constraintMT);
                     // DebugConsole.WriteLine();
 
-                    if (tempMethod.IsVirtual && tempMethod.VtableSlot >= 0 &&
-                        tempMethod.VtableSlot < constraintMT->_usNumVtableSlots)
+                    // Check if method can be resolved via vtable (including sealed virtual slots for AOT types)
+                    if (tempMethod.IsVirtual && tempMethod.VtableSlot >= 0)
                     {
-                        nint vtableEntry = constraintMT->GetVtableSlot(tempMethod.VtableSlot);
+                        // Use GetVirtualSlot which handles both regular vtable and sealed virtual slots
+                        nint vtableEntry = constraintMT->GetVirtualSlot(tempMethod.VtableSlot);
                         // DebugConsole.Write("[JIT] VT entry: vtable[");
                         // DebugConsole.WriteDecimal((uint)tempMethod.VtableSlot);
                         // DebugConsole.Write("]=0x");
@@ -5670,7 +5671,7 @@ public unsafe struct ILCompiler
                                 JitStubs.EnsureCompiled(overrideInfo->Token, overrideInfo->AssemblyId);
 
                                 // Check if compilation succeeded and vtable is now populated
-                                vtableEntry = constraintMT->GetVtableSlot(tempMethod.VtableSlot);
+                                vtableEntry = constraintMT->GetVirtualSlot(tempMethod.VtableSlot);
                                 if (vtableEntry == 0 && overrideInfo->NativeCode != null)
                                 {
                                     vtableEntry = (nint)overrideInfo->NativeCode;

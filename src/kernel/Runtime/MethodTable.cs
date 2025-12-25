@@ -246,8 +246,9 @@ public struct DispatchMapEntry
 
 /// <summary>
 /// DispatchMap structure for mapping interface methods to implementations.
-/// In NativeAOT, sealed virtual slots are stored as 4-byte RelPtrs after the dispatch entries.
-/// Layout: Header(8) + Entries[n] + SealedVirtualSlots[]
+/// Layout: Header(8 bytes) + Entries[numStandard + numDefault]
+/// Note: Sealed virtual slots are stored separately in the MethodTable's optional fields,
+/// accessed via GetSealedVirtualSlot() on MethodTable, NOT via this structure.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct DispatchMap
@@ -260,35 +261,17 @@ public unsafe struct DispatchMap
 
     public uint NumStandardEntries => _standardEntryCount;
     public uint NumDefaultEntries => _defaultEntryCount;
+    public uint NumStandardStaticEntries => _standardStaticEntryCount;
+    public uint NumDefaultStaticEntries => _defaultStaticEntryCount;
+
+    /// <summary>Total number of dispatch entries (standard + default, excluding static).</summary>
+    public uint NumEntries => (uint)(_standardEntryCount + _defaultEntryCount);
 
     public DispatchMapEntry* GetEntry(int index)
     {
         fixed (DispatchMapEntry* pFirst = &_firstEntry)
         {
             return pFirst + index;
-        }
-    }
-
-    /// <summary>
-    /// Get a sealed virtual slot method address.
-    /// Sealed slots are stored as 4-byte RelPtrs after the dispatch map entries.
-    /// </summary>
-    /// <param name="sealedSlotIndex">Index into the sealed slots table (impl - numVtableSlots)</param>
-    /// <returns>The method address, or 0 if not found</returns>
-    public nint GetSealedVirtualSlot(int sealedSlotIndex)
-    {
-        fixed (DispatchMap* self = &this)
-        {
-            // Calculate offset to sealed slots: after header (8 bytes) + entries
-            int numEntries = _standardEntryCount + _defaultEntryCount;
-            int entriesSize = numEntries * 6;  // Each DispatchMapEntry is 6 bytes
-            int sealedSlotsOffset = 8 + entriesSize;
-
-            byte* sealedSlotBase = (byte*)self + sealedSlotsOffset + sealedSlotIndex * 4;
-            int relPtr = *(int*)sealedSlotBase;
-            nint methodAddr = (nint)(sealedSlotBase + relPtr);
-
-            return methodAddr;
         }
     }
 }
@@ -415,6 +398,8 @@ public unsafe struct MethodTable
 
     /// <summary>
     /// Get the function pointer at a specific vtable slot.
+    /// Only checks the regular vtable, not sealed virtual slots.
+    /// For a unified lookup that handles sealed slots too, use GetVirtualSlot().
     /// </summary>
     /// <param name="slotIndex">Zero-based slot index.</param>
     /// <returns>The function pointer, or null if slot is out of range.</returns>
@@ -425,6 +410,35 @@ public unsafe struct MethodTable
 
         nint* vtable = GetVtablePtr();
         return vtable[slotIndex];
+    }
+
+    /// <summary>
+    /// Get a virtual method pointer by slot index, handling both regular vtable slots
+    /// and sealed virtual slots (for AOT types with dispatch maps).
+    /// This is the preferred method for resolving virtual calls as it handles all cases.
+    /// </summary>
+    /// <param name="slotIndex">Zero-based slot index (may exceed _usNumVtableSlots for sealed slots).</param>
+    /// <returns>The function pointer, or 0 if not found.</returns>
+    public nint GetVirtualSlot(int slotIndex)
+    {
+        if (slotIndex < 0)
+            return 0;
+
+        // Check regular vtable first
+        if (slotIndex < _usNumVtableSlots)
+        {
+            nint* vtable = GetVtablePtr();
+            return vtable[slotIndex];
+        }
+
+        // For slots beyond vtable, check sealed virtual slots (AOT types only)
+        if (HasDispatchMap)
+        {
+            int sealedSlotIndex = slotIndex - _usNumVtableSlots;
+            return GetSealedVirtualSlot(sealedSlotIndex);
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -607,22 +621,58 @@ public unsafe struct MethodTable
             pOptional += sizeof(int);  // Skip TypeManagerIndirection (4-byte RelPtr)
             pOptional += sizeof(int);  // Skip WritableData (4-byte RelPtr)
             int relativeOffset = *(int*)pOptional;
-            DispatchMap* result = (DispatchMap*)(pOptional + relativeOffset);
 
-            // For minimal/shared MTs, the dispatch map might be garbage
-            // In that case, return null to trigger fallback handling
-            if (result->NumStandardEntries > 500 || result->NumDefaultEntries > 500)
+            // Validate the relative offset is reasonable (within ±1MB of the MT)
+            // This catches garbage values that would point to invalid memory
+            if (relativeOffset < -0x100000 || relativeOffset > 0x100000)
             {
                 if (_usNumVtableSlots <= 5)
                 {
-                    DebugConsole.Write("[GetDispMap] Invalid? NumStd=");
-                    DebugConsole.WriteDecimal(result->NumStandardEntries);
+                    DebugConsole.Write("[GetDispMap] Invalid relOff=");
+                    DebugConsole.WriteDecimal(relativeOffset);
+                    DebugConsole.WriteLine();
+                }
+                return null;
+            }
+
+            DispatchMap* result = (DispatchMap*)(pOptional + relativeOffset);
+
+            // Validate the dispatch map address is in a reasonable range
+            // (should be in kernel memory, not user or unmapped space)
+            ulong resultAddr = (ulong)result;
+            if (resultAddr < 0x10000 || resultAddr > 0xFFFF800000000000)
+            {
+                if (_usNumVtableSlots <= 5)
+                {
+                    DebugConsole.Write("[GetDispMap] Invalid addr=0x");
+                    DebugConsole.WriteHex(resultAddr);
+                    DebugConsole.WriteLine();
+                }
+                return null;
+            }
+
+            // Validate entry counts are reasonable:
+            // - Not excessively large (max ~100 entries per interface is generous)
+            // - Total entries shouldn't exceed numInterfaces * reasonable_methods_per_interface
+            uint numStd = result->NumStandardEntries;
+            uint numDef = result->NumDefaultEntries;
+            uint maxReasonableEntries = (uint)(_usNumInterfaces + 1) * 50;  // 50 methods per interface is very generous
+
+            if (numStd > maxReasonableEntries || numDef > maxReasonableEntries ||
+                (numStd + numDef) > maxReasonableEntries)
+            {
+                if (_usNumVtableSlots <= 5)
+                {
+                    DebugConsole.Write("[GetDispMap] Invalid counts NumStd=");
+                    DebugConsole.WriteDecimal(numStd);
                     DebugConsole.Write(" NumDef=");
-                    DebugConsole.WriteDecimal(result->NumDefaultEntries);
+                    DebugConsole.WriteDecimal(numDef);
+                    DebugConsole.Write(" max=");
+                    DebugConsole.WriteDecimal(maxReasonableEntries);
                     DebugConsole.Write(" relOff=");
                     DebugConsole.WriteDecimal(relativeOffset);
                     DebugConsole.Write(" @0x");
-                    DebugConsole.WriteHex((ulong)result);
+                    DebugConsole.WriteHex(resultAddr);
                     DebugConsole.WriteLine();
                 }
                 return null;
@@ -638,6 +688,42 @@ public unsafe struct MethodTable
             }
 
             return result;
+        }
+    }
+
+    /// <summary>
+    /// Get a sealed virtual slot method address from the sealed slots table.
+    /// For AOT types, sealed slots are stored as 4-byte RelPtrs in a table referenced
+    /// from the optional fields at offset 12 (after TypeManagerIndirection, WritableData, DispatchMap).
+    /// </summary>
+    /// <param name="sealedSlotIndex">Index into the sealed slots table (implSlot - numVtableSlots)</param>
+    /// <returns>The method address, or 0 if not found or invalid</returns>
+    public nint GetSealedVirtualSlot(int sealedSlotIndex)
+    {
+        if (!HasDispatchMap || sealedSlotIndex < 0)
+            return 0;
+
+        fixed (MethodTable* self = &this)
+        {
+            int optOffset = GetOptionalFieldsOffset();
+
+            // SealedVirtualSlots RelPtr is at optOffset + 12
+            // (after TypeManagerIndirection(4) + WritableData(4) + DispatchMap(4))
+            byte* sealedSlotsRelPtrAddr = (byte*)self + optOffset + 12;
+            int sealedSlotsRelPtr = *(int*)sealedSlotsRelPtrAddr;
+
+            // Check for null/invalid RelPtr
+            if (sealedSlotsRelPtr == 0)
+                return 0;
+
+            byte* sealedSlotsTable = sealedSlotsRelPtrAddr + sealedSlotsRelPtr;
+
+            // Each sealed slot is a 4-byte RelPtr in the table
+            byte* slotRelPtrAddr = sealedSlotsTable + sealedSlotIndex * 4;
+            int slotRelPtr = *(int*)slotRelPtrAddr;
+            nint methodAddr = (nint)(slotRelPtrAddr + slotRelPtr);
+
+            return methodAddr;
         }
     }
 
@@ -878,43 +964,79 @@ public unsafe struct MethodTable
             return false;
         }
 
+        // Detect if both MTs are from the same "world" (AOT or Kernel)
+        // AOT types are loaded from boot image at high addresses (0x1DA00000+)
+        // Kernel-created types are in heap at low addresses (typically < 0x02000000)
+        // Note: We can't use HasDispatchMap for interfaces since they don't have dispatch maps
+        const ulong AotBaseAddress = 0x1D000000;  // Conservative - AOT image range
+        bool mt1IsAot = (ulong)mt1 >= AotBaseAddress;
+        bool mt2IsAot = (ulong)mt2 >= AotBaseAddress;
+        bool sameWorld = (mt1IsAot == mt2IsAot);
+
+        // Only compare hash codes when both are from the same world
+        // (AOT uses different hash algorithm than kernel)
+        bool hash1Valid = mt1->_uHashCode != 0;
+        bool hash2Valid = mt2->_uHashCode != 0;
+
+        if (sameWorld && hash1Valid && hash2Valid)
+        {
+            if (mt1->_uHashCode != mt2->_uHashCode)
+            {
+                // Same world + different hash = different types
+                DebugConsole.WriteLine("[StructEq] Same-world hash mismatch - rejecting");
+                return false;
+            }
+            // Hash codes match within same world - strong indicator of same type
+            DebugConsole.WriteLine("[StructEq] Same-world hash match - accepting");
+            return true;
+        }
+
         // Check for generic interface matching based on type arguments
+        // _relatedType stores the first type argument MT for generic types
         MethodTable* rel1 = mt1->_relatedType;
         MethodTable* rel2 = mt2->_relatedType;
 
-        // If one has _relatedType (generic with type arg) and the other doesn't (AOT without),
-        // accept as a candidate match since NativeAOT doesn't set _relatedType for interfaces
-        if ((rel1 != null && rel2 == null) || (rel1 == null && rel2 != null))
-        {
-            DebugConsole.WriteLine("[StructEq] One has type arg, other null (AOT/runtime mismatch) - candidate match");
-            return true;  // Accept as potential match
-        }
-
-        // Slot counts match - if both have hash codes, they should match
-        if (mt1->_uHashCode != 0 && mt2->_uHashCode != 0 && mt1->_uHashCode != mt2->_uHashCode)
-        {
-            // Different hash codes means different interface types, even with same slot count
-            DebugConsole.WriteLine("[StructEq] Slot match but hash mismatch - rejecting");
-            return false;
-        }
-
-        // At this point, vtable slots match. For interface dispatch to work,
-        // we just need the methods to be at the same slots. Since this is
-        // the same interface type (just different MT pointers), the layout is identical.
-
         if (rel1 != null && rel2 != null)
         {
-            // Both have type args - they should be the same type
-            if (rel1 != rel2)
-            {
-                // Different MT pointers - check if they're the same type by size
-                if (rel1->_uBaseSize != rel2->_uBaseSize)
-                    return false;
-            }
-        }
-        // If only one has type arg or neither has, still accept as long as
-        // vtable slot counts matched - the interface layout is the same
+            // Both have type args - compare them thoroughly
+            if (rel1 == rel2)
+                return true;  // Same type arg MT - definitely same type
 
+            // Different MT pointers - check if they represent the same type
+            // Compare base size for type equivalence (compatible sizes)
+            if (rel1->_uBaseSize != rel2->_uBaseSize)
+            {
+                DebugConsole.WriteLine("[StructEq] Type arg size mismatch - rejecting");
+                return false;
+            }
+
+            // If type args are from same world and have hash codes, they should match
+            bool rel1IsAot = (ulong)rel1 >= AotBaseAddress;
+            bool rel2IsAot = (ulong)rel2 >= AotBaseAddress;
+            if (rel1IsAot == rel2IsAot && rel1->_uHashCode != 0 && rel2->_uHashCode != 0 &&
+                rel1->_uHashCode != rel2->_uHashCode)
+            {
+                DebugConsole.WriteLine("[StructEq] Type arg same-world hash mismatch - rejecting");
+                return false;
+            }
+
+            // Same size type args with compatible hashes - accept
+            DebugConsole.WriteLine("[StructEq] Type args compatible - accepting");
+            return true;
+        }
+
+        // Cross-world matching: AOT interface vs Kernel interface
+        // In this case, we can't rely on hash codes, only on structural similarity
+        if ((rel1 != null && rel2 == null) || (rel1 == null && rel2 != null))
+        {
+            // Mixed case: one has type arg, other doesn't
+            // AOT doesn't always set _relatedType for interfaces
+            // Accept if slot counts matched (checked earlier)
+            DebugConsole.WriteLine("[StructEq] Cross-world type arg asymmetry - accepting structural match");
+            return true;
+        }
+
+        // Neither has type args and slot counts matched - accept as structural match
         return true;
     }
 
