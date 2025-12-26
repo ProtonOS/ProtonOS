@@ -1235,7 +1235,7 @@ When region exhausted, trigger collection or allocate new region.
 
 ---
 
-## Phase 4: UEFI File System
+## Phase 4: UEFI File System ✓ COMPLETE
 
 ### Goal
 Implement UEFI Simple File System Protocol to load files from the boot device.
@@ -1282,14 +1282,16 @@ public static class UefiFileSystem
 - Verify loading works: print file size and first bytes
 
 ### Deliverables
-- [ ] UEFI file system protocol working
-- [ ] Can read files from boot image
-- [ ] TestAssembly.dll loads into memory
-- [ ] Foundation ready for metadata reader testing
+- [x] UEFI file system protocol working
+- [x] Can read files from boot image
+- [x] Test assemblies load into memory
+- [x] Foundation ready for metadata reader testing
+
+Implemented in `src/kernel/Platform/UEFIFS.cs` with `ReadFileAscii()` API.
 
 ---
 
-## Phase 5: Metadata Reader
+## Phase 5: Metadata Reader ✓ COMPLETE
 
 ### Goal
 Implement a complete, AOT-compiled PE/metadata reader for assembly loading.
@@ -1385,16 +1387,21 @@ Build on existing `src/kernel/Runtime/PEFormat.cs`:
 - Module loading
 
 ### Deliverables
-- [ ] Complete PE reader with CLI support
-- [ ] All metadata tables accessible
-- [ ] Heap access (strings, blobs, GUIDs)
-- [ ] Type resolution working
-- [ ] Method IL readable
-- [ ] Assembly binding functional
+- [x] Complete PE reader with CLI support
+- [x] All metadata tables accessible
+- [x] Heap access (strings, blobs, GUIDs)
+- [x] Type resolution working
+- [x] Method IL readable
+- [x] Assembly binding functional
+
+Implemented in `src/kernel/Runtime/`:
+- `PEFormat.cs` - PE header parsing
+- `MetadataReader.cs` - Metadata tables and heaps
+- `AssemblyLoader.cs` - Assembly loading and resolution
 
 ---
 
-## Phase 6: Native JIT Compiler (ProtonJIT)
+## Phase 6: Native JIT Compiler (ProtonJIT) ✓ COMPLETE
 
 ### Goal
 Implement our own JIT compiler to compile IL from loaded assemblies to native x64 code.
@@ -1492,16 +1499,25 @@ Goal: Reduce memory traffic.
 See `docs/JIT_CHECKLIST.md` for detailed implementation checklist.
 
 ### Deliverables
-- [ ] IL compiles to working x64 code
-- [ ] All basic IL opcodes supported
-- [ ] Method calls work (static, instance, virtual)
-- [ ] Exception handling in JIT'd code
-- [ ] GC can walk JIT'd stack frames
-- [ ] Performance adequate for OS workloads
+- [x] IL compiles to working x64 code
+- [x] All basic IL opcodes supported
+- [x] Method calls work (static, instance, virtual)
+- [x] Exception handling in JIT'd code
+- [x] GC can walk JIT'd stack frames
+- [x] Performance adequate for OS workloads
+
+Implemented in `src/kernel/Runtime/JIT/`:
+- `Tier0JIT.cs` - JIT entry point, signature parsing, method compilation
+- `ILCompiler.cs` - IL opcode compilation to x64
+- `X64Emitter.cs` - x64 machine code emission
+- `JITGCInfo.cs` - GC info generation for stack walking
+
+The JIT supports 627+ test cases including complex scenarios like generics,
+virtual dispatch, exception handling, and large struct parameters.
 
 ---
 
-## Phase 7: Managed Assembly Execution
+## Phase 7: Managed Assembly Execution ✓ COMPLETE
 
 ### Goal
 Load and execute complete .NET assemblies.
@@ -1532,14 +1548,23 @@ public static class AssemblyLoader
 - Internal call table for runtime methods
 
 ### Deliverables
-- [ ] Load assemblies from memory or filesystem
-- [ ] Instantiate objects of loaded types
-- [ ] Call methods (static, instance, virtual)
-- [ ] P/Invoke to kernel functions
+- [x] Load assemblies from memory or filesystem
+- [x] Instantiate objects of loaded types
+- [x] Call methods (static, instance, virtual)
+- [x] DllImport to kernel functions (via DDK exports)
+
+The kernel loads and executes multiple assemblies:
+- FullTest.dll - 627 unit tests
+- ProtonOS.DDK.dll - Driver Development Kit
+- ProtonOS.Drivers.Virtio.dll - VirtIO base driver
+- ProtonOS.Drivers.VirtioBlk.dll - VirtIO block device
+- ProtonOS.Drivers.Fat.dll - FAT32 filesystem
+- ProtonOS.Drivers.Ahci.dll - AHCI/SATA controller
+- ProtonOS.Drivers.Ext2.dll - EXT2 filesystem
 
 ---
 
-## Phase 8: BCL Support
+## Phase 8: BCL Support (In Progress)
 
 ### Goal
 Enable loaded assemblies to use standard .NET libraries.
@@ -1581,13 +1606,17 @@ Load BCL assemblies as needed:
 - Others as required
 
 ### Deliverables
-- [ ] Loaded code can use core types
-- [ ] Essential internal calls implemented
-- [ ] BCL assemblies loadable when needed
+- [x] Loaded code can use core types
+- [x] Essential internal calls implemented
+- [ ] Full BCL assemblies loadable (not yet needed)
+
+Current status: DDK provides kernel functionality to drivers. Drivers use
+korlib types (collections, strings, etc.) which are AOT-compiled into the
+kernel. Full BCL loading deferred until needed.
 
 ---
 
-## Phase 9: End-to-End Validation
+## Phase 9: End-to-End Validation (In Progress)
 
 ### Goal
 Full integration testing of the managed code execution pipeline.
@@ -1611,9 +1640,13 @@ Full integration testing of the managed code execution pipeline.
 - Type forwarding resolution
 
 ### Deliverables
-- [ ] Complex multi-assembly scenarios work
-- [ ] Performance meets expectations
-- [ ] BCL assemblies load and function
+- [x] Complex multi-assembly scenarios work
+- [x] Performance meets expectations
+- [ ] Full BCL assemblies load and function
+
+Current validation: 627 tests passing, 7 driver assemblies loading and
+executing, VirtIO block I/O, AHCI/SATA, FAT32 and EXT2 filesystems all
+working end-to-end.
 
 ---
 
@@ -1624,12 +1657,12 @@ Full integration testing of the managed code execution pipeline.
 | 1 ✓ | Fork zerolib → korlib | Low | Build system works |
 | 2 ✓ | Exception support | Low-Medium | Error handling |
 | 3 ✓ | Mark-Sweep GC | High | Managed heap works, memory reclaimed |
-| 4 | UEFI File System | Medium | Can load files from boot device |
-| 5 | Metadata Reader | High | Can parse PE/metadata natively |
-| 6 | RyuJIT Integration | Very High | IL compiles to native code |
-| 7 | Assembly Execution | High | Full managed code execution |
-| 8 | BCL Support | Medium | Standard library compatibility |
-| 9 | End-to-End Validation | Medium | Production readiness |
+| 4 ✓ | UEFI File System | Medium | Can load files from boot device |
+| 5 ✓ | Metadata Reader | High | Can parse PE/metadata natively |
+| 6 ✓ | Native JIT Compiler | Very High | IL compiles to native code |
+| 7 ✓ | Assembly Execution | High | Full managed code execution |
+| 8 ~ | BCL Support | Medium | Standard library compatibility (partial) |
+| 9 ~ | End-to-End Validation | Medium | Production readiness (ongoing) |
 
 ## Dependencies Graph
 
