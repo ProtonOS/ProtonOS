@@ -30,6 +30,7 @@ dotnet ildasm build/x64/ProtonOS.Drivers.Virtio.dll -o build/x64/ProtonOS.Driver
 dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Drivers.VirtioBlk.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Fat.dll -o build/x64/ProtonOS.Drivers.Fat.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Ahci.dll -o build/x64/ProtonOS.Drivers.Ahci.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.Ext2.dll -o build/x64/ProtonOS.Drivers.Ext2.il 2>/dev/null || true
 echo "IL disassembly complete"
 
 # Create test disk image for FAT filesystem testing
@@ -62,16 +63,13 @@ if [ -d "$TESTDATA_DIR" ]; then
 fi
 echo "Test disk created: $TEST_DISK"
 
-# Create SATA disk image for AHCI testing (FAT formatted)
-echo "Creating SATA disk image..."
+# Create SATA disk image for AHCI testing (EXT2 formatted)
+echo "Creating SATA disk image (EXT2)..."
 dd if=/dev/zero of="$SATA_DISK" bs=1M count=64 status=none
-mformat -i "$SATA_DISK" -F -v SATADISK ::
-# Copy test files to SATA disk as well
+# Format as EXT2 and populate from testdata directory
 if [ -d "$TESTDATA_DIR" ]; then
-    for file in "$TESTDATA_DIR"/*; do
-        if [ -f "$file" ]; then
-            mcopy -i "$SATA_DISK" "$file" "::/$(basename "$file")"
-        fi
-    done
+    mkfs.ext2 -F -q -d "$TESTDATA_DIR" "$SATA_DISK"
+else
+    mkfs.ext2 -F -q "$SATA_DISK"
 fi
-echo "SATA disk created: $SATA_DISK"
+echo "SATA disk created: $SATA_DISK (EXT2)"

@@ -7,6 +7,7 @@ using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Platform;
 using ProtonOS.DDK.Storage;
 using ProtonOS.Drivers.Storage.Fat;
+using ProtonOS.Drivers.Storage.Ext2;
 
 namespace ProtonOS.Drivers.Storage.Ahci;
 
@@ -458,6 +459,170 @@ public static unsafe class AhciEntry
         file.Dispose();
         fat.Unmount();
         fat.Shutdown();
+
+        return success ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test mounting EXT2 filesystem on the SATA test disk (last device).
+    /// </summary>
+    public static int TestExt2Mount()
+    {
+        // Use last device - boot disk is usually first, test disk is last
+        var device = GetLastDevice();
+        if (device == null)
+            return 0;
+
+        // Create EXT2 filesystem driver
+        var ext2 = new Ext2FileSystem();
+        ext2.Initialize();
+
+        // Mount on the AHCI device
+        var mountResult = ext2.Mount(device, false);
+        if (mountResult != FileResult.Success)
+        {
+            ext2.Shutdown();
+            return 0;
+        }
+
+        // Verify we can open root directory
+        IDirectoryHandle? rootDir;
+        var dirResult = ext2.OpenDirectory("/", out rootDir);
+        bool success = (dirResult == FileResult.Success && rootDir != null);
+
+        if (rootDir != null)
+            rootDir.Dispose();
+
+        ext2.Unmount();
+        ext2.Shutdown();
+
+        return success ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test reading a file from the EXT2 filesystem on the SATA test disk.
+    /// </summary>
+    public static int TestExt2ReadFile()
+    {
+        // Use last device - boot disk is usually first, test disk is last
+        var device = GetLastDevice();
+        if (device == null)
+            return 0;
+
+        var ext2 = new Ext2FileSystem();
+        ext2.Initialize();
+
+        var mountResult = ext2.Mount(device, false);
+        if (mountResult != FileResult.Success)
+        {
+            ext2.Shutdown();
+            return 0;
+        }
+
+        // List directory entries
+        IDirectoryHandle? rootDir;
+        var dirResult = ext2.OpenDirectory("/", out rootDir);
+        if (dirResult != FileResult.Success || rootDir == null)
+        {
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        Debug.Write("[Ext2Test] Listing root directory:");
+        Debug.WriteLine();
+        int fileCount = 0;
+        string? foundFile = null;
+        FileInfo? entry;
+        while ((entry = rootDir.ReadNext()) != null)
+        {
+            Debug.Write("  '");
+            Debug.Write(entry.Name);
+            Debug.Write("' size=");
+            Debug.WriteDecimal((int)entry.Size);
+            Debug.WriteLine();
+            if (entry.Name != null && entry.Type == FileEntryType.File)
+                foundFile = entry.Name;
+            fileCount++;
+        }
+        rootDir.Dispose();
+        Debug.Write("[Ext2Test] Found ");
+        Debug.WriteDecimal(fileCount);
+        Debug.Write(" entries");
+        Debug.WriteLine();
+
+        // Try to open the file we found
+        IFileHandle? file;
+        string fileToOpen = foundFile != null ? "/" + foundFile : "/hello.txt";
+        Debug.Write("[Ext2Test] Trying to open: ");
+        Debug.Write(fileToOpen);
+        Debug.WriteLine();
+        var openResult = ext2.OpenFile(fileToOpen, FileMode.Open, FileAccess.Read, out file);
+        if (openResult != FileResult.Success || file == null)
+        {
+            Debug.Write("[Ext2Test] Failed to open file: ");
+            Debug.WriteDecimal((int)openResult);
+            Debug.WriteLine();
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        Debug.Write("[Ext2Test] Opened file, size=");
+        Debug.WriteDecimal((int)file.Length);
+        Debug.WriteLine();
+
+        // Read file contents
+        int length = (int)file.Length;
+        if (length > 256)
+            length = 256;
+
+        ulong pageCount = ((ulong)length + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+        {
+            file.Dispose();
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        int bytesRead = file.Read(buffer, length);
+        Debug.Write("[Ext2Test] Read ");
+        Debug.WriteDecimal(bytesRead);
+        Debug.Write(" bytes");
+        Debug.WriteLine();
+
+        // Print first line of content
+        if (bytesRead > 0)
+        {
+            // Build string from first line
+            int lineLen = 0;
+            for (int i = 0; i < bytesRead && buffer[i] != '\n' && buffer[i] != '\r'; i++)
+            {
+                if (buffer[i] >= 32 && buffer[i] < 127)
+                    lineLen++;
+            }
+            var chars = new char[lineLen];
+            int j = 0;
+            for (int i = 0; i < bytesRead && buffer[i] != '\n' && buffer[i] != '\r' && j < lineLen; i++)
+            {
+                if (buffer[i] >= 32 && buffer[i] < 127)
+                    chars[j++] = (char)buffer[i];
+            }
+            Debug.Write("[Ext2Test] Content: ");
+            Debug.Write(new string(chars));
+            Debug.WriteLine();
+        }
+
+        bool success = bytesRead > 0;
+
+        Memory.FreePages(bufferPhys, pageCount);
+        file.Dispose();
+        ext2.Unmount();
+        ext2.Shutdown();
 
         return success ? 1 : 0;
     }

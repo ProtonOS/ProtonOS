@@ -31,6 +31,8 @@ public static unsafe class Kernel
     private static ulong _virtioBlkDriverSize;
     private static byte* _fatDriverBytes;
     private static ulong _fatDriverSize;
+    private static byte* _ext2DriverBytes;
+    private static ulong _ext2DriverSize;
     private static byte* _ahciDriverBytes;
     private static ulong _ahciDriverSize;
 
@@ -45,6 +47,7 @@ public static unsafe class Kernel
     private static uint _virtioDriverId;
     private static uint _virtioBlkDriverId;
     private static uint _fatDriverId;
+    private static uint _ext2DriverId;
     private static uint _ahciDriverId;
     private static uint _korlibId;
 
@@ -238,6 +241,11 @@ public static unsafe class Kernel
             _fatDriverId = AssemblyLoader.Load(_fatDriverBytes, _fatDriverSize);
         }
 
+        if (_ext2DriverBytes != null)
+        {
+            _ext2DriverId = AssemblyLoader.Load(_ext2DriverBytes, _ext2DriverSize);
+        }
+
         if (_ahciDriverBytes != null)
         {
             _ahciDriverId = AssemblyLoader.Load(_ahciDriverBytes, _ahciDriverSize);
@@ -308,6 +316,7 @@ public static unsafe class Kernel
         _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
         _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
         _fatDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
+        _ext2DriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Ext2.dll", out _ext2DriverSize);
         _ahciDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Ahci.dll", out _ahciDriverSize);
 
         // Load korlib.dll (IL assembly for JIT generic instantiation)
@@ -1241,6 +1250,46 @@ public static unsafe class Kernel
         var testFatReadFunc = (delegate* unmanaged<int>)testFatReadResult.CodeAddress;
         int fatReadResult = testFatReadFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestFatReadFile returned {0}", fatReadResult));
+
+        // Test EXT2 mount on SATA device
+        uint testExt2MountToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestExt2Mount");
+        if (testExt2MountToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestExt2Mount method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestExt2Mount...");
+        var testExt2MountResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testExt2MountToken);
+        if (!testExt2MountResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestExt2Mount");
+            return;
+        }
+
+        var testExt2MountFunc = (delegate* unmanaged<int>)testExt2MountResult.CodeAddress;
+        int ext2MountResult = testExt2MountFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2Mount returned {0}", ext2MountResult));
+
+        // Test EXT2 file read on SATA device
+        uint testExt2ReadToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestExt2ReadFile");
+        if (testExt2ReadToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestExt2ReadFile method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestExt2ReadFile...");
+        var testExt2ReadResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testExt2ReadToken);
+        if (!testExt2ReadResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestExt2ReadFile");
+            return;
+        }
+
+        var testExt2ReadFunc = (delegate* unmanaged<int>)testExt2ReadResult.CodeAddress;
+        int ext2ReadResult = testExt2ReadFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2ReadFile returned {0}", ext2ReadResult));
     }
 
     /// <summary>

@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="../../../../ddk/DDK.csproj" />
     <ProjectReference Include="../fat/Fat.csproj" />
+    <ProjectReference Include="../ext2/Ext2.csproj" />
   </ItemGroup>
 
 </Project>
