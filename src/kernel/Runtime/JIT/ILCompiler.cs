@@ -1206,12 +1206,6 @@ public unsafe struct ILCompiler
         if (_returnIsValueType && _returnTypeSize > 16)
             physicalArgCount = _argCount + 1;
 
-        // DebugConsole.Write("[JIT-Home] argCnt=");
-        // DebugConsole.WriteDecimal((uint)_argCount);
-        // DebugConsole.Write(" physArgCnt=");
-        // DebugConsole.WriteDecimal((uint)physicalArgCount);
-        // DebugConsole.WriteLine();
-
         if (physicalArgCount > 0)
             X64Emitter.HomeArguments(ref _code, physicalArgCount);
 
@@ -2318,6 +2312,7 @@ public unsafe struct ILCompiler
         // Check if this local is a value type - affects stack type marking
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
+
         // bool debugBind = IsDebugBindMethod() && index == 4;
         //
         // // Debug: Log large struct ldloc
@@ -5032,12 +5027,43 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 4 && !needsHiddenBuffer)
         {
-            // Four args: pop to R9, R8, RDX, RCX
-            X64Emitter.Pop(ref _code, VReg.R4);    // arg3
-            X64Emitter.Pop(ref _code, VReg.R3);    // arg2
-            X64Emitter.Pop(ref _code, VReg.R2);   // arg1
-            X64Emitter.Pop(ref _code, VReg.R1);   // arg0
-            PopEntry(); PopEntry(); PopEntry(); PopEntry();
+            // Four args: check if any are large structs
+            EvalStackEntry arg3Entry = PeekEntryAt(0);  // TOS = arg3
+            EvalStackEntry arg2Entry = PeekEntryAt(1);
+            EvalStackEntry arg1Entry = PeekEntryAt(2);
+            EvalStackEntry arg0Entry = PeekEntryAt(3);  // Deepest = arg0
+
+            // Check for large struct in arg1 (common case: instance method with struct param)
+            // Stack layout when arg1 is large struct:
+            //   [RSP] = arg3 (8 bytes)
+            //   [RSP+8] = arg2 (8 bytes)
+            //   [RSP+16] = arg1 (struct, arg1Size bytes)
+            //   [RSP+16+arg1Size] = arg0 (8 bytes)
+            if (arg1Entry.ByteSize > 8)
+            {
+                // Pop arg3 and arg2 normally
+                X64Emitter.Pop(ref _code, VReg.R4);    // arg3 -> R9
+                X64Emitter.Pop(ref _code, VReg.R3);    // arg2 -> R8
+                PopEntry(); PopEntry();
+
+                // Now struct is at TOS, arg0 is below it
+                // Load arg0 from [RSP + structSize] into RCX
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, arg1Entry.ByteSize);
+                PopEntry(); PopEntry();  // Remove arg1 and arg0 from tracking
+
+                // Leave struct on stack, pass pointer in RDX after shadow space
+                largeStructArgBytes = arg1Entry.ByteSize + 8;  // struct + arg0 slot
+                needsLargeStructPtrInRdx = true;
+            }
+            else
+            {
+                // All small args: pop to R9, R8, RDX, RCX
+                X64Emitter.Pop(ref _code, VReg.R4);    // arg3
+                X64Emitter.Pop(ref _code, VReg.R3);    // arg2
+                X64Emitter.Pop(ref _code, VReg.R2);   // arg1
+                X64Emitter.Pop(ref _code, VReg.R1);   // arg0
+                PopEntry(); PopEntry(); PopEntry(); PopEntry();
+            }
         }
         else if (totalArgs == 4 && needsHiddenBuffer)
         {
@@ -9119,20 +9145,75 @@ public unsafe struct ILCompiler
             // Pop args into temp registers/stack (in reverse order since last arg is on top)
             // Args 0-3 go to registers: arg0->R7, arg1->R8, arg2->R9, arg3->R10
             // Args 4-7 go to stack slots at extraArgBaseOffset
+            // IMPORTANT: Large struct args (>8 bytes) are on the eval stack as multi-slot values.
+            // For these, we pass a POINTER to the data, not the value itself.
             VReg[] tempRegs = { VReg.R7, VReg.R8, VReg.R9, VReg.R10 };
+
+            // Track large struct args that need their data preserved on stack
+            // Each entry: (argIndex, bytesOnStack, stackOffsetFromCurrentRSP)
+            int[] largeStructArgBytes = new int[ctorArgs];
+            int totalLargeStructBytes = 0;
+            int totalArgBytes = 0;  // Total bytes of ALL args on eval stack
+
+            // First pass: determine which args are large structs
+            // We need to peek at the stack entries before popping
+            // Args are in order: arg0 at bottom, argN-1 at top
+            // PeekEntryAt(0) = top of stack = last arg (argN-1)
+            // PeekEntryAt(n) = nth from top = arg(ctorArgs-1-n)
+            // When loop is at i, we want entry for arg i, which is at depth (ctorArgs-1-i)
+
             for (int i = ctorArgs - 1; i >= 0; i--)
             {
-                if (i < 4)
+                int depthFromTop = ctorArgs - 1 - i;
+                var entry = PeekEntryAt(depthFromTop);
+                int argBytes = (entry.ByteSize + 7) & ~7;  // Align to 8 bytes
+                if (argBytes < 8) argBytes = 8;  // Minimum 8 bytes per pop
+                totalArgBytes += argBytes;
+                if (entry.ByteSize > 8)
+                {
+                    largeStructArgBytes[i] = entry.ByteSize;
+                    totalLargeStructBytes += argBytes;
+                }
+            }
+
+            for (int i = ctorArgs - 1; i >= 0; i--)
+            {
+                // Check if this is a large struct argument
+                if (largeStructArgBytes[i] > 8)
+                {
+                    // Large struct: RSP currently points to the struct data
+                    // We need to pass a pointer to this data, not try to fit it in a register
+                    int structSize = largeStructArgBytes[i];
+                    int alignedSize = (structSize + 7) & ~7;
+
+                    // Compute pointer to struct data (current RSP)
+                    // Store pointer in temp register
+                    if (i < 4)
+                    {
+                        X64Emitter.MovRR(ref _code, tempRegs[i], VReg.SP);
+                    }
+                    else
+                    {
+                        X64Emitter.MovRR(ref _code, VReg.R0, VReg.SP);
+                        X64Emitter.MovMR(ref _code, VReg.FP, extraArgBaseOffset + (i - 4) * 8, VReg.R0);
+                    }
+
+                    // Move RSP past the struct data
+                    X64Emitter.AddRI(ref _code, VReg.SP, alignedSize);
+                    PopEntry();
+                }
+                else if (i < 4)
                 {
                     X64Emitter.Pop(ref _code, tempRegs[i]);
+                    PopEntry();
                 }
                 else
                 {
                     // Pop to RAX then store to stack slot
                     X64Emitter.Pop(ref _code, VReg.R0);
                     X64Emitter.MovMR(ref _code, VReg.FP, extraArgBaseOffset + (i - 4) * 8, VReg.R0);
+                    PopEntry();
                 }
-                PopEntry();
             }
 
             // CRITICAL: Reserve shadow space to protect any live eval stack data.
@@ -9143,8 +9224,16 @@ public unsafe struct ILCompiler
             // For constructors with 4+ args, we need space for extra args on stack:
             // - Shadow space is always 32 bytes
             // - arg3 goes at [RSP+32], arg4 at [RSP+40], etc.
+            // ALSO: For large struct args, we saved pointers to their data on the stack.
+            // After popping, that data is still above current RSP. We must reserve enough
+            // space that the shadow space (32 bytes at RSP) doesn't overlap with ANY arg data.
+            // The largest struct pointer points to data at RSP_original + offset_to_that_arg.
+            // After all pops, RSP = RSP_original + totalArgBytes. We need:
+            //   RSP_new + 32 <= RSP_original  (shadow space must be below original data)
+            //   (RSP_original + totalArgBytes - shadowReserve) + 32 <= RSP_original
+            //   shadowReserve >= totalArgBytes + 32
             int extraStackArgs = ctorArgs > 3 ? ctorArgs - 3 : 0;
-            int shadowReserve = 32 + extraStackArgs * 8;
+            int shadowReserve = totalArgBytes + 32 + extraStackArgs * 8;
             X64Emitter.SubRI(ref _code, VReg.SP, shadowReserve);
 
             // newobjTempOffset must be AFTER all local variable slots.

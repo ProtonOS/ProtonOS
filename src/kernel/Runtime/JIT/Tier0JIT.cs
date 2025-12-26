@@ -181,6 +181,7 @@ public static unsafe class Tier0JIT
         ReturnKind returnKind = ReturnKind.Void;
         ushort returnStructSize = 0;
         bool hasThis = false;
+
         if (sigBlob != null && sigLen > 0)
         {
             // Targeted signature dump for VirtioDevice.Initialize (asm 3, token 0x06000015)
@@ -1604,6 +1605,13 @@ public static unsafe class Tier0JIT
             isValueType = true;
             typeSize = 8;
             return;
+        }
+
+        // Pointer (0x0F) - skip the pointed-to type, pointers are not value types
+        if (elemType == 0x0F)
+        {
+            SkipTypeSig(ref ptr, end);
+            return; // isValueType=false, typeSize=0
         }
 
         // Class (0x12) - skip token, not a value type
