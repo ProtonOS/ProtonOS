@@ -4974,17 +4974,23 @@ public static unsafe class MetadataIntegration
 
         uint typeRow = typeToken & 0x00FFFFFF;
 
-        // Field calculation debug
-        DebugConsole.Write("[CalcFieldOff] fld=");
-        DebugConsole.WriteDecimal(fieldRow);
-        DebugConsole.Write(" type=");
-        DebugConsole.WriteDecimal(typeRow);
-        DebugConsole.Write(" asm=");
-        DebugConsole.WriteDecimal(_currentAssemblyId);
-
         // Check if this is a value type (struct/enum)
         // Value types accessed via byref don't have an MT pointer, so offsets start at 0
         bool isValueType = IsTypeDefValueType(typeRow);
+
+        // Check ClassLayout table for packing size (Pack attribute)
+        // Packing size of 0 or 1 means no alignment padding
+        uint packingSize = 0;  // Default: natural alignment
+        uint classLayoutCount = _tablesHeader->RowCounts[(int)MetadataTableId.ClassLayout];
+        for (uint i = 1; i <= classLayoutCount; i++)
+        {
+            uint parent = MetadataReader.GetClassLayoutParent(ref *_tablesHeader, ref *_tableSizes, i);
+            if (parent == typeRow)
+            {
+                packingSize = MetadataReader.GetClassLayoutPackingSize(ref *_tablesHeader, ref *_tableSizes, i);
+                break;
+            }
+        }
 
         // Get the type's field list
         uint firstField = MetadataReader.GetTypeDefFieldList(ref *_tablesHeader, ref *_tableSizes, typeRow);
@@ -5064,10 +5070,14 @@ public static unsafe class MetadataIntegration
                         size = 8;  // Default for unknown types
                 }
 
-                // Align offset to field size (capped at 8)
+                // Align offset to field size (capped at 8, or by packingSize if set)
                 int alignment = size;
                 if (alignment > 8) alignment = 8;
-                offset = (offset + alignment - 1) & ~(alignment - 1);
+                // packingSize=1 means no alignment padding
+                if (packingSize > 0 && packingSize < (uint)alignment)
+                    alignment = (int)packingSize;
+                if (alignment > 1)
+                    offset = (offset + alignment - 1) & ~(alignment - 1);
                 offset += size;
             }
         }
@@ -5116,13 +5126,13 @@ public static unsafe class MetadataIntegration
 
             int alignment = targetSize;
             if (alignment > 8) alignment = 8;
-            offset = (offset + alignment - 1) & ~(alignment - 1);
+            // packingSize=1 means no alignment padding
+            if (packingSize > 0 && packingSize < (uint)alignment)
+                alignment = (int)packingSize;
+            if (alignment > 1)
+                offset = (offset + alignment - 1) & ~(alignment - 1);
         }
 
-        // Field offset debug
-        DebugConsole.Write(" -> offset=");
-        DebugConsole.WriteDecimal((uint)offset);
-        DebugConsole.WriteLine();
         return offset;
     }
 

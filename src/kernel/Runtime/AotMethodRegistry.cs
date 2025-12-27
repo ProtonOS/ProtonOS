@@ -2101,12 +2101,7 @@ public static unsafe class StringHelpers
     {
         if (s == null)
             return 0;
-        int len = s.Length;
-        // Debug: print what GetLength is returning
-        ProtonOS.Platform.DebugConsole.Write("[GetLen] len=");
-        ProtonOS.Platform.DebugConsole.WriteDecimal((uint)len);
-        ProtonOS.Platform.DebugConsole.WriteLine();
-        return len;
+        return s.Length;
     }
 
     /// <summary>

@@ -3634,6 +3634,43 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Check if a TypeDefOrRef coded index refers to System.Enum (specifically, not ValueType).
+    /// </summary>
+    private static bool IsEnumBase(LoadedAssembly* asm, CodedIndex extendsIdx)
+    {
+        // TypeDefOrRef: 0=TypeDef, 1=TypeRef, 2=TypeSpec
+        if (extendsIdx.Table == MetadataTableId.TypeRef)
+        {
+            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            if (ns != null && name != null)
+            {
+                if (IsSystemNamespace(ns) && IsEnumName(name))
+                    return true;
+            }
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeDef)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+
+            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+            if (ns != null && name != null)
+            {
+                if (IsSystemNamespace(ns) && IsEnumName(name))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Check if a TypeDefOrRef coded index refers to System.MulticastDelegate.
     /// </summary>
     private static bool IsDelegateBase(LoadedAssembly* asm, CodedIndex extendsIdx)
@@ -3678,11 +3715,328 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Try to compute the size of a fixed buffer type.
+    /// Fixed buffer types are compiler-generated nested structs with names like "&lt;FieldName&gt;e__FixedBuffer".
+    /// Their actual size is element_count * element_size, where element_count comes from
+    /// the FixedBufferAttribute on the parent class's field that uses this type.
+    /// Returns 0 if this is not a fixed buffer type or size cannot be determined.
+    /// </summary>
+    private static uint TryGetFixedBufferSize(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Get the type name
+        uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        if (typeName == null)
+            return 0;
+
+        // Check if name contains ">e__FixedBuffer"
+        if (!ContainsFixedBufferSuffix(typeName))
+            return 0;
+
+        // This is a fixed buffer type. Find the enclosing type using NestedClass table.
+        uint nestedClassCount = asm->Tables.RowCounts[(int)MetadataTableId.NestedClass];
+        uint enclosingTypeRow = 0;
+
+        for (uint nc = 1; nc <= nestedClassCount; nc++)
+        {
+            uint nestedRow = MetadataReader.GetNestedClassNestedClass(ref asm->Tables, ref asm->Sizes, nc);
+            if (nestedRow == typeDefRow)
+            {
+                enclosingTypeRow = MetadataReader.GetNestedClassEnclosingClass(ref asm->Tables, ref asm->Sizes, nc);
+                break;
+            }
+        }
+
+        if (enclosingTypeRow == 0)
+            return 0;
+
+        // Find the field in the enclosing type that uses this nested type
+        uint fieldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, enclosingTypeRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint fieldDefCount = asm->Tables.RowCounts[(int)MetadataTableId.Field];
+        uint fieldEnd = enclosingTypeRow < typeDefCount
+            ? MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, enclosingTypeRow + 1)
+            : fieldDefCount + 1;
+
+        for (uint fldRow = fieldStart; fldRow < fieldEnd; fldRow++)
+        {
+            // Get field signature to check if it references our nested type
+            uint sigIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, fldRow);
+            byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+            if (sig == null || sigLen < 3 || sig[0] != 0x06)
+                continue;
+
+            // Field signature: 0x06 (FIELD), followed by type
+            // For VALUETYPE, it's 0x11 followed by TypeDefOrRefOrSpecEncoded
+            if (sig[1] != 0x11)  // ELEMENT_TYPE_VALUETYPE
+                continue;
+
+            // Decode TypeDefOrRefOrSpecEncoded - compressed unsigned integer
+            uint tokenIdx = 2;
+            uint typeToken = DecodeCompressedUInt(sig, sigLen, ref tokenIdx);
+            // TypeDefOrRefOrSpec: bits 0-1 = table tag (0=TypeDef, 1=TypeRef, 2=TypeSpec)
+            // bits 2+ = row index
+            uint tableTag = typeToken & 0x03;
+            uint rowIndex = typeToken >> 2;
+
+            // We're looking for TypeDef (tag=0) that matches our nested type
+            if (tableTag == 0 && rowIndex == typeDefRow)
+            {
+                // Found the field! Now get the FixedBufferAttribute from it
+                uint count = GetFixedBufferAttributeCount(asm, fldRow);
+                if (count > 0)
+                {
+                    // Get the element size from the FixedElementField in our nested type
+                    uint elemSize = GetFixedBufferElementSize(asm, typeDefRow);
+                    return count * elemSize;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Check if a type name contains the fixed buffer suffix ">e__FixedBuffer".
+    /// </summary>
+    private static bool ContainsFixedBufferSuffix(byte* name)
+    {
+        // Look for ">e__FixedBuffer" substring
+        // The name format is "<FieldName>e__FixedBuffer"
+        int i = 0;
+        while (name[i] != 0)
+        {
+            if (name[i] == '>' && name[i + 1] == 'e' && name[i + 2] == '_' && name[i + 3] == '_')
+            {
+                // Check for "FixedBuffer"
+                if (name[i + 4] == 'F' && name[i + 5] == 'i' && name[i + 6] == 'x' &&
+                    name[i + 7] == 'e' && name[i + 8] == 'd' && name[i + 9] == 'B' &&
+                    name[i + 10] == 'u' && name[i + 11] == 'f' && name[i + 12] == 'f' &&
+                    name[i + 13] == 'e' && name[i + 14] == 'r')
+                {
+                    return true;
+                }
+            }
+            i++;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get the count parameter from the FixedBufferAttribute on a field.
+    /// Returns 0 if the attribute is not found.
+    /// </summary>
+    private static uint GetFixedBufferAttributeCount(LoadedAssembly* asm, uint fieldRow)
+    {
+        // Search CustomAttribute table for attributes on this field
+        uint customAttrCount = asm->Tables.RowCounts[(int)MetadataTableId.CustomAttribute];
+
+        for (uint ca = 1; ca <= customAttrCount; ca++)
+        {
+            // CustomAttribute.Parent is a HasCustomAttribute coded index (5-bit tag)
+            // Tags: 0=MethodDef, 1=Field, 2=TypeRef, 3=TypeDef, 4=Param, ...
+            uint parentRaw = MetadataReader.GetCustomAttributeParent(ref asm->Tables, ref asm->Sizes, ca);
+            uint parentTag = parentRaw & 0x1F;  // 5-bit tag
+            uint parentRow = parentRaw >> 5;
+
+            // HasCustomAttribute: Field has tag 1
+            if (parentTag != 1 || parentRow != fieldRow)
+                continue;
+
+            // Check if this is FixedBufferAttribute
+            // CustomAttribute.Type is a CustomAttributeType coded index (3-bit tag)
+            // Tags: 2=MethodDef, 3=MemberRef
+            uint typeRaw = MetadataReader.GetCustomAttributeType(ref asm->Tables, ref asm->Sizes, ca);
+            uint typeTag = typeRaw & 0x07;  // 3-bit tag
+            uint typeRow = typeRaw >> 3;
+
+            if (typeTag == 3)  // MemberRef
+            {
+                // Get the MemberRef's parent (class) to check if it's FixedBufferAttribute
+                CodedIndex classIdx = MetadataReader.GetMemberRefClass(ref asm->Tables, ref asm->Sizes, typeRow);
+
+                if (classIdx.Table == MetadataTableId.TypeRef)
+                {
+                    uint attrNameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, classIdx.RowId);
+                    byte* attrName = MetadataReader.GetString(ref asm->Metadata, attrNameIdx);
+
+                    if (attrName != null && IsFixedBufferAttributeName(attrName))
+                    {
+                        // Found it! Parse the attribute value blob to get the count
+                        uint valueIdx = MetadataReader.GetCustomAttributeValue(ref asm->Tables, ref asm->Sizes, ca);
+                        byte* blob = MetadataReader.GetBlob(ref asm->Metadata, valueIdx, out uint blobLen);
+
+                        if (blob != null && blobLen >= 6)
+                        {
+                            // CustomAttribute value format:
+                            // - Prolog: 2 bytes (0x0001)
+                            // - Fixed args: Type string (SerString), then int32 count
+                            // The Type is a SerString: 1 byte length (for short strings) or PackedLen + UTF8
+                            // Skip the prolog
+                            uint pos = 2;
+                            // Skip the Type SerString
+                            // SerString format: length as PackedLen, then UTF8 bytes
+                            if (pos < blobLen)
+                            {
+                                uint strLen = blob[pos];
+                                if ((strLen & 0x80) == 0)
+                                {
+                                    // Simple 1-byte length
+                                    pos += 1 + strLen;
+                                }
+                                else if ((strLen & 0xC0) == 0x80)
+                                {
+                                    // 2-byte length
+                                    strLen = (uint)((strLen & 0x3F) << 8) | blob[pos + 1];
+                                    pos += 2 + strLen;
+                                }
+                                else
+                                {
+                                    // 4-byte length (unlikely for type names)
+                                    strLen = (uint)((strLen & 0x1F) << 24) |
+                                             (uint)(blob[pos + 1] << 16) |
+                                             (uint)(blob[pos + 2] << 8) |
+                                             blob[pos + 3];
+                                    pos += 4 + strLen;
+                                }
+
+                                // Now read the int32 count (little-endian)
+                                if (pos + 4 <= blobLen)
+                                {
+                                    uint count = (uint)blob[pos] |
+                                                ((uint)blob[pos + 1] << 8) |
+                                                ((uint)blob[pos + 2] << 16) |
+                                                ((uint)blob[pos + 3] << 24);
+                                    return count;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Check if a name is "FixedBufferAttribute".
+    /// </summary>
+    private static bool IsFixedBufferAttributeName(byte* name)
+    {
+        // Check for "FixedBufferAttribute"
+        return name[0] == 'F' && name[1] == 'i' && name[2] == 'x' && name[3] == 'e' &&
+               name[4] == 'd' && name[5] == 'B' && name[6] == 'u' && name[7] == 'f' &&
+               name[8] == 'f' && name[9] == 'e' && name[10] == 'r' &&
+               name[11] == 'A' && name[12] == 't' && name[13] == 't' && name[14] == 'r' &&
+               name[15] == 'i' && name[16] == 'b' && name[17] == 'u' && name[18] == 't' &&
+               name[19] == 'e' && name[20] == 0;
+    }
+
+    /// <summary>
+    /// Get the element size from a fixed buffer type's FixedElementField.
+    /// </summary>
+    private static uint GetFixedBufferElementSize(LoadedAssembly* asm, uint typeDefRow)
+    {
+        // Get the field range for this type (should be exactly one field: FixedElementField)
+        uint fieldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint typeDefCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint fieldDefCount = asm->Tables.RowCounts[(int)MetadataTableId.Field];
+        uint fieldEnd = typeDefRow < typeDefCount
+            ? MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1)
+            : fieldDefCount + 1;
+
+        for (uint fldRow = fieldStart; fldRow < fieldEnd; fldRow++)
+        {
+            uint sigIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, fldRow);
+            byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+            if (sig != null && sigLen >= 2 && sig[0] == 0x06)
+            {
+                byte elemType = sig[1];
+                switch (elemType)
+                {
+                    case 0x02: // Boolean
+                    case 0x04: // I1 (sbyte)
+                    case 0x05: // U1 (byte)
+                        return 1;
+                    case 0x06: // I2 (short)
+                    case 0x07: // U2 (ushort)
+                    case 0x03: // Char
+                        return 2;
+                    case 0x08: // I4 (int)
+                    case 0x09: // U4 (uint)
+                    case 0x0C: // R4 (float)
+                        return 4;
+                    case 0x0A: // I8 (long)
+                    case 0x0B: // U8 (ulong)
+                    case 0x0D: // R8 (double)
+                    case 0x18: // I (IntPtr)
+                    case 0x19: // U (UIntPtr)
+                        return 8;
+                }
+            }
+        }
+
+        return 4; // Default fallback
+    }
+
+    /// <summary>
     /// Compute instance size for a type from its fields, including base class.
     /// Handles explicit layout structs by checking ClassLayout and FieldLayout tables.
     /// </summary>
     private static uint ComputeInstanceSize(LoadedAssembly* asm, uint typeDefRow, bool isValueType)
     {
+        // Special handling for enums: size is determined by the underlying type
+        // Enums extend System.Enum and have a single field "value__" with primitive type
+        if (isValueType)
+        {
+            CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref asm->Tables, ref asm->Sizes, typeDefRow);
+            if (extendsIdx.RowId != 0 && IsEnumBase(asm, extendsIdx))
+            {
+                // This is an enum - find the value__ field and get its primitive size
+                uint enumFldStart = MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow);
+                uint enumTypeDefCnt = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+                uint enumFldDefCnt = asm->Tables.RowCounts[(int)MetadataTableId.Field];
+                uint enumFldEnd = typeDefRow < enumTypeDefCnt
+                    ? MetadataReader.GetTypeDefFieldList(ref asm->Tables, ref asm->Sizes, typeDefRow + 1)
+                    : enumFldDefCnt + 1;
+
+                for (uint enumFldRow = enumFldStart; enumFldRow < enumFldEnd; enumFldRow++)
+                {
+                    // Get field signature to determine underlying type
+                    uint sigIdx = MetadataReader.GetFieldSignature(ref asm->Tables, ref asm->Sizes, enumFldRow);
+                    byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+
+                    if (sig != null && sigLen >= 2 && sig[0] == 0x06)
+                    {
+                        byte elemType = sig[1];
+                        // Enum underlying types are primitive integers
+                        switch (elemType)
+                        {
+                            case 0x02: // Boolean
+                            case 0x04: // I1 (sbyte)
+                            case 0x05: // U1 (byte)
+                                return 1;
+                            case 0x06: // I2 (short)
+                            case 0x07: // U2 (ushort)
+                            case 0x03: // Char
+                                return 2;
+                            case 0x08: // I4 (int)
+                            case 0x09: // U4 (uint)
+                                return 4;
+                            case 0x0A: // I8 (long)
+                            case 0x0B: // U8 (ulong)
+                                return 8;
+                        }
+                    }
+                }
+                // Fallback: default enum size is int (4 bytes)
+                return 4;
+            }
+        }
+
         // First, check ClassLayout table for an explicit size
         uint classLayoutCount = asm->Tables.RowCounts[(int)MetadataTableId.ClassLayout];
         for (uint i = 1; i <= classLayoutCount; i++)
@@ -3690,15 +4044,25 @@ public static unsafe class AssemblyLoader
             uint parent = MetadataReader.GetClassLayoutParent(ref asm->Tables, ref asm->Sizes, i);
             if (parent == typeDefRow)
             {
-                uint explicitSize = MetadataReader.GetClassLayoutClassSize(ref asm->Tables, ref asm->Sizes, i);
-                if (explicitSize > 0)
+                uint classLayoutSize = MetadataReader.GetClassLayoutClassSize(ref asm->Tables, ref asm->Sizes, i);
+                if (classLayoutSize > 0)
                 {
                     // For reference types, add object header (8 bytes)
-                    return isValueType ? explicitSize : (explicitSize + 8);
+                    return isValueType ? classLayoutSize : (classLayoutSize + 8);
                 }
                 // If ClassSize is 0, fall through to calculate from fields
                 break;
             }
+        }
+
+        // Special handling for fixed buffer types (compiler-generated nested types)
+        // These are nested structs with names like "<FieldName>e__FixedBuffer"
+        // Their size comes from the FixedBufferAttribute on the parent's field
+        if (isValueType)
+        {
+            uint fixedBufferSize = TryGetFixedBufferSize(asm, typeDefRow);
+            if (fixedBufferSize > 0)
+                return fixedBufferSize;
         }
 
         // For reference types, start with pointer size (for MethodTable*)

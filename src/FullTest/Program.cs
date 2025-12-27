@@ -11164,7 +11164,7 @@ public static class CollectionTests
     }
 
     /// <summary>Tests Dictionary Keys property</summary>
-    public static int TestDictKeys()
+    public static unsafe int TestDictKeys()
     {
         var dict = new System.Collections.Generic.Dictionary<int, string>();
         dict[1] = "one";
@@ -11172,14 +11172,87 @@ public static class CollectionTests
         dict[3] = "three";
 
         var keys = dict.Keys;
-        if (keys.Count != 3) return 0;
+        int count = keys.Count;
+        Debug.Write("[DictKeys] Count=");
+        Debug.WriteHex((uint)count);
+        Debug.WriteLine("");
+        if (count != 3)
+        {
+            Debug.WriteLine("[DictKeys] FAIL: Count != 3");
+            return 0;
+        }
 
         // Check that all keys are present
         int sum = 0;
-        foreach (var key in keys)
-        {
-            sum += key;
-        }
+        int iterations = 0;
+
+        // Get enumerator and manually iterate to debug
+        var enumerator = keys.GetEnumerator();
+
+        // Get struct address for debugging
+        byte* enumBytes = (byte*)&enumerator;
+
+        // Print struct bytes (24 bytes expected)
+        Debug.Write("[DictKeys] initial struct: ");
+        for (int i = 0; i < 24; i++)
+            Debug.WriteHex(enumBytes[i]);
+        Debug.WriteLine("");
+
+        // Debug: check entries array directly using TypedReference trick
+        // The _entries field is a private field in Dictionary, but we need to examine it
+        // Actually, let's just trace what get_Current is returning vs what MoveNext stores
+
+        // First MoveNext
+        bool moved = enumerator.MoveNext();
+        Debug.Write("[DictKeys] MV1 ret=");
+        Debug.WriteHex((uint)(moved ? 1 : 0));
+        Debug.Write(" raw@16=");
+        Debug.WriteHex(*(uint*)(enumBytes+16));
+        Debug.Write(" idx@8=");
+        Debug.WriteHex(*(uint*)(enumBytes+8));
+        Debug.WriteLine("");
+        int k1 = enumerator.Current;
+        Debug.Write("[DictKeys] Cur1=");
+        Debug.WriteHex((uint)k1);
+        Debug.WriteLine("");
+        sum += k1;
+
+        // Second MoveNext
+        moved = enumerator.MoveNext();
+        Debug.Write("[DictKeys] MV2 ret=");
+        Debug.WriteHex((uint)(moved ? 1 : 0));
+        Debug.Write(" raw@16=");
+        Debug.WriteHex(*(uint*)(enumBytes+16));
+        Debug.Write(" idx@8=");
+        Debug.WriteHex(*(uint*)(enumBytes+8));
+        Debug.WriteLine("");
+        int k2 = enumerator.Current;
+        Debug.Write("[DictKeys] Cur2=");
+        Debug.WriteHex((uint)k2);
+        Debug.WriteLine("");
+        sum += k2;
+
+        // Third MoveNext
+        moved = enumerator.MoveNext();
+        Debug.Write("[DictKeys] MV3 ret=");
+        Debug.WriteHex((uint)(moved ? 1 : 0));
+        Debug.Write(" raw@16=");
+        Debug.WriteHex(*(uint*)(enumBytes+16));
+        Debug.Write(" idx@8=");
+        Debug.WriteHex(*(uint*)(enumBytes+8));
+        Debug.WriteLine("");
+        int k3 = enumerator.Current;
+        Debug.Write("[DictKeys] Cur3=");
+        Debug.WriteHex((uint)k3);
+        Debug.WriteLine("");
+        sum += k3;
+
+        iterations = 3;
+        Debug.Write("[DictKeys] sum=");
+        Debug.WriteHex((uint)sum);
+        Debug.Write(" iters=");
+        Debug.WriteHex((uint)iterations);
+        Debug.WriteLine("");
         return sum == 6 ? 1 : 0;  // 1 + 2 + 3 = 6
     }
 

@@ -4638,7 +4638,6 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool CompileCall(uint token)
     {
-
         // DEBUG: Track stack depth before resolve
         int depthBefore = _evalStackDepth;
 
@@ -7555,23 +7554,6 @@ public unsafe struct ILCompiler
             isValueType = field.IsDeclaringTypeValueType;
             declaringTypeSize = field.DeclaringTypeSize;
             fieldTypeIsValueType = field.IsFieldTypeValueType;
-            // ldfld field resolver debug - enabled for Enumerator debugging
-            if (declaringTypeSize == 24 && isValueType)  // HashSet.Enumerator or similar
-            {
-                DebugConsole.Write("[LdfldDbg] tok=0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" off=");
-                DebugConsole.WriteDecimal((uint)offset);
-                DebugConsole.Write(" size=");
-                DebugConsole.WriteDecimal((uint)size);
-                DebugConsole.Write(" declVT=");
-                DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-                DebugConsole.Write(" declSize=");
-                DebugConsole.WriteDecimal((uint)declaringTypeSize);
-                DebugConsole.Write(" fieldVT=");
-                DebugConsole.WriteDecimal(fieldTypeIsValueType ? 1U : 0U);
-                DebugConsole.WriteLine();
-            }
         }
         else
         {

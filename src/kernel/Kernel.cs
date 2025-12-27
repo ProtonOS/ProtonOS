@@ -1290,6 +1290,66 @@ public static unsafe class Kernel
         var testExt2ReadFunc = (delegate* unmanaged<int>)testExt2ReadResult.CodeAddress;
         int ext2ReadResult = testExt2ReadFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2ReadFile returned {0}", ext2ReadResult));
+
+        // Test EXT2 file write on SATA device
+        uint testExt2WriteToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestExt2WriteFile");
+        if (testExt2WriteToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestExt2WriteFile method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestExt2WriteFile...");
+        var testExt2WriteResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testExt2WriteToken);
+        if (!testExt2WriteResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestExt2WriteFile");
+            return;
+        }
+
+        var testExt2WriteFunc = (delegate* unmanaged<int>)testExt2WriteResult.CodeAddress;
+        int ext2WriteResult = testExt2WriteFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2WriteFile returned {0}", ext2WriteResult));
+
+        // Test struct field access (diagnose JIT issues with Pack=1 structs)
+        uint testStructToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestStructFieldAccess");
+        if (testStructToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestStructFieldAccess method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestStructFieldAccess...");
+        var testStructResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testStructToken);
+        if (!testStructResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestStructFieldAccess");
+            return;
+        }
+
+        var testStructFunc = (delegate* unmanaged<int>)testStructResult.CodeAddress;
+        int structTestResult = testStructFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestStructFieldAccess returned {0}", structTestResult));
+
+        // Test AtaIdentifyData field offsets (fixed buffer investigation)
+        uint testIdentifyToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestIdentifyOffsets");
+        if (testIdentifyToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestIdentifyOffsets method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestIdentifyOffsets...");
+        var testIdentifyResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testIdentifyToken);
+        if (!testIdentifyResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestIdentifyOffsets");
+            return;
+        }
+
+        var testIdentifyFunc = (delegate* unmanaged<int>)testIdentifyResult.CodeAddress;
+        int identifyTestResult = testIdentifyFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestIdentifyOffsets returned {0}", identifyTestResult));
     }
 
     /// <summary>

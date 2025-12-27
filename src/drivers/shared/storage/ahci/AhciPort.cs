@@ -278,32 +278,11 @@ public unsafe class AhciPort : IDisposable
 
         DMA.Zero(identifyBuffer);
 
-        // Build IDENTIFY command (inlined to avoid JIT method call issues)
-        byte* fisPtr = (byte*)_cmdTable->Cfis;
-        // Clear first 20 bytes
-        *(ulong*)fisPtr = 0;
-        *((ulong*)fisPtr + 1) = 0;
-        *((uint*)fisPtr + 4) = 0;
-        // Set fields
+        // Build IDENTIFY command
         byte cmd = _deviceType == AhciDeviceType.Atapi
             ? AtaCmd.IDENTIFY_PACKET_DEVICE
             : AtaCmd.IDENTIFY_DEVICE;
-        fisPtr[0] = 0x27;  // FisType.RegH2D
-        fisPtr[1] = 0x80;  // Flags: C bit = 1
-        fisPtr[2] = cmd;   // Command
-        fisPtr[3] = 0;     // FeatureLo
-        fisPtr[4] = 0;     // Lba0
-        fisPtr[5] = 0;     // Lba1
-        fisPtr[6] = 0;     // Lba2
-        fisPtr[7] = 0x40;  // Device (LBA mode)
-        fisPtr[8] = 0;     // Lba3
-        fisPtr[9] = 0;     // Lba4
-        fisPtr[10] = 0;    // Lba5
-        fisPtr[11] = 0;    // FeatureHi
-        fisPtr[12] = 1;    // CountLo (1 sector for identify)
-        fisPtr[13] = 0;    // CountHi
-        fisPtr[14] = 0;    // Icc
-        fisPtr[15] = 0;    // Control
+        BuildH2DFis((FisRegH2D*)_cmdTable->Cfis, cmd, 0, 1);
 
         // Set up command header
         ref var header = ref _cmdList[CMD_SLOT];
@@ -338,17 +317,11 @@ public unsafe class AhciPort : IDisposable
     /// </summary>
     private void ParseIdentifyData(AtaIdentifyData* identify)
     {
-        // Work around JIT bug with struct field access by reading directly via pointer
-        byte* raw = (byte*)identify;
-
-        // Words 60-61 (offset 120-123): Total sectors 28-bit
-        uint totalSectors28 = *(uint*)(raw + 120);
-
-        // Word 83 (offset 166-167): Command set 2 supported
-        ushort cmdSet2 = *(ushort*)(raw + 166);
-
-        // Words 100-103 (offset 200-207): Total sectors 48-bit
-        ulong totalSectors48 = *(ulong*)(raw + 200);
+        // Read sector counts using proper struct field access
+        // (JIT now correctly handles fixed buffer field offsets)
+        uint totalSectors28 = identify->TotalSectors28;
+        ushort cmdSet2 = identify->CmdSet2Supported;
+        ulong totalSectors48 = identify->TotalSectors48;
 
         // Get sector count (prefer 48-bit LBA if supported)
         if ((cmdSet2 & (1 << 10)) != 0)
@@ -362,17 +335,8 @@ public unsafe class AhciPort : IDisposable
             _sectorCount = totalSectors28;
         }
 
-        // Get sector size (default 512, check for 4K)
-        if ((identify->FieldValidity & (1 << 2)) != 0 &&
-            (identify->Various[13] & (1 << 12)) != 0)
-        {
-            // Logical sector size is specified
-            _sectorSize = (uint)(identify->Various[14] | (identify->Various[15] << 16)) * 2;
-        }
-        else
-        {
-            _sectorSize = AhciConst.SECTOR_SIZE;
-        }
+        // Default sector size (most drives use 512 bytes)
+        _sectorSize = AhciConst.SECTOR_SIZE;
 
         // Extract model number (bytes are swapped in pairs)
         _modelNumber = ExtractAtaString(identify->ModelNumber, 40);
@@ -408,29 +372,29 @@ public unsafe class AhciPort : IDisposable
     /// </summary>
     private void BuildH2DFis(FisRegH2D* fis, byte command, ulong lba, uint count)
     {
-        // Clear FIS (20 bytes)
-        *(ulong*)fis = 0;
-        *((ulong*)fis + 1) = 0;
-        *((uint*)fis + 4) = 0;
-
-        // Set FIS fields via pointer arithmetic (avoid struct field access)
+        // Clear FIS struct
         byte* p = (byte*)fis;
-        p[0] = 0x27;  // FisType.RegH2D
-        p[1] = 0x80;  // Flags: C bit = 1 (command)
-        p[2] = command;  // Command
-        p[3] = 0;     // FeatureLo
-        p[4] = (byte)lba;         // Lba0
-        p[5] = (byte)(lba >> 8);  // Lba1
-        p[6] = (byte)(lba >> 16); // Lba2
-        p[7] = 0x40;  // Device (LBA mode)
-        p[8] = (byte)(lba >> 24); // Lba3
-        p[9] = (byte)(lba >> 32); // Lba4
-        p[10] = (byte)(lba >> 40); // Lba5
-        p[11] = 0;    // FeatureHi
-        p[12] = (byte)count;       // CountLo
-        p[13] = (byte)(count >> 8); // CountHi
-        p[14] = 0;    // Icc
-        p[15] = 0;    // Control
+        *(ulong*)p = 0;
+        *((ulong*)p + 1) = 0;
+        *((uint*)p + 4) = 0;
+
+        // Use struct field access (JIT correctly handles enum field sizes now)
+        fis->FisType = FisType.RegH2D;
+        fis->Flags = 0x80;  // C bit = 1 (command)
+        fis->Command = command;
+        fis->FeatureLo = 0;
+        fis->Lba0 = (byte)lba;
+        fis->Lba1 = (byte)(lba >> 8);
+        fis->Lba2 = (byte)(lba >> 16);
+        fis->Device = 0x40;  // LBA mode
+        fis->Lba3 = (byte)(lba >> 24);
+        fis->Lba4 = (byte)(lba >> 32);
+        fis->Lba5 = (byte)(lba >> 40);
+        fis->FeatureHi = 0;
+        fis->CountLo = (byte)count;
+        fis->CountHi = (byte)(count >> 8);
+        fis->Icc = 0;
+        fis->Control = 0;
     }
 
     /// <summary>
@@ -496,28 +460,9 @@ public unsafe class AhciPort : IDisposable
         if (!dataBuffer.IsValid)
             return false;
 
-        // Build READ DMA EXT command (inlined)
-        byte* fisPtr = (byte*)_cmdTable->Cfis;
-        *(ulong*)fisPtr = 0;
-        *((ulong*)fisPtr + 1) = 0;
-        *((uint*)fisPtr + 4) = 0;
+        // Build READ DMA command
         byte cmd = _lba48Supported ? AtaCmd.READ_DMA_EXT : AtaCmd.READ_DMA;
-        fisPtr[0] = 0x27;  // FisType.RegH2D
-        fisPtr[1] = 0x80;  // Flags: C bit = 1
-        fisPtr[2] = cmd;
-        fisPtr[3] = 0;     // FeatureLo
-        fisPtr[4] = (byte)lba;
-        fisPtr[5] = (byte)(lba >> 8);
-        fisPtr[6] = (byte)(lba >> 16);
-        fisPtr[7] = 0x40;  // Device (LBA mode)
-        fisPtr[8] = (byte)(lba >> 24);
-        fisPtr[9] = (byte)(lba >> 32);
-        fisPtr[10] = (byte)(lba >> 40);
-        fisPtr[11] = 0;    // FeatureHi
-        fisPtr[12] = (byte)count;
-        fisPtr[13] = (byte)(count >> 8);
-        fisPtr[14] = 0;
-        fisPtr[15] = 0;
+        BuildH2DFis((FisRegH2D*)_cmdTable->Cfis, cmd, lba, count);
 
         // Set up command header
         ref var header = ref _cmdList[CMD_SLOT];
@@ -562,28 +507,9 @@ public unsafe class AhciPort : IDisposable
         // Copy data to DMA buffer
         DMA.CopyTo(dataBuffer, buffer, totalBytes);
 
-        // Build WRITE DMA EXT command (inlined)
-        byte* fisPtr = (byte*)_cmdTable->Cfis;
-        *(ulong*)fisPtr = 0;
-        *((ulong*)fisPtr + 1) = 0;
-        *((uint*)fisPtr + 4) = 0;
+        // Build WRITE DMA command
         byte cmd = _lba48Supported ? AtaCmd.WRITE_DMA_EXT : AtaCmd.WRITE_DMA;
-        fisPtr[0] = 0x27;  // FisType.RegH2D
-        fisPtr[1] = 0x80;  // Flags: C bit = 1
-        fisPtr[2] = cmd;
-        fisPtr[3] = 0;     // FeatureLo
-        fisPtr[4] = (byte)lba;
-        fisPtr[5] = (byte)(lba >> 8);
-        fisPtr[6] = (byte)(lba >> 16);
-        fisPtr[7] = 0x40;  // Device (LBA mode)
-        fisPtr[8] = (byte)(lba >> 24);
-        fisPtr[9] = (byte)(lba >> 32);
-        fisPtr[10] = (byte)(lba >> 40);
-        fisPtr[11] = 0;    // FeatureHi
-        fisPtr[12] = (byte)count;
-        fisPtr[13] = (byte)(count >> 8);
-        fisPtr[14] = 0;
-        fisPtr[15] = 0;
+        BuildH2DFis((FisRegH2D*)_cmdTable->Cfis, cmd, lba, count);
 
         // Set up command header
         ref var header = ref _cmdList[CMD_SLOT];
@@ -613,16 +539,9 @@ public unsafe class AhciPort : IDisposable
         if (_state != AhciPortState.Ready)
             return false;
 
-        // Build FLUSH CACHE EXT command (inlined)
-        byte* fisPtr = (byte*)_cmdTable->Cfis;
-        *(ulong*)fisPtr = 0;
-        *((ulong*)fisPtr + 1) = 0;
-        *((uint*)fisPtr + 4) = 0;
+        // Build FLUSH CACHE command
         byte cmd = _lba48Supported ? AtaCmd.FLUSH_CACHE_EXT : AtaCmd.FLUSH_CACHE;
-        fisPtr[0] = 0x27;  // FisType.RegH2D
-        fisPtr[1] = 0x80;  // Flags: C bit = 1
-        fisPtr[2] = cmd;
-        fisPtr[7] = 0x40;  // Device (LBA mode)
+        BuildH2DFis((FisRegH2D*)_cmdTable->Cfis, cmd, 0, 0);
 
         // Set up command header (no data transfer)
         ref var header = ref _cmdList[CMD_SLOT];

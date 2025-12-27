@@ -626,4 +626,263 @@ public static unsafe class AhciEntry
 
         return success ? 1 : 0;
     }
+
+    /// <summary>
+    /// Test writing to a file in the EXT2 filesystem.
+    /// </summary>
+    public static int TestExt2WriteFile()
+    {
+        // Use last device - boot disk is usually first, test disk is last
+        var device = GetLastDevice();
+        if (device == null)
+            return 0;
+
+        var ext2 = new Ext2FileSystem();
+        ext2.Initialize();
+
+        // Mount read-write
+        var mountResult = ext2.Mount(device, false);
+        if (mountResult != FileResult.Success)
+        {
+            ext2.Shutdown();
+            return 0;
+        }
+
+        // Open an existing file for read-write
+        IFileHandle? file;
+        var openResult = ext2.OpenFile("/hello.txt", FileMode.Open, FileAccess.ReadWrite, out file);
+        if (openResult != FileResult.Success || file == null)
+        {
+            Debug.Write("[Ext2WriteTest] Failed to open file: ");
+            Debug.WriteDecimal((int)openResult);
+            Debug.WriteLine();
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        // Save original size
+        long originalSize = file.Length;
+
+        // Write test pattern at a safe offset (past original content)
+        long writeOffset = originalSize;
+        file.Position = writeOffset;
+
+        ulong pageCount = 1;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+        {
+            file.Dispose();
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        // Fill with test pattern
+        string testPattern = "EXT2 WRITE TEST OK!";
+        for (int i = 0; i < testPattern.Length; i++)
+            buffer[i] = (byte)testPattern[i];
+
+        int bytesWritten = file.Write(buffer, testPattern.Length);
+        Debug.Write("[Ext2WriteTest] Wrote ");
+        Debug.WriteDecimal(bytesWritten);
+        Debug.Write(" bytes at offset ");
+        Debug.WriteDecimal((int)writeOffset);
+        Debug.WriteLine();
+
+        if (bytesWritten != testPattern.Length)
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            file.Dispose();
+            ext2.Unmount();
+            ext2.Shutdown();
+            return 0;
+        }
+
+        // Flush to disk
+        var flushResult = file.Flush();
+        if (flushResult != FileResult.Success)
+        {
+            Debug.Write("[Ext2WriteTest] Flush failed: ");
+            Debug.WriteDecimal((int)flushResult);
+            Debug.WriteLine();
+        }
+
+        // Read back and verify
+        file.Position = writeOffset;
+        for (int i = 0; i < 64; i++)
+            buffer[i] = 0;
+
+        int bytesRead = file.Read(buffer, testPattern.Length);
+        Debug.Write("[Ext2WriteTest] Read back ");
+        Debug.WriteDecimal(bytesRead);
+        Debug.Write(" bytes");
+        Debug.WriteLine();
+
+        bool success = (bytesRead == testPattern.Length);
+        if (success)
+        {
+            for (int i = 0; i < testPattern.Length; i++)
+            {
+                if (buffer[i] != (byte)testPattern[i])
+                {
+                    success = false;
+                    Debug.Write("[Ext2WriteTest] Mismatch at byte ");
+                    Debug.WriteDecimal(i);
+                    Debug.WriteLine();
+                    break;
+                }
+            }
+        }
+
+        if (success)
+        {
+            Debug.WriteLine("[Ext2WriteTest] Write/read verify SUCCESS!");
+        }
+        else
+        {
+            Debug.WriteLine("[Ext2WriteTest] Write/read verify FAILED!");
+        }
+
+        Memory.FreePages(bufferPhys, pageCount);
+        file.Dispose();
+        ext2.Unmount();
+        ext2.Shutdown();
+
+        return success ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test AtaIdentifyData field offsets to diagnose fixed buffer issues.
+    /// </summary>
+    public static int TestIdentifyOffsets()
+    {
+        Debug.WriteLine("[IdentifyTest] Testing AtaIdentifyData field offsets...");
+
+        // Allocate buffer
+        ulong bufferPhys = Memory.AllocatePages(1);
+        if (bufferPhys == 0)
+            return 0;
+
+        AtaIdentifyData* identify = (AtaIdentifyData*)Memory.PhysToVirt(bufferPhys);
+        byte* raw = (byte*)identify;
+
+        // Clear
+        for (int i = 0; i < 512; i++)
+            raw[i] = 0;
+
+        // Write known values at expected byte offsets
+        *(uint*)(raw + 120) = 0x12345678;   // TotalSectors28 at words 60-61
+        *(ushort*)(raw + 166) = 0xABCD;     // CmdSet2Supported at word 83
+        *(ulong*)(raw + 200) = 0xDEADBEEFCAFEBABE; // TotalSectors48 at words 100-103
+
+        // Now read via struct field access
+        uint ts28 = identify->TotalSectors28;
+        ushort cmd2 = identify->CmdSet2Supported;
+        ulong ts48 = identify->TotalSectors48;
+
+        Debug.Write("[IdentifyTest] Expected TotalSectors28=0x12345678, got 0x");
+        Debug.WriteHex(ts28);
+        Debug.WriteLine();
+
+        Debug.Write("[IdentifyTest] Expected CmdSet2Supported=0xABCD, got 0x");
+        Debug.WriteHex(cmd2);
+        Debug.WriteLine();
+
+        Debug.Write("[IdentifyTest] Expected TotalSectors48=0xDEADBEEFCAFEBABE, got 0x");
+        Debug.WriteHex(ts48);
+        Debug.WriteLine();
+
+        bool success = (ts28 == 0x12345678) && (cmd2 == 0xABCD) && (ts48 == 0xDEADBEEFCAFEBABE);
+
+        Memory.FreePages(bufferPhys, 1);
+
+        if (success)
+            Debug.WriteLine("[IdentifyTest] All offsets CORRECT!");
+        else
+            Debug.WriteLine("[IdentifyTest] Offset ERRORS detected!");
+
+        return success ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test struct pointer field access to diagnose JIT issues.
+    /// This tests that fields in Pack=1 structs have correct offsets.
+    /// </summary>
+    public static int TestStructFieldAccess()
+    {
+        Debug.WriteLine("[StructTest] Testing FisRegH2D field access...");
+
+        // Allocate a FisRegH2D struct on heap (to ensure we access through pointer)
+        ulong bufferPhys = Memory.AllocatePages(1);
+        if (bufferPhys == 0)
+            return 0;
+
+        FisRegH2D* fis = (FisRegH2D*)Memory.PhysToVirt(bufferPhys);
+
+        // Clear the struct
+        byte* raw = (byte*)fis;
+        for (int i = 0; i < 20; i++)
+            raw[i] = 0;
+
+        // Use struct field access (what we want to work)
+        fis->FisType = FisType.RegH2D;  // Should be at offset 0
+        fis->Flags = 0x80;               // Should be at offset 1
+        fis->Command = 0x25;             // Should be at offset 2 (READ DMA EXT)
+        fis->FeatureLo = 0;              // Should be at offset 3
+        fis->Lba0 = 0x11;                // Should be at offset 4
+        fis->Lba1 = 0x22;                // Should be at offset 5
+        fis->Lba2 = 0x33;                // Should be at offset 6
+        fis->Device = 0x40;              // Should be at offset 7
+        fis->Lba3 = 0x44;                // Should be at offset 8
+        fis->Lba4 = 0x55;                // Should be at offset 9
+        fis->Lba5 = 0x66;                // Should be at offset 10
+        fis->FeatureHi = 0;              // Should be at offset 11
+        fis->CountLo = 0x01;             // Should be at offset 12
+        fis->CountHi = 0;                // Should be at offset 13
+        fis->Icc = 0;                    // Should be at offset 14
+        fis->Control = 0;                // Should be at offset 15
+
+        // Now verify by reading back via byte pointers (which we know works)
+        bool success = true;
+        byte expected0 = (byte)FisType.RegH2D;  // 0x27
+
+        Debug.Write("[StructTest] Expected FisType=0x");
+        Debug.WriteHex(expected0);
+        Debug.Write(" at [0], got 0x");
+        Debug.WriteHex(raw[0]);
+        Debug.WriteLine();
+
+        if (raw[0] != expected0) { Debug.WriteLine("[StructTest] FAIL: FisType wrong"); success = false; }
+        if (raw[1] != 0x80) { Debug.WriteLine("[StructTest] FAIL: Flags wrong"); success = false; }
+        if (raw[2] != 0x25) { Debug.WriteLine("[StructTest] FAIL: Command wrong"); success = false; }
+        if (raw[4] != 0x11) { Debug.WriteLine("[StructTest] FAIL: Lba0 wrong"); success = false; }
+        if (raw[5] != 0x22) { Debug.WriteLine("[StructTest] FAIL: Lba1 wrong"); success = false; }
+        if (raw[6] != 0x33) { Debug.WriteLine("[StructTest] FAIL: Lba2 wrong"); success = false; }
+        if (raw[7] != 0x40) { Debug.WriteLine("[StructTest] FAIL: Device wrong"); success = false; }
+        if (raw[8] != 0x44) { Debug.WriteLine("[StructTest] FAIL: Lba3 wrong"); success = false; }
+        if (raw[9] != 0x55) { Debug.WriteLine("[StructTest] FAIL: Lba4 wrong"); success = false; }
+        if (raw[10] != 0x66) { Debug.WriteLine("[StructTest] FAIL: Lba5 wrong"); success = false; }
+        if (raw[12] != 0x01) { Debug.WriteLine("[StructTest] FAIL: CountLo wrong"); success = false; }
+
+        // Print actual bytes for diagnosis
+        Debug.Write("[StructTest] Raw bytes: ");
+        for (int i = 0; i < 16; i++)
+        {
+            Debug.WriteHex(raw[i]);
+            Debug.Write(" ");
+        }
+        Debug.WriteLine();
+
+        Memory.FreePages(bufferPhys, 1);
+
+        if (success)
+            Debug.WriteLine("[StructTest] All field offsets CORRECT!");
+        else
+            Debug.WriteLine("[StructTest] Field offset ERRORS detected!");
+
+        return success ? 1 : 0;
+    }
 }

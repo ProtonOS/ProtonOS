@@ -587,6 +587,77 @@ public unsafe class Ext2FileSystem : IFileSystem
     }
 
     /// <summary>
+    /// Write a block to the filesystem.
+    /// </summary>
+    internal bool WriteBlock(uint blockNum, byte* buffer)
+    {
+        if (_device == null || blockNum == 0 || _readOnly)
+            return false;
+
+        ulong sector = (ulong)blockNum * _sectorsPerBlock;
+        int result = _device.Write(sector, _sectorsPerBlock, buffer);
+        return result == (int)_sectorsPerBlock;
+    }
+
+    /// <summary>
+    /// Write an inode to disk.
+    /// </summary>
+    internal bool WriteInode(uint inodeNum, ref Ext2Inode inode)
+    {
+        if (_device == null || _groupDescs == null || inodeNum == 0 || _readOnly)
+            return false;
+
+        // Calculate which group and index within group
+        uint group = (inodeNum - 1) / _inodesPerGroup;
+        uint index = (inodeNum - 1) % _inodesPerGroup;
+
+        if (group >= _groupCount)
+            return false;
+
+        // Get inode table block from group descriptor
+        uint inodeTableBlock = _groupDescs[group].InodeTable;
+
+        // Calculate offset within inode table
+        uint inodeOffset = index * _inodeSize;
+        uint blockInTable = inodeOffset / _blockSize;
+        uint offsetInBlock = inodeOffset % _blockSize;
+
+        // Read the block containing the inode
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            // Read block first
+            uint targetBlock = inodeTableBlock + blockInTable;
+            if (!ReadBlock(targetBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Update inode in buffer
+            var inodePtr = (Ext2Inode*)(buffer + offsetInBlock);
+            *inodePtr = inode;
+
+            // Write block back
+            bool success = WriteBlock(targetBlock, buffer);
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return success;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Get block number for a given file offset.
     /// Handles direct, indirect, double indirect, and triple indirect blocks.
     /// </summary>
@@ -867,6 +938,305 @@ public unsafe class Ext2FileSystem : IFileSystem
     internal uint BlockSize => _blockSize;
     internal uint SectorsPerBlock => _sectorsPerBlock;
     internal IBlockDevice? Device => _device;
+
+    #endregion
+
+    #region Block/Inode Allocation
+
+    /// <summary>
+    /// Allocate a new block, preferring the specified group.
+    /// Returns 0 on failure.
+    /// </summary>
+    internal uint AllocateBlock(uint preferredGroup = 0)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return 0;
+
+        if (_freeBlocksCount == 0)
+            return 0;
+
+        // Try preferred group first, then search all groups
+        for (uint i = 0; i < _groupCount; i++)
+        {
+            uint group = (preferredGroup + i) % _groupCount;
+            if (_groupDescs[group].FreeBlocksCount == 0)
+                continue;
+
+            uint block = AllocateBlockInGroup(group);
+            if (block != 0)
+                return block;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Allocate a block from a specific group.
+    /// </summary>
+    private uint AllocateBlockInGroup(uint group)
+    {
+        if (_device == null || _groupDescs == null)
+            return 0;
+
+        uint bitmapBlock = _groupDescs[group].BlockBitmap;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return 0;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return 0;
+            }
+
+            // Search for a free bit
+            uint blocksInGroup = (group == _groupCount - 1)
+                ? (_totalBlocks - 1) % _blocksPerGroup + 1
+                : _blocksPerGroup;
+
+            for (uint i = 0; i < blocksInGroup; i++)
+            {
+                uint byteIndex = i / 8;
+                uint bitIndex = i % 8;
+
+                if ((buffer[byteIndex] & (1 << (int)bitIndex)) == 0)
+                {
+                    // Found free block - mark as used
+                    buffer[byteIndex] |= (byte)(1 << (int)bitIndex);
+
+                    // Write bitmap back
+                    if (!WriteBlock(bitmapBlock, buffer))
+                    {
+                        Memory.FreePages(bufferPhys, pageCount);
+                        return 0;
+                    }
+
+                    // Update group descriptor
+                    _groupDescs[group].FreeBlocksCount--;
+
+                    // Update superblock free count
+                    _freeBlocksCount--;
+
+                    Memory.FreePages(bufferPhys, pageCount);
+
+                    // Calculate absolute block number
+                    uint blockNum = group * _blocksPerGroup + i + _firstDataBlock;
+                    return blockNum;
+                }
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return 0;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Free a block.
+    /// </summary>
+    internal bool FreeBlock(uint blockNum)
+    {
+        if (_device == null || _groupDescs == null || _readOnly || blockNum == 0)
+            return false;
+
+        // Calculate group and index within group
+        uint blockInFs = blockNum - _firstDataBlock;
+        uint group = blockInFs / _blocksPerGroup;
+        uint indexInGroup = blockInFs % _blocksPerGroup;
+
+        if (group >= _groupCount)
+            return false;
+
+        uint bitmapBlock = _groupDescs[group].BlockBitmap;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            uint byteIndex = indexInGroup / 8;
+            uint bitIndex = indexInGroup % 8;
+
+            // Clear the bit
+            buffer[byteIndex] &= (byte)~(1 << (int)bitIndex);
+
+            // Write bitmap back
+            if (!WriteBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Update group descriptor
+            _groupDescs[group].FreeBlocksCount++;
+
+            // Update superblock free count
+            _freeBlocksCount++;
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return true;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Set a block pointer for a file at the given file block index.
+    /// Allocates indirect blocks as needed.
+    /// </summary>
+    internal bool SetBlockNumber(Ext2Inode* inode, uint fileBlockIndex, uint blockNum)
+    {
+        uint idx = fileBlockIndex;
+        uint ptrsPerBlock = _blockSize / 4;
+
+        // Direct blocks (0-11)
+        if (idx < Ext2BlockPtrs.NDIR_BLOCKS)
+        {
+            inode->Block[idx] = blockNum;
+            return true;
+        }
+
+        idx -= Ext2BlockPtrs.NDIR_BLOCKS;
+
+        // Single indirect
+        if (idx < ptrsPerBlock)
+        {
+            // Allocate indirect block if needed
+            if (inode->Block[Ext2BlockPtrs.IND_BLOCK] == 0)
+            {
+                uint indBlock = AllocateBlock();
+                if (indBlock == 0)
+                    return false;
+                inode->Block[Ext2BlockPtrs.IND_BLOCK] = indBlock;
+                // Zero the new indirect block
+                if (!ZeroBlock(indBlock))
+                    return false;
+            }
+            return WriteBlockPointer(inode->Block[Ext2BlockPtrs.IND_BLOCK], idx, blockNum);
+        }
+
+        idx -= ptrsPerBlock;
+
+        // Double indirect
+        if (idx < ptrsPerBlock * ptrsPerBlock)
+        {
+            // Allocate double indirect block if needed
+            if (inode->Block[Ext2BlockPtrs.DIND_BLOCK] == 0)
+            {
+                uint dindBlock = AllocateBlock();
+                if (dindBlock == 0)
+                    return false;
+                inode->Block[Ext2BlockPtrs.DIND_BLOCK] = dindBlock;
+                if (!ZeroBlock(dindBlock))
+                    return false;
+            }
+
+            uint indIndex = idx / ptrsPerBlock;
+            uint ptrIndex = idx % ptrsPerBlock;
+
+            // Get/allocate indirect block
+            uint indBlock = ReadBlockPointer(inode->Block[Ext2BlockPtrs.DIND_BLOCK], indIndex);
+            if (indBlock == 0)
+            {
+                indBlock = AllocateBlock();
+                if (indBlock == 0)
+                    return false;
+                if (!WriteBlockPointer(inode->Block[Ext2BlockPtrs.DIND_BLOCK], indIndex, indBlock))
+                    return false;
+                if (!ZeroBlock(indBlock))
+                    return false;
+            }
+
+            return WriteBlockPointer(indBlock, ptrIndex, blockNum);
+        }
+
+        // Triple indirect (not implemented for now)
+        return false;
+    }
+
+    /// <summary>
+    /// Write a block pointer to an indirect block.
+    /// </summary>
+    private bool WriteBlockPointer(uint indBlockNum, uint index, uint value)
+    {
+        if (_device == null)
+            return false;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(indBlockNum, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            uint* ptrs = (uint*)buffer;
+            ptrs[index] = value;
+
+            bool success = WriteBlock(indBlockNum, buffer);
+            Memory.FreePages(bufferPhys, pageCount);
+            return success;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Zero a block.
+    /// </summary>
+    private bool ZeroBlock(uint blockNum)
+    {
+        if (_device == null)
+            return false;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        // Zero the buffer
+        for (uint i = 0; i < _blockSize; i++)
+            buffer[i] = 0;
+
+        bool success = WriteBlock(blockNum, buffer);
+        Memory.FreePages(bufferPhys, pageCount);
+        return success;
+    }
 
     #endregion
 }
