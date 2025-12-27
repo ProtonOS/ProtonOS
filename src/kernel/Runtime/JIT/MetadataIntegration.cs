@@ -64,6 +64,9 @@ public unsafe struct CctorRegistryEntry
     /// <summary>Assembly ID containing the type.</summary>
     public uint AssemblyId;
 
+    /// <summary>Hash of type arguments for generic instantiations.</summary>
+    public ulong TypeArgHash;
+
     /// <summary>Pointer to the StaticClassConstructionContext for this type.</summary>
     public nint* ContextAddress;
 
@@ -6218,8 +6221,9 @@ public static unsafe class MetadataIntegration
     /// </summary>
     /// <param name="assemblyId">Assembly ID containing the type.</param>
     /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
+    /// <param name="typeArgHash">Hash of type arguments for generic instantiations.</param>
     /// <param name="contextAddress">Address of StaticClassConstructionContext.</param>
-    public static void RegisterCctorContext(uint assemblyId, uint typeToken, nint* contextAddress)
+    public static void RegisterCctorContext(uint assemblyId, uint typeToken, ulong typeArgHash, nint* contextAddress)
     {
         if (!_initialized)
             Initialize();
@@ -6233,7 +6237,7 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var entry = (CctorRegistryEntry*)block->GetEntry(i);
-                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken)
+                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken && entry->TypeArgHash == typeArgHash)
                     {
                         return;  // Already registered
                     }
@@ -6245,6 +6249,7 @@ public static unsafe class MetadataIntegration
             CctorRegistryEntry newEntry;
             newEntry.AssemblyId = assemblyId;
             newEntry.TypeToken = typeToken;
+            newEntry.TypeArgHash = typeArgHash;
             newEntry.ContextAddress = contextAddress;
             if (BlockAllocator.Add(chain, &newEntry) == null)
             {
@@ -6263,12 +6268,16 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Look up the StaticClassConstructionContext address for a type.
+    /// For generic types, uses the current type arg context to find the right instantiation.
     /// </summary>
     /// <param name="assemblyId">Assembly ID containing the type.</param>
     /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
     /// <returns>Pointer to the context, or null if no cctor.</returns>
     public static nint* GetCctorContext(uint assemblyId, uint typeToken)
     {
+        // Get type arg hash to distinguish generic instantiations
+        ulong typeArgHash = GetTypeTypeArgHash();
+
         fixed (BlockChain* chain = &_cctorChain)
         {
             if (chain->First == null)
@@ -6280,7 +6289,7 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var entry = (CctorRegistryEntry*)block->GetEntry(i);
-                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken)
+                    if (entry->AssemblyId == assemblyId && entry->TypeToken == typeToken && entry->TypeArgHash == typeArgHash)
                     {
                         return entry->ContextAddress;
                     }
@@ -6380,12 +6389,16 @@ public static unsafe class MetadataIntegration
     /// Ensure a cctor context is registered for a type.
     /// Called the first time a static field is accessed for a type.
     /// If the type has a .cctor, this allocates a context and registers it.
+    /// For generic types, each instantiation gets its own cctor context.
     /// </summary>
     /// <param name="assemblyId">Assembly ID containing the type.</param>
     /// <param name="typeToken">TypeDef token (0x02xxxxxx).</param>
     /// <returns>Pointer to the context if type has cctor, null otherwise.</returns>
     public static nint* EnsureCctorContextRegistered(uint assemblyId, uint typeToken)
     {
+        // Get type arg hash to distinguish generic instantiations
+        ulong typeArgHash = GetTypeTypeArgHash();
+
         // Check if already registered
         nint* existing = GetCctorContext(assemblyId, typeToken);
         if (existing != null)
@@ -6409,7 +6422,7 @@ public static unsafe class MetadataIntegration
         // a recursive call to EnsureCctorContextRegistered. By registering first
         // with address=0, those accesses will find the context and skip the cctor check
         // (since 0 means "already run" or "being run").
-        RegisterCctorContext(assemblyId, typeToken, context);
+        RegisterCctorContext(assemblyId, typeToken, typeArgHash, context);
 
         // The context holds the cctor method address
         // We need to compile the cctor and store its address
