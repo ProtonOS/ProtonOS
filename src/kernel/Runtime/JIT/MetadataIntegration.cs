@@ -1582,8 +1582,11 @@ public static unsafe class MetadataIntegration
             Initialize();
 
         uint asmId = _currentAssemblyId;
-        // Get type arg hash for generic statics - each instantiation has its own static storage
-        ulong typeArgHash = isStatic ? GetTypeTypeArgHash() : 0;
+        // Get type arg hash to distinguish generic instantiations.
+        // For generic types like Entry<TKey, TValue>, the field layout (size, type) depends
+        // on the type arguments. Entry<int, string>.key is 4 bytes, Entry<string, int>.key is 8 bytes.
+        // We must include the type arg hash for ALL fields, not just static ones.
+        ulong typeArgHash = GetTypeTypeArgHash();
 
         // Check if already cached - iterate through blocks
         fixed (BlockChain* chain = &_fieldLayoutChain)
@@ -1640,13 +1643,14 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Look up cached field layout.
-    /// For static fields, also matches type arg hash for generic statics.
+    /// Matches type arg hash to distinguish generic instantiations (e.g., Entry&lt;int,string&gt; vs Entry&lt;string,int&gt;).
     /// </summary>
     public static bool LookupFieldLayout(uint token, out FieldLayoutEntry entry)
     {
         entry = default;
 
-        // Get type arg hash for potential generic static field lookup
+        // Get type arg hash to distinguish generic instantiations.
+        // Entry<int, string>.key has different size than Entry<string, int>.key.
         ulong typeArgHash = GetTypeTypeArgHash();
 
         // Cache key is (token, assemblyId, typeArgHash) - same token in different assemblies
@@ -1659,8 +1663,7 @@ public static unsafe class MetadataIntegration
                 for (int i = 0; i < block->Used; i++)
                 {
                     var e = (FieldLayoutEntry*)block->GetEntry(i);
-                    // For statics, must also match type arg hash
-                    // For instance fields, TypeArgHash is 0 so this still works
+                    // Must match token, assembly, AND type arg hash
                     if (e->Token == token && e->AssemblyId == _currentAssemblyId && e->TypeArgHash == typeArgHash)
                     {
                         entry = *e;
@@ -1668,27 +1671,6 @@ public static unsafe class MetadataIntegration
                     }
                 }
                 block = block->Next;
-            }
-
-            // If not found and we have a non-zero type arg hash, try again with hash=0
-            // This handles instance fields being looked up from within a generic context
-            // Instance fields are always cached with TypeArgHash=0
-            if (typeArgHash != 0)
-            {
-                block = chain->First;
-                while (block != null)
-                {
-                    for (int i = 0; i < block->Used; i++)
-                    {
-                        var e = (FieldLayoutEntry*)block->GetEntry(i);
-                        if (e->Token == token && e->AssemblyId == _currentAssemblyId && e->TypeArgHash == 0)
-                        {
-                            entry = *e;
-                            return true;
-                        }
-                    }
-                    block = block->Next;
-                }
             }
         }
         return false;
@@ -2072,6 +2054,47 @@ public static unsafe class MetadataIntegration
     {
         result = default;
 
+        // Check if this MemberRef is on a generic instantiation (e.g., Dictionary<int, string>.KeyCollection.Enumerator)
+        // If so, get the instantiated MethodTable which has the type argument info
+        MethodTable* genericInstMT = AssemblyLoader.GetMemberRefGenericInstMT(_currentAssemblyId, token);
+        bool hasGenericContext = false;
+        int savedTypeArgCount = _typeTypeArgCount;
+        MethodTable** savedTypeArgs = stackalloc MethodTable*[4];
+        for (int i = 0; i < 4 && i < savedTypeArgCount; i++)
+            savedTypeArgs[i] = _typeTypeArgMTs[i];
+
+        if (genericInstMT != null)
+        {
+            // Set up the type argument context using all type arguments from the cache
+            MethodTable** typeArgs = stackalloc MethodTable*[4];
+            int typeArgCount;
+
+            if (AssemblyLoader.GetGenericInstTypeArgs(genericInstMT, typeArgs, out typeArgCount) && typeArgCount > 0)
+            {
+                SetTypeTypeArgs(typeArgs, typeArgCount);
+                hasGenericContext = true;
+
+                DebugConsole.Write("[FieldTypeArgs] Set ");
+                DebugConsole.WriteDecimal((uint)typeArgCount);
+                DebugConsole.Write(" args for field MemberRef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine();
+            }
+            else if (genericInstMT->_relatedType != null)
+            {
+                // Fallback: use _relatedType for single type argument (legacy path)
+                typeArgs[0] = genericInstMT->_relatedType;
+                SetTypeTypeArgs(typeArgs, 1);
+                hasGenericContext = true;
+
+                DebugConsole.Write("[FieldTypeArgs] Set legacy MT=0x");
+                DebugConsole.WriteHex((ulong)genericInstMT->_relatedType);
+                DebugConsole.Write(" for field MemberRef 0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.WriteLine();
+            }
+        }
+
         // Use AssemblyLoader to resolve the MemberRef to a FieldDef in another assembly
         if (!AssemblyLoader.ResolveMemberRefField(_currentAssemblyId, token,
                                                    out uint fieldToken, out uint targetAsmId))
@@ -2079,6 +2102,13 @@ public static unsafe class MetadataIntegration
             DebugConsole.Write("[MetaInt] Failed to resolve MemberRef field 0x");
             DebugConsole.WriteHex(token);
             DebugConsole.WriteLine();
+            // Restore type arg context on failure
+            if (hasGenericContext)
+            {
+                for (int i = 0; i < savedTypeArgCount; i++)
+                    _typeTypeArgMTs[i] = savedTypeArgs[i];
+                _typeTypeArgCount = savedTypeArgCount;
+            }
             return false;
         }
 
@@ -2121,6 +2151,14 @@ public static unsafe class MetadataIntegration
                             result.IsStatic, result.IsGCRef, result.StaticAddress,
                             result.IsDeclaringTypeValueType, result.DeclaringTypeSize,
                             result.IsFieldTypeValueType);
+        }
+
+        // Restore type arg context
+        if (hasGenericContext)
+        {
+            for (int i = 0; i < savedTypeArgCount; i++)
+                _typeTypeArgMTs[i] = savedTypeArgs[i];
+            _typeTypeArgCount = savedTypeArgCount;
         }
 
         return success;
@@ -3740,8 +3778,20 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static MethodTable* GetTypeTypeArgMethodTable(int index)
     {
+        DebugConsole.Write("[GetTypeArg] idx=");
+        DebugConsole.WriteDecimal((uint)index);
+        DebugConsole.Write(" count=");
+        DebugConsole.WriteDecimal((uint)_typeTypeArgCount);
+
         if (index < 0 || index >= _typeTypeArgCount)
+        {
+            DebugConsole.WriteLine(" -> OUT OF RANGE");
             return null;
+        }
+
+        DebugConsole.Write(" -> MT=0x");
+        DebugConsole.WriteHex((ulong)_typeTypeArgMTs[index]);
+        DebugConsole.WriteLine();
         return _typeTypeArgMTs[index];
     }
 
@@ -3750,6 +3800,17 @@ public static unsafe class MetadataIntegration
     /// </summary>
     public static void SetTypeTypeArgs(MethodTable** mts, int count)
     {
+        DebugConsole.Write("[SetTypeArgs] count=");
+        DebugConsole.WriteDecimal((uint)count);
+        for (int i = 0; i < count && i < 4; i++)
+        {
+            DebugConsole.Write(" arg");
+            DebugConsole.WriteDecimal((uint)i);
+            DebugConsole.Write("=0x");
+            DebugConsole.WriteHex((ulong)mts[i]);
+        }
+        DebugConsole.WriteLine();
+
         _typeTypeArgCount = count > MaxTypeTypeArgs ? MaxTypeTypeArgs : count;
         for (int i = 0; i < _typeTypeArgCount; i++)
             _typeTypeArgMTs[i] = mts[i];
@@ -5003,8 +5064,9 @@ public static unsafe class MetadataIntegration
                         size = 8;  // Default for unknown types
                 }
 
-                // Align offset
-                int alignment = size < 8 ? size : 8;
+                // Align offset to field size (capped at 8)
+                int alignment = size;
+                if (alignment > 8) alignment = 8;
                 offset = (offset + alignment - 1) & ~(alignment - 1);
                 offset += size;
             }
@@ -5018,7 +5080,6 @@ public static unsafe class MetadataIntegration
         {
             byte targetElementType = targetSig[1];
             int targetSize;
-
             // For ValueType fields, use AssemblyLoader to compute actual struct size
             if (targetElementType == ElementType.ValueType || targetElementType == ElementType.GenericInst)
             {
@@ -5053,7 +5114,8 @@ public static unsafe class MetadataIntegration
                     targetSize = 8;
             }
 
-            int alignment = targetSize < 8 ? targetSize : 8;
+            int alignment = targetSize;
+            if (alignment > 8) alignment = 8;
             offset = (offset + alignment - 1) & ~(alignment - 1);
         }
 

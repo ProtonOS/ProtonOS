@@ -154,6 +154,8 @@ public static unsafe class Tier0JIT
             return JitResult.Fail();
         }
 
+        // Debug for TestDictKeys removed - token confusion was causing misleading output
+
         // Debug: dump raw header bytes for ReadAndProgramBar (asm 4, token 0x0600002E)
         if (assemblyId == 4 && methodToken == 0x0600002E)
         {
@@ -861,6 +863,20 @@ public static unsafe class Tier0JIT
         //         DebugConsole.WriteLine();
         //     }
         // }
+
+        // Debug: dump signature bytes for methods with 5 locals (potential TestDictKeys)
+        if (numLocals == 5)
+        {
+            DebugConsole.Write("[SigDump] 5-local method, sigLen=");
+            DebugConsole.WriteDecimal(sigLen);
+            DebugConsole.Write(" bytes: ");
+            for (uint b = 0; b < sigLen && b < 40; b++)
+            {
+                DebugConsole.WriteHex(sigBlob[b]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+        }
 
         // Parse each local's type
         for (int i = 0; i < numLocals && ptr < end; i++)
@@ -2252,9 +2268,22 @@ public static unsafe class Tier0JIT
             return;
         }
 
-        // Set the vtable entry
-        nint* vtable = mt->GetVtablePtr();
-        vtable[vtableSlot] = nativeCode;
+        // Check if we're compiling this for a specific generic instantiation (type context is set)
+        // If so, this code is specific to that instantiation and should NOT be stored on
+        // the generic definition's MT. The instantiation will get its code via:
+        // - The caller storing on instantiation vtable directly
+        // - PropagateVtableSlotToInstantiations for existing instantiations
+        int typeArgCnt = MetadataIntegration.GetTypeTypeArgCount();
+        bool isCompileForInst = (typeArgCnt > 0);
+        MethodTable* genDefMT2 = AssemblyLoader.GetGenericDefinitionMT(mt);
+        bool isGenDef = (genDefMT2 == null) && isCompileForInst;
+
+        // Only set the vtable entry if this is NOT a generic definition (with instantiation-specific code)
+        if (!isGenDef)
+        {
+            nint* vtable = mt->GetVtablePtr();
+            vtable[vtableSlot] = nativeCode;
+        }
 
         // If this is a generic type, also update all instantiated MTs in the cache
         // because they copied the vtable when they were created (possibly with null entries)
@@ -2268,6 +2297,7 @@ public static unsafe class Tier0JIT
         DebugConsole.WriteHex((ulong)mt);
         DebugConsole.Write(" slot=");
         DebugConsole.WriteDecimal((uint)vtableSlot);
+        DebugConsole.Write(isGenDef ? " (gen-def-skip)" : " (stored)");
         DebugConsole.Write(" code=0x");
         DebugConsole.WriteHex((ulong)nativeCode);
         DebugConsole.WriteLine();

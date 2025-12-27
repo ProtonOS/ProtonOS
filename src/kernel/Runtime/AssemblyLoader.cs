@@ -8613,6 +8613,10 @@ public static unsafe class AssemblyLoader
         // Create normalized token for this type definition
         uint normalizedGenDefToken = (assemblyId << 24) | typeDefRow;
 
+        // Also create TypeSpec format token - cache entries from GetOrCreateGenericInstMethodTable
+        // may store TypeSpec tokens (0x03...) instead of normalized tokens
+        uint typeSpecToken = 0x03000000 | typeDefRow;
+
         // Debug: show what we're looking for
         DebugConsole.Write("[PropagateVT] Searching for def 0x");
         DebugConsole.WriteHex(normalizedGenDefToken);
@@ -8625,7 +8629,9 @@ public static unsafe class AssemblyLoader
         // Scan the generic instantiation cache for MTs derived from this generic definition
         for (int i = 0; i < _genericInstCacheCount; i++)
         {
-            if (_genericInstCacheDefTokens[i] == normalizedGenDefToken)
+            uint cachedToken = _genericInstCacheDefTokens[i];
+            // Match either normalized format or TypeSpec format (for generic types in same assembly)
+            if (cachedToken == normalizedGenDefToken || cachedToken == typeSpecToken)
             {
                 MethodTable* instMT = _genericInstCacheInstMTs[i];
                 if (instMT != null && vtableSlot < instMT->_usNumVtableSlots)
