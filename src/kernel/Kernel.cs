@@ -1350,6 +1350,26 @@ public static unsafe class Kernel
         var testIdentifyFunc = (delegate* unmanaged<int>)testIdentifyResult.CodeAddress;
         int identifyTestResult = testIdentifyFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestIdentifyOffsets returned {0}", identifyTestResult));
+
+        // Test VFS root mount with EXT2
+        uint testVfsToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestVfsRootMount");
+        if (testVfsToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestVfsRootMount method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestVfsRootMount...");
+        var testVfsResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testVfsToken);
+        if (!testVfsResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestVfsRootMount");
+            return;
+        }
+
+        var testVfsFunc = (delegate* unmanaged<int>)testVfsResult.CodeAddress;
+        int vfsTestResult = testVfsFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestVfsRootMount returned {0}", vfsTestResult));
     }
 
     /// <summary>
