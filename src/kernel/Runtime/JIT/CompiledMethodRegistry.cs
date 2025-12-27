@@ -987,8 +987,8 @@ public static unsafe class CompiledMethodRegistry
         if (!_initialized || token == 0)
             return null;
 
-        // Debug: trace lookups for tokens 0x268 and 0x269 in asm 1
-        bool debugThis = (assemblyId == 1 && (token == 0x06000268 || token == 0x06000269));
+        // Debug: trace specific token lookups if needed
+        bool debugThis = false; // (assemblyId == 1 && (token == 0x06000268 || token == 0x06000269));
         if (debugThis)
         {
             DebugConsole.Write("[LookupDbg] token=0x");
@@ -1032,6 +1032,11 @@ public static unsafe class CompiledMethodRegistry
         // This handles abstract/virtual method definitions that are registered without type args
         // (e.g., EqualityComparer<T>.Equals) but looked up with type args in context
         // (e.g., calling on EqualityComparer<int>)
+        //
+        // IMPORTANT: Only use this fallback for entries that:
+        // 1. Are virtual methods that should be dispatched at runtime
+        // 2. Have NO compiled code (NativeCode is null) - if they have compiled code,
+        //    that code was compiled for a specific type instantiation and can't be reused
         if (typeArgHash != 0)
         {
             // Debug: trace fallback lookup attempts
@@ -1053,7 +1058,9 @@ public static unsafe class CompiledMethodRegistry
                 {
                     if (entries[i].Token == token &&
                         entries[i].AssemblyId == assemblyId &&
-                        entries[i].TypeArgHash == 0)
+                        entries[i].TypeArgHash == 0 &&
+                        entries[i].IsVirtual &&
+                        entries[i].NativeCode == null)  // Only use if no compiled code
                     {
                         if (debugThis)
                         {
@@ -1064,16 +1071,17 @@ public static unsafe class CompiledMethodRegistry
                             DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
                             DebugConsole.WriteLine();
                         }
-                        DebugConsole.Write("[RegFallback] token=0x");
-                        DebugConsole.WriteHex(token);
-                        DebugConsole.Write(" asm=");
-                        DebugConsole.WriteDecimal(assemblyId);
-                        DebugConsole.Write(" isVirt=");
-                        DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
-                        DebugConsole.Write(" slot=");
-                        DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
-                        if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
-                        DebugConsole.WriteLine();
+                        // Debug: trace registry fallback
+                        // DebugConsole.Write("[RegFallback] token=0x");
+                        // DebugConsole.WriteHex(token);
+                        // DebugConsole.Write(" asm=");
+                        // DebugConsole.WriteDecimal(assemblyId);
+                        // DebugConsole.Write(" isVirt=");
+                        // DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
+                        // DebugConsole.Write(" slot=");
+                        // DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
+                        // if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
+                        // DebugConsole.WriteLine();
                         return &entries[i];
                     }
                 }

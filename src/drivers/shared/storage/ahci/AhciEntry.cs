@@ -894,14 +894,7 @@ public static unsafe class AhciEntry
     /// </summary>
     public static int TestVfsRootMount()
     {
-        // VFS test disabled - there's a JIT bug where creating generic types like
-        // List<MountPoint> from the AHCI driver assembly corrupts state that affects
-        // later FullTest execution. The EXT2/AHCI tests (TestExt2Mount, etc.) work
-        // correctly without this issue because they don't use VFS which creates List<T>.
-        Debug.WriteLine("[VFS] Test disabled (JIT generic instantiation issue)");
-        Debug.WriteLine("[VFS] EXT2 mount/read/write verified via TestExt2* methods");
-        return 1;
-
+        // TEMPORARILY RE-ENABLED FOR DEBUGGING
         Debug.WriteLine("[VFS] Testing VFS root mount with EXT2...");
 
         // Initialize VFS

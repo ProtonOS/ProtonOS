@@ -9041,7 +9041,8 @@ public static unsafe class AssemblyLoader
                 uint defTypeDefToken = 0x02000000 | defTypeDefRow;
 
                 // Resolve to get the generic definition MT
-                return ResolveType(defAsmId, defTypeDefToken);
+                MethodTable* defMT = ResolveType(defAsmId, defTypeDefToken);
+                return defMT;
             }
         }
 

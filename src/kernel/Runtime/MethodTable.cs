@@ -922,43 +922,43 @@ public unsafe struct MethodTable
             // Kernel type - InterfaceMapEntry array
             InterfaceMapEntry* map = GetInterfaceMapPtr();
 
-            // Debug: dump interface map for kernel types
-            fixed (MethodTable* self = &this)
-            {
-                DebugConsole.Write("[FindVarIface] Kernel type MT=0x");
-                DebugConsole.WriteHex((ulong)self);
-                DebugConsole.Write(" numIf=");
-                DebugConsole.WriteDecimal(_usNumInterfaces);
-                DebugConsole.Write(" target=0x");
-                DebugConsole.WriteHex((ulong)targetInterfaceMT);
-                if (targetInterfaceMT != null)
-                {
-                    DebugConsole.Write(" targetSlots=");
-                    DebugConsole.WriteDecimal(targetInterfaceMT->_usNumVtableSlots);
-                    DebugConsole.Write(" targetHash=0x");
-                    DebugConsole.WriteHex(targetInterfaceMT->_uHashCode);
-                }
-                DebugConsole.WriteLine();
+            // Debug: dump interface map for kernel types (DISABLED - too verbose)
+            // fixed (MethodTable* self = &this)
+            // {
+            //     DebugConsole.Write("[FindVarIface] Kernel type MT=0x");
+            //     DebugConsole.WriteHex((ulong)self);
+            //     DebugConsole.Write(" numIf=");
+            //     DebugConsole.WriteDecimal(_usNumInterfaces);
+            //     DebugConsole.Write(" target=0x");
+            //     DebugConsole.WriteHex((ulong)targetInterfaceMT);
+            //     if (targetInterfaceMT != null)
+            //     {
+            //         DebugConsole.Write(" targetSlots=");
+            //         DebugConsole.WriteDecimal(targetInterfaceMT->_usNumVtableSlots);
+            //         DebugConsole.Write(" targetHash=0x");
+            //         DebugConsole.WriteHex(targetInterfaceMT->_uHashCode);
+            //     }
+            //     DebugConsole.WriteLine();
 
-                for (int j = 0; j < _usNumInterfaces; j++)
-                {
-                    MethodTable* iface = map[j].InterfaceMT;
-                    DebugConsole.Write("  [");
-                    DebugConsole.WriteDecimal(j);
-                    DebugConsole.Write("] MT=0x");
-                    DebugConsole.WriteHex((ulong)iface);
-                    if (iface != null)
-                    {
-                        DebugConsole.Write(" slots=");
-                        DebugConsole.WriteDecimal(iface->_usNumVtableSlots);
-                        DebugConsole.Write(" hash=0x");
-                        DebugConsole.WriteHex(iface->_uHashCode);
-                        DebugConsole.Write(" startSlot=");
-                        DebugConsole.WriteDecimal(map[j].StartSlot);
-                    }
-                    DebugConsole.WriteLine();
-                }
-            }
+            //     for (int j = 0; j < _usNumInterfaces; j++)
+            //     {
+            //         MethodTable* iface = map[j].InterfaceMT;
+            //         DebugConsole.Write("  [");
+            //         DebugConsole.WriteDecimal(j);
+            //         DebugConsole.Write("] MT=0x");
+            //         DebugConsole.WriteHex((ulong)iface);
+            //         if (iface != null)
+            //         {
+            //             DebugConsole.Write(" slots=");
+            //             DebugConsole.WriteDecimal(iface->_usNumVtableSlots);
+            //             DebugConsole.Write(" hash=0x");
+            //             DebugConsole.WriteHex(iface->_uHashCode);
+            //             DebugConsole.Write(" startSlot=");
+            //             DebugConsole.WriteDecimal(map[j].StartSlot);
+            //         }
+            //         DebugConsole.WriteLine();
+            //     }
+            // }
 
             // Track best candidate - when there are multiple matches (e.g., IEnumerable, IReadOnlyCollection,
             // IReadOnlyList all with 1 slot), we want the most specific one (highest startSlot)
@@ -968,8 +968,12 @@ public unsafe struct MethodTable
             for (int i = 0; i < _usNumInterfaces; i++)
             {
                 MethodTable* implInterface = map[i].InterfaceMT;
+
+                // Exact match check
                 if (implInterface == targetInterfaceMT)
+                {
                     return i;  // Exact match - return immediately
+                }
 
                 // Check structural type equality (same generic def + type args)
                 if (implInterface != null && IsStructurallyEqual(implInterface, targetInterfaceMT))
@@ -1038,20 +1042,6 @@ public unsafe struct MethodTable
         // the type arguments are compatible, we can use this interface.
 
         // Compare vtable slot count - same interface should have same number of methods
-        DebugConsole.Write("[StructEq] mt1=0x");
-        DebugConsole.WriteHex((ulong)mt1);
-        DebugConsole.Write(" slots=");
-        DebugConsole.WriteDecimal(mt1->_usNumVtableSlots);
-        DebugConsole.Write(" hash=0x");
-        DebugConsole.WriteHex(mt1->_uHashCode);
-        DebugConsole.Write(" mt2=0x");
-        DebugConsole.WriteHex((ulong)mt2);
-        DebugConsole.Write(" slots=");
-        DebugConsole.WriteDecimal(mt2->_usNumVtableSlots);
-        DebugConsole.Write(" hash=0x");
-        DebugConsole.WriteHex(mt2->_uHashCode);
-        DebugConsole.WriteLine();
-
         // If slot counts differ, check if we should use hash code instead
         // AOT interface MTs often have malformed slot counts (1 instead of actual)
         if (mt1->_usNumVtableSlots != mt2->_usNumVtableSlots)
@@ -1059,7 +1049,6 @@ public unsafe struct MethodTable
             // Try hash code comparison for AOT interfaces with malformed slots
             if (mt1->_uHashCode != 0 && mt2->_uHashCode != 0 && mt1->_uHashCode == mt2->_uHashCode)
             {
-                DebugConsole.WriteLine("[StructEq] Slot mismatch but hash match - accepting");
                 return true;
             }
             return false;
@@ -1455,7 +1444,10 @@ public unsafe struct MethodTable
 
             // Must be same generic definition (both non-null)
             if (sourceDefMT == null || targetDefMT == null || sourceDefMT != targetDefMT)
+            {
+                // Don't log - this happens frequently for non-matching interfaces
                 return false;
+            }
 
             // Definition must have variance
             if (!sourceDefMT->HasVariance)
