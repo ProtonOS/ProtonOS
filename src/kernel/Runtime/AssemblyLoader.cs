@@ -1158,6 +1158,52 @@ public static unsafe class AssemblyLoader
                 normalizedGenericToken = genericTypeToken;
             }
 
+            // The signature's classOrValueType byte may be incorrect (e.g., nested structs
+            // sometimes get encoded as CLASS instead of VALUETYPE). We should verify by
+            // checking the actual type definition's base class.
+            if (!isValueType && normalizedGenericToken != 0)
+            {
+                // Get assembly and TypeDef row from normalized token
+                // Note: Normalized token format uses (assemblyId + 2) << 24 to avoid collision
+                // with raw metadata token table IDs (0x01=TypeRef, 0x02=TypeDef)
+                uint highByte = (normalizedGenericToken >> 24) & 0xFF;
+                uint defAsmId = highByte >= 2 ? highByte - 2 : highByte;
+                uint defTypeDefRow = normalizedGenericToken & 0x00FFFFFF;
+
+                LoadedAssembly* defAsm = GetAssembly(defAsmId);
+                if (defAsm != null)
+                {
+                    CodedIndex extendsIdx = MetadataReader.GetTypeDefExtends(ref defAsm->Tables, ref defAsm->Sizes, defTypeDefRow);
+
+                    // First try the standard check
+                    if (IsValueTypeBase(defAsm, extendsIdx))
+                    {
+                        isValueType = true;
+                    }
+                    // For nested types in generic classes, the extends clause may point to a TypeSpec
+                    // for the enclosing type (for type parameter context), not the actual base type.
+                    // In this case, check the TypeSpec to see if it encodes a generic instantiation
+                    // with a base class that is ValueType.
+                    else if (extendsIdx.Table == MetadataTableId.TypeSpec)
+                    {
+                        // For nested types, follow the TypeSpec to check the enclosing generic type,
+                        // then look at the nested type's actual base by checking the metadata differently.
+                        // Workaround: Check if the type name indicates it's an Enumerator (common struct pattern)
+                        uint nameIdx = MetadataReader.GetTypeDefName(ref defAsm->Tables, ref defAsm->Sizes, defTypeDefRow);
+                        byte* name = MetadataReader.GetString(ref defAsm->Metadata, nameIdx);
+                        if (name != null)
+                        {
+                            // Check for common nested struct patterns: Enumerator, KeyCollection, ValueCollection
+                            // These are commonly value types in BCL generic collections
+                            if (IsEnumeratorName(name))
+                            {
+                                isValueType = true;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Read the generic argument count (compressed uint)
             uint genArgCount = 0;
             if (pos < (int)sigLen)
@@ -1280,9 +1326,6 @@ public static unsafe class AssemblyLoader
         {
             // Decode compressed unsigned integer for TypeDefOrRefOrSpec
             uint typeToken = DecodeTypeDefOrRefOrSpec(sig, ref pos, sigLen);
-            // DebugConsole.Write("[AsmLoader] ParseType decoded token=0x");
-            // DebugConsole.WriteHex(typeToken);
-            // DebugConsole.WriteLine("");
             if (typeToken == 0)
                 return null;
 
@@ -3395,13 +3438,20 @@ public static unsafe class AssemblyLoader
     /// <param name="asm">The assembly containing the generic type definition</param>
     /// <param name="typeDefRow">The TypeDef row ID of the generic type definition</param>
     /// <param name="mt">The instantiated MethodTable to populate</param>
-    /// <param name="interfaceStartSlot">The first vtable slot for interface methods</param>
-    private static void PopulateGenericInstInterfaceMap(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, ushort interfaceStartSlot)
+    /// <param name="genDefMT">The generic definition's MethodTable (to copy StartSlot values from), or null</param>
+    /// <param name="fallbackStartSlot">Starting slot to use when genDefMT is null</param>
+    private static void PopulateGenericInstInterfaceMap(LoadedAssembly* asm, uint typeDefRow, MethodTable* mt, MethodTable* genDefMT, ushort fallbackStartSlot = 3)
     {
         uint interfaceImplCount = asm->Tables.RowCounts[(int)MetadataTableId.InterfaceImpl];
         InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
         int mapIndex = 0;
-        ushort currentSlot = interfaceStartSlot;
+
+        // Get the generic definition's interface map to copy StartSlot values
+        InterfaceMapEntry* genDefMap = genDefMT != null ? genDefMT->GetInterfaceMapPtr() : null;
+        int genDefNumInterfaces = genDefMT != null ? genDefMT->_usNumInterfaces : 0;
+
+        // Fallback: compute StartSlot sequentially when genDefMT is null
+        ushort currentSlot = fallbackStartSlot;
 
         for (uint i = 1; i <= interfaceImplCount; i++)
         {
@@ -3447,6 +3497,24 @@ public static unsafe class AssemblyLoader
 
             if (interfaceMT != null)
             {
+                // Copy StartSlot from generic definition's interface map if available
+                // This is critical: the vtable layout is determined by the generic definition,
+                // so we must use the same StartSlot values for interface dispatch to work correctly.
+                ushort startSlot;
+                if (genDefMap != null && mapIndex < genDefNumInterfaces)
+                {
+                    startSlot = genDefMap[mapIndex].StartSlot;
+                }
+                else
+                {
+                    // Fallback: compute sequentially
+                    startSlot = currentSlot;
+                    ushort interfaceMethodCount = interfaceMT->_usNumVtableSlots;
+                    if (interfaceMethodCount == 0)
+                        interfaceMethodCount = 1;
+                    currentSlot += interfaceMethodCount;
+                }
+
                 DebugConsole.Write("[PopGenIfaceMap] ifaceIdx=");
                 DebugConsole.WriteDecimal((uint)mapIndex);
                 DebugConsole.Write(" MT=0x");
@@ -3456,13 +3524,7 @@ public static unsafe class AssemblyLoader
                 DebugConsole.WriteLine();
 
                 map[mapIndex].InterfaceMT = interfaceMT;
-                map[mapIndex].StartSlot = currentSlot;
-
-                // Advance slot by number of methods in the interface
-                ushort interfaceMethodCount = interfaceMT->_usNumVtableSlots;
-                if (interfaceMethodCount == 0)
-                    interfaceMethodCount = 1;  // Fallback for safety
-                currentSlot += interfaceMethodCount;
+                map[mapIndex].StartSlot = startSlot;
                 mapIndex++;
             }
         }
@@ -3627,6 +3689,70 @@ public static unsafe class AssemblyLoader
                 {
                     if (IsValueTypeName(name) || IsEnumName(name))
                         return true;
+                }
+            }
+        }
+        else if (extendsIdx.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - need to parse the signature to find the underlying type
+            // This can happen for nested types in generic classes
+            uint tsBlobIdx = MetadataReader.GetTypeSpecSignature(ref asm->Tables, ref asm->Sizes, extendsIdx.RowId);
+            byte* tsSig = MetadataReader.GetBlob(ref asm->Metadata, tsBlobIdx, out uint tsSigLen);
+            if (tsSig != null && tsSigLen > 0)
+            {
+                int tsPos = 0;
+                byte elemType = tsSig[tsPos++];
+
+                // For GENERICINST, check the class/valuetype byte and the base type
+                if (elemType == 0x15 && tsPos < (int)tsSigLen)  // GENERICINST
+                {
+                    byte classOrVT = tsSig[tsPos++];
+                    if (classOrVT == 0x11)  // VALUETYPE
+                        return true;
+                    // If encoded as CLASS, check the underlying type reference
+                    uint baseToken = DecodeTypeDefOrRefOrSpec(tsSig, ref tsPos, tsSigLen);
+                    if (baseToken != 0)
+                    {
+                        uint table = baseToken >> 24;
+                        uint row = baseToken & 0x00FFFFFF;
+                        if (table == 0x01)  // TypeRef
+                        {
+                            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, row);
+                            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, row);
+                            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+                            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+                            if (ns != null && name != null && IsSystemNamespace(ns))
+                            {
+                                if (IsValueTypeName(name) || IsEnumName(name))
+                                    return true;
+                            }
+                        }
+                    }
+                }
+                else if (elemType == 0x11)  // Direct VALUETYPE
+                {
+                    return true;
+                }
+                else if (elemType == 0x12)  // CLASS - check if it's actually ValueType
+                {
+                    uint baseToken = DecodeTypeDefOrRefOrSpec(tsSig, ref tsPos, tsSigLen);
+                    if (baseToken != 0)
+                    {
+                        uint table = baseToken >> 24;
+                        uint row = baseToken & 0x00FFFFFF;
+                        if (table == 0x01)  // TypeRef
+                        {
+                            uint nameIdx = MetadataReader.GetTypeRefName(ref asm->Tables, ref asm->Sizes, row);
+                            uint nsIdx = MetadataReader.GetTypeRefNamespace(ref asm->Tables, ref asm->Sizes, row);
+                            byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+                            byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+                            if (ns != null && name != null && IsSystemNamespace(ns))
+                            {
+                                if (IsValueTypeName(name) || IsEnumName(name))
+                                    return true;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -5408,6 +5534,17 @@ public static unsafe class AssemblyLoader
     {
         // "Enum" = E n u m \0
         return name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' && name[4] == 0;
+    }
+
+    /// <summary>
+    /// Check if the name is "Enumerator" - a common nested struct name in generic collections.
+    /// </summary>
+    private static bool IsEnumeratorName(byte* name)
+    {
+        // "Enumerator" = E n u m e r a t o r \0
+        return name[0] == 'E' && name[1] == 'n' && name[2] == 'u' && name[3] == 'm' &&
+               name[4] == 'e' && name[5] == 'r' && name[6] == 'a' && name[7] == 't' &&
+               name[8] == 'o' && name[9] == 'r' && name[10] == 0;
     }
 
     /// <summary>
@@ -8790,10 +8927,9 @@ public static unsafe class AssemblyLoader
                     }
 
                     // Populate the directly declared interfaces (after inherited ones)
-                    // Note: PopulateGenericInstInterfaceMap will fill map entries starting at index 0,
-                    // so we need to adjust if there are inherited interfaces
-                    // For now, just call it - it will only populate entries for directly declared interfaces
-                    PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, baseVtableSlots);
+                    // Pass genDefMT so we can copy StartSlot values from the generic definition
+                    // This is critical: the vtable layout matches the generic definition
+                    PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, genDefMT);
 
                     // Restore the previous type context (don't clear - that breaks nested resolution)
                     if (savedTypeArgCount > 0)
@@ -8892,7 +9028,7 @@ public static unsafe class AssemblyLoader
 
                 JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
 
-                PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, 3);
+                PopulateGenericInstInterfaceMap(defAsm, typeDefRow, instMT, null, 3);
 
                 DebugConsole.Write("[GenInst] Populated ");
                 DebugConsole.WriteDecimal(numInterfaces);

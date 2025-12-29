@@ -565,18 +565,10 @@ public static unsafe class CompiledMethodRegistry
         if (token == 0)
             return null;
 
-        // Debug: log ALL reserve calls for assembly 5 to track when 0x8B is touched
-        if (assemblyId == 5 && (token & 0xFFFFFF00) == 0x06000000)
-        {
-            DebugConsole.Write("[CMR] Reserve 0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" asm ");
-            DebugConsole.WriteDecimal(assemblyId);
-            DebugConsole.WriteLine();
-        }
-
         // Check if already exists (use assembly-aware lookup)
-        CompiledMethodInfo* existing = Lookup(token, assemblyId);
+        ulong lookupHash = MetadataIntegration.GetTypeTypeArgHash();
+        CompiledMethodInfo* existing = Lookup(token, assemblyId, lookupHash);
+
         if (existing != null)
         {
             if (existing->IsBeingCompiled)
@@ -607,14 +599,12 @@ public static unsafe class CompiledMethodRegistry
             }
             // Update the entry
             existing->IsBeingCompiled = true;
-            // Debug
-            if (token == 0x0600008B && assemblyId == 5)
+
+            // If the existing entry has TypeArgHash=0 (from generic definition registration)
+            // and we're compiling with a non-zero hash, update the hash so future lookups work
+            if (existing->TypeArgHash == 0 && lookupHash != 0)
             {
-                DebugConsole.Write("[CMR] EXISTING entry for 0x");
-                DebugConsole.WriteHex(token);
-                DebugConsole.Write(" asm ");
-                DebugConsole.WriteDecimal(assemblyId);
-                DebugConsole.WriteLine(" IsBeingCompiled=true");
+                existing->TypeArgHash = lookupHash;
             }
             existing->ArgCount = argCount;
             existing->ReturnKind = returnKind;
@@ -1035,18 +1025,9 @@ public static unsafe class CompiledMethodRegistry
         //
         // IMPORTANT: Only use this fallback for entries that:
         // 1. Are virtual methods that should be dispatched at runtime
-        // 2. Have NO compiled code (NativeCode is null) - if they have compiled code,
-        //    that code was compiled for a specific type instantiation and can't be reused
+        // 2. Are NOT yet compiled - compiled code is instantiation-specific and can't be reused
         if (typeArgHash != 0)
         {
-            // Debug: trace fallback lookup attempts
-            // DebugConsole.Write("[RegFallbackTry] token=0x");
-            // DebugConsole.WriteHex(token);
-            // DebugConsole.Write(" asm=");
-            // DebugConsole.WriteDecimal(assemblyId);
-            // DebugConsole.Write(" hash=");
-            // DebugConsole.WriteHex(typeArgHash);
-            // DebugConsole.WriteLine();
             for (int b = 0; b < _blockCount; b++)
             {
                 MethodBlock* block = _blocks[b];
@@ -1060,7 +1041,7 @@ public static unsafe class CompiledMethodRegistry
                         entries[i].AssemblyId == assemblyId &&
                         entries[i].TypeArgHash == 0 &&
                         entries[i].IsVirtual &&
-                        entries[i].NativeCode == null)  // Only use if no compiled code
+                        !entries[i].IsCompiled)  // Only return uncompiled entries - compiled code is instantiation-specific
                     {
                         if (debugThis)
                         {
@@ -1071,17 +1052,6 @@ public static unsafe class CompiledMethodRegistry
                             DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
                             DebugConsole.WriteLine();
                         }
-                        // Debug: trace registry fallback
-                        // DebugConsole.Write("[RegFallback] token=0x");
-                        // DebugConsole.WriteHex(token);
-                        // DebugConsole.Write(" asm=");
-                        // DebugConsole.WriteDecimal(assemblyId);
-                        // DebugConsole.Write(" isVirt=");
-                        // DebugConsole.Write(entries[i].IsVirtual ? "Y" : "N");
-                        // DebugConsole.Write(" slot=");
-                        // DebugConsole.WriteDecimal((uint)(entries[i].VtableSlot >= 0 ? entries[i].VtableSlot : 0));
-                        // if (entries[i].VtableSlot < 0) DebugConsole.Write("(neg)");
-                        // DebugConsole.WriteLine();
                         return &entries[i];
                     }
                 }
