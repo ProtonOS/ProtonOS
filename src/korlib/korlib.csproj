@@ -51,10 +51,11 @@
     <Compile Remove="System/Runtime/InteropServices/InteropAttributes.cs" />
     <Compile Remove="System/Runtime/InteropServices/MemoryMarshal.cs" />
     <!-- Interlocked.cs included with KORLIB_IL stubs -->
-    <Compile Remove="System/RuntimeHandles.cs" />
-    <Compile Remove="System/TypedReference.cs" />
-    <Compile Remove="System/ArgIterator.cs" />
-    <Compile Remove="System/RuntimeArgumentHandle.cs" />
+    <!-- RuntimeHandles and varargs support types - included for proper __arglist support -->
+    <!-- <Compile Remove="System/RuntimeHandles.cs" /> -->
+    <!-- <Compile Remove="System/TypedReference.cs" /> -->
+    <!-- <Compile Remove="System/ArgIterator.cs" /> -->
+    <!-- <Compile Remove="System/RuntimeArgumentHandle.cs" /> -->
     <Compile Remove="System/Globalization/CultureInfo.cs" />
     <Compile Remove="System/Buffer.cs" />
     <Compile Remove="Internal/Runtime/CompilerHelpers/InteropHelpers.cs" />

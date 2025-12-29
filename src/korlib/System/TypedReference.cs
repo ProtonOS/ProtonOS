@@ -34,12 +34,13 @@ namespace System
 
         /// <summary>
         /// Gets the Type of the referenced value.
+        /// Note: This requires korlib's Type implementation to be included.
         /// </summary>
         public static unsafe Type? GetTargetType(TypedReference value)
         {
-            if (value._type == 0)
-                return null;
-            return Type.GetTypeFromHandle(new RuntimeTypeHandle(value._type));
+            // TODO: Enable when Type.cs is included in korlib build
+            // return Type.GetTypeFromHandle(new RuntimeTypeHandle(value._type));
+            throw new NotSupportedException("GetTargetType requires korlib Type implementation");
         }
 
         /// <summary>

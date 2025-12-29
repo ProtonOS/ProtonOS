@@ -96,6 +96,7 @@ public static unsafe class Tier0JIT
         // Get method RVA, flags, and signature from metadata
         uint rva = MetadataReader.GetMethodDefRva(ref assembly->Tables, ref assembly->Sizes, methodRid);
         ushort methodFlags = MetadataReader.GetMethodDefFlags(ref assembly->Tables, ref assembly->Sizes, methodRid);
+        ushort implFlags = MetadataReader.GetMethodDefImplFlags(ref assembly->Tables, ref assembly->Sizes, methodRid);
         uint sigIdx = MetadataReader.GetMethodDefSignature(ref assembly->Tables, ref assembly->Sizes, methodRid);
 
         if (rva == 0)
@@ -126,13 +127,25 @@ public static unsafe class Tier0JIT
                 return result;
             }
 
+            // Check if this is a runtime-managed method (e.g., delegate Invoke/BeginInvoke/EndInvoke)
+            // ImplFlags CodeTypeMask = 0x0003, Runtime = 0x0003
+            if ((implFlags & 0x0003) == 0x0003)
+            {
+                // Runtime-managed methods are expected to have no IL body - this is not an error
+                // They are implemented by the runtime (e.g., delegate dispatch)
+                RestoreContext(savedAsmId);
+                return JitResult.Fail();  // Still fail JIT, but silently
+            }
+
             DebugConsole.Write("[Tier0JIT] ERROR: Method 0x");
             DebugConsole.WriteHex(methodToken);
             DebugConsole.Write(" (asm ");
             DebugConsole.WriteDecimal(assemblyId);
             DebugConsole.Write(") has no IL body, flags=0x");
             DebugConsole.WriteHex(methodFlags);
-            DebugConsole.WriteLine(" (extern?)");
+            DebugConsole.Write(" implFlags=0x");
+            DebugConsole.WriteHex(implFlags);
+            DebugConsole.WriteLine();
             RestoreContext(savedAsmId);
             return JitResult.Fail();
         }
