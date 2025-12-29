@@ -582,6 +582,13 @@ public static unsafe class AssemblyLoader
     public const uint CoreLibAssemblyId = 1;
     public const uint KernelAssemblyId = 2;
 
+    /// <summary>
+    /// Context flag: true when resolving interfaces for a generic type definition.
+    /// In this context, VAR (type parameter) resolution without type args is expected
+    /// and should fallback to Object silently (not a warning).
+    /// </summary>
+    private static bool _resolvingGenericDefInterfaces;
+
     // ============================================================================
     // Token Normalization Helpers
     // Normalized token format: ((assemblyId + 2) << 24) | row
@@ -1121,9 +1128,24 @@ public static unsafe class AssemblyLoader
             }
 
             // Fallback to Object for unresolved VAR
-            DebugConsole.Write("[AsmLoader] TypeSpec VAR index=");
-            DebugConsole.WriteDecimal(index);
-            DebugConsole.WriteLine(" NO TYPE CONTEXT! using Object");
+            // This is expected during generic definition interface resolution (no concrete T yet)
+            if (_resolvingGenericDefInterfaces)
+            {
+                // Expected: resolving interface like IEnumerable<T> on List<T> definition
+                // VAR has no context because we're looking at the generic definition, not an instantiation
+                // Log at info level, not warning
+                DebugConsole.Write("[AsmLoader] VAR(");
+                DebugConsole.WriteDecimal(index);
+                DebugConsole.WriteLine(") in generic def iface -> Object (expected)");
+            }
+            else
+            {
+                // Unexpected: VAR resolution outside of generic definition interface context
+                // This might indicate a missing type context - log as warning
+                DebugConsole.Write("[AsmLoader] WARNING: VAR(");
+                DebugConsole.WriteDecimal(index);
+                DebugConsole.WriteLine(") NO TYPE CONTEXT - using Object fallback");
+            }
             return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
@@ -1398,7 +1420,15 @@ public static unsafe class AssemblyLoader
             }
 
             // Fallback to Object for unresolved VAR
-            DebugConsole.WriteLine(" NO TYPE CONTEXT! using Object");
+            // This is expected during generic definition interface resolution (no concrete T yet)
+            if (_resolvingGenericDefInterfaces)
+            {
+                DebugConsole.WriteLine(" -> Object (expected in generic def)");
+            }
+            else
+            {
+                DebugConsole.WriteLine(" WARNING: NO TYPE CONTEXT - using Object fallback");
+            }
             return GetPrimitiveMethodTable(0x1C);  // Object
         }
 
@@ -3404,10 +3434,14 @@ public static unsafe class AssemblyLoader
             }
             else if (tag == 2)  // TypeSpec - generic interface instantiation
             {
-                // TypeSpec is used for generic interfaces like IContainer<int>
-                // ResolveTypeSpec handles deduplication via GetOrCreateGenericInstMethodTable
+                // TypeSpec is used for generic interfaces like IContainer<int> or IEnumerable<T>
+                // For generic type DEFINITIONS (like List<T>), interfaces like IEnumerable<T> have
+                // VAR elements that won't have type context - this is expected, not a warning.
+                // Set flag so VAR resolution knows this is an expected scenario.
+                _resolvingGenericDefInterfaces = true;
                 uint typeSpecToken = 0x1B000000 | rowId;
                 interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+                _resolvingGenericDefInterfaces = false;
             }
 
             if (interfaceMT != null)
@@ -3490,9 +3524,12 @@ public static unsafe class AssemblyLoader
             else if (tag == 2)  // TypeSpec - generic interface instantiation
             {
                 // TypeSpec is used for generic interfaces like IContainer<T>
-                // With the type context set, ResolveTypeSpec will substitute type variables
+                // With the type context set, ResolveTypeSpec will substitute type variables.
+                // If no context is set, VAR resolution will fallback - mark this as expected.
+                _resolvingGenericDefInterfaces = true;
                 uint typeSpecToken = 0x1B000000 | rowId;
                 interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
+                _resolvingGenericDefInterfaces = false;
             }
 
             if (interfaceMT != null)
@@ -7911,9 +7948,17 @@ public static unsafe class AssemblyLoader
     /// <summary>
     /// Find a TypeDef by namespace and name in an assembly.
     /// Returns the TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// Uses O(1) hash lookup for korlib, O(n) linear scan for other assemblies.
     /// </summary>
     public static uint FindTypeDefByFullName(uint assemblyId, string ns, string name)
     {
+        // Fast path: use korlib type cache for O(1) lookup
+        if (_korlibTypeCacheInitialized && assemblyId == _korlibAssemblyId)
+        {
+            return FindKorlibTypeDef(ns, name);
+        }
+
+        // Slow path: linear scan for other assemblies
         LoadedAssembly* asm = GetAssembly(assemblyId);
         if (asm == null)
             return 0;
@@ -9216,6 +9261,217 @@ public static unsafe class AssemblyLoader
         }
 
         return false;
+    }
+
+    // ============================================================================
+    // Korlib Type Name Cache - Fast type lookup by (namespace, name)
+    // ============================================================================
+
+    // Hash table for O(1) type name lookups in korlib
+    // Uses open addressing with linear probing
+    private const int KorlibTypeCacheSize = 512;  // Power of 2 for fast modulo
+    private const int KorlibTypeCacheMask = KorlibTypeCacheSize - 1;
+
+    // Cache entry: packed as (namespaceHash:16, nameHash:16, typeDefRow:32)
+    // If typeDefRow is 0, the slot is empty
+    private static ulong* _korlibTypeCache;
+    private static uint _korlibAssemblyId;
+    private static bool _korlibTypeCacheInitialized;
+
+    /// <summary>
+    /// Simple hash function for null-terminated UTF-8 strings.
+    /// Uses FNV-1a for good distribution.
+    /// </summary>
+    private static uint HashString(byte* str)
+    {
+        if (str == null || str[0] == 0)
+            return 0;
+
+        uint hash = 2166136261;  // FNV offset basis
+        while (*str != 0)
+        {
+            hash ^= *str++;
+            hash *= 16777619;  // FNV prime
+        }
+        return hash;
+    }
+
+    /// <summary>
+    /// Build the korlib type cache for fast name-based lookups.
+    /// Called during kernel initialization after korlib.dll is loaded.
+    /// </summary>
+    public static void BuildKorlibTypeCache(uint korlibId)
+    {
+        if (_korlibTypeCacheInitialized)
+            return;
+
+        LoadedAssembly* korlib = GetAssembly(korlibId);
+        if (korlib == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] BuildKorlibTypeCache: korlib not loaded");
+            return;
+        }
+
+        // Allocate the hash table
+        _korlibTypeCache = (ulong*)HeapAllocator.AllocZeroed(
+            (ulong)(KorlibTypeCacheSize * sizeof(ulong)));
+        if (_korlibTypeCache == null)
+        {
+            DebugConsole.WriteLine("[AsmLoader] BuildKorlibTypeCache: allocation failed");
+            return;
+        }
+
+        _korlibAssemblyId = korlibId;
+
+        uint typeCount = korlib->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint inserted = 0;
+        uint collisions = 0;
+
+        for (uint row = 1; row <= typeCount; row++)
+        {
+            uint nameIdx = MetadataReader.GetTypeDefName(ref korlib->Tables, ref korlib->Sizes, row);
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref korlib->Tables, ref korlib->Sizes, row);
+
+            byte* typeName = MetadataReader.GetString(ref korlib->Metadata, nameIdx);
+            byte* typeNs = MetadataReader.GetString(ref korlib->Metadata, nsIdx);
+
+            uint nameHash = HashString(typeName);
+            uint nsHash = HashString(typeNs);
+
+            // Compute bucket index from combined hash
+            uint combinedHash = nsHash ^ (nameHash * 31);
+            int bucket = (int)(combinedHash & KorlibTypeCacheMask);
+
+            // Linear probing for collision resolution
+            int probeCount = 0;
+            while (_korlibTypeCache[bucket] != 0 && probeCount < KorlibTypeCacheSize)
+            {
+                bucket = (bucket + 1) & KorlibTypeCacheMask;
+                probeCount++;
+                collisions++;
+            }
+
+            if (probeCount < KorlibTypeCacheSize)
+            {
+                // Pack: [nsHash:16][nameHash:16][typeDefRow:32]
+                _korlibTypeCache[bucket] = ((ulong)(nsHash & 0xFFFF) << 48) |
+                                           ((ulong)(nameHash & 0xFFFF) << 32) |
+                                           row;
+                inserted++;
+            }
+        }
+
+        _korlibTypeCacheInitialized = true;
+
+        DebugConsole.Write("[AsmLoader] Korlib type cache: ");
+        DebugConsole.WriteDecimal(inserted);
+        DebugConsole.Write("/");
+        DebugConsole.WriteDecimal(typeCount);
+        DebugConsole.Write(" types cached, ");
+        DebugConsole.WriteDecimal(collisions);
+        DebugConsole.Write(" probes (");
+        // Calculate load factor percentage
+        uint loadPct = (inserted * 100) / KorlibTypeCacheSize;
+        DebugConsole.WriteDecimal(loadPct);
+        DebugConsole.WriteLine("% load)");
+    }
+
+    /// <summary>
+    /// Fast lookup of a korlib type by namespace and name.
+    /// Returns the TypeDef row (1-based) or 0 if not found.
+    /// </summary>
+    public static uint LookupKorlibType(string ns, string name)
+    {
+        if (!_korlibTypeCacheInitialized || _korlibTypeCache == null)
+            return 0;
+
+        // Convert managed strings to native for hashing
+        // We need to compute the same hash as BuildKorlibTypeCache did
+        uint nsHash = 0;
+        uint nameHash = 0;
+
+        // Hash namespace
+        if (ns != null && ns.Length > 0)
+        {
+            uint h = 2166136261;
+            for (int i = 0; i < ns.Length; i++)
+            {
+                h ^= (uint)(byte)ns[i];
+                h *= 16777619;
+            }
+            nsHash = h;
+        }
+
+        // Hash name
+        if (name != null && name.Length > 0)
+        {
+            uint h = 2166136261;
+            for (int i = 0; i < name.Length; i++)
+            {
+                h ^= (uint)(byte)name[i];
+                h *= 16777619;
+            }
+            nameHash = h;
+        }
+
+        // Compute bucket
+        uint combinedHash = nsHash ^ (nameHash * 31);
+        int bucket = (int)(combinedHash & KorlibTypeCacheMask);
+
+        // Linear probing
+        int probeCount = 0;
+        while (probeCount < KorlibTypeCacheSize)
+        {
+            ulong entry = _korlibTypeCache[bucket];
+            if (entry == 0)
+                return 0;  // Empty slot - not found
+
+            // Extract hash components for quick rejection
+            ushort storedNsHash = (ushort)(entry >> 48);
+            ushort storedNameHash = (ushort)(entry >> 32);
+
+            if (storedNsHash == (nsHash & 0xFFFF) && storedNameHash == (nameHash & 0xFFFF))
+            {
+                // Hash match - verify with actual string comparison
+                uint row = (uint)(entry & 0xFFFFFFFF);
+                LoadedAssembly* korlib = GetAssembly(_korlibAssemblyId);
+                if (korlib != null)
+                {
+                    uint nameIdx = MetadataReader.GetTypeDefName(ref korlib->Tables, ref korlib->Sizes, row);
+                    uint nsIdx = MetadataReader.GetTypeDefNamespace(ref korlib->Tables, ref korlib->Sizes, row);
+
+                    byte* typeName = MetadataReader.GetString(ref korlib->Metadata, nameIdx);
+                    byte* typeNs = MetadataReader.GetString(ref korlib->Metadata, nsIdx);
+
+                    bool nsMatch = false;
+                    if ((ns == null || ns.Length == 0) && (typeNs == null || typeNs[0] == 0))
+                        nsMatch = true;
+                    else if (ns != null && typeNs != null && StringEqualsLiteral(typeNs, ns))
+                        nsMatch = true;
+
+                    if (nsMatch && StringEqualsLiteral(typeName, name))
+                        return row;
+                }
+            }
+
+            bucket = (bucket + 1) & KorlibTypeCacheMask;
+            probeCount++;
+        }
+
+        return 0;  // Not found after full probe
+    }
+
+    /// <summary>
+    /// Fast lookup of a korlib TypeDef token by namespace and name.
+    /// Uses the type cache for O(1) average lookup.
+    /// Returns TypeDef token (0x02xxxxxx) or 0 if not found.
+    /// </summary>
+    public static uint FindKorlibTypeDef(string ns, string name)
+    {
+        uint row = LookupKorlibType(ns, name);
+        if (row != 0)
+            return 0x02000000 | row;
+        return 0;
     }
 
     // ============================================================================

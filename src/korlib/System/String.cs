@@ -30,6 +30,10 @@ namespace System
         /// <summary>
         /// Gets the empty string.
         /// </summary>
+        /// <remarks>
+        /// Note: Implemented as property because static field initialization causes bflat AOT issues.
+        /// The JIT handles ldsfld String::Empty specially by synthesizing an empty string.
+        /// </remarks>
         public static string Empty => "";
 
         public int Length => _length;

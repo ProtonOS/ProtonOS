@@ -4539,6 +4539,8 @@ public static unsafe class MetadataIntegration
             return FindDefaultConstructor(genDefMT);
         }
 
+        // TODO: Add support for AOT types by looking up in ReflectionRuntime's type info registry
+        // For now, just log and return null for unresolved types
         DebugConsole.WriteLine("[FindDefCtor] MT not found in any registry!");
         return null;
     }

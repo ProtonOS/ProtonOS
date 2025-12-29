@@ -202,6 +202,9 @@ public static unsafe class Kernel
             _korlibId = AssemblyLoader.Load(_korlibBytes, _korlibSize, AssemblyFlags.CoreLib);
             if (_korlibId != AssemblyLoader.InvalidAssemblyId)
             {
+                // Build korlib type name cache for fast lookups
+                AssemblyLoader.BuildKorlibTypeCache(_korlibId);
+
                 // Build token-based AOT method registry from korlib metadata
                 BuildKorlibTokenRegistry();
 
