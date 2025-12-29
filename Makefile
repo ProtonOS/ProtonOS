@@ -175,11 +175,13 @@ $(EXT2_DLL): $(EXT2_SRC) $(EXT2_DIR)/Ext2.csproj $(DDK_DLL) | $(BUILD_DIR)
 
 drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL)
 
-# Link UEFI executable
+# Link UEFI executable with debug symbols
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@echo "LINK $@"
-	$(LD) $(LD_FLAGS) -out:$@ $^
+	$(LD) $(LD_FLAGS) -debug -out:$@ $^
 	@file $@
+	@echo "Generating GDB-compatible symbols from PDB..."
+	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
 image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL)
