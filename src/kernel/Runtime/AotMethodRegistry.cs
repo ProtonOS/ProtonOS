@@ -1205,9 +1205,14 @@ public static unsafe class AotMethodRegistry
             (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int>)&CollectionHelpers.ReadOnlyCollectionException_get_Count,
             0, ReturnKind.Int32, true, false);
 
-        // NOTE: ReadOnlyCollection<T>.get_Item is NOT registered here because the helper assumes
-        // reference types (8-byte elements). For value types like int (4-byte elements), the
-        // element offset calculation is wrong. Let the JIT compile this for each instantiation.
+        // ReadOnlyCollection<T>.get_Item - indexer for reference types only
+        // NOTE: The helper uses 8-byte pointer indexing which only works for reference types.
+        // MetadataIntegration.TryResolveAotMemberRef checks if T is a reference type and
+        // skips AOT for value types (falls through to JIT compilation).
+        Register(
+            "System.Collections.ObjectModel.ReadOnlyCollection`1", "get_Item",
+            (nint)(delegate*<System.Collections.ObjectModel.ReadOnlyCollection<Exception>, int, Exception?>)&CollectionHelpers.ReadOnlyCollectionException_get_Item,
+            1, ReturnKind.IntPtr, true, false);
 
         // ReadOnlyCollection<Exception> constructor
         Register(

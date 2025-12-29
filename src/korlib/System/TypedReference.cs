@@ -52,16 +52,12 @@ namespace System
                 return null;
 
             // Get the MethodTable pointer
-            nint mt = value._type;
+            void* mt = (void*)value._type;
 
             // Check if this is a reference type (object pointer)
             // For reference types, _value IS the object reference
             // For value types, _value points to the value data
-
-            // Read flags from MethodTable to determine if value type
-            // MT layout: +0 = flags (includes IsValueType bit)
-            ushort flags = *(ushort*)(mt + 2);  // _usFlags at offset 2
-            bool isValueType = (flags & 0x0004) != 0;  // MTFlags.IsValueType >> 16
+            bool isValueType = Reflection_IsValueType(mt);
 
             if (!isValueType)
             {
@@ -70,19 +66,22 @@ namespace System
             }
 
             // Value type: need to box the value
-            // Get the size from MethodTable.BaseSize
-            // For boxing, we need the raw value size = BaseSize - 8 (without MT pointer overhead)
-            uint baseSize = *(uint*)(mt + 4);  // _uBaseSize at offset 4
-            int valueSize = (int)(baseSize >= 8 ? baseSize - 8 : baseSize);
+            int valueSize = Reflection_GetValueSize(mt);
 
             // Box the value using kernel helper
-            void* boxed = Reflection_BoxValue((void*)mt, (void*)value._value, valueSize);
+            void* boxed = Reflection_BoxValue(mt, (void*)value._value, valueSize);
             if (boxed == null)
                 return null;
 
             // Convert void* to object reference
             return Unsafe.As<nint, object>(ref *(nint*)&boxed);
         }
+
+        [DllImport("*", EntryPoint = "Reflection_IsValueType", CallingConvention = CallingConvention.Cdecl)]
+        private static extern unsafe bool Reflection_IsValueType(void* methodTable);
+
+        [DllImport("*", EntryPoint = "Reflection_GetValueSize", CallingConvention = CallingConvention.Cdecl)]
+        private static extern unsafe int Reflection_GetValueSize(void* methodTable);
 
         [DllImport("*", EntryPoint = "Reflection_BoxValue", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe void* Reflection_BoxValue(void* methodTable, void* valueData, int valueSize);

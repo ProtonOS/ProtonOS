@@ -363,6 +363,43 @@ public static unsafe class ReflectionExports
     }
 
     // ========================================================================
+    // MethodTable Accessor APIs
+    // ========================================================================
+    // These provide safe accessors for MethodTable fields so korlib doesn't
+    // need to know the exact memory layout. This is more robust than
+    // hardcoded pointer offsets.
+
+    /// <summary>
+    /// Check if a type represented by a MethodTable is a value type.
+    /// </summary>
+    /// <param name="methodTable">The MethodTable* to check</param>
+    /// <returns>True if the type is a value type (struct/enum), false for reference types</returns>
+    [RuntimeExport("Reflection_IsValueType")]
+    public static bool IsValueType(void* methodTable)
+    {
+        if (methodTable == null) return false;
+        var mt = (ProtonOS.Runtime.MethodTable*)methodTable;
+        return mt->IsValueType;
+    }
+
+    /// <summary>
+    /// Get the size of value data for boxing (BaseSize minus object header overhead).
+    /// For reference types, returns 0.
+    /// </summary>
+    /// <param name="methodTable">The MethodTable* to query</param>
+    /// <returns>Size of value data in bytes, or 0 for reference types</returns>
+    [RuntimeExport("Reflection_GetValueSize")]
+    public static int GetValueSize(void* methodTable)
+    {
+        if (methodTable == null) return 0;
+        var mt = (ProtonOS.Runtime.MethodTable*)methodTable;
+        if (!mt->IsValueType) return 0;
+        // Value size = BaseSize - 8 (minus the MethodTable pointer overhead in boxed representation)
+        uint baseSize = mt->BaseSize;
+        return (int)(baseSize >= 8 ? baseSize - 8 : baseSize);
+    }
+
+    // ========================================================================
     // Boxing/Allocation APIs
     // ========================================================================
 

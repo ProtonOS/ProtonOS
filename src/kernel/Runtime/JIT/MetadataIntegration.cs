@@ -2210,6 +2210,7 @@ public static unsafe class MetadataIntegration
 
         // Get the type name from the TypeRef or TypeSpec
         byte* typeName = null;
+        bool firstGenericArgIsRefType = false;  // Track if first generic type arg is reference type
         if (classRef.Table == MetadataTableId.TypeRef)
         {
             uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
@@ -2262,6 +2263,32 @@ public static unsafe class MetadataIntegration
                             byte* ns = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
                             byte* name = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
                             typeName = BuildFullTypeName(ns, name);
+
+                            // Parse generic argument count and first type argument
+                            if (tsPos < (int)tsSigLen)
+                            {
+                                // Decode argCount (compressed integer)
+                                uint argCount = 0;
+                                byte ac = tsSig[tsPos++];
+                                if ((ac & 0x80) == 0)
+                                    argCount = ac;
+                                else if ((ac & 0xC0) == 0x80 && tsPos < (int)tsSigLen)
+                                    argCount = (uint)(((ac & 0x3F) << 8) | tsSig[tsPos++]);
+
+                                // Parse first type argument to check if reference type
+                                if (argCount > 0 && tsPos < (int)tsSigLen)
+                                {
+                                    byte argElemType = tsSig[tsPos];
+                                    // Reference types: CLASS(0x12), STRING(0x0E), OBJECT(0x1C), SZARRAY(0x1D), ARRAY(0x14)
+                                    // Value types: VALUETYPE(0x11), I1-I8, U1-U8, R4, R8, BOOLEAN, CHAR, etc.
+                                    firstGenericArgIsRefType =
+                                        argElemType == 0x12 || // CLASS
+                                        argElemType == 0x0E || // STRING
+                                        argElemType == 0x1C || // OBJECT
+                                        argElemType == 0x1D || // SZARRAY
+                                        argElemType == 0x14;   // ARRAY
+                                }
+                            }
                         }
                     }
                 }
@@ -2303,6 +2330,15 @@ public static unsafe class MetadataIntegration
         DebugConsole.Write(" args=");
         DebugConsole.WriteDecimal(paramCount);
         DebugConsole.WriteLine();
+
+        // Special handling for ReadOnlyCollection<T>.get_Item - only use AOT for reference types
+        // The AOT helper uses 8-byte pointer indexing which only works for reference type arrays
+        if (NameEquals(typeName, "System.Collections.ObjectModel.ReadOnlyCollection`1") &&
+            NameEquals(memberName, "get_Item") && !firstGenericArgIsRefType)
+        {
+            DebugConsole.WriteLine("[AotMemberRef] ReadOnlyCollection.get_Item: T is value type, skip AOT");
+            return false;  // Fall through to JIT for value types
+        }
 
         // Special handling for String constructors - need to distinguish char* from char[]
         // For .ctor with 3 params, check if first param is pointer (char*) vs array (char[])
