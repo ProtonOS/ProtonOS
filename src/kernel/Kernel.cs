@@ -213,6 +213,9 @@ public static unsafe class Kernel
 
                 // Initialize critical interface types (IDisposable) from korlib
                 AssemblyLoader.InitializeKorlibInterfaces(_korlibId);
+
+                // Test AOT→JIT: compile a method from korlib.dll
+                TestAotToJitCompilation();
             }
         }
 
@@ -1160,6 +1163,47 @@ public static unsafe class Kernel
         {
             TestAhciIO(ahciEntryToken);
         }
+    }
+
+    /// <summary>
+    /// Test AOT→JIT compilation capability by compiling a method from korlib.dll.
+    /// </summary>
+    private static void TestAotToJitCompilation()
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[AOT→JIT] Testing AOT to JIT compilation...");
+
+        // Try to compile Environment.get_NewLine from korlib.dll
+        // This is a simple method that just returns a string constant
+        void* code = ProtonOS.Runtime.JIT.Tier0JIT.CompileKorlibMethod("System", "Environment", "get_NewLine");
+        if (code != null)
+        {
+            DebugConsole.Write("[AOT→JIT] SUCCESS: Compiled Environment.get_NewLine at 0x");
+            DebugConsole.WriteHex((ulong)code);
+            DebugConsole.WriteLine();
+
+            // Try to call it! The signature is: string get_NewLine()
+            // We'll use a function pointer to call the JIT-compiled code
+            var getNewLine = (delegate*<string>)code;
+            string newLine = getNewLine();
+            if (newLine != null)
+            {
+                DebugConsole.Write("[AOT→JIT] Called get_NewLine, got string of length ");
+                DebugConsole.WriteDecimal((uint)newLine.Length);
+                DebugConsole.WriteLine();
+            }
+            else
+            {
+                DebugConsole.WriteLine("[AOT→JIT] WARNING: get_NewLine returned null");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[AOT→JIT] FAILED: Could not compile Environment.get_NewLine");
+        }
+
+        DebugConsole.WriteLine("[AOT→JIT] Test complete");
+        DebugConsole.WriteLine();
     }
 
     /// <summary>

@@ -2327,4 +2327,90 @@ public static unsafe class Tier0JIT
         }
         return name[expected.Length] == 0;
     }
+
+    // ============================================================================
+    // AOT→JIT Interop - Compile korlib methods from AOT code
+    // ============================================================================
+
+    /// <summary>
+    /// Compile a method from korlib.dll by type and method name.
+    /// This allows AOT kernel code to JIT-compile and call methods from korlib.
+    /// </summary>
+    /// <param name="ns">Namespace (e.g., "System.Collections.Generic")</param>
+    /// <param name="typeName">Type name (e.g., "List`1")</param>
+    /// <param name="methodName">Method name (e.g., "Add")</param>
+    /// <returns>Native code pointer, or null if compilation failed.</returns>
+    public static void* CompileKorlibMethod(string ns, string typeName, string methodName)
+    {
+        // Get korlib assembly
+        var korlib = AssemblyLoader.GetCoreLib();
+        if (korlib == null)
+        {
+            DebugConsole.WriteLine("[Tier0JIT] CompileKorlibMethod: CoreLib not loaded");
+            return null;
+        }
+
+        // Find type using the korlib type cache (O(1) lookup)
+        uint typeToken = AssemblyLoader.FindKorlibTypeDef(ns, typeName);
+        if (typeToken == 0)
+        {
+            DebugConsole.Write("[Tier0JIT] CompileKorlibMethod: Type not found: ");
+            if (ns != null && ns.Length > 0)
+            {
+                for (int i = 0; i < ns.Length; i++)
+                    DebugConsole.WriteChar((char)ns[i]);
+                DebugConsole.WriteChar('.');
+            }
+            for (int i = 0; i < typeName.Length; i++)
+                DebugConsole.WriteChar((char)typeName[i]);
+            DebugConsole.WriteLine();
+            return null;
+        }
+
+        // Find method in type
+        uint methodToken = AssemblyLoader.FindMethodDefByName(korlib->AssemblyId, typeToken, methodName);
+        if (methodToken == 0)
+        {
+            DebugConsole.Write("[Tier0JIT] CompileKorlibMethod: Method not found: ");
+            for (int i = 0; i < methodName.Length; i++)
+                DebugConsole.WriteChar((char)methodName[i]);
+            DebugConsole.WriteLine();
+            return null;
+        }
+
+        DebugConsole.Write("[Tier0JIT] CompileKorlibMethod: ");
+        if (ns != null && ns.Length > 0)
+        {
+            for (int i = 0; i < ns.Length; i++)
+                DebugConsole.WriteChar((char)ns[i]);
+            DebugConsole.WriteChar('.');
+        }
+        for (int i = 0; i < typeName.Length; i++)
+            DebugConsole.WriteChar((char)typeName[i]);
+        DebugConsole.WriteChar('.');
+        for (int i = 0; i < methodName.Length; i++)
+            DebugConsole.WriteChar((char)methodName[i]);
+        DebugConsole.Write(" -> token 0x");
+        DebugConsole.WriteHex(methodToken);
+        DebugConsole.WriteLine();
+
+        // Compile the method
+        var result = CompileMethod(korlib->AssemblyId, methodToken);
+        if (!result.Success)
+        {
+            DebugConsole.WriteLine("[Tier0JIT] CompileKorlibMethod: Compilation failed");
+            return null;
+        }
+
+        return result.CodeAddress;
+    }
+
+    /// <summary>
+    /// Get the korlib assembly ID.
+    /// </summary>
+    public static uint GetKorlibAssemblyId()
+    {
+        var korlib = AssemblyLoader.GetCoreLib();
+        return korlib != null ? korlib->AssemblyId : AssemblyLoader.InvalidAssemblyId;
+    }
 }
