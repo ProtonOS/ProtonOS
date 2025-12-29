@@ -7,11 +7,13 @@ This script automates loading kernel symbols at the correct address by:
 2. Waiting for the kernel to write the marker (0xDEADBEEF)
 3. Reading the actual ImageBase from 0x10008
 4. Loading symbols with the correct offset
+5. Enabling JIT symbol registration via GDB JIT interface
 
 Usage in GDB:
   source tools/gdb-protonos.py
   proton-connect        # Connect to QEMU and load symbols automatically
   proton-load-symbols   # Just load symbols (if already connected and base known)
+  proton-jit-enable     # Enable JIT symbol debugging (after symbols loaded)
 """
 
 import gdb
@@ -21,6 +23,9 @@ GDB_DEBUG_MARKER_ADDR = 0x10000
 GDB_DEBUG_IMAGEBASE_ADDR = 0x10008
 GDB_DEBUG_MARKER_VALUE = 0xDEADBEEF
 PE_IMAGE_BASE = 0x140000000  # Expected base in the PE header
+
+# Global state for symbol offset
+_symbol_offset = 0
 
 class ProtonConnectCommand(gdb.Command):
     """Connect to QEMU and automatically load ProtonOS kernel symbols."""
@@ -58,11 +63,19 @@ class ProtonConnectCommand(gdb.Command):
         gdb.execute("delete")
 
         # Load symbols with offset
-        print("[ProtonOS] Loading symbols...")
+        print("[ProtonOS] Loading AOT symbols...")
         gdb.execute(f"add-symbol-file build/x64/kernel_syms.elf -o {offset}")
 
-        print("[ProtonOS] Symbols loaded! You can now set breakpoints by function name.")
+        # Save offset for JIT symbol support
+        global _symbol_offset
+        _symbol_offset = offset
+
+        print("[ProtonOS] AOT symbols loaded! You can now set breakpoints by function name.")
         print("[ProtonOS] Example: break kernel_ProtonOS_Kernel__Main")
+        print("[ProtonOS] ")
+        print("[ProtonOS] JIT symbols: The kernel registers JIT-compiled methods with GDB.")
+        print("[ProtonOS] Use 'proton-jit-enable' to set breakpoint on JIT registration.")
+        print("[ProtonOS] JIT methods will have names like: jit_FullTest_Tests__TestMethod")
 
 class ProtonLoadSymbolsCommand(gdb.Command):
     """Load ProtonOS symbols using the ImageBase already written to memory."""
@@ -114,12 +127,52 @@ class ProtonInfoCommand(gdb.Command):
         except gdb.error:
             print("\n(Not connected to target)")
 
+class ProtonJitEnableCommand(gdb.Command):
+    """Enable JIT symbol debugging by setting breakpoint on JIT registration."""
+
+    def __init__(self):
+        super().__init__("proton-jit-enable", gdb.COMMAND_USER)
+
+    def invoke(self, arg, from_tty):
+        global _symbol_offset
+
+        if _symbol_offset == 0:
+            print("[ProtonOS] Error: Symbol offset not set. Run proton-connect first.")
+            return
+
+        try:
+            # Try to set breakpoint on __jit_debug_register_code
+            # This is the function GDB normally breaks on for JIT interface
+            gdb.execute("break __jit_debug_register_code")
+            print("[ProtonOS] JIT debugging enabled.")
+            print("[ProtonOS] GDB will stop when JIT code is registered.")
+            print("[ProtonOS] Use 'info functions jit_' to list JIT symbols after they're registered.")
+        except gdb.error as e:
+            print(f"[ProtonOS] Could not set JIT breakpoint: {e}")
+            print("[ProtonOS] JIT debugging may not be available.")
+
+class ProtonJitListCommand(gdb.Command):
+    """List registered JIT symbols."""
+
+    def __init__(self):
+        super().__init__("proton-jit-list", gdb.COMMAND_USER)
+
+    def invoke(self, arg, from_tty):
+        try:
+            gdb.execute("info functions jit_")
+        except gdb.error as e:
+            print(f"[ProtonOS] Error listing JIT symbols: {e}")
+
 # Register commands
 ProtonConnectCommand()
 ProtonLoadSymbolsCommand()
 ProtonInfoCommand()
+ProtonJitEnableCommand()
+ProtonJitListCommand()
 
 print("[ProtonOS] GDB helper loaded. Commands available:")
 print("  proton-connect [port]  - Connect to QEMU and load symbols automatically")
 print("  proton-load-symbols    - Load symbols (if ImageBase already available)")
+print("  proton-jit-enable      - Enable JIT symbol debugging")
+print("  proton-jit-list        - List registered JIT symbols")
 print("  proton-info            - Show debug addresses and current values")

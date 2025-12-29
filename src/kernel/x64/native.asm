@@ -11,7 +11,63 @@ global g_uefi_image_handle, g_uefi_system_table
 g_uefi_image_handle: dq 0
 g_uefi_system_table:  dq 0
 
+;; ==================== GDB JIT Debug Interface ====================
+;; GDB monitors __jit_debug_descriptor and breaks on __jit_debug_register_code
+;; to learn about dynamically compiled code.
+;;
+;; struct jit_descriptor {
+;;     uint32_t version;        // Must be 1
+;;     uint32_t action_flag;    // 0=none, 1=register, 2=unregister
+;;     jit_code_entry* relevant_entry;
+;;     jit_code_entry* first_entry;
+;; };
+
+global __jit_debug_descriptor
+__jit_debug_descriptor:
+    dd 1                    ; version = 1
+    dd 0                    ; action_flag = JIT_NOACTION
+    dq 0                    ; relevant_entry = NULL
+    dq 0                    ; first_entry = NULL
+
 section .text
+
+;; ==================== GDB JIT Debug Interface ====================
+;; GDB sets a breakpoint on this function to detect JIT events.
+;; When called, GDB reads __jit_debug_descriptor to find new code.
+
+global __jit_debug_register_code
+__jit_debug_register_code:
+    ret
+
+;; Helper functions for managed code to manipulate the descriptor
+
+; void __jit_set_action(uint32_t action)
+; Sets action_flag in __jit_debug_descriptor
+global __jit_set_action
+__jit_set_action:
+    mov [rel __jit_debug_descriptor + 4], ecx
+    ret
+
+; void __jit_set_relevant_entry(void* entry)
+; Sets relevant_entry in __jit_debug_descriptor
+global __jit_set_relevant_entry
+__jit_set_relevant_entry:
+    mov [rel __jit_debug_descriptor + 8], rcx
+    ret
+
+; void __jit_set_first_entry(void* entry)
+; Sets first_entry in __jit_debug_descriptor
+global __jit_set_first_entry
+__jit_set_first_entry:
+    mov [rel __jit_debug_descriptor + 16], rcx
+    ret
+
+; void* __jit_get_first_entry()
+; Gets first_entry from __jit_debug_descriptor
+global __jit_get_first_entry
+__jit_get_first_entry:
+    mov rax, [rel __jit_debug_descriptor + 16]
+    ret
 
 ;; ==================== UEFI Entry Point ====================
 ;; Linker entry point that saves UEFI parameters, then calls korlib's EfiMain.

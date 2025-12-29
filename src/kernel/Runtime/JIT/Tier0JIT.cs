@@ -710,6 +710,9 @@ public static unsafe class Tier0JIT
             JITMethodRegistry.RegisterMethodForUnwind(ref methodInfo);
         }
 
+        // Register with GDB JIT debug interface for symbolic debugging
+        RegisterWithGdb(assembly, methodToken, assemblyId, dbgMethodName, code, codeSize);
+
         // If this is a virtual method, populate the vtable slot
         bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
         bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
@@ -2412,5 +2415,98 @@ public static unsafe class Tier0JIT
     {
         var korlib = AssemblyLoader.GetCoreLib();
         return korlib != null ? korlib->AssemblyId : AssemblyLoader.InvalidAssemblyId;
+    }
+
+    /// <summary>
+    /// Register a JIT-compiled method with GDB for symbolic debugging.
+    /// Builds a mangled symbol name and registers the code region.
+    /// </summary>
+    private static void RegisterWithGdb(LoadedAssembly* assembly, uint methodToken, uint assemblyId,
+        byte* methodName, void* code, int codeSize)
+    {
+        if (methodName == null || code == null || codeSize <= 0)
+            return;
+
+        // Find the declaring type for the method
+        uint typeDefRow = 0;
+        uint methodRid = methodToken & 0x00FFFFFF;
+
+        // Walk TypeDef table to find the type that owns this method
+        // TypeDef has MethodList field that indicates first method RID for that type
+        uint typeDefCount = assembly->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        for (uint i = 1; i <= typeDefCount; i++)
+        {
+            uint methodListStart = MetadataReader.GetTypeDefMethodList(ref assembly->Tables, ref assembly->Sizes, i);
+            uint methodListEnd;
+
+            if (i < typeDefCount)
+            {
+                methodListEnd = MetadataReader.GetTypeDefMethodList(ref assembly->Tables, ref assembly->Sizes, i + 1);
+            }
+            else
+            {
+                // Last type owns all remaining methods
+                methodListEnd = assembly->Tables.RowCounts[(int)MetadataTableId.MethodDef] + 1;
+            }
+
+            if (methodRid >= methodListStart && methodRid < methodListEnd)
+            {
+                typeDefRow = i;
+                break;
+            }
+        }
+
+        // Build the mangled name: TypeName__MethodName
+        var sb = new System.Text.StringBuilder(128);
+
+        // Add namespace and type name if available
+        if (typeDefRow != 0)
+        {
+            uint nsIdx = MetadataReader.GetTypeDefNamespace(ref assembly->Tables, ref assembly->Sizes, typeDefRow);
+            byte* ns = MetadataReader.GetString(ref assembly->Metadata, nsIdx);
+            if (ns != null && ns[0] != 0)
+            {
+                // Append namespace, replacing . with _
+                for (byte* p = ns; *p != 0; p++)
+                {
+                    char c = (char)*p;
+                    sb.Append(c == '.' ? '_' : c);
+                }
+                sb.Append('_');
+            }
+
+            uint typeNameIdx = MetadataReader.GetTypeDefName(ref assembly->Tables, ref assembly->Sizes, typeDefRow);
+            byte* typeName = MetadataReader.GetString(ref assembly->Metadata, typeNameIdx);
+            if (typeName != null && typeName[0] != 0)
+            {
+                // Append type name, replacing problematic chars with _
+                for (byte* p = typeName; *p != 0; p++)
+                {
+                    char c = (char)*p;
+                    if (c == '<' || c == '>' || c == '`' || c == '+')
+                        sb.Append('_');
+                    else
+                        sb.Append(c);
+                }
+            }
+        }
+
+        // Add separator and method name
+        sb.Append('_');
+        sb.Append('_');
+
+        // Append method name
+        for (byte* p = methodName; *p != 0; p++)
+        {
+            char c = (char)*p;
+            if (c == '<' || c == '>' || c == '.' || c == ',')
+                sb.Append('_');
+            else
+                sb.Append(c);
+        }
+
+        // Register with GDB
+        string fullName = sb.ToString();
+        GdbJitDebug.RegisterMethod(fullName, (ulong)code, (uint)codeSize);
     }
 }

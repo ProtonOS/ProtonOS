@@ -20,11 +20,12 @@ for line in result.stdout.decode('utf-8', errors='replace').split('\n'):
         va = int(line.split()[0], 16)
         sections[section_num] = va
 
-# Get symbols
+# Get symbols from module 1
 result = subprocess.run(['llvm-pdbutil', 'dump', '--modi=1', '--symbols', pdb_file],
                        capture_output=True)
 
 symbols = []
+data_symbols = []  # For global data like __jit_debug_descriptor
 lines = result.stdout.decode('utf-8', errors='replace').split('\n')
 i = 0
 while i < len(lines):
@@ -44,16 +45,71 @@ while i < len(lines):
                     if section in sections:
                         addr = IMAGE_BASE + sections[section] + offset
                         symbols.append((addr, size, name))
+    elif 'S_GDATA32' in line:
+        # Global data symbols (e.g., __jit_debug_descriptor)
+        match = re.search(r'`([^`]+)`', line)
+        if match:
+            name = match.group(1)
+            if i + 1 < len(lines):
+                addr_line = lines[i + 1]
+                addr_match = re.search(r'addr = (\d+):(\d+)', addr_line)
+                if addr_match:
+                    section = int(addr_match.group(1))
+                    offset = int(addr_match.group(2))
+                    if section in sections:
+                        addr = IMAGE_BASE + sections[section] + offset
+                        data_symbols.append((addr, 0, name))
     i += 1
+
+# Also get public symbols (includes native symbols from .asm files)
+result = subprocess.run(['llvm-pdbutil', 'dump', '--publics', pdb_file],
+                       capture_output=True)
+lines = result.stdout.decode('utf-8', errors='replace').split('\n')
+
+# Track existing symbol names to avoid duplicates
+existing_names = {name for _, _, name in symbols} | {name for _, _, name in data_symbols}
+
+for line in lines:
+    if 'S_PUB32' in line:
+        # Format: offset | S_PUB32 [size = N] `name`
+        # Next line has: flags = ..., addr = section:offset
+        match = re.search(r'`([^`]+)`', line)
+        if match:
+            name = match.group(1)
+            # Skip if we already have this symbol
+            if name in existing_names:
+                continue
+            # Skip internal/compiler-generated symbols
+            if name.startswith('__Str__') or name.startswith('_unwind'):
+                continue
+            # Look for addr in next non-empty line
+            idx = lines.index(line)
+            if idx + 1 < len(lines):
+                next_line = lines[idx + 1]
+                addr_match = re.search(r'addr = (\d+):(\d+)', next_line)
+                if addr_match:
+                    section = int(addr_match.group(1))
+                    offset = int(addr_match.group(2))
+                    if section in sections:
+                        addr = IMAGE_BASE + sections[section] + offset
+                        # Determine if function or data based on name pattern
+                        if name.startswith('__jit_debug_descriptor') or name.startswith('g_'):
+                            data_symbols.append((addr, 0, name))
+                        else:
+                            symbols.append((addr, 0, name))
+                        existing_names.add(name)
+
+# Merge data symbols into symbols list (will be marked as OBJECT type)
+all_symbols = symbols + data_symbols
 
 # Build string table for section names
 shstrtab = b'\x00.text\x00.symtab\x00.strtab\x00.shstrtab\x00'
 # Offsets: .text=1, .symtab=7, .strtab=15, .shstrtab=23
 
-# Build string table for symbols
+# Build string table for symbols (include both functions and data)
 strtab = b'\x00'
 str_offsets = {}
-for addr, size, name in symbols:
+for addr, size, name in all_symbols:
     str_offsets[name] = len(strtab)
     strtab += name.encode('utf-8', errors='replace') + b'\x00'
 
@@ -78,7 +134,7 @@ struct.pack_into('<H', ehdr, 62, 4)  # e_shstrndx
 shdrs_size = 5 * 64  # 5 sections
 text_offset = 64 + shdrs_size
 symtab_offset = text_offset  # Empty text section
-strtab_offset = symtab_offset + (len(symbols) + 1) * 24
+strtab_offset = symtab_offset + (len(all_symbols) + 1) * 24
 shstrtab_offset = strtab_offset + len(strtab)
 
 # Section headers
@@ -99,7 +155,7 @@ shdr_symtab = bytearray(64)
 struct.pack_into('<I', shdr_symtab, 0, 7)  # sh_name = ".symtab"
 struct.pack_into('<I', shdr_symtab, 4, 2)  # sh_type = SHT_SYMTAB
 struct.pack_into('<Q', shdr_symtab, 24, symtab_offset)
-struct.pack_into('<Q', shdr_symtab, 32, (len(symbols)+1)*24)
+struct.pack_into('<Q', shdr_symtab, 32, (len(all_symbols)+1)*24)
 struct.pack_into('<I', shdr_symtab, 40, 3)  # sh_link = strtab
 struct.pack_into('<I', shdr_symtab, 44, 1)  # sh_info = first global
 struct.pack_into('<Q', shdr_symtab, 56, 24)
@@ -119,11 +175,17 @@ struct.pack_into('<Q', shdr_shstrtab, 24, shstrtab_offset)
 struct.pack_into('<Q', shdr_shstrtab, 32, len(shstrtab))
 
 # Build symbol table
+# Create set of function symbol names for type detection
+func_names = {name for addr, size, name in symbols}
+
 symtab = bytearray(24)  # Null symbol
-for addr, size, name in sorted(symbols):
+for addr, size, name in sorted(all_symbols):
     sym = bytearray(24)
     struct.pack_into('<I', sym, 0, str_offsets[name])
-    sym[4] = (1 << 4) | 2  # GLOBAL | FUNC
+    if name in func_names:
+        sym[4] = (1 << 4) | 2  # GLOBAL | FUNC
+    else:
+        sym[4] = (1 << 4) | 1  # GLOBAL | OBJECT (data symbol)
     sym[5] = 0  # st_other
     struct.pack_into('<H', sym, 6, 1)  # st_shndx = .text section
     struct.pack_into('<Q', sym, 8, addr)
@@ -142,4 +204,4 @@ with open(output_file, 'wb') as f:
     f.write(strtab)
     f.write(shstrtab)
 
-print(f"Generated {output_file} with {len(symbols)} symbols")
+print(f"Generated {output_file} with {len(symbols)} functions and {len(data_symbols)} data symbols")
