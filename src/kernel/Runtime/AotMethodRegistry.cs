@@ -208,6 +208,26 @@ public static unsafe class AotMethodRegistry
     private static bool _initialized;
     private static bool _tokenRegistryInitialized;
 
+    // =========================================================================
+    // Byref variant cache for value type instance methods
+    // When calling a value type method via "ldloca; call instance", the this
+    // pointer is a byref (value at offset 0), not a boxed object (value at offset +8).
+    // This cache provides the correct byref variants for such calls.
+    // =========================================================================
+    private const int ByrefCacheSize = 64;
+    private const int ByrefCacheMask = ByrefCacheSize - 1;
+
+    private struct ByrefEntry
+    {
+        public ulong TypeHash;
+        public ulong MethodHash;
+        public nint FunctionPtr;
+        public bool IsValid;
+    }
+
+    private static ByrefEntry* _byrefCache;
+    private static int _byrefCount;
+
     /// <summary>
     /// Initialize the AOT method registry.
     /// Must be called during kernel initialization before JIT compilation.
@@ -229,6 +249,15 @@ public static unsafe class AotMethodRegistry
             }
         }
 
+        // Initialize byref variant cache
+        _byrefCache = (ByrefEntry*)HeapAllocator.AllocZeroed((ulong)(ByrefCacheSize * sizeof(ByrefEntry)));
+        if (_byrefCache == null)
+        {
+            DebugConsole.WriteLine("[AotRegistry] Failed to alloc byref cache");
+            return;
+        }
+        _byrefCount = 0;
+
         // Register well-known String methods
         RegisterStringMethods();
 
@@ -243,6 +272,9 @@ public static unsafe class AotMethodRegistry
 
         // Register well-known primitive methods (UInt16, etc.)
         RegisterPrimitiveMethods();
+
+        // Register byref calling convention variants for value type instance methods
+        RegisterByrefVariants();
 
         // Register well-known Exception methods
         RegisterExceptionMethods();
@@ -1024,6 +1056,52 @@ public static unsafe class AotMethodRegistry
     }
 
     /// <summary>
+    /// Register byref calling convention variants for value type instance methods.
+    /// These are used for direct calls (ldloca; call instance) where the this pointer
+    /// points directly to the value (offset 0), not to a boxed object (offset +8).
+    /// </summary>
+    private static void RegisterByrefVariants()
+    {
+        // =========================================================================
+        // ToString - byref variants
+        // =========================================================================
+        RegisterByref("System.Byte", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Byte_ToString_Byref);
+        RegisterByref("System.SByte", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.SByte_ToString_Byref);
+        RegisterByref("System.Boolean", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Boolean_ToString_Byref);
+        RegisterByref("System.Char", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Char_ToString_Byref);
+        RegisterByref("System.Int16", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Int16_ToString_Byref);
+        RegisterByref("System.UInt16", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt16_ToString_Byref);
+        RegisterByref("System.Int32", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Int32_ToString_Byref);
+        RegisterByref("System.Int64", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Int64_ToString_Byref);
+        RegisterByref("System.UInt32", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt32_ToString_Byref);
+        RegisterByref("System.UInt64", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.UInt64_ToString_Byref);
+        RegisterByref("System.IntPtr", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.IntPtr_ToString_Byref);
+        RegisterByref("System.UIntPtr", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.UIntPtr_ToString_Byref);
+        RegisterByref("System.Single", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Single_ToString_Byref);
+        RegisterByref("System.Double", "ToString", (nint)(delegate*<nint, string>)&PrimitiveHelpers.Double_ToString_Byref);
+
+        // =========================================================================
+        // GetHashCode - byref variants
+        // =========================================================================
+        RegisterByref("System.Byte", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Byte_GetHashCode_Byref);
+        RegisterByref("System.SByte", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.SByte_GetHashCode_Byref);
+        RegisterByref("System.Boolean", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Boolean_GetHashCode_Byref);
+        RegisterByref("System.Char", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Char_GetHashCode_Byref);
+        RegisterByref("System.Int16", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Int16_GetHashCode_Byref);
+        RegisterByref("System.UInt16", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt16_GetHashCode_Byref);
+        RegisterByref("System.Int32", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Int32_GetHashCode_Byref);
+        RegisterByref("System.Int64", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.Int64_GetHashCode_Byref);
+        RegisterByref("System.UInt32", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt32_GetHashCode_Byref);
+        RegisterByref("System.UInt64", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.UInt64_GetHashCode_Byref);
+        RegisterByref("System.IntPtr", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.IntPtr_GetHashCode_Byref);
+        RegisterByref("System.UIntPtr", "GetHashCode", (nint)(delegate*<nint, int>)&PrimitiveHelpers.UIntPtr_GetHashCode_Byref);
+
+        DebugConsole.Write("[AotRegistry] Registered ");
+        DebugConsole.WriteDecimal((uint)_byrefCount);
+        DebugConsole.WriteLine(" byref variants");
+    }
+
+    /// <summary>
     /// Register Exception constructor methods for JIT code.
     /// These allow JIT-compiled code to call newobj for exception types.
     /// </summary>
@@ -1728,6 +1806,95 @@ public static unsafe class AotMethodRegistry
         return 0;
     }
 
+    // =========================================================================
+    // Byref variant registration and lookup
+    // =========================================================================
+
+    /// <summary>
+    /// Register a byref calling convention variant for a value type instance method.
+    /// The byref variant reads the value from offset 0 (direct pointer to value),
+    /// unlike boxed variants which read from offset +8.
+    /// </summary>
+    public static void RegisterByref(string typeName, string methodName, nint functionPtr)
+    {
+        if (_byrefCache == null || _byrefCount >= ByrefCacheSize - 1)
+            return;
+
+        ulong typeHash = HashString(typeName);
+        ulong methodHash = HashString(methodName);
+        ulong combinedHash = typeHash ^ (methodHash << 7);
+        int index = (int)(combinedHash & ByrefCacheMask);
+
+        // Linear probing
+        int probes = 0;
+        while (_byrefCache[index].IsValid && probes < ByrefCacheSize)
+        {
+            index = (index + 1) & ByrefCacheMask;
+            probes++;
+        }
+
+        if (probes >= ByrefCacheSize) return;
+
+        _byrefCache[index] = new ByrefEntry
+        {
+            TypeHash = typeHash,
+            MethodHash = methodHash,
+            FunctionPtr = functionPtr,
+            IsValid = true
+        };
+        _byrefCount++;
+    }
+
+    /// <summary>
+    /// Look up a byref calling convention variant for a value type instance method.
+    /// Returns the function pointer or 0 if not found.
+    /// </summary>
+    public static nint LookupByref(string typeName, string methodName)
+    {
+        if (_byrefCache == null)
+            return 0;
+
+        ulong typeHash = HashString(typeName);
+        ulong methodHash = HashString(methodName);
+        ulong combinedHash = typeHash ^ (methodHash << 7);
+        int index = (int)(combinedHash & ByrefCacheMask);
+
+        int probes = 0;
+        while (_byrefCache[index].IsValid && probes < ByrefCacheSize)
+        {
+            if (_byrefCache[index].TypeHash == typeHash && _byrefCache[index].MethodHash == methodHash)
+                return _byrefCache[index].FunctionPtr;
+            index = (index + 1) & ByrefCacheMask;
+            probes++;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Look up a byref variant by type and method name hashes.
+    /// Returns the function pointer or 0 if not found.
+    /// </summary>
+    public static nint LookupByrefByHash(ulong typeHash, ulong methodHash)
+    {
+        if (_byrefCache == null)
+            return 0;
+
+        ulong combinedHash = typeHash ^ (methodHash << 7);
+        int index = (int)(combinedHash & ByrefCacheMask);
+
+        int probes = 0;
+        while (_byrefCache[index].IsValid && probes < ByrefCacheSize)
+        {
+            if (_byrefCache[index].TypeHash == typeHash && _byrefCache[index].MethodHash == methodHash)
+                return _byrefCache[index].FunctionPtr;
+            index = (index + 1) & ByrefCacheMask;
+            probes++;
+        }
+
+        return 0;
+    }
+
     /// <summary>
     /// Check if a type name is a well-known AOT type.
     /// </summary>
@@ -1746,6 +1913,34 @@ public static unsafe class AotMethodRegistry
 
         // Check for System.Int32
         if (StringMatches(typeName, "System.Int32"))
+            return true;
+
+        // Other primitive types
+        if (StringMatches(typeName, "System.Int64"))
+            return true;
+        if (StringMatches(typeName, "System.Boolean"))
+            return true;
+        if (StringMatches(typeName, "System.Byte"))
+            return true;
+        if (StringMatches(typeName, "System.SByte"))
+            return true;
+        if (StringMatches(typeName, "System.Char"))
+            return true;
+        if (StringMatches(typeName, "System.Int16"))
+            return true;
+        if (StringMatches(typeName, "System.UInt16"))
+            return true;
+        if (StringMatches(typeName, "System.UInt32"))
+            return true;
+        if (StringMatches(typeName, "System.UInt64"))
+            return true;
+        if (StringMatches(typeName, "System.Single"))
+            return true;
+        if (StringMatches(typeName, "System.Double"))
+            return true;
+        if (StringMatches(typeName, "System.IntPtr"))
+            return true;
+        if (StringMatches(typeName, "System.UIntPtr"))
             return true;
 
         // Exception types
@@ -2865,6 +3060,7 @@ public static unsafe class PrimitiveHelpers
 
     /// <summary>
     /// Boolean.ToString() - returns "True" or "False".
+    /// BOXED calling convention: thisPtr points to boxed object, value at offset +8.
     /// </summary>
     public static string Boolean_ToString(nint thisPtr)
     {
@@ -3054,6 +3250,264 @@ public static unsafe class PrimitiveHelpers
     {
         if (thisPtr == 0) return 0;
         return (int)*(uint*)(thisPtr + 8);
+    }
+
+    // =========================================================================
+    // BYREF calling convention variants for ToString
+    // These are used for direct calls (ldloca; call instance) where thisPtr
+    // points directly to the value (offset 0), NOT to a boxed object.
+    // =========================================================================
+
+    /// <summary>
+    /// Byte.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Byte_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        byte value = *(byte*)thisPtr;
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// SByte.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string SByte_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        sbyte value = *(sbyte*)thisPtr;
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// Boolean.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Boolean_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "False";
+        bool value = *(bool*)thisPtr;
+        return value ? "True" : "False";
+    }
+
+    /// <summary>
+    /// Char.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Char_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "\0";
+        char value = *(char*)thisPtr;
+        return new string(value, 1);
+    }
+
+    /// <summary>
+    /// Int16.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Int16_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        short value = *(short*)thisPtr;
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// UInt16.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string UInt16_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        ushort value = *(ushort*)thisPtr;
+        return System.Int32.FormatInt32((int)value);
+    }
+
+    /// <summary>
+    /// Int32.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Int32_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        int value = *(int*)thisPtr;
+        return System.Int32.FormatInt32(value);
+    }
+
+    /// <summary>
+    /// Int64.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Int64_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        long value = *(long*)thisPtr;
+        return System.Int64.FormatInt64(value);
+    }
+
+    /// <summary>
+    /// UInt64.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string UInt64_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        ulong value = *(ulong*)thisPtr;
+        return System.UInt64.FormatUInt64(value);
+    }
+
+    /// <summary>
+    /// UInt32.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string UInt32_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        uint value = *(uint*)thisPtr;
+        return System.UInt32.FormatUInt32(value);
+    }
+
+    /// <summary>
+    /// IntPtr.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string IntPtr_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        nint value = *(nint*)thisPtr;
+        return System.Int64.FormatInt64((long)value);
+    }
+
+    /// <summary>
+    /// UIntPtr.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string UIntPtr_ToString_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return "0";
+        nuint value = *(nuint*)thisPtr;
+        return System.UInt64.FormatUInt64((ulong)value);
+    }
+
+    /// <summary>
+    /// Single.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Single_ToString_Byref(nint thisPtr)
+    {
+        return "Single";  // TODO: Implement proper float formatting
+    }
+
+    /// <summary>
+    /// Double.ToString() - BYREF calling convention.
+    /// </summary>
+    public static string Double_ToString_Byref(nint thisPtr)
+    {
+        return "Double";  // TODO: Implement proper double formatting
+    }
+
+    // =========================================================================
+    // BYREF calling convention variants for GetHashCode
+    // =========================================================================
+
+    /// <summary>
+    /// Byte.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Byte_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(byte*)thisPtr;
+    }
+
+    /// <summary>
+    /// SByte.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int SByte_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(sbyte*)thisPtr;
+    }
+
+    /// <summary>
+    /// Boolean.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Boolean_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(bool*)thisPtr ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Char.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Char_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(char*)thisPtr;
+    }
+
+    /// <summary>
+    /// Int16.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Int16_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(short*)thisPtr;
+    }
+
+    /// <summary>
+    /// UInt16.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int UInt16_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(ushort*)thisPtr;
+    }
+
+    /// <summary>
+    /// Int32.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Int32_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return *(int*)thisPtr;
+    }
+
+    /// <summary>
+    /// Int64.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int Int64_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        long value = *(long*)thisPtr;
+        return (int)value ^ (int)(value >> 32);
+    }
+
+    /// <summary>
+    /// UInt64.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int UInt64_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        ulong value = *(ulong*)thisPtr;
+        return (int)value ^ (int)(value >> 32);
+    }
+
+    /// <summary>
+    /// UInt32.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int UInt32_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        return (int)*(uint*)thisPtr;
+    }
+
+    /// <summary>
+    /// IntPtr.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int IntPtr_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        nint value = *(nint*)thisPtr;
+        return (int)value ^ (int)((long)value >> 32);
+    }
+
+    /// <summary>
+    /// UIntPtr.GetHashCode() - BYREF calling convention.
+    /// </summary>
+    public static int UIntPtr_GetHashCode_Byref(nint thisPtr)
+    {
+        if (thisPtr == 0) return 0;
+        nuint value = *(nuint*)thisPtr;
+        return (int)value ^ (int)((ulong)value >> 32);
     }
 }
 

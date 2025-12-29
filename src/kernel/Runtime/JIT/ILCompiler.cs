@@ -4751,6 +4751,91 @@ public unsafe struct ILCompiler
             return true;  // Don't proceed with normal call
         }
 
+        // CRITICAL FIX: For Boolean.ToString, inline to handle byref semantics correctly
+        // AOT Boolean.ToString expects boxed object (reads [this+8]), but we have byref (reads [this+0])
+        // VtableSlot 0 = ToString
+        if (method.HasThis && method.ArgCount == 0 && method.VtableSlot == 0 &&
+            method.MethodTable != null)
+        {
+            MethodTable* mt = (MethodTable*)method.MethodTable;
+            int valueSize = (int)(mt->BaseSize - 8);  // BaseSize includes 8-byte header
+
+            // Check if this is Boolean (1-byte value type)
+            if (valueSize == 1 && mt->IsValueType)
+            {
+                // Get TrueString and FalseString addresses from AOT static field registry
+                nint trueStringAddr = AotStaticFieldRegistry.TryGetFieldAddress("System.Boolean", "TrueString");
+                nint falseStringAddr = AotStaticFieldRegistry.TryGetFieldAddress("System.Boolean", "FalseString");
+
+                if (trueStringAddr != 0 && falseStringAddr != 0)
+                {
+                    // Stack has: [byref_to_bool]
+                    X64Emitter.Pop(ref _code, VReg.R0);   // RAX = byref to bool value
+                    PopEntry();
+
+                    // Load the bool value (1 byte) from byref
+                    X64Emitter.MovRM8(ref _code, VReg.R0, VReg.R0, 0);  // RAX = zero-extended bool value
+
+                    // Load TrueString pointer into R1
+                    X64Emitter.MovRI64(ref _code, VReg.R1, (ulong)trueStringAddr);
+                    X64Emitter.MovRM(ref _code, VReg.R1, VReg.R1, 0);  // R1 = *TrueString (the string object ref)
+
+                    // Load FalseString pointer into R2
+                    X64Emitter.MovRI64(ref _code, VReg.R2, (ulong)falseStringAddr);
+                    X64Emitter.MovRM(ref _code, VReg.R2, VReg.R2, 0);  // R2 = *FalseString
+
+                    // Test if bool is true (non-zero)
+                    X64Emitter.TestRR(ref _code, VReg.R0, VReg.R0);
+
+                    // CMOVZ: if zero (false), move FalseString to R1
+                    X64Emitter.CmovzRR(ref _code, VReg.R1, VReg.R2);
+
+                    // Push result string
+                    X64Emitter.Push(ref _code, VReg.R1);
+                    PushEntry(EvalStackEntry.NativeInt);  // String reference
+
+                    return true;  // Don't proceed with normal call
+                }
+            }
+        }
+
+        // BYREF VARIANT CHECK: For direct calls (call opcode, not callvirt) to value type
+        // instance methods, swap to byref variant if available.
+        // The byref variant reads value from offset 0 (direct pointer to value),
+        // while the boxed variant reads from offset +8 (boxed object layout).
+        if (method.HasThis && method.NativeCode != null && method.MethodTable != null)
+        {
+            MethodTable* mt = (MethodTable*)method.MethodTable;
+            if (mt->IsValueType)
+            {
+                // Determine type name from well-known type ID
+                string? typeName = MetadataIntegration.GetPrimitiveTypeName(mt);
+                if (typeName != null)
+                {
+                    // Determine method name based on return type and arg count
+                    // ArgCount == 0, returning string (IntPtr) = ToString
+                    // ArgCount == 0, returning Int32 = GetHashCode
+                    string? methodName = null;
+                    if (method.ArgCount == 0)
+                    {
+                        if (method.ReturnKind == ReturnKind.IntPtr)
+                            methodName = "ToString";
+                        else if (method.ReturnKind == ReturnKind.Int32)
+                            methodName = "GetHashCode";
+                    }
+
+                    if (methodName != null)
+                    {
+                        nint byrefVariant = AotMethodRegistry.LookupByref(typeName, methodName);
+                        if (byrefVariant != 0)
+                        {
+                            method.NativeCode = (void*)byrefVariant;
+                        }
+                    }
+                }
+            }
+        }
+
         int totalArgs = method.ArgCount;
         if (method.HasThis)
             totalArgs++;  // Instance methods have implicit 'this' as first arg

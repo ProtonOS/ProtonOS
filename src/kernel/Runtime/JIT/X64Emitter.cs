@@ -1463,6 +1463,30 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// Conditional move if zero (ZF=1): dst = src if ZF is set.
+    /// CMOVZ r64, r64 is encoded as: REX.W 0F 44 /r
+    /// </summary>
+    public static void CmovzRR(ref CodeBuffer code, VReg dst, VReg src)
+    {
+        byte dstReg = (byte)Map(dst);
+        byte srcReg = (byte)Map(src);
+
+        // REX prefix: always need REX.W for 64-bit
+        byte rex = 0x48;
+        if (dstReg >= 8) rex |= 0x04;  // REX.R
+        if (srcReg >= 8) rex |= 0x01;  // REX.B
+        code.EmitByte(rex);
+
+        // Opcode: 0F 44 (CMOVZ)
+        code.EmitByte(0x0F);
+        code.EmitByte(0x44);
+
+        // ModR/M: 11 dst src (register direct)
+        byte modrm = (byte)(0xC0 | ((dstReg & 7) << 3) | (srcReg & 7));
+        code.EmitByte(modrm);
+    }
+
+    /// <summary>
     /// Call through register.
     /// </summary>
     public static void CallR(ref CodeBuffer code, VReg target)

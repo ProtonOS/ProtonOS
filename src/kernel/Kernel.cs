@@ -179,6 +179,10 @@ public static unsafe class Kernel
         // Initialize AOT method registry for well-known types (String, etc.)
         Runtime.AotMethodRegistry.Init();
 
+        // Initialize AOT static field registry for excluded types (Boolean, IntPtr, etc.)
+        Runtime.AotStaticFieldRegistry.Initialize();
+        Runtime.AotStaticFieldRegistry.RegisterKnownFields();
+
         // Initialize JIT stubs for lazy method compilation
         Runtime.JIT.JitStubs.Init();
 

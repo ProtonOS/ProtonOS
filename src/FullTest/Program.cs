@@ -193,6 +193,11 @@ public static class TestRunner
         RunJitRegressionTests();
         Debug.WriteLine("[PHASE] JIT Regression tests complete");
 
+        // AOT static field tests - tests for accessing static fields on AOT-compiled types from JIT code
+        Debug.WriteLine("[PHASE] Starting AOT Static Field tests...");
+        RunAotStaticFieldTests();
+        Debug.WriteLine("[PHASE] AOT Static Field tests complete");
+
         return (_passCount << 16) | _failCount;
     }
 
@@ -348,6 +353,34 @@ public static class TestRunner
 
         // Verify struct with 5 args still works (baseline)
         RecordResult("JitRegressionTests.TestStructCtorManyArgs", JitRegressionTests.TestStructCtorManyArgs() == 15);
+    }
+
+    private static void RunAotStaticFieldTests()
+    {
+        // Boolean.TrueString and Boolean.FalseString - static readonly string fields
+        RecordResult("AotStaticFieldTests.TestBooleanTrueString", AotStaticFieldTests.TestBooleanTrueString() == 1);
+        RecordResult("AotStaticFieldTests.TestBooleanFalseString", AotStaticFieldTests.TestBooleanFalseString() == 1);
+        RecordResult("AotStaticFieldTests.TestBooleanTrueStringValue", AotStaticFieldTests.TestBooleanTrueStringValue() == 1);
+        RecordResult("AotStaticFieldTests.TestBooleanFalseStringValue", AotStaticFieldTests.TestBooleanFalseStringValue() == 1);
+
+        // IntPtr.Zero and UIntPtr.Zero - static readonly value type fields
+        RecordResult("AotStaticFieldTests.TestIntPtrZero", AotStaticFieldTests.TestIntPtrZero() == 1);
+        RecordResult("AotStaticFieldTests.TestUIntPtrZero", AotStaticFieldTests.TestUIntPtrZero() == 1);
+        RecordResult("AotStaticFieldTests.TestIntPtrZeroComparison", AotStaticFieldTests.TestIntPtrZeroComparison() == 1);
+        RecordResult("AotStaticFieldTests.TestUIntPtrZeroComparison", AotStaticFieldTests.TestUIntPtrZeroComparison() == 1);
+
+        // String.Empty - property (workaround for AOT field init issues)
+        RecordResult("AotStaticFieldTests.TestStringEmpty", AotStaticFieldTests.TestStringEmpty() == 1);
+        RecordResult("AotStaticFieldTests.TestStringEmptyLength", AotStaticFieldTests.TestStringEmptyLength() == 1);
+        RecordResult("AotStaticFieldTests.TestStringEmptyEquality", AotStaticFieldTests.TestStringEmptyEquality() == 1);
+
+        // Boolean.ToString using TrueString/FalseString
+        RecordResult("AotStaticFieldTests.TestBooleanToStringTrue", AotStaticFieldTests.TestBooleanToStringTrue() == 1);
+        RecordResult("AotStaticFieldTests.TestBooleanToStringFalse", AotStaticFieldTests.TestBooleanToStringFalse() == 1);
+
+        // Edge cases
+        RecordResult("AotStaticFieldTests.TestIntPtrZeroToString", AotStaticFieldTests.TestIntPtrZeroToString() == 1);
+        RecordResult("AotStaticFieldTests.TestNullableIntPtrZero", AotStaticFieldTests.TestNullableIntPtrZero() == 1);
     }
 
     private static void RunUtilityTests()
@@ -11718,6 +11751,190 @@ public static class JitRegressionTests
         int sum = s.A + s.B + s.C + s.D + s.E;
         Debug.WriteLine("[JitRegr] Struct sum: " + sum.ToString());
         return sum;  // Should be 15
+    }
+}
+
+// =============================================================================
+// AOT Static Field Tests
+// Tests for accessing static fields on AOT-compiled types from JIT code.
+// The AOT Static Field Registry provides addresses for these fields.
+// =============================================================================
+
+public static class AotStaticFieldTests
+{
+    /// <summary>
+    /// Test that Boolean.TrueString can be accessed and is not null.
+    /// </summary>
+    public static int TestBooleanTrueString()
+    {
+        string trueStr = bool.TrueString;
+        Debug.WriteLine("[AotField] Boolean.TrueString: " + (trueStr ?? "(null)"));
+        return trueStr != null ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that Boolean.FalseString can be accessed and is not null.
+    /// </summary>
+    public static int TestBooleanFalseString()
+    {
+        string falseStr = bool.FalseString;
+        Debug.WriteLine("[AotField] Boolean.FalseString: " + (falseStr ?? "(null)"));
+        return falseStr != null ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that Boolean.TrueString has the correct value "True".
+    /// </summary>
+    public static int TestBooleanTrueStringValue()
+    {
+        string expected = "True";
+        string actual = bool.TrueString;
+        bool match = actual == expected;
+        Debug.WriteLine("[AotField] TrueString value check: '" + actual + "' == '" + expected + "' => " + (match ? "MATCH" : "MISMATCH"));
+        return match ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that Boolean.FalseString has the correct value "False".
+    /// </summary>
+    public static int TestBooleanFalseStringValue()
+    {
+        string expected = "False";
+        string actual = bool.FalseString;
+        bool match = actual == expected;
+        Debug.WriteLine("[AotField] FalseString value check: '" + actual + "' == '" + expected + "' => " + (match ? "MATCH" : "MISMATCH"));
+        return match ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that IntPtr.Zero can be accessed and equals zero.
+    /// </summary>
+    public static int TestIntPtrZero()
+    {
+        nint zero = nint.Zero;
+        Debug.WriteLine("[AotField] IntPtr.Zero: " + zero.ToString());
+        return zero == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that UIntPtr.Zero can be accessed and equals zero.
+    /// </summary>
+    public static int TestUIntPtrZero()
+    {
+        nuint zero = nuint.Zero;
+        Debug.WriteLine("[AotField] UIntPtr.Zero: " + zero.ToString());
+        return zero == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test IntPtr.Zero comparison with a non-zero value.
+    /// </summary>
+    public static int TestIntPtrZeroComparison()
+    {
+        nint zero = nint.Zero;
+        nint one = (nint)1;
+        bool isLess = zero < one;
+        bool isNotEqual = zero != one;
+        Debug.WriteLine("[AotField] IntPtr.Zero < 1: " + (isLess ? "true" : "false"));
+        return (isLess && isNotEqual) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test UIntPtr.Zero comparison with a non-zero value.
+    /// </summary>
+    public static int TestUIntPtrZeroComparison()
+    {
+        nuint zero = nuint.Zero;
+        nuint one = (nuint)1;
+        bool isLess = zero < one;
+        bool isNotEqual = zero != one;
+        Debug.WriteLine("[AotField] UIntPtr.Zero < 1: " + (isLess ? "true" : "false"));
+        return (isLess && isNotEqual) ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that string.Empty can be accessed (it's a property, not a field).
+    /// </summary>
+    public static int TestStringEmpty()
+    {
+        string empty = string.Empty;
+        Debug.WriteLine("[AotField] string.Empty: '" + empty + "'");
+        return empty != null ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that string.Empty has length 0.
+    /// </summary>
+    public static int TestStringEmptyLength()
+    {
+        int len = string.Empty.Length;
+        Debug.WriteLine("[AotField] string.Empty.Length: " + len.ToString());
+        return len == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test that string.Empty equals "".
+    /// </summary>
+    public static int TestStringEmptyEquality()
+    {
+        string empty = string.Empty;
+        bool equals = empty == "";
+        Debug.WriteLine("[AotField] string.Empty == \"\": " + (equals ? "true" : "false"));
+        return equals ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Boolean.ToString() returns TrueString for true.
+    /// </summary>
+    public static int TestBooleanToStringTrue()
+    {
+        bool val = true;
+        string result = val.ToString();
+        string expected = bool.TrueString;
+        bool match = result == expected;
+        Debug.WriteLine("[AotField] true.ToString(): '" + result + "' (expected '" + expected + "')");
+        return match ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Boolean.ToString() returns FalseString for false.
+    /// </summary>
+    public static int TestBooleanToStringFalse()
+    {
+        bool val = false;
+        string result = val.ToString();
+        string expected = bool.FalseString;
+        bool match = result == expected;
+        Debug.WriteLine("[AotField] false.ToString(): '" + result + "' (expected '" + expected + "')");
+        return match ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test IntPtr.Zero.ToString() works.
+    /// </summary>
+    public static int TestIntPtrZeroToString()
+    {
+        nint zero = nint.Zero;
+        string result = zero.ToString();
+        Debug.WriteLine("[AotField] IntPtr.Zero.ToString(): '" + result + "'");
+        // Result should be "0" or similar
+        return result != null && result.Length > 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// Test Nullable<IntPtr> with Zero value.
+    /// </summary>
+    public static int TestNullableIntPtrZero()
+    {
+        nint? nullable = nint.Zero;
+        bool hasValue = nullable.HasValue;
+        nint value = nullable.Value;
+        // Split into multiple Write calls to avoid 4-arg String.Concat
+        Debug.Write("[AotField] Nullable<IntPtr>.Zero: HasValue=");
+        Debug.Write(hasValue ? "true" : "false");
+        Debug.Write(" Value=");
+        Debug.WriteLine(value.ToString());
+        return (hasValue && value == 0) ? 1 : 0;
     }
 }
 

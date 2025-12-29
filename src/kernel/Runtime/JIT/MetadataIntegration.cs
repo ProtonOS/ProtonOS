@@ -594,7 +594,7 @@ public static unsafe class MetadataIntegration
     ///                6=Single, 7=Int16, 8=UInt16, 9=UInt32, 10=UInt64,
     ///                11=IntPtr, 12=UIntPtr, 13=SByte
     /// </summary>
-    private static string GetPrimitiveTypeName(int index)
+    private static string GetPrimitiveTypeShortName(int index)
     {
         if (index == 0) return "Int32";
         if (index == 1) return "Int64";
@@ -610,6 +610,34 @@ public static unsafe class MetadataIntegration
         if (index == 11) return "IntPtr";
         if (index == 12) return "UIntPtr";
         if (index == 13) return "SByte";
+        return null;
+    }
+
+    /// <summary>
+    /// Get the full System.* type name for a primitive MethodTable.
+    /// Returns null if not a primitive type.
+    /// Used by JIT to look up byref calling convention variants.
+    /// </summary>
+    public static string? GetPrimitiveTypeName(MethodTable* mt)
+    {
+        int index = GetPrimitiveIndex(mt);
+        if (index < 0) return null;
+
+        // Return full type name for AOT registry lookup
+        if (index == 0) return "System.Int32";
+        if (index == 1) return "System.Int64";
+        if (index == 2) return "System.Boolean";
+        if (index == 3) return "System.Byte";
+        if (index == 4) return "System.Char";
+        if (index == 5) return "System.Double";
+        if (index == 6) return "System.Single";
+        if (index == 7) return "System.Int16";
+        if (index == 8) return "System.UInt16";
+        if (index == 9) return "System.UInt32";
+        if (index == 10) return "System.UInt64";
+        if (index == 11) return "System.IntPtr";
+        if (index == 12) return "System.UIntPtr";
+        if (index == 13) return "System.SByte";
         return null;
     }
 
@@ -674,7 +702,7 @@ public static unsafe class MetadataIntegration
         if (methodNameBytes == null)
             return 0;
 
-        string typeName = GetPrimitiveTypeName(primIndex);
+        string typeName = GetPrimitiveTypeShortName(primIndex);
         if (typeName == null)
             return 0;
 
@@ -2050,12 +2078,163 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Try to resolve a MemberRef field token via the AOT static field registry.
+    /// This handles static fields on AOT types like Boolean.TrueString, IntPtr.Zero, etc.
+    /// </summary>
+    private static bool TryResolveAotStaticField(uint token, out ResolvedField result)
+    {
+        result = default;
+
+        if (_metadataRoot == null || _tablesHeader == null || _tableSizes == null)
+            return false;
+
+        uint rowId = token & 0x00FFFFFF;
+        if (rowId == 0)
+            return false;
+
+        // Get member name and signature
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, rowId);
+        uint sigIdx = MetadataReader.GetMemberRefSignature(ref *_tablesHeader, ref *_tableSizes, rowId);
+
+        byte* memberName = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        byte* sig = MetadataReader.GetBlob(ref *_metadataRoot, sigIdx, out uint sigLen);
+
+        if (memberName == null || sig == null || sigLen == 0)
+            return false;
+
+        // Check if this is a field signature (FIELD = 0x06)
+        if (sig[0] != 0x06)
+            return false; // Not a field
+
+        // Get the Class coded index (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, rowId);
+
+        // Get the type name from the TypeRef or TypeSpec
+        byte* typeName = null;
+        if (classRef.Table == MetadataTableId.TypeRef)
+        {
+            uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+            uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+            byte* ns = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+            byte* name = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+
+            typeName = BuildFullTypeName(ns, name);
+        }
+        else if (classRef.Table == MetadataTableId.TypeSpec)
+        {
+            // TypeSpec - parse to get the underlying generic type definition
+            uint typeSpecRow = classRef.RowId;
+            if (typeSpecRow > 0 && typeSpecRow <= _tablesHeader->RowCounts[(int)MetadataTableId.TypeSpec])
+            {
+                uint tsSigIdx = MetadataReader.GetTypeSpecSignature(ref *_tablesHeader, ref *_tableSizes, typeSpecRow);
+                byte* tsSig = MetadataReader.GetBlob(ref *_metadataRoot, tsSigIdx, out uint tsSigLen);
+                if (tsSig != null && tsSigLen > 0)
+                {
+                    int tsPos = 0;
+                    byte elementType = tsSig[tsPos++];
+
+                    // ELEMENT_TYPE_GENERICINST (0x15) - generic type instantiation
+                    if (elementType == 0x15 && tsPos < (int)tsSigLen)
+                    {
+                        tsPos++; // Skip CLASS (0x12) or VALUETYPE (0x11)
+
+                        // Decode the TypeDefOrRefOrSpec coded index
+                        uint codedIndex = 0;
+                        byte b1 = tsSig[tsPos++];
+                        if ((b1 & 0x80) == 0)
+                            codedIndex = b1;
+                        else if ((b1 & 0xC0) == 0x80 && tsPos < (int)tsSigLen)
+                            codedIndex = (uint)(((b1 & 0x3F) << 8) | tsSig[tsPos++]);
+                        else if ((b1 & 0xE0) == 0xC0 && tsPos + 2 < (int)tsSigLen)
+                            codedIndex = (uint)(((b1 & 0x1F) << 24) | (tsSig[tsPos++] << 16) | (tsSig[tsPos++] << 8) | tsSig[tsPos++]);
+
+                        uint tableId = codedIndex & 0x03;
+                        uint typeRow = codedIndex >> 2;
+
+                        if (tableId == 1 && typeRow > 0) // TypeRef
+                        {
+                            uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, typeRow);
+                            uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, typeRow);
+                            byte* ns = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+                            byte* name = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+                            typeName = BuildFullTypeName(ns, name);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (typeName == null)
+            return false;
+
+        // Convert type name and field name to strings for registry lookup
+        string typeNameStr = BytePtrToString(typeName);
+        string fieldNameStr = BytePtrToString(memberName);
+
+        if (typeNameStr == null || fieldNameStr == null)
+            return false;
+
+        // Check the AOT static field registry
+        if (!AotStaticFieldRegistry.Lookup(typeNameStr, fieldNameStr, out AotStaticFieldEntry entry))
+            return false;
+
+        // Found in AOT registry - populate result
+        result.IsValid = true;
+        result.IsStatic = true;
+        result.StaticAddress = (void*)entry.Address;
+        result.Size = (byte)entry.Size;
+        result.IsSigned = entry.IsSigned;
+        result.Offset = 0; // Not used for static fields
+        result.IsGCRef = entry.Size == 8; // Reference type fields are 8 bytes (pointers)
+        result.IsDeclaringTypeValueType = IsKnownValueType(typeNameStr);
+        result.DeclaringTypeSize = 0;
+        result.IsFieldTypeValueType = !result.IsGCRef;
+
+        DebugConsole.Write("[AOT Static] Resolved ");
+        DebugConsole.Write(typeNameStr);
+        DebugConsole.Write(".");
+        DebugConsole.Write(fieldNameStr);
+        DebugConsole.Write(" -> 0x");
+        DebugConsole.WriteHex((ulong)entry.Address);
+        DebugConsole.WriteLine();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Check if a type name is a known value type.
+    /// </summary>
+    private static bool IsKnownValueType(string typeName)
+    {
+        if (typeName == null) return false;
+        return typeName == "System.Boolean" ||
+               typeName == "System.Byte" ||
+               typeName == "System.SByte" ||
+               typeName == "System.Int16" ||
+               typeName == "System.UInt16" ||
+               typeName == "System.Int32" ||
+               typeName == "System.UInt32" ||
+               typeName == "System.Int64" ||
+               typeName == "System.UInt64" ||
+               typeName == "System.Single" ||
+               typeName == "System.Double" ||
+               typeName == "System.Char" ||
+               typeName == "System.IntPtr" ||
+               typeName == "System.UIntPtr";
+    }
+
+    /// <summary>
     /// Resolve a MemberRef field token to field information.
     /// This handles cross-assembly field references.
     /// </summary>
     private static bool ResolveMemberRefField(uint token, out ResolvedField result)
     {
         result = default;
+
+        // First, try the AOT static field registry for excluded types
+        if (TryResolveAotStaticField(token, out result))
+            return true;
 
         // Check if this MemberRef is on a generic instantiation (e.g., Dictionary<int, string>.KeyCollection.Enumerator)
         // If so, get the instantiated MethodTable which has the type argument info
@@ -2538,6 +2717,28 @@ public static unsafe class MetadataIntegration
 
         _typeNameBuffer[pos] = 0;
         return _typeNameBuffer;
+    }
+
+    /// <summary>
+    /// Convert a null-terminated UTF-8 byte pointer to a managed string.
+    /// </summary>
+    private static string BytePtrToString(byte* ptr)
+    {
+        if (ptr == null)
+            return null!;
+
+        int len = 0;
+        while (ptr[len] != 0)
+            len++;
+
+        if (len == 0)
+            return string.Empty;
+
+        char* chars = stackalloc char[len];
+        for (int i = 0; i < len; i++)
+            chars[i] = (char)ptr[i];
+
+        return new string(chars, 0, len);
     }
 
     /// <summary>
@@ -5551,6 +5752,35 @@ public static unsafe class MetadataIntegration
             wellKnownToken = WellKnownTypes.Enum;
         else if (NameEquals(typeName, "System.Array"))
             wellKnownToken = WellKnownTypes.Array;
+        // Primitive types
+        else if (NameEquals(typeName, "System.Int32"))
+            wellKnownToken = WellKnownTypes.Int32;
+        else if (NameEquals(typeName, "System.Int64"))
+            wellKnownToken = WellKnownTypes.Int64;
+        else if (NameEquals(typeName, "System.Boolean"))
+            wellKnownToken = WellKnownTypes.Boolean;
+        else if (NameEquals(typeName, "System.Byte"))
+            wellKnownToken = WellKnownTypes.Byte;
+        else if (NameEquals(typeName, "System.Char"))
+            wellKnownToken = WellKnownTypes.Char;
+        else if (NameEquals(typeName, "System.Double"))
+            wellKnownToken = WellKnownTypes.Double;
+        else if (NameEquals(typeName, "System.Single"))
+            wellKnownToken = WellKnownTypes.Single;
+        else if (NameEquals(typeName, "System.Int16"))
+            wellKnownToken = WellKnownTypes.Int16;
+        else if (NameEquals(typeName, "System.UInt16"))
+            wellKnownToken = WellKnownTypes.UInt16;
+        else if (NameEquals(typeName, "System.UInt32"))
+            wellKnownToken = WellKnownTypes.UInt32;
+        else if (NameEquals(typeName, "System.UInt64"))
+            wellKnownToken = WellKnownTypes.UInt64;
+        else if (NameEquals(typeName, "System.IntPtr"))
+            wellKnownToken = WellKnownTypes.IntPtr;
+        else if (NameEquals(typeName, "System.UIntPtr"))
+            wellKnownToken = WellKnownTypes.UIntPtr;
+        else if (NameEquals(typeName, "System.SByte"))
+            wellKnownToken = WellKnownTypes.SByte;
 
         if (wellKnownToken != 0)
             return LookupType(wellKnownToken);
