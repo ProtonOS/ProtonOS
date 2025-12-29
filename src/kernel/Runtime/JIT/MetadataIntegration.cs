@@ -2445,15 +2445,8 @@ public static unsafe class MetadataIntegration
             return true;
         }
 
-        // Debug: TryLookup failed
-        DebugConsole.Write("[AotMemberRef] AOT lookup failed for ");
-        WriteByteString(typeName);
-        DebugConsole.Write(".");
-        WriteByteString(memberName);
-        DebugConsole.Write(" paramCount=");
-        DebugConsole.WriteDecimal(paramCount);
-        DebugConsole.WriteLine();
-
+        // No AOT method found - caller will fall through to JIT compilation
+        // This is expected for generic instantiations and methods not in AOT registry
         return false;
     }
 

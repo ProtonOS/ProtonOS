@@ -29,6 +29,10 @@
     <Compile Remove="System/Delegate.cs" />
     <Compile Remove="System/ValueType.cs" />
     <Compile Remove="System/Enum.cs" />
+    <!-- Type.cs excluded: Depends on RuntimeReflection.cs (RuntimeMethodInfo, RuntimeFieldInfo,
+         RuntimeConstructorInfo) and kernel's MethodTable type. Enabling requires refactoring
+         to use void* for MethodTable and enabling RuntimeReflection.cs. Currently reflection
+         works via JIT-compiled BCL code. TODO: Enable full reflection infrastructure. -->
     <Compile Remove="System/Type.cs" />
     <Compile Remove="System/Attribute.cs" />
     <!-- Exception.cs included - provides PlatformNotSupportedException for stubs -->
