@@ -748,8 +748,11 @@ public static unsafe class ExceptionHandling
     /// </summary>
     private static void RegisterKernelFunctionTable()
     {
-        // Get kernel image base from UEFI
-        ulong imageBase = UEFIBoot.ImageBase;
+        // Get kernel image base from BootInfo
+        var bootInfo = BootInfoAccess.Get();
+        if (bootInfo == null || !bootInfo->IsValid)
+            return;
+        ulong imageBase = bootInfo->KernelPhysicalBase;
         if (imageBase == 0)
             return;
 

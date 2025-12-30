@@ -105,20 +105,21 @@ public static unsafe class Kernel
         DebugConsole.WriteLine("==============================");
         DebugConsole.WriteLine();
 
-        // Verify we have access to UEFI system table
-        var systemTable = UEFIBoot.SystemTable;
-        DebugConsole.Write("[UEFI] SystemTable at 0x");
-        DebugConsole.WriteHex((ulong)systemTable);
-        if (systemTable != null && UEFIBoot.BootServicesAvailable)
+        // Verify BootInfo from bootloader is available and valid
+        var bootInfo = BootInfoAccess.Get();
+        if (bootInfo == null || !bootInfo->IsValid)
         {
-            DebugConsole.Write(" BootServices at 0x");
-            DebugConsole.WriteHex((ulong)systemTable->BootServices);
+            DebugConsole.WriteLine("[BootInfo] ERROR: BootInfo not available or invalid!");
+            for (;;) { }  // Halt
         }
+        DebugConsole.Write("[BootInfo] Valid BootInfo at 0x");
+        DebugConsole.WriteHex((ulong)bootInfo);
+        DebugConsole.Write(" files=");
+        DebugConsole.WriteDecimal(bootInfo->LoadedFilesCount);
         DebugConsole.WriteLine();
 
-        // Dump UEFI memory map before ExitBootServices
-        // This helps understand UEFI's memory layout and where the kernel is loaded
-        UEFIBoot.DumpMemoryMap();
+        // Dump memory map to analyze fragmentation
+        DumpMemoryMap(bootInfo);
 
         // Initialize ReadyToRun info (must be before anything needing runtime metadata)
         ReadyToRunInfo.Init();
@@ -127,18 +128,14 @@ public static unsafe class Kernel
         // Test GCDesc parsing with frozen objects
         // GCDescHelper.TestWithFrozenObjects();
 
-        // Load test assembly from boot device (must be before PageAllocator.Init
-        // so the memory map snapshot includes our allocation)
+        // Get pointers to pre-loaded assemblies from BootInfo (bootloader loaded them)
         LoadTestAssembly();
 
-        // Initialize page allocator (requires UEFI boot services)
+        // Initialize page allocator (uses BootInfo memory map)
         PageAllocator.Init();
 
-        // Initialize ACPI (requires UEFI - must be before ExitBootServices)
+        // Initialize ACPI (uses BootInfo RSDP)
         ACPI.Init();
-
-        // Exit UEFI boot services - we now own the hardware
-        UEFIBoot.ExitBootServices();
 
         // Initialize architecture-specific code (GDT, IDT, virtual memory)
         CurrentArch.InitStage1();
@@ -315,33 +312,33 @@ public static unsafe class Kernel
     }
 
     /// <summary>
-    /// Load the test assembly from the boot device filesystem.
-    /// Must be called before ExitBootServices.
+    /// Load the test assembly from BootInfo's loaded files table.
+    /// Files were loaded by the bootloader before ExitBootServices.
     /// </summary>
     private static void LoadTestAssembly()
     {
         // Load TestSupport.dll (dependency for test assembly)
-        _testSupportBytes = UEFIFS.ReadFileAscii("\\TestSupport.dll", out _testSupportSize);
+        _testSupportBytes = BootInfoAccess.FindFile("TestSupport.dll", out _testSupportSize);
 
         // Load ProtonOS.DDK.dll (Driver Development Kit)
-        _ddkBytes = UEFIFS.ReadFileAscii("\\ProtonOS.DDK.dll", out _ddkSize);
+        _ddkBytes = BootInfoAccess.FindFile("ProtonOS.DDK.dll", out _ddkSize);
 
-        // Load driver assemblies from /drivers/
-        _virtioDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
-        _virtioBlkDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
-        _fatDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
-        _ext2DriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Ext2.dll", out _ext2DriverSize);
-        _ahciDriverBytes = UEFIFS.ReadFileAscii("\\drivers\\ProtonOS.Drivers.Ahci.dll", out _ahciDriverSize);
+        // Load driver assemblies
+        _virtioDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Virtio.dll", out _virtioDriverSize);
+        _virtioBlkDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.VirtioBlk.dll", out _virtioBlkDriverSize);
+        _fatDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
+        _ext2DriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Ext2.dll", out _ext2DriverSize);
+        _ahciDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Ahci.dll", out _ahciDriverSize);
 
         // Load korlib.dll (IL assembly for JIT generic instantiation)
-        _korlibBytes = UEFIFS.ReadFileAscii("\\korlib.dll", out _korlibSize);
+        _korlibBytes = BootInfoAccess.FindFile("korlib.dll", out _korlibSize);
 
         // Load FullTest.dll
-        _testAssemblyBytes = UEFIFS.ReadFileAscii("\\FullTest.dll", out _testAssemblySize);
+        _testAssemblyBytes = BootInfoAccess.FindFile("FullTest.dll", out _testAssemblySize);
 
         if (_testAssemblyBytes == null)
         {
-            DebugConsole.WriteLine("[Kernel] Failed to load test assembly");
+            DebugConsole.WriteLine("[Kernel] Failed to load test assembly from BootInfo");
             return;
         }
 
@@ -1433,6 +1430,202 @@ public static unsafe class Kernel
         var testVfsFunc = (delegate* unmanaged<int>)testVfsResult.CodeAddress;
         int vfsTestResult = testVfsFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestVfsRootMount returned {0}", vfsTestResult));
+    }
+
+    /// <summary>
+    /// Dump the memory map from BootInfo to analyze fragmentation.
+    /// </summary>
+    private static void DumpMemoryMap(BootInfo* bootInfo)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Memory Map from Bootloader");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        byte* memoryMap = (byte*)bootInfo->MemoryMapAddress;
+        int entryCount = (int)bootInfo->MemoryMapEntries;
+        ulong descriptorSize = bootInfo->MemoryMapEntrySize;
+
+        if (memoryMap == null || entryCount == 0)
+        {
+            DebugConsole.WriteLine("[MemMap] No memory map available!");
+            return;
+        }
+
+        DebugConsole.Write("[MemMap] ");
+        DebugConsole.WriteDecimal(entryCount);
+        DebugConsole.Write(" entries, descriptor size=");
+        DebugConsole.WriteDecimal((int)descriptorSize);
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine();
+
+        // Statistics
+        ulong totalConventional = 0;
+        ulong totalUsed = 0;
+        int conventionalRegions = 0;
+        ulong smallestConventional = ulong.MaxValue;
+        ulong largestConventional = 0;
+
+        // Print header
+        DebugConsole.WriteLine("  Start            End              Size        Type");
+        DebugConsole.WriteLine("  ---------------  ---------------  ----------  ----------------");
+
+        for (int i = 0; i < entryCount; i++)
+        {
+            var desc = UEFIBoot.GetDescriptor(memoryMap, descriptorSize, i);
+            ulong start = desc->PhysicalStart;
+            ulong size = desc->NumberOfPages * 4096;
+            ulong end = start + size;
+
+            // Print address range
+            DebugConsole.Write("  0x");
+            DebugConsole.WriteHex(start);
+            DebugConsole.Write("  0x");
+            DebugConsole.WriteHex(end);
+            DebugConsole.Write("  ");
+
+            // Print size in human-readable format
+            if (size >= 1024 * 1024)
+            {
+                DebugConsole.WriteDecimal((uint)(size / (1024 * 1024)));
+                DebugConsole.Write(" MB");
+            }
+            else if (size >= 1024)
+            {
+                DebugConsole.WriteDecimal((uint)(size / 1024));
+                DebugConsole.Write(" KB");
+            }
+            else
+            {
+                DebugConsole.WriteDecimal((uint)size);
+                DebugConsole.Write(" B ");
+            }
+
+            // Pad to 10 chars
+            DebugConsole.Write("     ");
+
+            // Print type name
+            string typeName = GetMemoryTypeName(desc->Type);
+            DebugConsole.Write(typeName);
+
+            // Mark important types
+            if (desc->Type == EFIMemoryType.ConventionalMemory)
+            {
+                DebugConsole.Write(" [FREE]");
+                totalConventional += size;
+                conventionalRegions++;
+                if (size < smallestConventional) smallestConventional = size;
+                if (size > largestConventional) largestConventional = size;
+            }
+            else if (desc->Type == EFIMemoryType.RuntimeServicesCode ||
+                     desc->Type == EFIMemoryType.RuntimeServicesData)
+            {
+                DebugConsole.Write(" [RUNTIME]");
+                totalUsed += size;
+            }
+            else if (desc->Type == EFIMemoryType.ACPIReclaimMemory ||
+                     desc->Type == EFIMemoryType.ACPIMemoryNVS)
+            {
+                DebugConsole.Write(" [ACPI]");
+                totalUsed += size;
+            }
+            else if (desc->Type == EFIMemoryType.ReservedMemoryType ||
+                     desc->Type == EFIMemoryType.UnusableMemory)
+            {
+                totalUsed += size;
+            }
+            else if (desc->Type == EFIMemoryType.LoaderCode ||
+                     desc->Type == EFIMemoryType.LoaderData ||
+                     desc->Type == EFIMemoryType.BootServicesCode ||
+                     desc->Type == EFIMemoryType.BootServicesData)
+            {
+                // After ExitBootServices, these are also free
+                DebugConsole.Write(" [reclaimable]");
+                totalConventional += size;
+            }
+
+            DebugConsole.WriteLine();
+        }
+
+        // Print summary
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("  Memory Summary:");
+        DebugConsole.Write("    Conventional (free): ");
+        DebugConsole.WriteDecimal((uint)(totalConventional / (1024 * 1024)));
+        DebugConsole.Write(" MB in ");
+        DebugConsole.WriteDecimal(conventionalRegions);
+        DebugConsole.WriteLine(" regions");
+
+        if (conventionalRegions > 0 && smallestConventional != ulong.MaxValue)
+        {
+            DebugConsole.Write("    Smallest free region: ");
+            if (smallestConventional >= 1024 * 1024)
+            {
+                DebugConsole.WriteDecimal((uint)(smallestConventional / (1024 * 1024)));
+                DebugConsole.WriteLine(" MB");
+            }
+            else
+            {
+                DebugConsole.WriteDecimal((uint)(smallestConventional / 1024));
+                DebugConsole.WriteLine(" KB");
+            }
+
+            DebugConsole.Write("    Largest free region:  ");
+            DebugConsole.WriteDecimal((uint)(largestConventional / (1024 * 1024)));
+            DebugConsole.WriteLine(" MB");
+        }
+
+        // Show our reserved regions
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("  Our Reserved Regions:");
+        DebugConsole.Write("    BootInfo:    0x");
+        DebugConsole.WriteHex(0x100000UL);
+        DebugConsole.Write(" - 0x");
+        DebugConsole.WriteHex(0x200000UL);
+        DebugConsole.WriteLine(" (1 MB)");
+
+        DebugConsole.Write("    Files:       0x");
+        DebugConsole.WriteHex(bootInfo->LoadedFilesAddress);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal(bootInfo->LoadedFilesCount);
+        DebugConsole.WriteLine(" files)");
+
+        DebugConsole.Write("    Kernel:      0x");
+        DebugConsole.WriteHex(bootInfo->KernelPhysicalBase);
+        DebugConsole.Write(" - 0x");
+        DebugConsole.WriteHex(bootInfo->KernelPhysicalBase + bootInfo->KernelSize);
+        DebugConsole.Write(" (");
+        DebugConsole.WriteDecimal((uint)(bootInfo->KernelSize / 1024));
+        DebugConsole.WriteLine(" KB)");
+
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Get human-readable name for EFI memory type
+    /// </summary>
+    private static string GetMemoryTypeName(EFIMemoryType type)
+    {
+        return type switch
+        {
+            EFIMemoryType.ReservedMemoryType => "Reserved",
+            EFIMemoryType.LoaderCode => "LoaderCode",
+            EFIMemoryType.LoaderData => "LoaderData",
+            EFIMemoryType.BootServicesCode => "BSCode",
+            EFIMemoryType.BootServicesData => "BSData",
+            EFIMemoryType.RuntimeServicesCode => "RSCode",
+            EFIMemoryType.RuntimeServicesData => "RSData",
+            EFIMemoryType.ConventionalMemory => "Conventional",
+            EFIMemoryType.UnusableMemory => "Unusable",
+            EFIMemoryType.ACPIReclaimMemory => "ACPIReclaim",
+            EFIMemoryType.ACPIMemoryNVS => "ACPINVS",
+            EFIMemoryType.MemoryMappedIO => "MMIO",
+            EFIMemoryType.MemoryMappedIOPortSpace => "MMIOPort",
+            EFIMemoryType.PalCode => "PalCode",
+            EFIMemoryType.PersistentMemory => "Persistent",
+            _ => "Unknown"
+        };
     }
 
     /// <summary>

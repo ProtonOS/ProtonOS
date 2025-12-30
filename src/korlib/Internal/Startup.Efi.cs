@@ -50,6 +50,18 @@ namespace Internal.Runtime.CompilerHelpers
 
         static void WriteGdbDebugMarker(IntPtr imageHandle, EFI_SYSTEM_TABLE* systemTable)
         {
+            ulong* markerPtr = (ulong*)GDB_DEBUG_MARKER_ADDR;
+            ulong* imageBasePtr = (ulong*)GDB_DEBUG_IMAGEBASE_ADDR;
+
+            // After ExitBootServices, BootServices is invalid - skip this if null
+            if (systemTable->BootServices == null)
+            {
+                // Bootloader already exited boot services, can't query load address
+                *imageBasePtr = 0;
+                *markerPtr = GDB_DEBUG_MARKER_VALUE;
+                return;
+            }
+
             // Get the EFI_LOADED_IMAGE_PROTOCOL to find our actual load address
             EFI_GUID guid;
             EFI_GUID.InitLoadedImageProtocol(&guid);
@@ -63,9 +75,6 @@ namespace Internal.Runtime.CompilerHelpers
             // Write the ImageBase to known address (0x10008)
             // Write magic marker to 0x10000 to signal GDB
             // Use direct pointer writes - they won't be optimized away at this early stage
-            ulong* markerPtr = (ulong*)GDB_DEBUG_MARKER_ADDR;
-            ulong* imageBasePtr = (ulong*)GDB_DEBUG_IMAGEBASE_ADDR;
-
             if (status == 0 && loadedImage != null)
             {
                 *imageBasePtr = (ulong)loadedImage->ImageBase;

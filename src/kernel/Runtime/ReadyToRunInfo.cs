@@ -115,16 +115,24 @@ public static unsafe class ReadyToRunInfo
 
     /// <summary>
     /// Initialize RTR info from the kernel's PE image.
-    /// Must be called after UEFIBoot.Init() sets the image base.
+    /// Uses BootInfo to get the kernel's physical base address.
     /// </summary>
     public static void Init()
     {
         if (_initialized) return;
 
-        _imageBase = UEFIBoot.ImageBase;
+        // Get image base from BootInfo (where bootloader loaded the kernel)
+        var bootInfo = BootInfoAccess.Get();
+        if (bootInfo == null || !bootInfo->IsValid)
+        {
+            DebugConsole.WriteLine("[RTR] Error: BootInfo not available");
+            return;
+        }
+
+        _imageBase = bootInfo->KernelPhysicalBase;
         if (_imageBase == 0)
         {
-            DebugConsole.WriteLine("[RTR] Error: Image base not set");
+            DebugConsole.WriteLine("[RTR] Error: Kernel base not set in BootInfo");
             return;
         }
 

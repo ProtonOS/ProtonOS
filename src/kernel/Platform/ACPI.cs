@@ -1,41 +1,10 @@
 // ProtonOS kernel - ACPI table parsing
-// Finds ACPI tables from UEFI configuration table to locate hardware like HPET.
+// Uses RSDP address from BootInfo (captured by bootloader) to locate hardware like HPET.
 
 using System;
 using System.Runtime.InteropServices;
 
 namespace ProtonOS.Platform;
-
-// ============================================================================
-// ACPI GUIDs for UEFI Configuration Table
-// ============================================================================
-
-/// <summary>
-/// UEFI Configuration Table entry
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-public unsafe struct EFIConfigurationTable
-{
-    public Guid VendorGuid;
-    public void* VendorTable;
-}
-
-/// <summary>
-/// GUID structure matching UEFI format
-/// </summary>
-[StructLayout(LayoutKind.Sequential)]
-public struct Guid
-{
-    public uint Data1;
-    public ushort Data2;
-    public ushort Data3;
-    public ulong Data4;  // Actually 8 bytes
-
-    public bool Equals(uint d1, ushort d2, ushort d3, ulong d4)
-    {
-        return Data1 == d1 && Data2 == d2 && Data3 == d3 && Data4 == d4;
-    }
-}
 
 // ============================================================================
 // ACPI Table Structures
@@ -384,22 +353,10 @@ public struct ACPISLIT
 // ============================================================================
 
 /// <summary>
-/// ACPI table parser - finds tables from UEFI configuration table
+/// ACPI table parser - uses RSDP from BootInfo
 /// </summary>
 public static unsafe class ACPI
 {
-    // ACPI 2.0 RSDP GUID: 8868E871-E4F1-11D3-BC22-0080C73C8881
-    private const uint AcpiGuid1 = 0x8868E871;
-    private const ushort AcpiGuid2 = 0xE4F1;
-    private const ushort AcpiGuid3 = 0x11D3;
-    private const ulong AcpiGuid4 = 0x8188C773800022BC;  // Byte-swapped for little-endian
-
-    // ACPI 1.0 RSDP GUID: EB9D2D30-2D88-11D3-9A16-0090273FC14D
-    private const uint Acpi1Guid1 = 0xEB9D2D30;
-    private const ushort Acpi1Guid2 = 0x2D88;
-    private const ushort Acpi1Guid3 = 0x11D3;
-    private const ulong Acpi1Guid4 = 0x4DC13F279000169A;  // Byte-swapped for little-endian
-
     private static ACPIRSDP2* _rsdp;
     private static ACPIXSDT* _xsdt;
     private static ACPIRSDT* _rsdt;
@@ -409,64 +366,31 @@ public static unsafe class ACPI
     public static bool IsInitialized => _initialized;
 
     /// <summary>
-    /// Initialize ACPI by finding RSDP from UEFI configuration table.
-    /// Must be called before ExitBootServices (needs SystemTable).
+    /// Initialize ACPI by getting RSDP from BootInfo (captured by bootloader from UEFI).
     /// </summary>
     public static bool Init()
     {
         if (_initialized)
             return true;
 
-        var systemTable = UEFIBoot.SystemTable;
-        if (systemTable == null)
+        var bootInfo = BootInfoAccess.Get();
+        if (bootInfo == null || !bootInfo->IsValid)
         {
-            DebugConsole.WriteLine("[ACPI] No UEFI system table!");
+            DebugConsole.WriteLine("[ACPI] BootInfo not available!");
             return false;
         }
 
-        DebugConsole.WriteLine("[ACPI] Searching for RSDP...");
+        if (bootInfo->AcpiRsdp == 0)
+        {
+            DebugConsole.WriteLine("[ACPI] RSDP not found in BootInfo!");
+            return false;
+        }
 
-        // Search configuration table for ACPI RSDP
-        ulong tableCount = systemTable->NumberOfTableEntries;
-        var configTable = (EFIConfigurationTable*)systemTable->ConfigurationTable;
+        void* rsdpPtr = (void*)bootInfo->AcpiRsdp;
 
-        DebugConsole.Write("[ACPI] ConfigurationTable at 0x");
-        DebugConsole.WriteHex((ulong)configTable);
-        DebugConsole.Write(" entries: ");
-        DebugConsole.WriteHex((ushort)tableCount);
+        DebugConsole.Write("[ACPI] RSDP from BootInfo at 0x");
+        DebugConsole.WriteHex(bootInfo->AcpiRsdp);
         DebugConsole.WriteLine();
-
-        void* rsdpPtr = null;
-        bool isAcpi2 = false;
-
-        for (ulong i = 0; i < tableCount; i++)
-        {
-            var entry = &configTable[i];
-
-            // Check for ACPI 2.0+ GUID first (preferred)
-            if (entry->VendorGuid.Equals(AcpiGuid1, AcpiGuid2, AcpiGuid3, AcpiGuid4))
-            {
-                rsdpPtr = entry->VendorTable;
-                isAcpi2 = true;
-                DebugConsole.WriteLine("[ACPI] Found ACPI 2.0+ RSDP");
-                break;
-            }
-
-            // Check for ACPI 1.0 GUID
-            if (entry->VendorGuid.Equals(Acpi1Guid1, Acpi1Guid2, Acpi1Guid3, Acpi1Guid4))
-            {
-                rsdpPtr = entry->VendorTable;
-                isAcpi2 = false;
-                DebugConsole.WriteLine("[ACPI] Found ACPI 1.0 RSDP");
-                // Keep searching for 2.0 version
-            }
-        }
-
-        if (rsdpPtr == null)
-        {
-            DebugConsole.WriteLine("[ACPI] RSDP not found!");
-            return false;
-        }
 
         // Validate RSDP signature
         var rsdp = (ACPIRSDP*)rsdpPtr;
@@ -481,14 +405,12 @@ public static unsafe class ACPI
 
         _rsdp = (ACPIRSDP2*)rsdpPtr;
 
-        DebugConsole.Write("[ACPI] RSDP at 0x");
-        DebugConsole.WriteHex((ulong)rsdpPtr);
-        DebugConsole.Write(" revision ");
+        DebugConsole.Write("[ACPI] RSDP revision ");
         DebugConsole.WriteHex((ushort)rsdp->Revision);
         DebugConsole.WriteLine();
 
-        // Use XSDT if ACPI 2.0+ and XSDT address is valid
-        if (isAcpi2 && rsdp->Revision >= 2 && _rsdp->XsdtAddress != 0)
+        // Use XSDT if ACPI 2.0+ (revision >= 2) and XSDT address is valid
+        if (rsdp->Revision >= 2 && _rsdp->XsdtAddress != 0)
         {
             _xsdt = (ACPIXSDT*)_rsdp->XsdtAddress;
             _useXsdt = true;

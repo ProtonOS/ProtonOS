@@ -51,19 +51,18 @@ public static unsafe class NativeAOTPAL
     {
         if (!_moduleBoundsInitialized)
         {
-            // Try to get from UEFI image info (must be called before ExitBootServices)
-            var imageBase = UEFIBoot.ImageBase;
-            var imageSize = UEFIBoot.ImageSize;
-
-            if (imageBase != 0 && imageSize != 0)
+            // Get kernel bounds from BootInfo
+            var bootInfo = BootInfoAccess.Get();
+            if (bootInfo != null && bootInfo->IsValid &&
+                bootInfo->KernelPhysicalBase != 0 && bootInfo->KernelSize != 0)
             {
-                _moduleBase = imageBase;
-                _moduleEnd = imageBase + imageSize;
+                _moduleBase = bootInfo->KernelPhysicalBase;
+                _moduleEnd = bootInfo->KernelPhysicalBase + bootInfo->KernelSize;
             }
             else
             {
-                // Fallback: use reasonable defaults for UEFI loaded image
-                _moduleBase = 0x100000;       // 1MB (common UEFI load address)
+                // Fallback: use reasonable defaults
+                _moduleBase = 0x8000000;      // 128MB (our kernel load address)
                 _moduleEnd = 0x10000000;      // 256MB (generous upper bound)
             }
             _moduleBoundsInitialized = true;

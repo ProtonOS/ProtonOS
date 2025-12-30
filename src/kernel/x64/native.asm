@@ -6,10 +6,10 @@ DEFAULT REL
 
 section .data
 
-;; UEFI parameters - stored for later retrieval by managed code
-global g_uefi_image_handle, g_uefi_system_table
-g_uefi_image_handle: dq 0
-g_uefi_system_table:  dq 0
+;; Boot parameters - stored for later retrieval by managed code
+;; The bootloader passes BootInfo* in RCX
+global g_boot_info
+g_boot_info: dq 0
 
 ;; ==================== ProtonOS JIT Debug Interface ====================
 ;; Custom JIT debug interface for GDB. Uses non-standard names to avoid
@@ -70,20 +70,30 @@ __proton_jit_get_first_entry:
     mov rax, [rel __proton_jit_descriptor + 16]
     ret
 
-;; ==================== UEFI Entry Point ====================
-;; Linker entry point that saves UEFI parameters, then calls korlib's EfiMain.
+;; ==================== Kernel Entry Point ====================
+;; Linker entry point that receives BootInfo* from bootloader,
+;; saves it, then calls korlib's EfiMain.
+;;
+;; The bootloader passes BootInfo* in RCX. BootInfo contains all
+;; platform info (memory map, loaded files, ACPI) - no UEFI needed.
 
 extern EfiMain  ; korlib's EfiMain
 
-; EFI_STATUS EFIAPI EfiEntry(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable)
-; Windows x64 ABI: ImageHandle in rcx, SystemTable in rdx
+BI_MAGIC_VALUE  equ 0x50524F544F4E4F53  ; "PROTONOS"
+
+; void KernelEntry(BootInfo* bootInfo)
+; Windows x64 ABI: bootInfo in rcx
 global EfiEntry
 EfiEntry:
-    ; Save UEFI parameters to globals for later retrieval by managed code
-    mov [rel g_uefi_image_handle], rcx
-    mov [rel g_uefi_system_table], rdx
+    ; Save BootInfo pointer
+    mov [rel g_boot_info], rcx
 
-    ; Tail-call to korlib's EfiMain (parameters already in correct registers)
+    ; EfiMain expects ImageHandle in rcx, SystemTable in rdx
+    ; We no longer use UEFI - pass zeros (EfiMain handles null gracefully)
+    xor rcx, rcx
+    xor rdx, rdx
+
+    ; Tail-call to korlib's EfiMain
     jmp EfiMain
 
 ;; ==================== Port I/O ====================
@@ -539,19 +549,14 @@ get_isr_table:
     lea rax, [rel isr_table]
     ret
 
-;; ==================== UEFI Parameter Access ====================
-;; Functions to retrieve UEFI parameters saved by EfiMainHook
+;; ==================== Boot Parameter Access ====================
+;; Functions to retrieve boot parameters saved by KernelEntry
 
-; void* get_uefi_system_table(void)
-global get_uefi_system_table
-get_uefi_system_table:
-    mov rax, [rel g_uefi_system_table]
-    ret
-
-; void* get_uefi_image_handle(void)
-global get_uefi_image_handle
-get_uefi_image_handle:
-    mov rax, [rel g_uefi_image_handle]
+; void* get_boot_info(void)
+; Returns the BootInfo* passed by bootloader
+global get_boot_info
+get_boot_info:
+    mov rax, [rel g_boot_info]
     ret
 
 ;; ==================== Context Switching ====================
