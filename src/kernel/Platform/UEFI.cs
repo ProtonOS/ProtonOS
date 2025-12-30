@@ -752,4 +752,202 @@ public static unsafe class UEFIBoot
     {
         return (EFIMemoryDescriptor*)(buffer + (ulong)index * descriptorSize);
     }
+
+    // Static buffer for memory map dump (to avoid heap allocation early in boot)
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct MemoryMapDumpBuffer
+    {
+        public fixed byte Data[16384];  // 16KB should be plenty for memory map
+    }
+    private static MemoryMapDumpBuffer _memMapDumpBuffer;
+
+    /// <summary>
+    /// Dump the complete UEFI memory map to debug console.
+    /// Must be called before ExitBootServices.
+    /// This helps understand where UEFI loads images and what regions are available.
+    /// </summary>
+    public static void DumpMemoryMap()
+    {
+        if (!BootServicesAvailable)
+        {
+            DebugConsole.WriteLine("[UEFI] Cannot dump memory map: boot services unavailable");
+            return;
+        }
+
+        // Get image info first
+        LoadImageInfo();
+
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  UEFI Memory Map");
+        DebugConsole.WriteLine("==============================");
+
+        fixed (byte* buffer = _memMapDumpBuffer.Data)
+        {
+            var status = GetMemoryMap(buffer, 16384, out ulong mapKey, out ulong descSize, out int entryCount);
+
+            if (status != EFIStatus.Success)
+            {
+                DebugConsole.Write("[UEFI] GetMemoryMap failed: 0x");
+                DebugConsole.WriteHex((ulong)status);
+                DebugConsole.WriteLine();
+                return;
+            }
+
+            DebugConsole.Write("[UEFI] Memory map has ");
+            DebugConsole.WriteDecimal(entryCount);
+            DebugConsole.Write(" entries, descriptor size ");
+            DebugConsole.WriteDecimal((int)descSize);
+            DebugConsole.WriteLine(" bytes");
+            DebugConsole.WriteLine();
+
+            // Print header
+            DebugConsole.WriteLine("Type             Start            End              Pages    Attr");
+            DebugConsole.WriteLine("---------------  ---------------  ---------------  -------  ----");
+
+            ulong totalConventional = 0;
+            ulong totalReserved = 0;
+            ulong kernelRegionStart = 0;
+            ulong kernelRegionEnd = 0;
+
+            for (int i = 0; i < entryCount; i++)
+            {
+                var desc = GetDescriptor(buffer, descSize, i);
+                ulong start = desc->PhysicalStart;
+                ulong pages = desc->NumberOfPages;
+                ulong end = start + pages * 4096 - 1;
+                ulong attr = desc->Attribute;
+
+                // Track if this is where the kernel is loaded
+                bool isKernelRegion = (start <= _imageBase && end >= _imageBase);
+                if (isKernelRegion)
+                {
+                    kernelRegionStart = start;
+                    kernelRegionEnd = end;
+                }
+
+                // Print type name
+                switch (desc->Type)
+                {
+                    case EFIMemoryType.ReservedMemoryType:
+                        DebugConsole.Write("Reserved        ");
+                        totalReserved += pages;
+                        break;
+                    case EFIMemoryType.LoaderCode:
+                        DebugConsole.Write("LoaderCode      ");
+                        break;
+                    case EFIMemoryType.LoaderData:
+                        DebugConsole.Write("LoaderData      ");
+                        break;
+                    case EFIMemoryType.BootServicesCode:
+                        DebugConsole.Write("BootSvcsCode    ");
+                        break;
+                    case EFIMemoryType.BootServicesData:
+                        DebugConsole.Write("BootSvcsData    ");
+                        break;
+                    case EFIMemoryType.RuntimeServicesCode:
+                        DebugConsole.Write("RuntimeCode     ");
+                        break;
+                    case EFIMemoryType.RuntimeServicesData:
+                        DebugConsole.Write("RuntimeData     ");
+                        break;
+                    case EFIMemoryType.ConventionalMemory:
+                        DebugConsole.Write("Conventional    ");
+                        totalConventional += pages;
+                        break;
+                    case EFIMemoryType.UnusableMemory:
+                        DebugConsole.Write("Unusable        ");
+                        break;
+                    case EFIMemoryType.ACPIReclaimMemory:
+                        DebugConsole.Write("ACPIReclaim     ");
+                        break;
+                    case EFIMemoryType.ACPIMemoryNVS:
+                        DebugConsole.Write("ACPINVS         ");
+                        break;
+                    case EFIMemoryType.MemoryMappedIO:
+                        DebugConsole.Write("MMIO            ");
+                        break;
+                    case EFIMemoryType.MemoryMappedIOPortSpace:
+                        DebugConsole.Write("MMIOPort        ");
+                        break;
+                    case EFIMemoryType.PalCode:
+                        DebugConsole.Write("PalCode         ");
+                        break;
+                    case EFIMemoryType.PersistentMemory:
+                        DebugConsole.Write("Persistent      ");
+                        break;
+                    default:
+                        DebugConsole.Write("Unknown(");
+                        DebugConsole.WriteDecimal((int)desc->Type);
+                        DebugConsole.Write(")    ");
+                        break;
+                }
+
+                // Print address range
+                DebugConsole.Write(" 0x");
+                DebugConsole.WriteHex(start);
+                DebugConsole.Write(" 0x");
+                DebugConsole.WriteHex(end);
+
+                // Print page count
+                DebugConsole.Write(" ");
+                if (pages < 10000)
+                    DebugConsole.Write(" ");
+                if (pages < 1000)
+                    DebugConsole.Write(" ");
+                if (pages < 100)
+                    DebugConsole.Write(" ");
+                if (pages < 10)
+                    DebugConsole.Write(" ");
+                DebugConsole.WriteDecimal((int)pages);
+
+                // Print key attributes
+                DebugConsole.Write("  ");
+                if ((attr & EFIMemoryAttribute.Runtime) != 0)
+                    DebugConsole.Write("RT ");
+                if ((attr & EFIMemoryAttribute.WB) != 0)
+                    DebugConsole.Write("WB ");
+                if ((attr & EFIMemoryAttribute.WT) != 0)
+                    DebugConsole.Write("WT ");
+                if ((attr & EFIMemoryAttribute.UC) != 0)
+                    DebugConsole.Write("UC ");
+
+                // Mark kernel region
+                if (isKernelRegion)
+                    DebugConsole.Write(" <-- KERNEL");
+
+                DebugConsole.WriteLine();
+            }
+
+            // Print summary
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("--- Summary ---");
+            DebugConsole.Write("Kernel image:      0x");
+            DebugConsole.WriteHex(_imageBase);
+            DebugConsole.Write(" - 0x");
+            DebugConsole.WriteHex(_imageBase + _imageSize);
+            DebugConsole.Write(" (");
+            DebugConsole.WriteDecimal((int)(_imageSize / 1024));
+            DebugConsole.WriteLine(" KB)");
+
+            DebugConsole.Write("Kernel in region:  0x");
+            DebugConsole.WriteHex(kernelRegionStart);
+            DebugConsole.Write(" - 0x");
+            DebugConsole.WriteHex(kernelRegionEnd);
+            DebugConsole.WriteLine();
+
+            DebugConsole.Write("Conventional mem:  ");
+            DebugConsole.WriteDecimal((int)(totalConventional * 4 / 1024));
+            DebugConsole.Write(" MB (");
+            DebugConsole.WriteDecimal((int)totalConventional);
+            DebugConsole.WriteLine(" pages)");
+
+            DebugConsole.Write("Reserved mem:      ");
+            DebugConsole.WriteDecimal((int)(totalReserved * 4 / 1024));
+            DebugConsole.Write(" MB (");
+            DebugConsole.WriteDecimal((int)totalReserved);
+            DebugConsole.WriteLine(" pages)");
+            DebugConsole.WriteLine();
+        }
+    }
 }

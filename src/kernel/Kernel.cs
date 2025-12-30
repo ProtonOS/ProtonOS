@@ -116,6 +116,10 @@ public static unsafe class Kernel
         }
         DebugConsole.WriteLine();
 
+        // Dump UEFI memory map before ExitBootServices
+        // This helps understand UEFI's memory layout and where the kernel is loaded
+        UEFIBoot.DumpMemoryMap();
+
         // Initialize ReadyToRun info (must be before anything needing runtime metadata)
         ReadyToRunInfo.Init();
         // ReadyToRunInfo.DumpSections();

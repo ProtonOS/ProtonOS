@@ -12,11 +12,19 @@ TEST_DIR := src/FullTest
 # Output files
 ifeq ($(ARCH),x64)
     EFI_NAME := BOOTX64.EFI
+    KERNEL_NAME := KERNEL.BIN
     NASM_FORMAT := win64
 else ifeq ($(ARCH),arm64)
     EFI_NAME := BOOTAA64.EFI
+    KERNEL_NAME := KERNEL.BIN
     $(error ARM64 not yet implemented)
 endif
+
+# Bootloader
+BOOTLOADER_DIR := src/bootloader
+BOOTLOADER_SRC := $(BOOTLOADER_DIR)/boot.asm
+BOOTLOADER_OBJ := $(BUILD_DIR)/boot.obj
+BOOTLOADER_EFI := $(BUILD_DIR)/LOADER.EFI
 
 # Tools
 NASM := nasm
@@ -91,7 +99,7 @@ AHCI_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ahci.dll
 EXT2_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ext2.dll
 
 # Targets
-.PHONY: all clean native kernel test korlibdll testsupport ddk drivers image run deps install-deps check-deps
+.PHONY: all clean native kernel bootloader test korlibdll testsupport ddk drivers image run deps install-deps check-deps
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -105,6 +113,18 @@ $(NATIVE_OBJ): $(NATIVE_SRC) | $(BUILD_DIR)
 	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/native.lst
 
 native: $(NATIVE_OBJ)
+
+# Assemble bootloader
+$(BOOTLOADER_OBJ): $(BOOTLOADER_SRC) | $(BUILD_DIR)
+	@echo "NASM $(BOOTLOADER_SRC)"
+	$(NASM) $(NASM_FLAGS) $< -o $@ -l $(BUILD_DIR)/boot.lst
+
+# Link bootloader
+$(BOOTLOADER_EFI): $(BOOTLOADER_OBJ)
+	@echo "LINK $@"
+	$(LD) -subsystem:efi_application -entry:EfiMain -out:$@ $<
+
+bootloader: $(BOOTLOADER_EFI)
 
 # Compile kernel (korlib + kernel C# sources together)
 $(KERNEL_OBJ): $(KORLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
@@ -184,14 +204,15 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mmd -i $(BUILD_DIR)/boot.img ::/drivers
-	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/$(EFI_NAME) ::/EFI/BOOT/$(EFI_NAME)
+	mcopy -i $(BUILD_DIR)/boot.img $(BOOTLOADER_EFI) ::/EFI/BOOT/$(EFI_NAME)
+	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/BOOTX64.EFI ::/EFI/BOOT/$(KERNEL_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(KORLIB_DLL) ::/korlib.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll
