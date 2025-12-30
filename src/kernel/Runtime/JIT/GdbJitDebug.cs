@@ -55,29 +55,40 @@ namespace ProtonOS.Runtime.JIT
     /// </summary>
     public static unsafe class GdbJitDebug
     {
-        // Import native GDB JIT helper functions
-        [RuntimeImport("*", "__jit_debug_register_code")]
+        // Import native ProtonOS JIT helper functions
+        // Uses custom names to avoid triggering GDB's built-in JIT handler
+        // which has bugs when used with add-symbol-file
+        [RuntimeImport("*", "__proton_jit_register")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern void NativeJitDebugRegisterCode();
 
-        [RuntimeImport("*", "__jit_set_action")]
+        [RuntimeImport("*", "__proton_jit_set_action")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern void NativeSetAction(uint action);
 
-        [RuntimeImport("*", "__jit_set_relevant_entry")]
+        [RuntimeImport("*", "__proton_jit_set_relevant_entry")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern void NativeSetRelevantEntry(JitCodeEntry* entry);
 
-        [RuntimeImport("*", "__jit_set_first_entry")]
+        [RuntimeImport("*", "__proton_jit_set_first_entry")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern void NativeSetFirstEntry(JitCodeEntry* entry);
 
-        [RuntimeImport("*", "__jit_get_first_entry")]
+        [RuntimeImport("*", "__proton_jit_get_first_entry")]
         [MethodImpl(MethodImplOptions.InternalCall)]
         private static extern JitCodeEntry* NativeGetFirstEntry();
 
         private static bool _initialized;
         private static SpinLock _lock;
+        private static int _registeredCount;  // Count of registered methods
+
+        // High memory allocator for JIT debug structures
+        // GDB can't access low EFI memory (<1MB), so we allocate from higher addresses
+        private const ulong JIT_DEBUG_MIN_ADDRESS = 0x100000;  // 1MB - minimum address for GDB access
+        private const ulong JIT_DEBUG_POOL_SIZE = 16;          // Pages to allocate at once (64KB)
+        private static byte* _jitPool;                          // Current allocation pool
+        private static ulong _jitPoolOffset;                    // Current offset in pool
+        private static ulong _jitPoolSize;                      // Size of current pool
 
         // ELF constants
         private const byte ELFCLASS64 = 2;
@@ -109,12 +120,52 @@ namespace ProtonOS.Runtime.JIT
             if (_initialized)
                 return;
 
-            // Native __jit_debug_descriptor is already initialized in assembly
+            // Native __proton_jit_descriptor is already initialized in assembly
             // Just set up our managed state
             _lock = new SpinLock();
+            _jitPool = null;
+            _jitPoolOffset = 0;
+            _jitPoolSize = 0;
             _initialized = true;
 
             DebugConsole.WriteLine("[GdbJit] Debug interface initialized");
+        }
+
+        /// <summary>
+        /// Allocate memory from the high-memory JIT debug pool.
+        /// This ensures allocations are accessible via GDB (above 1MB).
+        /// </summary>
+        private static void* AllocJitDebug(ulong size)
+        {
+            // Align to 8 bytes
+            size = (size + 7) & ~7UL;
+
+            // Check if we need to allocate a new pool
+            if (_jitPool == null || _jitPoolOffset + size > _jitPoolSize)
+            {
+                // Allocate new pool from high memory
+                ulong poolBytes = JIT_DEBUG_POOL_SIZE * 4096;  // 64KB default
+                if (size > poolBytes)
+                    poolBytes = size + 4096;  // Ensure enough for large allocations
+
+                ulong pages = (poolBytes + 4095) / 4096;
+                ulong newPool = PageAllocator.AllocatePagesAbove(pages, JIT_DEBUG_MIN_ADDRESS);
+
+                if (newPool == 0)
+                {
+                    // Fallback to regular allocation if high memory is exhausted
+                    return HeapAllocator.Alloc(size);
+                }
+
+                _jitPool = (byte*)newPool;
+                _jitPoolSize = pages * 4096;
+                _jitPoolOffset = 0;
+            }
+
+            // Bump allocate from pool
+            void* result = _jitPool + _jitPoolOffset;
+            _jitPoolOffset += size;
+            return result;
         }
 
         /// <summary>
@@ -143,8 +194,8 @@ namespace ProtonOS.Runtime.JIT
                 return;
             }
 
-            // Allocate JIT code entry
-            JitCodeEntry* entry = (JitCodeEntry*)HeapAllocator.Alloc((ulong)sizeof(JitCodeEntry));
+            // Allocate JIT code entry from high memory pool (GDB accessible)
+            JitCodeEntry* entry = (JitCodeEntry*)AllocJitDebug((ulong)sizeof(JitCodeEntry));
             if (entry == null)
             {
                 // Can't free elfData easily, but this is a rare error path
@@ -160,13 +211,17 @@ namespace ProtonOS.Runtime.JIT
             // Add to linked list and notify GDB
             _lock.Acquire();
 
+            _registeredCount++;
+
             // Insert at head of list - use native helpers to access descriptor
             JitCodeEntry* firstEntry = NativeGetFirstEntry();
+
             entry->NextEntry = firstEntry;
             if (firstEntry != null)
             {
                 firstEntry->PrevEntry = entry;
             }
+
             NativeSetFirstEntry(entry);
 
             // Notify GDB via native interface
@@ -179,6 +234,56 @@ namespace ProtonOS.Runtime.JIT
             NativeSetAction((uint)JitAction.NoAction);
 
             _lock.Release();
+        }
+
+        /// <summary>
+        /// Get the count of registered JIT methods.
+        /// </summary>
+        public static int GetRegisteredCount()
+        {
+            return _registeredCount;
+        }
+
+        /// <summary>
+        /// Debug: Walk and count entries in the linked list.
+        /// </summary>
+        public static int CountLinkedListEntries()
+        {
+            int count = 0;
+            JitCodeEntry* entry = NativeGetFirstEntry();
+            while (entry != null && count < 100000)  // Safety limit
+            {
+                count++;
+                entry = entry->NextEntry;
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// Debug: Dump linked list entries at intervals to verify list integrity.
+        /// </summary>
+        public static void DumpLinkedListSample()
+        {
+            int count = 0;
+            JitCodeEntry* entry = NativeGetFirstEntry();
+            JitCodeEntry* prev = null;
+            int errors = 0;
+
+            while (entry != null && count < 100000)
+            {
+                count++;
+
+                // Check prev pointer consistency
+                if (entry->PrevEntry != prev)
+                {
+                    errors++;
+                }
+
+                prev = entry;
+                entry = entry->NextEntry;
+            }
+
+            DebugConsole.WriteLine(string.Format("[GdbJit] Total entries: {0}, PrevPtr errors: {1}", count, errors));
         }
 
         /// <summary>
@@ -217,8 +322,8 @@ namespace ProtonOS.Runtime.JIT
             int shstrtabOffset = strtabOffset + strtabSize;
             int totalSize = shstrtabOffset + shstrtabSize;
 
-            // Allocate ELF buffer
-            elfData = (byte*)HeapAllocator.Alloc((ulong)totalSize);
+            // Allocate ELF buffer from high memory pool (GDB accessible)
+            elfData = (byte*)AllocJitDebug((ulong)totalSize);
             if (elfData == null)
             {
                 elfSize = 0;

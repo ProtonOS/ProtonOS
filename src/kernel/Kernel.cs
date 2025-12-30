@@ -585,6 +585,14 @@ public static unsafe class Kernel
             {
                 DebugConsole.WriteLine("[FullTest] SOME TESTS FAILED");
             }
+
+            // Report JIT debug statistics
+            int jitRegistered = Runtime.JIT.GdbJitDebug.GetRegisteredCount();
+            int jitListCount = Runtime.JIT.GdbJitDebug.CountLinkedListEntries();
+            DebugConsole.WriteLine(string.Format("[GdbJit] Registered: {0}  LinkedList: {1}", jitRegistered, jitListCount));
+
+            // Dump linked list sample to verify integrity
+            Runtime.JIT.GdbJitDebug.DumpLinkedListSample();
         }
         else
         {

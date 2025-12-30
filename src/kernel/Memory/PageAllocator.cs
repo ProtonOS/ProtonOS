@@ -439,6 +439,55 @@ public static unsafe class PageAllocator
     }
 
     /// <summary>
+    /// Allocate contiguous physical pages above a minimum address.
+    /// Used for allocations that must be in GDB-accessible memory (>1MB).
+    /// </summary>
+    /// <param name="count">Number of pages to allocate</param>
+    /// <param name="minAddress">Minimum physical address (allocation will be >= this)</param>
+    /// <returns>Physical address of the first page, or 0 on failure</returns>
+    public static ulong AllocatePagesAbove(ulong count, ulong minAddress)
+    {
+        if (!_initialized || count == 0 || _freePages < count)
+            return 0;
+
+        // Convert minimum address to minimum page number
+        ulong minPage = (minAddress + PageSize - 1) / PageSize;  // Round up
+        if (minPage == 0) minPage = 1;  // Skip null page
+
+        // Linear search for contiguous free pages starting from minPage
+        ulong consecutive = 0;
+        ulong startPage = 0;
+
+        for (ulong pageNum = minPage; pageNum < _totalPages; pageNum++)
+        {
+            if (IsPageFree(pageNum))
+            {
+                if (consecutive == 0)
+                    startPage = pageNum;
+                consecutive++;
+
+                if (consecutive == count)
+                {
+                    // Found enough contiguous pages, mark them as used
+                    for (ulong p = 0; p < count; p++)
+                    {
+                        SetPageUsed(startPage + p);
+                        UpdateNodeStatsOnAlloc(startPage + p);
+                    }
+                    _freePages -= count;
+                    return startPage * PageSize;
+                }
+            }
+            else
+            {
+                consecutive = 0;
+            }
+        }
+
+        return 0;  // Not enough contiguous pages above minAddress
+    }
+
+    /// <summary>
     /// Free a single physical page.
     /// </summary>
     /// <param name="physicalAddress">Physical address of the page to free</param>
