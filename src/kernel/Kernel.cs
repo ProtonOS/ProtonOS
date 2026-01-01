@@ -1371,6 +1371,86 @@ public static unsafe class Kernel
         int ext2WriteResult = testExt2WriteFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2WriteFile returned {0}", ext2WriteResult));
 
+        // Test FAT CreateDirectory
+        uint testFatCreateDirToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestFatCreateDirectory");
+        if (testFatCreateDirToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestFatCreateDirectory method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestFatCreateDirectory...");
+        var testFatCreateDirResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testFatCreateDirToken);
+        if (!testFatCreateDirResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestFatCreateDirectory");
+            return;
+        }
+
+        var testFatCreateDirFunc = (delegate* unmanaged<int>)testFatCreateDirResult.CodeAddress;
+        int fatCreateDirResult = testFatCreateDirFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestFatCreateDirectory returned {0}", fatCreateDirResult));
+
+        // Test FAT CreateFile/DeleteFile
+        uint testFatCreateFileToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestFatCreateDeleteFile");
+        if (testFatCreateFileToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestFatCreateDeleteFile method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestFatCreateDeleteFile...");
+        var testFatCreateFileResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testFatCreateFileToken);
+        if (!testFatCreateFileResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestFatCreateDeleteFile");
+            return;
+        }
+
+        var testFatCreateFileFunc = (delegate* unmanaged<int>)testFatCreateFileResult.CodeAddress;
+        int fatCreateFileResult = testFatCreateFileFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestFatCreateDeleteFile returned {0}", fatCreateFileResult));
+
+        // Test ext2 CreateDirectory
+        uint testExt2CreateDirToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestExt2CreateDirectory");
+        if (testExt2CreateDirToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestExt2CreateDirectory method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestExt2CreateDirectory...");
+        var testExt2CreateDirResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testExt2CreateDirToken);
+        if (!testExt2CreateDirResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestExt2CreateDirectory");
+            return;
+        }
+
+        var testExt2CreateDirFunc = (delegate* unmanaged<int>)testExt2CreateDirResult.CodeAddress;
+        int ext2CreateDirResult = testExt2CreateDirFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2CreateDirectory returned {0}", ext2CreateDirResult));
+
+        // Test ext2 CreateFile/DeleteFile
+        uint testExt2CreateFileToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestExt2CreateDeleteFile");
+        if (testExt2CreateFileToken == 0)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Could not find TestExt2CreateDeleteFile method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[AhciIO] JIT compiling AhciEntry.TestExt2CreateDeleteFile...");
+        var testExt2CreateFileResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, testExt2CreateFileToken);
+        if (!testExt2CreateFileResult.Success)
+        {
+            DebugConsole.WriteLine("[AhciIO] ERROR: Failed to JIT compile TestExt2CreateDeleteFile");
+            return;
+        }
+
+        var testExt2CreateFileFunc = (delegate* unmanaged<int>)testExt2CreateFileResult.CodeAddress;
+        int ext2CreateFileResult = testExt2CreateFileFunc();
+        DebugConsole.WriteLine(string.Format("[AhciIO] TestExt2CreateDeleteFile returned {0}", ext2CreateFileResult));
+
         // Test struct field access (diagnose JIT issues with Pack=1 structs)
         uint testStructToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "TestStructFieldAccess");
         if (testStructToken == 0)

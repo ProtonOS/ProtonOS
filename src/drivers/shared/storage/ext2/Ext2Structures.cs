@@ -74,18 +74,19 @@ public unsafe struct Ext2Superblock
 
 /// <summary>
 /// EXT2 block group descriptor - 32 bytes each.
+/// Note: Using explicit layout to avoid fixed buffer sizing issues in JIT.
 /// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct Ext2GroupDesc
+[StructLayout(LayoutKind.Explicit, Size = 32)]
+public struct Ext2GroupDesc
 {
-    public uint BlockBitmap;        // Block bitmap block number
-    public uint InodeBitmap;        // Inode bitmap block number
-    public uint InodeTable;         // First inode table block
-    public ushort FreeBlocksCount;  // Free blocks in group
-    public ushort FreeInodesCount;  // Free inodes in group
-    public ushort UsedDirsCount;    // Directories in group
-    public ushort Pad;              // Alignment padding
-    public fixed byte Reserved[12]; // Reserved for future use
+    [FieldOffset(0)]  public uint BlockBitmap;        // Block bitmap block number
+    [FieldOffset(4)]  public uint InodeBitmap;        // Inode bitmap block number
+    [FieldOffset(8)]  public uint InodeTable;         // First inode table block
+    [FieldOffset(12)] public ushort FreeBlocksCount;  // Free blocks in group
+    [FieldOffset(14)] public ushort FreeInodesCount;  // Free inodes in group
+    [FieldOffset(16)] public ushort UsedDirsCount;    // Directories in group
+    [FieldOffset(18)] public ushort Pad;              // Alignment padding
+    // Reserved bytes 20-31 are implicit due to Size = 32
 }
 
 /// <summary>
@@ -115,18 +116,29 @@ public unsafe struct Ext2Inode
 }
 
 /// <summary>
-/// EXT2 directory entry - variable length.
+/// EXT2 directory entry header - 8 bytes.
+/// The name follows immediately after in memory.
+/// Note: Using explicit layout to avoid fixed buffer sizing issues in JIT.
 /// </summary>
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct Ext2DirEntry
+[StructLayout(LayoutKind.Explicit, Size = 8)]
+public struct Ext2DirEntry
 {
-    public uint Inode;              // Inode number
-    public ushort RecLen;           // Directory entry length
-    public byte NameLen;            // Name length
-    public byte FileType;           // File type (EXT2_FT_*)
-    // Name follows (up to 255 bytes, not null-terminated)
-    // Use fixed buffer for easy access
-    public fixed byte Name[256];
+    [FieldOffset(0)] public uint Inode;     // Inode number
+    [FieldOffset(4)] public ushort RecLen;  // Directory entry length
+    [FieldOffset(6)] public byte NameLen;   // Name length
+    [FieldOffset(7)] public byte FileType;  // File type (EXT2_FT_*)
+    // Name follows at offset 8 in memory, accessed via pointer arithmetic
+
+    /// <summary>
+    /// Get pointer to name bytes (unsafe).
+    /// </summary>
+    public unsafe byte* GetNamePtr()
+    {
+        fixed (Ext2DirEntry* self = &this)
+        {
+            return (byte*)self + 8;
+        }
+    }
 }
 
 /// <summary>

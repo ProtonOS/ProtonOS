@@ -130,9 +130,6 @@ public unsafe class Ext2FileSystem : IFileSystem
 
     public FileResult Mount(IBlockDevice device, bool readOnly = false)
     {
-        Debug.Write("[Ext2] Mount called");
-        Debug.WriteLine();
-
         if (_mounted)
             return FileResult.AlreadyExists;
 
@@ -143,20 +140,10 @@ public unsafe class Ext2FileSystem : IFileSystem
         _readOnly = readOnly;
         _sectorSize = device.BlockSize;
 
-        Debug.Write("[Ext2] Sector size: ");
-        Debug.WriteDecimal((int)_sectorSize);
-        Debug.WriteLine();
-
         // Read superblock at offset 1024
         ulong sbOffset = 1024;
         ulong sbSector = sbOffset / _sectorSize;
         uint offsetInSector = (uint)(sbOffset % _sectorSize);
-
-        Debug.Write("[Ext2] Reading superblock from sector ");
-        Debug.WriteDecimal((int)sbSector);
-        Debug.Write(" offset ");
-        Debug.WriteDecimal((int)offsetInSector);
-        Debug.WriteLine();
 
         uint sectorsNeeded = (offsetInSector + 1024 + _sectorSize - 1) / _sectorSize;
         ulong pageCount = ((ulong)sectorsNeeded * _sectorSize + 4095) / 4096;
@@ -169,12 +156,6 @@ public unsafe class Ext2FileSystem : IFileSystem
         try
         {
             int result = device.Read(sbSector, sectorsNeeded, buffer);
-            Debug.Write("[Ext2] Read result: ");
-            Debug.WriteDecimal(result);
-            Debug.Write(" expected: ");
-            Debug.WriteDecimal((int)sectorsNeeded);
-            Debug.WriteLine();
-
             if (result != (int)sectorsNeeded)
             {
                 Memory.FreePages(bufferPhys, pageCount);
@@ -183,30 +164,11 @@ public unsafe class Ext2FileSystem : IFileSystem
 
             // Copy superblock
             var sb = (Ext2Superblock*)(buffer + offsetInSector);
-            Debug.Write("[Ext2] Magic: 0x");
-            Debug.WriteHex((ulong)sb->Magic);
-            Debug.Write(" expected: 0x");
-            Debug.WriteHex((ulong)Ext2Magic.MAGIC);
-            Debug.WriteLine();
-
             if (sb->Magic != Ext2Magic.MAGIC)
             {
-                Debug.WriteLine("[EXT2] Invalid magic number");
                 Memory.FreePages(bufferPhys, pageCount);
                 return FileResult.InvalidPath;
             }
-
-            Debug.Write("[Ext2] LogBlockSize=");
-            Debug.WriteDecimal((int)sb->LogBlockSize);
-            Debug.WriteLine();
-
-            Debug.Write("[Ext2] BlocksPerGroup=");
-            Debug.WriteDecimal((int)sb->BlocksPerGroup);
-            Debug.WriteLine();
-
-            Debug.Write("[Ext2] InodesPerGroup=");
-            Debug.WriteDecimal((int)sb->InodesPerGroup);
-            Debug.WriteLine();
 
             // Extract filesystem parameters directly from sb pointer (avoid large struct copy)
             _blockSize = 1024u << (int)sb->LogBlockSize;
@@ -247,32 +209,11 @@ public unsafe class Ext2FileSystem : IFileSystem
                 _volumeLabel = null;
             }
 
-            Debug.Write("[Ext2] blockSize=");
-            Debug.WriteDecimal((int)_blockSize);
-            Debug.Write(" sectorsPerBlock=");
-            Debug.WriteDecimal((int)_sectorsPerBlock);
-            Debug.WriteLine();
-
             Memory.FreePages(bufferPhys, pageCount);
-
-            Debug.Write("[Ext2] groupCount=");
-            Debug.WriteDecimal((int)_groupCount);
-            Debug.WriteLine();
-
-            Debug.Write("[EXT2] Mounted: ");
-            Debug.WriteDecimal((int)_blockSize);
-            Debug.Write(" byte blocks, ");
-            Debug.WriteDecimal((int)_groupCount);
-            Debug.Write(" groups, ");
-            Debug.WriteDecimal((int)_totalInodes);
-            Debug.WriteLine(" inodes");
 
             // Load block group descriptors
             if (!LoadGroupDescriptors())
-            {
-                Debug.WriteLine("[EXT2] Failed to load group descriptors");
                 return FileResult.IoError;
-            }
 
             _mounted = true;
             return FileResult.Success;
@@ -355,12 +296,23 @@ public unsafe class Ext2FileSystem : IFileSystem
             case FileMode.CreateNew:
                 if (findResult == FileResult.Success)
                     return FileResult.AlreadyExists;
-                return FileResult.NotSupported; // TODO: implement create
+                // Create new file
+                var createResult = CreateFileInternal(path, out inodeNum);
+                if (createResult != FileResult.Success)
+                    return createResult;
+                findResult = FileResult.Success;
+                break;
 
             case FileMode.OpenOrCreate:
             case FileMode.Create:
                 if (findResult != FileResult.Success)
-                    return FileResult.NotSupported; // TODO: implement create
+                {
+                    // Create new file
+                    var createResult2 = CreateFileInternal(path, out inodeNum);
+                    if (createResult2 != FileResult.Success)
+                        return createResult2;
+                    findResult = FileResult.Success;
+                }
                 break;
 
             case FileMode.Truncate:
@@ -427,7 +379,9 @@ public unsafe class Ext2FileSystem : IFileSystem
             return FileResult.IoError;
         if (_readOnly)
             return FileResult.ReadOnly;
-        return FileResult.NotSupported;
+
+        path = NormalizePath(path);
+        return CreateDirectoryInternal(path);
     }
 
     public FileResult DeleteFile(string path)
@@ -436,7 +390,9 @@ public unsafe class Ext2FileSystem : IFileSystem
             return FileResult.IoError;
         if (_readOnly)
             return FileResult.ReadOnly;
-        return FileResult.NotSupported;
+
+        path = NormalizePath(path);
+        return DeleteFileInternal(path);
     }
 
     public FileResult DeleteDirectory(string path)
@@ -445,7 +401,9 @@ public unsafe class Ext2FileSystem : IFileSystem
             return FileResult.IoError;
         if (_readOnly)
             return FileResult.ReadOnly;
-        return FileResult.NotSupported;
+
+        path = NormalizePath(path);
+        return DeleteDirectoryInternal(path);
     }
 
     public FileResult Rename(string oldPath, string newPath)
@@ -646,7 +604,6 @@ public unsafe class Ext2FileSystem : IFileSystem
 
             // Write block back
             bool success = WriteBlock(targetBlock, buffer);
-
             Memory.FreePages(bufferPhys, pageCount);
             return success;
         }
@@ -859,9 +816,10 @@ public unsafe class Ext2FileSystem : IFileSystem
                         if (entry->NameLen == name.Length)
                         {
                             bool match = true;
+                            byte* entryName = (byte*)entry + 8;
                             for (int i = 0; i < name.Length && match; i++)
                             {
-                                if (entry->Name[i] != (byte)name[i])
+                                if (entryName[i] != (byte)name[i])
                                     match = false;
                             }
                             if (match)
@@ -1236,6 +1194,974 @@ public unsafe class Ext2FileSystem : IFileSystem
         bool success = WriteBlock(blockNum, buffer);
         Memory.FreePages(bufferPhys, pageCount);
         return success;
+    }
+
+    /// <summary>
+    /// Allocate a new inode, preferring the specified group.
+    /// Returns 0 on failure.
+    /// </summary>
+    internal uint AllocateInode(uint preferredGroup = 0)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return 0;
+
+        // Try preferred group first, then search all groups
+        for (uint i = 0; i < _groupCount; i++)
+        {
+            uint group = (preferredGroup + i) % _groupCount;
+            if (_groupDescs[group].FreeInodesCount == 0)
+                continue;
+
+            uint inodeNum = AllocateInodeInGroup(group);
+            if (inodeNum != 0)
+                return inodeNum;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Allocate an inode from a specific group.
+    /// </summary>
+    private uint AllocateInodeInGroup(uint group)
+    {
+        if (_device == null || _groupDescs == null)
+            return 0;
+
+        uint bitmapBlock = _groupDescs[group].InodeBitmap;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return 0;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return 0;
+            }
+
+            // Search for a free bit
+            for (uint i = 0; i < _inodesPerGroup; i++)
+            {
+                uint byteIndex = i / 8;
+                uint bitIndex = i % 8;
+
+                if ((buffer[byteIndex] & (1 << (int)bitIndex)) == 0)
+                {
+                    // Found free inode - mark as used
+                    buffer[byteIndex] |= (byte)(1 << (int)bitIndex);
+
+                    // Write bitmap back
+                    if (!WriteBlock(bitmapBlock, buffer))
+                    {
+                        Memory.FreePages(bufferPhys, pageCount);
+                        return 0;
+                    }
+
+                    // Update group descriptor
+                    _groupDescs[group].FreeInodesCount--;
+                    WriteGroupDescriptor(group);
+
+                    Memory.FreePages(bufferPhys, pageCount);
+
+                    // Calculate absolute inode number (1-based)
+                    uint inodeNum = group * _inodesPerGroup + i + 1;
+                    return inodeNum;
+                }
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return 0;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Free an inode.
+    /// </summary>
+    internal bool FreeInode(uint inodeNum)
+    {
+        if (_device == null || _groupDescs == null || _readOnly || inodeNum == 0)
+            return false;
+
+        // Calculate group and index within group
+        uint group = (inodeNum - 1) / _inodesPerGroup;
+        uint indexInGroup = (inodeNum - 1) % _inodesPerGroup;
+
+        if (group >= _groupCount)
+            return false;
+
+        uint bitmapBlock = _groupDescs[group].InodeBitmap;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            uint byteIndex = indexInGroup / 8;
+            uint bitIndex = indexInGroup % 8;
+
+            // Clear the bit
+            buffer[byteIndex] &= (byte)~(1 << (int)bitIndex);
+
+            // Write bitmap back
+            if (!WriteBlock(bitmapBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Update group descriptor
+            _groupDescs[group].FreeInodesCount++;
+            WriteGroupDescriptor(group);
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return true;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Write a group descriptor back to disk.
+    /// </summary>
+    private bool WriteGroupDescriptor(uint group)
+    {
+        if (_device == null || _groupDescs == null || group >= _groupCount)
+            return false;
+
+        // Group descriptors start at block (firstDataBlock + 1)
+        uint gdBlock = _firstDataBlock + 1;
+
+        // Calculate which block contains this group descriptor
+        uint descsPerBlock = _blockSize / 32; // 32 bytes per descriptor
+        uint blockIndex = group / descsPerBlock;
+        uint offsetInBlock = (group % descsPerBlock) * 32;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            // Read the block containing this descriptor
+            if (!ReadBlock(gdBlock + blockIndex, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Update the descriptor
+            var gdPtr = (Ext2GroupDesc*)(buffer + offsetInBlock);
+            *gdPtr = _groupDescs[group];
+
+            // Write back
+            bool success = WriteBlock(gdBlock + blockIndex, buffer);
+            Memory.FreePages(bufferPhys, pageCount);
+            return success;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    #endregion
+
+    #region Directory Entry Management
+
+    /// <summary>
+    /// Add a directory entry to a directory.
+    /// </summary>
+    internal bool AddDirectoryEntry(uint dirInodeNum, string name, uint targetInodeNum, byte fileType)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return false;
+
+        if (name.Length == 0 || name.Length > 255)
+            return false;
+
+        Ext2Inode dirInode;
+        if (!ReadInode(dirInodeNum, out dirInode))
+            return false;
+
+        // Check it's actually a directory
+        if ((dirInode.Mode & Ext2FileMode.S_IFMT) != Ext2FileMode.S_IFDIR)
+            return false;
+
+        // Calculate required size for new entry (8 bytes header + name, rounded to 4-byte boundary)
+        uint requiredSize = (uint)((8 + name.Length + 3) & ~3);
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            uint dirSize = dirInode.Size;
+            uint blockIndex = 0;
+
+            // Search existing blocks for space
+            while (blockIndex * _blockSize < dirSize)
+            {
+                Ext2Inode localInode = dirInode;
+                uint blockNum = GetBlockNumber(&localInode, blockIndex);
+                if (blockNum == 0)
+                    break;
+
+                if (!ReadBlock(blockNum, buffer))
+                    break;
+
+                // Parse entries in this block looking for space
+                uint offset = 0;
+                while (offset < _blockSize)
+                {
+                    var entry = (Ext2DirEntry*)(buffer + offset);
+                    if (entry->RecLen == 0)
+                        break;
+
+                    // Calculate actual size this entry needs
+                    uint actualSize = entry->Inode != 0
+                        ? (uint)((8 + entry->NameLen + 3) & ~3)
+                        : 0;
+
+                    // Space available = RecLen - actualSize
+                    uint available = entry->RecLen - actualSize;
+
+                    if (available >= requiredSize)
+                    {
+                        // Found space - split this entry
+                        if (entry->Inode != 0)
+                        {
+                            // Shrink existing entry
+                            ushort newRecLen = (ushort)actualSize;
+                            ushort remainingLen = (ushort)(entry->RecLen - actualSize);
+                            entry->RecLen = newRecLen;
+
+                            // Create new entry after it
+                            var newEntry = (Ext2DirEntry*)(buffer + offset + actualSize);
+                            newEntry->Inode = targetInodeNum;
+                            newEntry->RecLen = remainingLen;
+                            newEntry->NameLen = (byte)name.Length;
+                            newEntry->FileType = fileType;
+                            byte* newEntryName = (byte*)newEntry + 8;
+                            for (int i = 0; i < name.Length; i++)
+                                newEntryName[i] = (byte)name[i];
+                        }
+                        else
+                        {
+                            // Reuse deleted entry
+                            entry->Inode = targetInodeNum;
+                            entry->NameLen = (byte)name.Length;
+                            entry->FileType = fileType;
+                            byte* entryName = (byte*)entry + 8;
+                            for (int i = 0; i < name.Length; i++)
+                                entryName[i] = (byte)name[i];
+                        }
+
+                        // Write block back
+                        if (!WriteBlock(blockNum, buffer))
+                        {
+                            Memory.FreePages(bufferPhys, pageCount);
+                            return false;
+                        }
+
+                        Memory.FreePages(bufferPhys, pageCount);
+                        return true;
+                    }
+
+                    offset += entry->RecLen;
+                }
+
+                blockIndex++;
+            }
+
+            // No space in existing blocks - allocate new block
+            uint group = (dirInodeNum - 1) / _inodesPerGroup;
+            uint newBlockNum = AllocateBlock(group);
+            if (newBlockNum == 0)
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Set block pointer in inode
+            Ext2Inode* inodePtr = &dirInode;
+            if (!SetBlockNumber(inodePtr, blockIndex, newBlockNum))
+            {
+                FreeBlock(newBlockNum);
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Zero the new block
+            for (uint i = 0; i < _blockSize; i++)
+                buffer[i] = 0;
+
+            // Create single entry spanning entire block
+            var dirEntry = (Ext2DirEntry*)buffer;
+            dirEntry->Inode = targetInodeNum;
+            dirEntry->RecLen = (ushort)_blockSize;
+            dirEntry->NameLen = (byte)name.Length;
+            dirEntry->FileType = fileType;
+            byte* dirEntryName = (byte*)dirEntry + 8;
+            for (int i = 0; i < name.Length; i++)
+                dirEntryName[i] = (byte)name[i];
+
+            // Write new block
+            if (!WriteBlock(newBlockNum, buffer))
+            {
+                FreeBlock(newBlockNum);
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            // Update directory inode size
+            dirInode.Size += _blockSize;
+            dirInode.Blocks += _blockSize / 512;
+            if (!WriteInode(dirInodeNum, ref dirInode))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return false;
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return true;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Remove a directory entry from a directory.
+    /// </summary>
+    internal bool RemoveDirectoryEntry(uint dirInodeNum, string name)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return false;
+
+        if (name.Length == 0 || name.Length > 255)
+            return false;
+
+        Ext2Inode dirInode;
+        if (!ReadInode(dirInodeNum, out dirInode))
+            return false;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            uint dirSize = dirInode.Size;
+            uint blockIndex = 0;
+
+            while (blockIndex * _blockSize < dirSize)
+            {
+                Ext2Inode localInode = dirInode;
+                uint blockNum = GetBlockNumber(&localInode, blockIndex);
+                if (blockNum == 0)
+                    break;
+
+                if (!ReadBlock(blockNum, buffer))
+                    break;
+
+                // Track previous entry for merging
+                Ext2DirEntry* prevEntry = null;
+                uint offset = 0;
+
+                while (offset < _blockSize)
+                {
+                    var entry = (Ext2DirEntry*)(buffer + offset);
+                    if (entry->RecLen == 0)
+                        break;
+
+                    if (entry->Inode != 0 && entry->NameLen == name.Length)
+                    {
+                        // Compare name
+                        bool match = true;
+                        byte* entryName = (byte*)entry + 8;
+                        for (int i = 0; i < name.Length && match; i++)
+                        {
+                            if (entryName[i] != (byte)name[i])
+                                match = false;
+                        }
+
+                        if (match)
+                        {
+                            // Found it - mark as deleted
+                            if (prevEntry != null)
+                            {
+                                // Merge with previous entry
+                                prevEntry->RecLen += entry->RecLen;
+                            }
+                            else
+                            {
+                                // First entry - just clear inode
+                                entry->Inode = 0;
+                            }
+
+                            // Write block back
+                            if (!WriteBlock(blockNum, buffer))
+                            {
+                                Memory.FreePages(bufferPhys, pageCount);
+                                return false;
+                            }
+
+                            Memory.FreePages(bufferPhys, pageCount);
+                            return true;
+                        }
+                    }
+
+                    prevEntry = entry;
+                    offset += entry->RecLen;
+                }
+
+                blockIndex++;
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return false; // Entry not found
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    #endregion
+
+    #region File/Directory Creation and Deletion
+
+    /// <summary>
+    /// Create a new file.
+    /// </summary>
+    internal FileResult CreateFileInternal(string path, out uint newInodeNum)
+    {
+        newInodeNum = 0;
+
+        if (_device == null || _groupDescs == null || _readOnly)
+            return FileResult.IoError;
+
+        // Get parent directory and filename
+        int lastSlash = path.LastIndexOf('/');
+        string parentPath = lastSlash > 0 ? path.Substring(0, lastSlash) : "/";
+        string fileName = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+
+        if (fileName.Length == 0 || fileName.Length > 255)
+            return FileResult.InvalidPath;
+
+        // Find parent directory inode
+        uint parentInodeNum;
+        var result = FindInode(parentPath, out parentInodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Check if file already exists
+        uint existingInode;
+        if (SearchDirectoryByInode(parentInodeNum, fileName, out existingInode))
+            return FileResult.AlreadyExists;
+
+        // Allocate new inode in same group as parent
+        uint group = (parentInodeNum - 1) / _inodesPerGroup;
+        newInodeNum = AllocateInode(group);
+        if (newInodeNum == 0)
+            return FileResult.NoSpace;
+
+        // Initialize inode
+        Ext2Inode inode = default;
+        inode.Mode = (ushort)(Ext2FileMode.S_IFREG | 0x1B6); // Regular file, rw-rw-rw-
+        inode.Uid = 0;
+        inode.Gid = 0;
+        inode.Size = 0;
+        inode.LinksCount = 1;
+        inode.Blocks = 0;
+        // Set timestamps (would need RTC support for proper values)
+        inode.Atime = inode.Ctime = inode.Mtime = 0;
+
+        if (!WriteInode(newInodeNum, ref inode))
+        {
+            FreeInode(newInodeNum);
+            newInodeNum = 0;
+            return FileResult.IoError;
+        }
+
+        // Add directory entry
+        if (!AddDirectoryEntry(parentInodeNum, fileName, newInodeNum, Ext2FileType.FT_REG_FILE))
+        {
+            FreeInode(newInodeNum);
+            newInodeNum = 0;
+            return FileResult.IoError;
+        }
+
+        return FileResult.Success;
+    }
+
+    /// <summary>
+    /// Create a new directory.
+    /// </summary>
+    internal FileResult CreateDirectoryInternal(string path)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return FileResult.IoError;
+
+        // Get parent directory and dirname
+        int lastSlash = path.LastIndexOf('/');
+        string parentPath = lastSlash > 0 ? path.Substring(0, lastSlash) : "/";
+        string dirName = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+
+        if (dirName.Length == 0 || dirName.Length > 255)
+            return FileResult.InvalidPath;
+
+        // Find parent directory inode
+        uint parentInodeNum;
+        var result = FindInode(parentPath, out parentInodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Check if already exists
+        uint existingInode;
+        if (SearchDirectoryByInode(parentInodeNum, dirName, out existingInode))
+            return FileResult.AlreadyExists;
+
+        // Allocate new inode
+        uint group = (parentInodeNum - 1) / _inodesPerGroup;
+        uint newInodeNum = AllocateInode(group);
+        if (newInodeNum == 0)
+            return FileResult.NoSpace;
+
+        // Allocate block for directory entries (. and ..)
+        uint dataBlock = AllocateBlock(group);
+        if (dataBlock == 0)
+        {
+            FreeInode(newInodeNum);
+            return FileResult.NoSpace;
+        }
+
+        // Initialize directory block with . and .. entries
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+        {
+            FreeBlock(dataBlock);
+            FreeInode(newInodeNum);
+            return FileResult.IoError;
+        }
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            // Zero the buffer
+            for (uint i = 0; i < _blockSize; i++)
+                buffer[i] = 0;
+
+            // Create "." entry
+            var dotEntry = (Ext2DirEntry*)buffer;
+            dotEntry->Inode = newInodeNum;
+            dotEntry->RecLen = 12; // Minimum for "." (8 header + 1 name + 3 padding)
+            dotEntry->NameLen = 1;
+            dotEntry->FileType = Ext2FileType.FT_DIR;
+            byte* dotName = (byte*)dotEntry + 8;
+            dotName[0] = (byte)'.';
+
+            // Create ".." entry
+            var dotdotEntry = (Ext2DirEntry*)(buffer + 12);
+            dotdotEntry->Inode = parentInodeNum;
+            dotdotEntry->RecLen = (ushort)(_blockSize - 12); // Rest of block
+            dotdotEntry->NameLen = 2;
+            dotdotEntry->FileType = Ext2FileType.FT_DIR;
+            byte* dotdotName = (byte*)dotdotEntry + 8;
+            dotdotName[0] = (byte)'.';
+            dotdotName[1] = (byte)'.';
+
+            // Write directory block
+            if (!WriteBlock(dataBlock, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                FreeBlock(dataBlock);
+                FreeInode(newInodeNum);
+                return FileResult.IoError;
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+
+            // Initialize inode
+            Ext2Inode inode = default;
+            inode.Mode = (ushort)(Ext2FileMode.S_IFDIR | 0x1FF); // Directory, rwxrwxrwx
+            inode.Uid = 0;
+            inode.Gid = 0;
+            inode.Size = _blockSize;
+            inode.LinksCount = 2; // . and parent's entry
+            inode.Blocks = _blockSize / 512;
+            inode.Block[0] = dataBlock;
+
+            if (!WriteInode(newInodeNum, ref inode))
+            {
+                FreeBlock(dataBlock);
+                FreeInode(newInodeNum);
+                return FileResult.IoError;
+            }
+
+            // Add entry in parent directory
+            if (!AddDirectoryEntry(parentInodeNum, dirName, newInodeNum, Ext2FileType.FT_DIR))
+            {
+                FreeBlock(dataBlock);
+                FreeInode(newInodeNum);
+                return FileResult.IoError;
+            }
+
+            // Increment parent's link count (for ..)
+            Ext2Inode parentInode;
+            if (ReadInode(parentInodeNum, out parentInode))
+            {
+                parentInode.LinksCount++;
+                WriteInode(parentInodeNum, ref parentInode);
+            }
+
+            // Update group descriptor used directories count
+            _groupDescs[group].UsedDirsCount++;
+            WriteGroupDescriptor(group);
+
+            return FileResult.Success;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            FreeBlock(dataBlock);
+            FreeInode(newInodeNum);
+            return FileResult.IoError;
+        }
+    }
+
+    /// <summary>
+    /// Delete a file.
+    /// </summary>
+    internal FileResult DeleteFileInternal(string path)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return FileResult.IoError;
+
+        // Find the inode
+        uint inodeNum;
+        var result = FindInode(path, out inodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Read inode
+        Ext2Inode inode;
+        if (!ReadInode(inodeNum, out inode))
+            return FileResult.IoError;
+
+        // Verify it's a regular file
+        if ((inode.Mode & Ext2FileMode.S_IFMT) != Ext2FileMode.S_IFREG)
+            return FileResult.IsADirectory;
+
+        // Get parent directory and filename
+        int lastSlash = path.LastIndexOf('/');
+        string parentPath = lastSlash > 0 ? path.Substring(0, lastSlash) : "/";
+        string fileName = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+
+        uint parentInodeNum;
+        result = FindInode(parentPath, out parentInodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Remove directory entry
+        if (!RemoveDirectoryEntry(parentInodeNum, fileName))
+            return FileResult.IoError;
+
+        // Decrement link count
+        inode.LinksCount--;
+
+        if (inode.LinksCount == 0)
+        {
+            // Free all data blocks
+            FreeFileBlocks(&inode);
+
+            // Free inode
+            FreeInode(inodeNum);
+        }
+        else
+        {
+            // Just update inode
+            WriteInode(inodeNum, ref inode);
+        }
+
+        return FileResult.Success;
+    }
+
+    /// <summary>
+    /// Delete a directory (must be empty).
+    /// </summary>
+    internal FileResult DeleteDirectoryInternal(string path)
+    {
+        if (_device == null || _groupDescs == null || _readOnly)
+            return FileResult.IoError;
+
+        // Can't delete root
+        if (path == "/" || path.Length == 0)
+            return FileResult.InvalidPath;
+
+        // Find the inode
+        uint inodeNum;
+        var result = FindInode(path, out inodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Read inode
+        Ext2Inode inode;
+        if (!ReadInode(inodeNum, out inode))
+            return FileResult.IoError;
+
+        // Verify it's a directory
+        if ((inode.Mode & Ext2FileMode.S_IFMT) != Ext2FileMode.S_IFDIR)
+            return FileResult.NotADirectory;
+
+        // Check if empty (only . and .. entries)
+        if (!IsDirectoryEmpty(inodeNum))
+            return FileResult.NotEmpty;
+
+        // Get parent directory and dirname
+        int lastSlash = path.LastIndexOf('/');
+        string parentPath = lastSlash > 0 ? path.Substring(0, lastSlash) : "/";
+        string dirName = lastSlash >= 0 ? path.Substring(lastSlash + 1) : path;
+
+        uint parentInodeNum;
+        result = FindInode(parentPath, out parentInodeNum);
+        if (result != FileResult.Success)
+            return result;
+
+        // Remove directory entry from parent
+        if (!RemoveDirectoryEntry(parentInodeNum, dirName))
+            return FileResult.IoError;
+
+        // Decrement parent's link count (for ..)
+        Ext2Inode parentInode;
+        if (ReadInode(parentInodeNum, out parentInode))
+        {
+            parentInode.LinksCount--;
+            WriteInode(parentInodeNum, ref parentInode);
+        }
+
+        // Free directory's data blocks
+        FreeFileBlocks(&inode);
+
+        // Free inode
+        FreeInode(inodeNum);
+
+        // Update group descriptor
+        uint group = (inodeNum - 1) / _inodesPerGroup;
+        _groupDescs[group].UsedDirsCount--;
+        WriteGroupDescriptor(group);
+
+        return FileResult.Success;
+    }
+
+    /// <summary>
+    /// Check if a directory is empty (only contains . and ..).
+    /// </summary>
+    private bool IsDirectoryEmpty(uint inodeNum)
+    {
+        Ext2Inode inode;
+        if (!ReadInode(inodeNum, out inode))
+            return false;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return false;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            uint blockIndex = 0;
+            uint dirSize = inode.Size;
+
+            while (blockIndex * _blockSize < dirSize)
+            {
+                Ext2Inode localInode = inode;
+                uint blockNum = GetBlockNumber(&localInode, blockIndex);
+                if (blockNum == 0)
+                    break;
+
+                if (!ReadBlock(blockNum, buffer))
+                    break;
+
+                uint offset = 0;
+                while (offset < _blockSize)
+                {
+                    var entry = (Ext2DirEntry*)(buffer + offset);
+                    if (entry->RecLen == 0)
+                        break;
+
+                    if (entry->Inode != 0)
+                    {
+                        // Check if it's . or ..
+                        byte* entryName = (byte*)entry + 8;
+                        if (entry->NameLen == 1 && entryName[0] == '.')
+                        {
+                            // . entry, ok
+                        }
+                        else if (entry->NameLen == 2 && entryName[0] == '.' && entryName[1] == '.')
+                        {
+                            // .. entry, ok
+                        }
+                        else
+                        {
+                            // Found a real entry - not empty
+                            Memory.FreePages(bufferPhys, pageCount);
+                            return false;
+                        }
+                    }
+
+                    offset += entry->RecLen;
+                }
+
+                blockIndex++;
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+            return true;
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Free all data blocks associated with an inode.
+    /// </summary>
+    private void FreeFileBlocks(Ext2Inode* inode)
+    {
+        uint ptrsPerBlock = _blockSize / 4;
+
+        // Free direct blocks
+        for (int i = 0; i < Ext2BlockPtrs.NDIR_BLOCKS; i++)
+        {
+            if (inode->Block[i] != 0)
+            {
+                FreeBlock(inode->Block[i]);
+                inode->Block[i] = 0;
+            }
+        }
+
+        // Free single indirect
+        if (inode->Block[Ext2BlockPtrs.IND_BLOCK] != 0)
+        {
+            FreeIndirectBlocks(inode->Block[Ext2BlockPtrs.IND_BLOCK], 1, ptrsPerBlock);
+            FreeBlock(inode->Block[Ext2BlockPtrs.IND_BLOCK]);
+            inode->Block[Ext2BlockPtrs.IND_BLOCK] = 0;
+        }
+
+        // Free double indirect
+        if (inode->Block[Ext2BlockPtrs.DIND_BLOCK] != 0)
+        {
+            FreeIndirectBlocks(inode->Block[Ext2BlockPtrs.DIND_BLOCK], 2, ptrsPerBlock);
+            FreeBlock(inode->Block[Ext2BlockPtrs.DIND_BLOCK]);
+            inode->Block[Ext2BlockPtrs.DIND_BLOCK] = 0;
+        }
+
+        // Free triple indirect
+        if (inode->Block[Ext2BlockPtrs.TIND_BLOCK] != 0)
+        {
+            FreeIndirectBlocks(inode->Block[Ext2BlockPtrs.TIND_BLOCK], 3, ptrsPerBlock);
+            FreeBlock(inode->Block[Ext2BlockPtrs.TIND_BLOCK]);
+            inode->Block[Ext2BlockPtrs.TIND_BLOCK] = 0;
+        }
+    }
+
+    /// <summary>
+    /// Recursively free indirect blocks.
+    /// </summary>
+    private void FreeIndirectBlocks(uint blockNum, int level, uint ptrsPerBlock)
+    {
+        if (blockNum == 0 || level < 1)
+            return;
+
+        ulong pageCount = (_blockSize + 4095) / 4096;
+        ulong bufferPhys = Memory.AllocatePages(pageCount);
+        if (bufferPhys == 0)
+            return;
+
+        byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
+
+        try
+        {
+            if (!ReadBlock(blockNum, buffer))
+            {
+                Memory.FreePages(bufferPhys, pageCount);
+                return;
+            }
+
+            uint* ptrs = (uint*)buffer;
+            for (uint i = 0; i < ptrsPerBlock; i++)
+            {
+                if (ptrs[i] != 0)
+                {
+                    if (level > 1)
+                        FreeIndirectBlocks(ptrs[i], level - 1, ptrsPerBlock);
+                    FreeBlock(ptrs[i]);
+                }
+            }
+
+            Memory.FreePages(bufferPhys, pageCount);
+        }
+        catch
+        {
+            Memory.FreePages(bufferPhys, pageCount);
+        }
+    }
+
+    /// <summary>
+    /// Search directory by inode number.
+    /// </summary>
+    private bool SearchDirectoryByInode(uint dirInodeNum, string name, out uint foundInode)
+    {
+        foundInode = 0;
+        Ext2Inode dirInode;
+        if (!ReadInode(dirInodeNum, out dirInode))
+            return false;
+        return SearchDirectory(dirInode, name, out foundInode);
     }
 
     #endregion

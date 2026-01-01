@@ -121,15 +121,16 @@ public unsafe class Ext2DirectoryHandle : IDirectoryHandle
                     continue;
 
                 // Skip . and ..
-                if (entry->NameLen == 1 && entry->Name[0] == '.')
+                byte* entryName = (byte*)entry + 8;
+                if (entry->NameLen == 1 && entryName[0] == '.')
                     continue;
-                if (entry->NameLen == 2 && entry->Name[0] == '.' && entry->Name[1] == '.')
+                if (entry->NameLen == 2 && entryName[0] == '.' && entryName[1] == '.')
                     continue;
 
                 // Build file name
                 var nameChars = new char[entry->NameLen];
                 for (int i = 0; i < entry->NameLen; i++)
-                    nameChars[i] = (char)entry->Name[i];
+                    nameChars[i] = (char)entryName[i];
                 string name = new string(nameChars);
 
                 // Build full path
