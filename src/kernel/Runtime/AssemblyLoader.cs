@@ -642,6 +642,140 @@ public static unsafe class AssemblyLoader
     private static bool _initialized;
 
     // ============================================================================
+    // Global Interface Registry
+    // ============================================================================
+    // Maps interface name hash -> canonical MethodTable pointer.
+    // This ensures all assemblies use the same MT for interface dispatch.
+
+    private const int MaxGlobalInterfaces = 256;
+
+    private struct GlobalInterfaceEntry
+    {
+        public uint NameHash;       // Hash of full interface name (namespace.name)
+        public ushort SlotCount;    // Number of vtable slots (for disambiguation)
+        public MethodTable* MT;     // Canonical MethodTable pointer
+    }
+
+    private static GlobalInterfaceEntry* _globalInterfaces;
+    private static int _globalInterfaceCount;
+
+    /// <summary>
+    /// Compute a hash for interface identification.
+    /// Uses namespace + "." + name for uniqueness.
+    /// </summary>
+    private static uint ComputeInterfaceNameHash(byte* ns, byte* name)
+    {
+        uint hash = 5381;
+
+        // Hash namespace
+        if (ns != null)
+        {
+            byte* p = ns;
+            while (*p != 0)
+                hash = ((hash << 5) + hash) ^ *p++;
+            // Add separator
+            hash = ((hash << 5) + hash) ^ (uint)'.';
+        }
+
+        // Hash name
+        if (name != null)
+        {
+            byte* p = name;
+            while (*p != 0)
+                hash = ((hash << 5) + hash) ^ *p++;
+        }
+
+        return hash;
+    }
+
+    /// <summary>
+    /// Look up a canonical interface MT by name hash and slot count.
+    /// Returns null if not found.
+    /// </summary>
+    public static MethodTable* LookupCanonicalInterface(uint nameHash, ushort slotCount)
+    {
+        if (_globalInterfaces == null)
+            return null;
+
+        for (int i = 0; i < _globalInterfaceCount; i++)
+        {
+            if (_globalInterfaces[i].NameHash == nameHash &&
+                _globalInterfaces[i].SlotCount == slotCount)
+            {
+                return _globalInterfaces[i].MT;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Register a canonical interface MT.
+    /// If already registered, returns the existing MT.
+    /// </summary>
+    public static MethodTable* RegisterCanonicalInterface(uint nameHash, ushort slotCount, MethodTable* mt)
+    {
+        // Initialize registry if needed
+        if (_globalInterfaces == null)
+        {
+            _globalInterfaces = (GlobalInterfaceEntry*)HeapAllocator.AllocZeroed(
+                (ulong)(MaxGlobalInterfaces * sizeof(GlobalInterfaceEntry)));
+            if (_globalInterfaces == null)
+            {
+                DebugConsole.WriteLine("[AsmLoader] Failed to allocate interface registry");
+                return mt;  // Fall back to using the provided MT
+            }
+            _globalInterfaceCount = 0;
+        }
+
+        // Check if already registered
+        for (int i = 0; i < _globalInterfaceCount; i++)
+        {
+            if (_globalInterfaces[i].NameHash == nameHash &&
+                _globalInterfaces[i].SlotCount == slotCount)
+            {
+                // Already registered - return canonical MT
+                return _globalInterfaces[i].MT;
+            }
+        }
+
+        // Register new entry
+        if (_globalInterfaceCount < MaxGlobalInterfaces)
+        {
+            _globalInterfaces[_globalInterfaceCount].NameHash = nameHash;
+            _globalInterfaces[_globalInterfaceCount].SlotCount = slotCount;
+            _globalInterfaces[_globalInterfaceCount].MT = mt;
+            _globalInterfaceCount++;
+        }
+
+        return mt;
+    }
+
+    /// <summary>
+    /// Get canonical interface MT from assembly type info.
+    /// This is the main entry point for getting interface MTs.
+    /// </summary>
+    public static MethodTable* GetCanonicalInterfaceMT(LoadedAssembly* asm, uint typeDefRow, MethodTable* rawMT)
+    {
+        if (asm == null || rawMT == null)
+            return rawMT;
+
+        // Get type name info
+        uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, typeDefRow);
+        byte* typeName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        byte* typeNs = MetadataReader.GetString(ref asm->Metadata, nsIdx);
+
+        if (typeName == null)
+            return rawMT;
+
+        uint nameHash = ComputeInterfaceNameHash(typeNs, typeName);
+        ushort slotCount = rawMT->_usNumVtableSlots;
+
+        // Register and get canonical MT
+        return RegisterCanonicalInterface(nameHash, slotCount, rawMT);
+    }
+
+    // ============================================================================
     // Initialization
     // ============================================================================
 
@@ -1870,15 +2004,37 @@ public static unsafe class AssemblyLoader
                     MethodTable* aotMT = JIT.MetadataIntegration.LookupType(wellKnownToken);
                     if (aotMT != null)
                     {
+                        // Check if this is an interface type (need to get flags early)
+                        uint wkTypeDefFlags = MetadataReader.GetTypeDefFlags(ref asm->Tables, ref asm->Sizes, rowId);
+                        bool wkIsInterface = (wkTypeDefFlags & 0x00000020) != 0;  // tdInterface
+
+                        // For interface types, canonicalize the AOT MT
+                        // This ensures cross-assembly interface dispatch uses the same MT
+                        if (wkIsInterface)
+                        {
+                            uint nameHash = ComputeInterfaceNameHash(typeNs, typeName);
+                            ushort slotCount = aotMT->_usNumVtableSlots;
+                            aotMT = RegisterCanonicalInterface(nameHash, slotCount, aotMT);
+
+                            DebugConsole.Write("[TypeUnify] Interface ");
+                            for (int i = 0; typeName != null && typeName[i] != 0 && i < 32; i++)
+                                DebugConsole.WriteChar((char)typeName[i]);
+                            DebugConsole.Write(" -> Canonical MT 0x");
+                            DebugConsole.WriteHex((ulong)aotMT);
+                            DebugConsole.WriteLine();
+                        }
+                        else
+                        {
+                            DebugConsole.Write("[TypeUnify] ");
+                            for (int i = 0; typeName != null && typeName[i] != 0 && i < 32; i++)
+                                DebugConsole.WriteChar((char)typeName[i]);
+                            DebugConsole.Write(" -> AOT MT 0x");
+                            DebugConsole.WriteHex((ulong)aotMT);
+                            DebugConsole.WriteLine();
+                        }
+
                         // Register this AOT MT under the korlib TypeDef token for future lookups
                         asm->Types.Register(token, aotMT);
-
-                        DebugConsole.Write("[TypeUnify] ");
-                        for (int i = 0; typeName != null && typeName[i] != 0 && i < 32; i++)
-                            DebugConsole.WriteChar((char)typeName[i]);
-                        DebugConsole.Write(" -> AOT MT 0x");
-                        DebugConsole.WriteHex((ulong)aotMT);
-                        DebugConsole.WriteLine();
 
                         return aotMT;
                     }
@@ -2114,7 +2270,13 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteDecimal(totalVtableSlots);
         DebugConsole.WriteLine();
 
-        // Register in the assembly's type registry first (needed for JIT compilation)
+        // For interfaces, register in global registry to ensure canonical MT across assemblies
+        if (isInterface)
+        {
+            mt = GetCanonicalInterfaceMT(asm, rowId, mt);
+        }
+
+        // Register in the assembly's type registry (needed for JIT compilation)
         asm->Types.Register(token, mt);
 
         // Register override methods in CompiledMethodRegistry for lazy JIT lookup
@@ -3391,6 +3553,8 @@ public static unsafe class AssemblyLoader
 
             MethodTable* interfaceMT = null;
             uint resolvedToken = 0;  // Track resolved token for IDisposable registration
+            LoadedAssembly* ifaceAsm = null;  // Track interface assembly for canonicalization
+            uint ifaceTypeDefRow = 0;         // Track interface TypeDef row for canonicalization
 
             if (tag == 0)  // TypeDef
             {
@@ -3398,6 +3562,8 @@ public static unsafe class AssemblyLoader
                 interfaceMT = asm->Types.Lookup(interfaceToken);
                 if (interfaceMT == null)
                     interfaceMT = CreateTypeDefMethodTable(asm, interfaceToken);
+                ifaceAsm = asm;
+                ifaceTypeDefRow = rowId;
             }
             else if (tag == 1)  // TypeRef
             {
@@ -3423,12 +3589,17 @@ public static unsafe class AssemblyLoader
                         {
                             interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
                         }
+                        // Well-known types use synthetic tokens, not real TypeDef rows
+                        ifaceAsm = null;
+                        ifaceTypeDefRow = 0;
                     }
                     else
                     {
                         interfaceMT = targetAsm->Types.Lookup(targetToken);
                         if (interfaceMT == null)
                             interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                        ifaceAsm = targetAsm;
+                        ifaceTypeDefRow = targetToken & 0x00FFFFFF;
                     }
                 }
             }
@@ -3442,10 +3613,20 @@ public static unsafe class AssemblyLoader
                 uint typeSpecToken = 0x1B000000 | rowId;
                 interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
                 _resolvingGenericDefInterfaces = false;
+                // Generic interfaces are handled by ResolveTypeSpec - canonicalization happens there
+                ifaceAsm = null;
+                ifaceTypeDefRow = 0;
             }
 
             if (interfaceMT != null)
             {
+                // Canonicalize interface MT if we have the assembly/row info
+                // This ensures all interface maps use the same canonical MT
+                if (ifaceAsm != null && ifaceTypeDefRow != 0)
+                {
+                    interfaceMT = GetCanonicalInterfaceMT(ifaceAsm, ifaceTypeDefRow, interfaceMT);
+                }
+
                 map[mapIndex].InterfaceMT = interfaceMT;
                 map[mapIndex].StartSlot = currentSlot;
 
@@ -3501,6 +3682,8 @@ public static unsafe class AssemblyLoader
             uint rowId = rawInterface >> 2;
 
             MethodTable* interfaceMT = null;
+            LoadedAssembly* ifaceAsm = null;  // Track interface assembly for canonicalization
+            uint ifaceTypeDefRow = 0;         // Track interface TypeDef row for canonicalization
 
             if (tag == 0)  // TypeDef
             {
@@ -3508,6 +3691,8 @@ public static unsafe class AssemblyLoader
                 interfaceMT = asm->Types.Lookup(interfaceToken);
                 if (interfaceMT == null)
                     interfaceMT = CreateTypeDefMethodTable(asm, interfaceToken);
+                ifaceAsm = asm;
+                ifaceTypeDefRow = rowId;
             }
             else if (tag == 1)  // TypeRef
             {
@@ -3519,6 +3704,12 @@ public static unsafe class AssemblyLoader
                     interfaceMT = targetAsm->Types.Lookup(targetToken);
                     if (interfaceMT == null)
                         interfaceMT = CreateTypeDefMethodTable(targetAsm, targetToken);
+                    // Only set for regular tokens (not well-known synthetic tokens)
+                    if ((targetToken & 0xFF000000) != 0xF0000000)
+                    {
+                        ifaceAsm = targetAsm;
+                        ifaceTypeDefRow = targetToken & 0x00FFFFFF;
+                    }
                 }
             }
             else if (tag == 2)  // TypeSpec - generic interface instantiation
@@ -3530,10 +3721,16 @@ public static unsafe class AssemblyLoader
                 uint typeSpecToken = 0x1B000000 | rowId;
                 interfaceMT = ResolveTypeSpec(asm, typeSpecToken);
                 _resolvingGenericDefInterfaces = false;
+                // Generic interfaces handled by ResolveTypeSpec - canonicalization there
             }
 
             if (interfaceMT != null)
             {
+                // Canonicalize interface MT if we have the assembly/row info
+                if (ifaceAsm != null && ifaceTypeDefRow != 0)
+                {
+                    interfaceMT = GetCanonicalInterfaceMT(ifaceAsm, ifaceTypeDefRow, interfaceMT);
+                }
                 // Copy StartSlot from generic definition's interface map if available
                 // This is critical: the vtable layout is determined by the generic definition,
                 // so we must use the same StartSlot values for interface dispatch to work correctly.
@@ -6793,7 +6990,7 @@ public static unsafe class AssemblyLoader
             interfaceMT = targetAsm->Types.Lookup(typeDefToken);
             if (interfaceMT == null)
             {
-                // Not created yet - create on demand
+                // Not created yet - create on demand (this will register canonical MT)
                 interfaceMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
             }
             if (interfaceMT == null)
@@ -6803,6 +7000,10 @@ public static unsafe class AssemblyLoader
                 DebugConsole.WriteLine();
                 return false;
             }
+
+            // Ensure we use the canonical interface MT for cross-assembly dispatch
+            uint typeDefRow2 = typeDefToken & 0x00FFFFFF;
+            interfaceMT = GetCanonicalInterfaceMT(targetAsm, typeDefRow2, interfaceMT);
         }
 
         // Find the method slot within the interface

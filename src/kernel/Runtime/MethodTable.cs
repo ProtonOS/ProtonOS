@@ -1527,12 +1527,31 @@ public static unsafe class TypeHelpers
     /// </summary>
     public static void* GetInterfaceMethod(void* obj, MethodTable* interfaceMT, int methodIndex)
     {
+        DebugConsole.Write("[GetIfaceMethod] obj=0x");
+        DebugConsole.WriteHex((ulong)obj);
+        DebugConsole.Write(" ifaceMT=0x");
+        DebugConsole.WriteHex((ulong)interfaceMT);
+        DebugConsole.Write(" idx=");
+        DebugConsole.WriteDecimal(methodIndex);
+        DebugConsole.WriteLine();
+
         if (obj == null)
+        {
+            DebugConsole.WriteLine("[GetIfaceMethod] obj is null");
             return null;
+        }
 
+        DebugConsole.WriteLine("[GetIfaceMethod] Getting objMT...");
         MethodTable* objectMT = *(MethodTable**)obj;
+        DebugConsole.Write("[GetIfaceMethod] objMT=0x");
+        DebugConsole.WriteHex((ulong)objectMT);
+        DebugConsole.WriteLine();
 
+        DebugConsole.WriteLine("[GetIfaceMethod] Getting slot...");
         int slot = objectMT->GetInterfaceMethodSlot(interfaceMT, methodIndex);
+        DebugConsole.Write("[GetIfaceMethod] slot=");
+        DebugConsole.WriteDecimal(slot);
+        DebugConsole.WriteLine();
 
         if (slot < 0)
         {
@@ -1552,7 +1571,11 @@ public static unsafe class TypeHelpers
 
         // Ensure the vtable slot is compiled (may be lazy-compiled)
         // Use the return value which handles out-of-bounds vtable slots (e.g., for sealed types like String)
+        DebugConsole.WriteLine("[GetIfaceMethod] EnsureVtableSlotCompiled...");
         nint methodCode = JitStubs.EnsureVtableSlotCompiled((nint)obj, (short)slot);
+        DebugConsole.Write("[GetIfaceMethod] methodCode=0x");
+        DebugConsole.WriteHex((ulong)methodCode);
+        DebugConsole.WriteLine();
 
         return (void*)methodCode;
     }

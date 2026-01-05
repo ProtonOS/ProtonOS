@@ -1510,6 +1510,69 @@ public static unsafe class Kernel
         var testVfsFunc = (delegate* unmanaged<int>)testVfsResult.CodeAddress;
         int vfsTestResult = testVfsFunc();
         DebugConsole.WriteLine(string.Format("[AhciIO] TestVfsRootMount returned {0}", vfsTestResult));
+
+        // Mount root filesystem (persistent mount)
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Mounting Root Filesystem");
+        DebugConsole.WriteLine("==============================");
+
+        uint mountRootToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "MountRootFilesystem");
+        if (mountRootToken == 0)
+        {
+            DebugConsole.WriteLine("[Root] ERROR: Could not find MountRootFilesystem method");
+            return;
+        }
+
+        DebugConsole.WriteLine("[Root] JIT compiling AhciEntry.MountRootFilesystem...");
+        var mountRootResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, mountRootToken);
+        if (!mountRootResult.Success)
+        {
+            DebugConsole.WriteLine("[Root] ERROR: Failed to JIT compile MountRootFilesystem");
+            return;
+        }
+
+        var mountRootFunc = (delegate* unmanaged<int>)mountRootResult.CodeAddress;
+        int mountResult = mountRootFunc();
+
+        if (mountResult != 1)
+        {
+            DebugConsole.WriteLine("[Root] ERROR: Failed to mount root filesystem");
+            return;
+        }
+
+        DebugConsole.WriteLine("[Root] Root filesystem ready");
+
+        // Mount boot filesystem (FAT) at /boot
+        uint mountBootToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "MountBootFilesystem");
+        if (mountBootToken == 0)
+        {
+            DebugConsole.WriteLine("[Boot] WARNING: Could not find MountBootFilesystem method");
+            // Continue without /boot - not fatal
+        }
+        else
+        {
+            DebugConsole.WriteLine("[Boot] JIT compiling AhciEntry.MountBootFilesystem...");
+            var mountBootResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, mountBootToken);
+            if (!mountBootResult.Success)
+            {
+                DebugConsole.WriteLine("[Boot] WARNING: Failed to JIT compile MountBootFilesystem");
+            }
+            else
+            {
+                var mountBootFunc = (delegate* unmanaged<int>)mountBootResult.CodeAddress;
+                int bootMountResult = mountBootFunc();
+
+                if (bootMountResult != 1)
+                {
+                    DebugConsole.WriteLine("[Boot] WARNING: Failed to mount boot filesystem");
+                }
+                else
+                {
+                    DebugConsole.WriteLine("[Boot] Boot filesystem ready");
+                }
+            }
+        }
     }
 
     /// <summary>

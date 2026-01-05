@@ -5074,7 +5074,7 @@ public unsafe struct ILCompiler
         }
         else if (totalArgs == 3 && !needsHiddenBuffer)
         {
-            // Three args: check if arg0 is a large struct
+            // Three args: check if arg0 or arg1 is a large struct
             EvalStackEntry arg2Entry = PeekEntryAt(0);  // TOS = arg2
             EvalStackEntry arg1Entry = PeekEntryAt(1);  // TOS-1 = arg1
             EvalStackEntry arg0Entry = PeekEntryAt(2);  // TOS-2 = arg0
@@ -5091,6 +5091,23 @@ public unsafe struct ILCompiler
                 // Now struct is at TOS - will pass pointer in RCX after shadow space
                 largeStructArgBytes = arg0Entry.ByteSize;
                 needsLargeStructPtrInRcx = true;
+            }
+            else if (arg1Entry.ByteSize > 8)
+            {
+                // arg1 is a large struct: pass by pointer in RDX
+                // Stack layout: [RSP] = arg2 (8), [RSP+8] = arg1 (struct, arg1Size bytes), [RSP+8+arg1Size] = arg0 (8)
+                // Pop arg2, leave struct on stack, load arg0 from below struct
+
+                X64Emitter.Pop(ref _code, VReg.R3);   // R8 = arg2
+                PopEntry();
+
+                // Load arg0 from [RSP + structSize] into RCX
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, arg1Entry.ByteSize);
+                PopEntry(); PopEntry();  // Remove arg1 and arg0 from tracking
+
+                // Leave struct on stack, pass pointer in RDX after shadow space
+                largeStructArgBytes = arg1Entry.ByteSize + 8;  // struct + arg0 slot
+                needsLargeStructPtrInRdx = true;
             }
             else
             {
@@ -6362,31 +6379,24 @@ public unsafe struct ILCompiler
             //   RCX = 'this' (the object)
             //   RDX, R8, R9 = arg1, arg2, arg3 (if any)
             //
-            // We need to:
-            //   1. Save current args to callee-saved registers
-            //   2. Call GetInterfaceMethod(obj, interfaceMT, methodIndex)
-            //   3. Save function pointer result
-            //   4. Restore args
-            //   5. Call through function pointer
+            // We use STACK-based save/restore like virtual dispatch to avoid clobbering
+            // callee-saved registers (R12-R15) that might be in use by other JIT code.
 
-            // Save args to callee-saved registers (R12-R15)
-            // We only need to save what we'll overwrite
-            X64Emitter.MovRR(ref _code, VReg.R8, VReg.R1);  // Save this
-            if (totalArgs >= 2)
-                X64Emitter.MovRR(ref _code, VReg.R9, VReg.R2);  // Save arg1
-            if (totalArgs >= 3)
-                X64Emitter.MovRR(ref _code, VReg.R10, VReg.R3);   // Save arg2
+            // Save RBX first (we'll use it to hold the method address)
+            X64Emitter.Push(ref _code, VReg.R7);  // Save original RBX
+
+            // Save args to stack (we need them after the helper call)
+            // Stack layout: [RBX_orig][arg3][arg2][arg1][this] <- RSP points to this
             if (totalArgs >= 4)
-                X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);   // Save arg3
+                X64Emitter.Push(ref _code, VReg.R4);  // Push R9 (arg3)
+            if (totalArgs >= 3)
+                X64Emitter.Push(ref _code, VReg.R3);  // Push R8 (arg2)
+            if (totalArgs >= 2)
+                X64Emitter.Push(ref _code, VReg.R2);  // Push RDX (arg1)
+            X64Emitter.Push(ref _code, VReg.R1);      // Push RCX (this)
 
             // Set up call to GetInterfaceMethod(obj, interfaceMT, methodIndex)
             // RCX already has 'this' (obj), no change needed
-            // Debug: Log what interface MT is being embedded
-            DebugConsole.Write("[JIT-IfaceDisp] Embedding ifaceMT=0x");
-            DebugConsole.WriteHex((ulong)method.InterfaceMT);
-            DebugConsole.Write(" slot=");
-            DebugConsole.WriteDecimal((uint)(method.InterfaceMethodSlot < 0 ? 0 : method.InterfaceMethodSlot));
-            DebugConsole.WriteLine();
             X64Emitter.MovRI64(ref _code, VReg.R2, (ulong)method.InterfaceMT);  // interfaceMT
             X64Emitter.MovRI32(ref _code, VReg.R3, method.InterfaceMethodSlot);  // methodIndex
 
@@ -6396,12 +6406,11 @@ public unsafe struct ILCompiler
             X64Emitter.CallR(ref _code, VReg.R0);
             X64Emitter.AddRI(ref _code, VReg.SP, 32);
 
-            // RAX now contains the function pointer
-            // Save it to R10 (caller-saved but we control this)
-            X64Emitter.MovRR(ref _code, VReg.R5, VReg.R0);
+            // Save method address to RBX
+            X64Emitter.MovRR(ref _code, VReg.R7, VReg.R0);  // RBX = RAX (method address)
 
-            // Restore args from callee-saved registers
-            X64Emitter.MovRR(ref _code, VReg.R1, VReg.R8);  // Restore this
+            // Pop args from stack (reverse order)
+            X64Emitter.Pop(ref _code, VReg.R1);       // Pop RCX (this)
 
             // For boxed value types, adjust 'this' to point to value data (offset 8)
             // The boxed object layout is: [MT pointer (8 bytes)][value data...]
@@ -6420,14 +6429,20 @@ public unsafe struct ILCompiler
             X64Emitter.PatchJump(ref _code, skipValueTypeAdjust, _code.Position);
 
             if (totalArgs >= 2)
-                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R9);  // Restore arg1
+                X64Emitter.Pop(ref _code, VReg.R2);   // Pop RDX (arg1)
             if (totalArgs >= 3)
-                X64Emitter.MovRR(ref _code, VReg.R3, VReg.R10);   // Restore arg2
+                X64Emitter.Pop(ref _code, VReg.R3);   // Pop R8 (arg2)
             if (totalArgs >= 4)
-                X64Emitter.MovRR(ref _code, VReg.R4, VReg.R11);   // Restore arg3
+                X64Emitter.Pop(ref _code, VReg.R4);   // Pop R9 (arg3)
 
-            // Call through the resolved function pointer
-            X64Emitter.CallR(ref _code, VReg.R5);
+            // Move method address to RAX for the call
+            X64Emitter.MovRR(ref _code, VReg.R0, VReg.R7);  // RAX = RBX (method address)
+
+            // Restore original RBX
+            X64Emitter.Pop(ref _code, VReg.R7);  // Restore RBX
+
+            // Call through the method address (now in RAX)
+            X64Emitter.CallR(ref _code, VReg.R0);
         }
         else if (method.IsVirtual && method.VtableSlot >= 0)
         {

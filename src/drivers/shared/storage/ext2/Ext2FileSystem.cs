@@ -245,7 +245,14 @@ public unsafe class Ext2FileSystem : IFileSystem
         path = NormalizePath(path);
 
         // Root directory
-        if (path == "/" || path.Length == 0)
+        bool isRoot = false;
+        int pLen = path.Length;
+        if (pLen == 0)
+            isRoot = true;
+        else if (pLen == 1 && path[0] == '/')
+            isRoot = true;
+
+        if (isRoot)
         {
             info = new FileInfo
             {
@@ -480,36 +487,66 @@ public unsafe class Ext2FileSystem : IFileSystem
     /// </summary>
     internal bool ReadInode(uint inodeNum, out Ext2Inode inode)
     {
+        Debug.Write("[ReadInode] num=");
+        Debug.WriteDecimal(inodeNum);
+        Debug.WriteLine();
         inode = default;
+        Debug.WriteLine("[ReadInode] Checking device...");
         if (_device == null || _groupDescs == null || inodeNum == 0)
+        {
+            Debug.WriteLine("[ReadInode] Invalid state");
             return false;
+        }
+        Debug.WriteLine("[ReadInode] Device OK");
 
         // Calculate which group and index within group
         uint group = (inodeNum - 1) / _inodesPerGroup;
         uint index = (inodeNum - 1) % _inodesPerGroup;
+        Debug.Write("[ReadInode] group=");
+        Debug.WriteDecimal(group);
+        Debug.Write(" index=");
+        Debug.WriteDecimal(index);
+        Debug.WriteLine();
 
+        Debug.Write("[ReadInode] groupCount=");
+        Debug.WriteDecimal(_groupCount);
+        Debug.WriteLine();
         if (group >= _groupCount)
             return false;
 
         // Get inode table block from group descriptor
+        Debug.WriteLine("[ReadInode] Getting inode table block...");
         uint inodeTableBlock = _groupDescs[group].InodeTable;
+        Debug.Write("[ReadInode] inodeTableBlock=");
+        Debug.WriteDecimal(inodeTableBlock);
+        Debug.WriteLine();
 
         // Calculate offset within inode table
         uint inodeOffset = index * _inodeSize;
         uint blockInTable = inodeOffset / _blockSize;
         uint offsetInBlock = inodeOffset % _blockSize;
+        Debug.Write("[ReadInode] blockInTable=");
+        Debug.WriteDecimal(blockInTable);
+        Debug.Write(" offsetInBlock=");
+        Debug.WriteDecimal(offsetInBlock);
+        Debug.WriteLine();
 
         // Read the block containing the inode
+        Debug.WriteLine("[ReadInode] Allocating pages...");
         ulong pageCount = (_blockSize + 4095) / 4096;
         ulong bufferPhys = Memory.AllocatePages(pageCount);
         if (bufferPhys == 0)
             return false;
 
+        Debug.WriteLine("[ReadInode] Getting buffer...");
         byte* buffer = (byte*)Memory.PhysToVirt(bufferPhys);
 
         try
         {
             ulong sector = (ulong)(inodeTableBlock + blockInTable) * _sectorsPerBlock;
+            Debug.Write("[ReadInode] Reading sector ");
+            Debug.WriteDecimal((int)sector);
+            Debug.WriteLine();
             int result = _device.Read(sector, _sectorsPerBlock, buffer);
             if (result != (int)_sectorsPerBlock)
             {
@@ -724,18 +761,36 @@ public unsafe class Ext2FileSystem : IFileSystem
     /// </summary>
     internal FileResult FindInode(string path, out uint inodeNum)
     {
+        Debug.WriteLine("[FindInode] Enter");
         inodeNum = Ext2Inodes.ROOT_INO;
 
-        if (string.IsNullOrEmpty(path) || path == "/")
+        Debug.WriteLine("[FindInode] Checking IsNullOrEmpty...");
+        bool isEmpty = string.IsNullOrEmpty(path);
+        Debug.Write("[FindInode] isEmpty=");
+        Debug.Write(isEmpty ? "Y" : "N");
+        Debug.WriteLine();
+        // Avoid path == "/" which crashes due to interface dispatch bug
+        bool isRoot = isEmpty || (path.Length == 1 && path[0] == '/');
+        Debug.Write("[FindInode] isRoot=");
+        Debug.Write(isRoot ? "Y" : "N");
+        Debug.WriteLine();
+        if (isRoot)
             return FileResult.Success;
 
         // Parse path components
+        Debug.WriteLine("[FindInode] Parsing path components...");
         int pathStart = 0;
         while (pathStart < path.Length)
         {
+            Debug.Write("[FindInode] pathStart=");
+            Debug.WriteDecimal(pathStart);
+            Debug.WriteLine();
             // Skip leading slashes
             while (pathStart < path.Length && path[pathStart] == '/')
                 pathStart++;
+            Debug.Write("[FindInode] after skip slashes, pathStart=");
+            Debug.WriteDecimal(pathStart);
+            Debug.WriteLine();
             if (pathStart >= path.Length)
                 break;
 
@@ -743,14 +798,25 @@ public unsafe class Ext2FileSystem : IFileSystem
             int pathEnd = pathStart;
             while (pathEnd < path.Length && path[pathEnd] != '/')
                 pathEnd++;
+            Debug.Write("[FindInode] pathEnd=");
+            Debug.WriteDecimal(pathEnd);
+            Debug.WriteLine();
 
+            Debug.WriteLine("[FindInode] Creating substring...");
             string component = path.Substring(pathStart, pathEnd - pathStart);
+            Debug.Write("[FindInode] component='");
+            Debug.Write(component);
+            Debug.WriteLine("'");
             pathStart = pathEnd;
 
+            Debug.Write("[FindInode] compLen=");
+            Debug.WriteDecimal(component.Length);
+            Debug.WriteLine();
             if (component.Length == 0)
                 continue;
 
             // Read current directory inode
+            Debug.WriteLine("[FindInode] Reading inode...");
             Ext2Inode dirInode;
             if (!ReadInode(inodeNum, out dirInode))
                 return FileResult.IoError;
@@ -885,10 +951,24 @@ public unsafe class Ext2FileSystem : IFileSystem
     /// </summary>
     private static string NormalizePath(string path)
     {
+        Debug.WriteLine("[NormPath] Enter");
         if (path == null || path.Length == 0)
+        {
+            Debug.WriteLine("[NormPath] Null/empty, return /");
             return "/";
+        }
+        Debug.Write("[NormPath] len=");
+        Debug.WriteDecimal(path.Length);
+        Debug.WriteLine();
+        Debug.Write("[NormPath] char0=");
+        Debug.WriteDecimal((int)path[0]);
+        Debug.WriteLine();
         if (path[0] != '/')
+        {
+            Debug.WriteLine("[NormPath] Prepending /");
             return "/" + path;
+        }
+        Debug.WriteLine("[NormPath] Already starts with /");
         return path;
     }
 

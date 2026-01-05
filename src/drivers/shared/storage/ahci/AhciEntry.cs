@@ -1658,4 +1658,236 @@ public static unsafe class AhciEntry
         Debug.WriteLine(" PASS");
         return true;
     }
+
+    #region Root Filesystem Mount
+
+    // Static reference to keep filesystem alive after mount
+    private static Ext2FileSystem? _rootFs;
+    private static FatFileSystem? _bootFs;
+
+    /// <summary>
+    /// Mount the root filesystem (ext2) at /.
+    /// This initializes VFS and mounts the ext2 partition as the system root.
+    /// The mount persists for the lifetime of the system.
+    /// Returns 1 on success, 0 on failure.
+    /// </summary>
+    public static int MountRootFilesystem()
+    {
+        Debug.WriteLine("[Root] Mounting root filesystem...");
+
+        // Initialize VFS if not already done
+        VFS.Initialize();
+
+        // Get the SATA device with ext2 (last device in AHCI)
+        var device = GetLastDevice();
+        if (device == null)
+        {
+            Debug.WriteLine("[Root] ERROR: No AHCI device found");
+            return 0;
+        }
+
+        // Create and initialize ext2 filesystem driver
+        _rootFs = new Ext2FileSystem();
+        _rootFs.Initialize();
+
+        // Probe to verify it's ext2
+        if (!_rootFs.Probe(device))
+        {
+            Debug.WriteLine("[Root] ERROR: Device is not ext2 formatted");
+            _rootFs.Shutdown();
+            _rootFs = null;
+            return 0;
+        }
+
+        // Mount as root (read-write)
+        var result = VFS.Mount("/", _rootFs, device, false);
+        if (result != FileResult.Success)
+        {
+            Debug.Write("[Root] ERROR: Mount failed with code ");
+            Debug.WriteDecimal((int)result);
+            Debug.WriteLine();
+            _rootFs.Shutdown();
+            _rootFs = null;
+            return 0;
+        }
+
+        Debug.WriteLine("[Root] Mounted ext2 at / (read-write)");
+
+        // Verify root directory exists
+        FileInfo? rootInfo;
+        var getInfoResult = _rootFs.GetInfo("/", out rootInfo);
+        if (getInfoResult != FileResult.Success || rootInfo == null)
+        {
+            Debug.WriteLine("[Root] ERROR: Cannot read root directory");
+            VFS.Unmount("/");
+            _rootFs.Shutdown();
+            _rootFs = null;
+            return 0;
+        }
+
+        Debug.Write("[Root] Root dir: ");
+        Debug.Write(rootInfo.Name);
+        Debug.Write(" (");
+        Debug.Write(rootInfo.IsDirectory ? "dir" : "file");
+        Debug.WriteLine(")");
+
+        // Check for /drivers directory
+        FileInfo? driversInfo;
+        var driversResult = _rootFs.GetInfo("/drivers", out driversInfo);
+        if (driversResult == FileResult.Success && driversInfo != null && driversInfo.IsDirectory)
+        {
+            Debug.WriteLine("[Root] Found /drivers directory");
+        }
+        else
+        {
+            Debug.WriteLine("[Root] No /drivers directory found");
+        }
+
+        Debug.WriteLine("[Root] Root filesystem mounted successfully");
+        return 1;
+    }
+
+    /// <summary>
+    /// Get the root filesystem instance (if mounted).
+    /// </summary>
+    public static Ext2FileSystem? GetRootFilesystem()
+    {
+        return _rootFs;
+    }
+
+    /// <summary>
+    /// Mount the boot filesystem (FAT) at /boot.
+    /// This mounts the boot partition containing kernel, DLLs, and drivers.
+    /// Must be called after MountRootFilesystem.
+    /// Returns 1 on success, 0 on failure.
+    /// </summary>
+    public static int MountBootFilesystem()
+    {
+        Debug.WriteLine("[Boot] Mounting boot filesystem...");
+
+        // Get the boot device (first AHCI device - FAT boot partition)
+        var device = GetFirstDevice();
+        if (device == null)
+        {
+            Debug.WriteLine("[Boot] ERROR: No boot device found");
+            return 0;
+        }
+
+        // Create and initialize FAT filesystem driver
+        _bootFs = new FatFileSystem();
+        _bootFs.Initialize();
+
+        // Probe to verify it's FAT
+        if (!_bootFs.Probe(device))
+        {
+            Debug.WriteLine("[Boot] ERROR: Boot device is not FAT formatted");
+            _bootFs.Shutdown();
+            _bootFs = null;
+            return 0;
+        }
+
+        // Mount at /boot (read-only for safety)
+        var result = VFS.Mount("/boot", _bootFs, device, true);
+        if (result != FileResult.Success)
+        {
+            Debug.Write("[Boot] ERROR: Mount failed with code ");
+            Debug.WriteDecimal((int)result);
+            Debug.WriteLine();
+            _bootFs.Shutdown();
+            _bootFs = null;
+            return 0;
+        }
+
+        Debug.WriteLine("[Boot] Mounted FAT at /boot (read-only)");
+
+        // Verify we can read the boot partition
+        FileInfo? efiInfo;
+        var getInfoResult = _bootFs.GetInfo("/EFI", out efiInfo);
+        if (getInfoResult == FileResult.Success && efiInfo != null && efiInfo.IsDirectory)
+        {
+            Debug.WriteLine("[Boot] Found /boot/EFI directory");
+        }
+
+        // Check for drivers directory
+        FileInfo? driversInfo;
+        var driversResult = _bootFs.GetInfo("/drivers", out driversInfo);
+        if (driversResult == FileResult.Success && driversInfo != null && driversInfo.IsDirectory)
+        {
+            Debug.WriteLine("[Boot] Found /boot/drivers directory");
+        }
+
+        Debug.WriteLine("[Boot] Boot filesystem mounted successfully");
+        return 1;
+    }
+
+    /// <summary>
+    /// Get the boot filesystem instance (if mounted).
+    /// </summary>
+    public static FatFileSystem? GetBootFilesystem()
+    {
+        return _bootFs;
+    }
+
+    /// <summary>
+    /// List contents of /drivers directory.
+    /// Returns the number of driver files found, or -1 on error.
+    /// </summary>
+    public static int ListDrivers()
+    {
+        if (_rootFs == null)
+        {
+            Debug.WriteLine("[Root] ERROR: Root filesystem not mounted");
+            return -1;
+        }
+
+        // Use direct filesystem access to avoid VFS interface dispatch issues
+        IDirectoryHandle? dir;
+        var result = _rootFs.OpenDirectory("/drivers", out dir);
+        if (result != FileResult.Success || dir == null)
+        {
+            Debug.Write("[Root] ERROR: Cannot open /drivers: ");
+            Debug.WriteDecimal((int)result);
+            Debug.WriteLine();
+            return -1;
+        }
+
+        Debug.WriteLine("[Root] Available drivers in /drivers:");
+        int count = 0;
+        FileInfo? entry;
+        while ((entry = dir.ReadNext()) != null)
+        {
+            // Check if it's a .dll file
+            if (!entry.IsDirectory)
+            {
+                string name = entry.Name;
+                if (name.Length > 4)
+                {
+                    // Check for .dll extension
+                    int extStart = name.Length - 4;
+                    if (name[extStart] == '.' &&
+                        (name[extStart + 1] == 'd' || name[extStart + 1] == 'D') &&
+                        (name[extStart + 2] == 'l' || name[extStart + 2] == 'L') &&
+                        (name[extStart + 3] == 'l' || name[extStart + 3] == 'L'))
+                    {
+                        Debug.Write("  ");
+                        Debug.Write(name);
+                        Debug.Write(" (");
+                        Debug.WriteDecimal((int)entry.Size);
+                        Debug.WriteLine(" bytes)");
+                        count++;
+                    }
+                }
+            }
+        }
+        dir.Dispose();
+
+        if (count == 0)
+        {
+            Debug.WriteLine("  (no drivers found)");
+        }
+
+        return count;
+    }
+
+    #endregion
 }

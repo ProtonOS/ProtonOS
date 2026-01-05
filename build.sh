@@ -63,13 +63,40 @@ if [ -d "$TESTDATA_DIR" ]; then
 fi
 echo "Test disk created: $TEST_DISK"
 
-# Create SATA disk image for AHCI testing (EXT2 formatted)
-echo "Creating SATA disk image (EXT2)..."
-dd if=/dev/zero of="$SATA_DISK" bs=1M count=64 status=none
-# Format as EXT2 and populate from testdata directory
-if [ -d "$TESTDATA_DIR" ]; then
-    mkfs.ext2 -F -q -d "$TESTDATA_DIR" "$SATA_DISK"
-else
-    mkfs.ext2 -F -q "$SATA_DISK"
+# Create root filesystem image (EXT2)
+# This will be mounted as / after boot
+echo "Creating root filesystem image (EXT2)..."
+ROOTFS_DIR="$SCRIPT_DIR/rootfs"
+ROOTFS_STAGING="${BUILD_DIR}/rootfs_staging"
+
+# Create staging directory with rootfs structure
+rm -rf "$ROOTFS_STAGING"
+mkdir -p "$ROOTFS_STAGING"
+
+# Copy rootfs template
+if [ -d "$ROOTFS_DIR" ]; then
+    cp -r "$ROOTFS_DIR"/* "$ROOTFS_STAGING"/
 fi
-echo "SATA disk created: $SATA_DISK (EXT2)"
+
+# Ensure standard directories exist
+mkdir -p "$ROOTFS_STAGING/drivers"
+mkdir -p "$ROOTFS_STAGING/etc"
+mkdir -p "$ROOTFS_STAGING/system"
+mkdir -p "$ROOTFS_STAGING/tmp"
+
+# Copy testdata for VFS testing (optional, can be removed later)
+if [ -d "$TESTDATA_DIR" ]; then
+    cp -r "$TESTDATA_DIR"/* "$ROOTFS_STAGING"/
+fi
+
+# Create the ext2 filesystem with the staging directory contents
+dd if=/dev/zero of="$SATA_DISK" bs=1M count=64 status=none
+mkfs.ext2 -F -q -d "$ROOTFS_STAGING" "$SATA_DISK"
+
+# Clean up staging
+rm -rf "$ROOTFS_STAGING"
+
+echo "Root filesystem created: $SATA_DISK (EXT2)"
+echo "  /drivers  - additional drivers (loaded after root mount)"
+echo "  /etc      - configuration files"
+echo "  /system   - system files"
