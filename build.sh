@@ -31,6 +31,7 @@ dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Dri
 dotnet ildasm build/x64/ProtonOS.Drivers.Fat.dll -o build/x64/ProtonOS.Drivers.Fat.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Ahci.dll -o build/x64/ProtonOS.Drivers.Ahci.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Ext2.dll -o build/x64/ProtonOS.Drivers.Ext2.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.Test.dll -o build/x64/ProtonOS.Drivers.Test.il 2>/dev/null || true
 echo "IL disassembly complete"
 
 # Create test disk image for FAT filesystem testing
@@ -83,6 +84,12 @@ mkdir -p "$ROOTFS_STAGING/drivers"
 mkdir -p "$ROOTFS_STAGING/etc"
 mkdir -p "$ROOTFS_STAGING/system"
 mkdir -p "$ROOTFS_STAGING/tmp"
+
+# Copy test driver to /drivers (dynamically loaded after root mount)
+if [ -f "${BUILD_DIR}/ProtonOS.Drivers.Test.dll" ]; then
+    cp "${BUILD_DIR}/ProtonOS.Drivers.Test.dll" "$ROOTFS_STAGING/drivers/"
+    echo "Copied test driver to rootfs/drivers/"
+fi
 
 # Copy testdata for VFS testing (optional, can be removed later)
 if [ -d "$TESTDATA_DIR" ]; then

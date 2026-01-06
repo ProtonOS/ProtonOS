@@ -38,6 +38,9 @@ public static unsafe class KernelExportInit
         // Register Thread exports
         RegisterThreadExports();
 
+        // Register Assembly Loader exports
+        RegisterAssemblyLoaderExports();
+
         KernelExportRegistry.DebugPrint();
     }
 
@@ -403,5 +406,45 @@ public static unsafe class KernelExportInit
         n[10]=0x54; n[11]=0x68; n[12]=0x72; n[13]=0x65; n[14]=0x61; n[15]=0x64; // Thread
         n[16]=0x43; n[17]=0x6F; n[18]=0x75; n[19]=0x6E; n[20]=0x74; n[21]=0; // Count
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int>)&ThreadExports.GetThreadCount);
+    }
+
+    private static void RegisterAssemblyLoaderExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_LoadOwnedAssembly
+        // "Kernel_LoadOwnedAssembly" = 4B 65 72 6E 65 6C 5F 4C 6F 61 64 4F 77 6E 65 64 41 73 73 65 6D 62 6C 79
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x4C; n[8]=0x6F; n[9]=0x61; n[10]=0x64; // Load
+        n[11]=0x4F; n[12]=0x77; n[13]=0x6E; n[14]=0x65; n[15]=0x64; // Owned
+        n[16]=0x41; n[17]=0x73; n[18]=0x73; n[19]=0x65; n[20]=0x6D; n[21]=0x62; n[22]=0x6C; n[23]=0x79; n[24]=0; // Assembly
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte*, ulong, uint, uint>)&AssemblyLoaderExports.LoadOwnedAssembly);
+
+        // Kernel_FindDriverEntryType
+        // "Kernel_FindDriverEntryType" = 4B 65 72 6E 65 6C 5F 46 69 6E 64 44 72 69 76 65 72 45 6E 74 72 79 54 79 70 65
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x46; n[8]=0x69; n[9]=0x6E; n[10]=0x64; // Find
+        n[11]=0x44; n[12]=0x72; n[13]=0x69; n[14]=0x76; n[15]=0x65; n[16]=0x72; // Driver
+        n[17]=0x45; n[18]=0x6E; n[19]=0x74; n[20]=0x72; n[21]=0x79; // Entry
+        n[22]=0x54; n[23]=0x79; n[24]=0x70; n[25]=0x65; n[26]=0; // Type
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, uint>)&AssemblyLoaderExports.FindDriverEntryType);
+
+        // Kernel_FindMethodByName
+        // "Kernel_FindMethodByName" = 4B 65 72 6E 65 6C 5F 46 69 6E 64 4D 65 74 68 6F 64 42 79 4E 61 6D 65
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x46; n[8]=0x69; n[9]=0x6E; n[10]=0x64; // Find
+        n[11]=0x4D; n[12]=0x65; n[13]=0x74; n[14]=0x68; n[15]=0x6F; n[16]=0x64; // Method
+        n[17]=0x42; n[18]=0x79; // By
+        n[19]=0x4E; n[20]=0x61; n[21]=0x6D; n[22]=0x65; n[23]=0; // Name
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, uint, byte*, uint>)&AssemblyLoaderExports.FindMethodByName);
+
+        // Kernel_JitAndCallInit
+        // "Kernel_JitAndCallInit" = 4B 65 72 6E 65 6C 5F 4A 69 74 41 6E 64 43 61 6C 6C 49 6E 69 74
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x4A; n[8]=0x69; n[9]=0x74; // Jit
+        n[10]=0x41; n[11]=0x6E; n[12]=0x64; // And
+        n[13]=0x43; n[14]=0x61; n[15]=0x6C; n[16]=0x6C; // Call
+        n[17]=0x49; n[18]=0x6E; n[19]=0x69; n[20]=0x74; n[21]=0; // Init
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, uint, bool>)&AssemblyLoaderExports.JitAndCallInit);
     }
 }

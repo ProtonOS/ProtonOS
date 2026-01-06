@@ -391,6 +391,12 @@ public unsafe struct LoadedAssembly
     /// <summary>Unique assembly ID assigned by the loader.</summary>
     public uint AssemblyId;
 
+    /// <summary>
+    /// Context ID for grouping assemblies.
+    /// 0 = kernel context (never unloaded), >0 = driver/plugin contexts (can unload).
+    /// </summary>
+    public uint ContextId;
+
     /// <summary>Assembly simple name (UTF-8, null-terminated).</summary>
     public fixed byte Name[MaxNameLength];
 
@@ -406,6 +412,9 @@ public unsafe struct LoadedAssembly
 
     /// <summary>Size of PE file in bytes.</summary>
     public ulong ImageSize;
+
+    /// <summary>True if ImageBase was allocated by us and should be freed on unload.</summary>
+    public bool OwnsImage;
 
     // ============================================================================
     // Parsed Metadata
@@ -563,9 +572,18 @@ public unsafe struct LoadedAssembly
     {
         Types.Free();
         Statics.Free();
-        // Note: ImageBase is typically not freed (UEFI-allocated or permanent)
+
+        // Free image memory if we allocated it
+        if (OwnsImage && ImageBase != null)
+        {
+            HeapAllocator.Free(ImageBase);
+            ImageBase = null;
+        }
+
         Flags = AssemblyFlags.None;
         AssemblyId = 0;
+        ContextId = 0;
+        OwnsImage = false;
     }
 }
 
@@ -640,6 +658,18 @@ public static unsafe class AssemblyLoader
     private static int _assemblyCount;
     private static uint _nextAssemblyId;
     private static bool _initialized;
+
+    // ============================================================================
+    // Context Tracking
+    // ============================================================================
+    // Context 0 = kernel (DDK, korlib, etc.) - never unloaded
+    // Context 1+ = driver/plugin contexts - can be unloaded
+
+    /// <summary>Special context ID for kernel assemblies.</summary>
+    public const uint KernelContextId = 0;
+
+    /// <summary>Next context ID to assign to new driver/plugin groups.</summary>
+    private static uint _nextContextId = 1;
 
     // ============================================================================
     // Global Interface Registry
@@ -935,6 +965,107 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteLine(")");
 
         return assemblyId;
+    }
+
+    // ============================================================================
+    // Owned Buffer Loading
+    // ============================================================================
+
+    /// <summary>
+    /// Load an assembly from a buffer that the loader will own.
+    /// The buffer will be freed when the assembly is unloaded.
+    /// Use this for assemblies loaded from the filesystem.
+    /// </summary>
+    /// <param name="buffer">PE bytes (ownership transferred to loader)</param>
+    /// <param name="size">Size in bytes</param>
+    /// <param name="contextId">Context ID for grouping (0 = kernel, >0 = driver contexts)</param>
+    /// <param name="extraFlags">Additional flags to set</param>
+    /// <returns>Assembly ID, or InvalidAssemblyId on failure</returns>
+    public static uint LoadOwned(byte* buffer, ulong size, uint contextId = KernelContextId, AssemblyFlags extraFlags = AssemblyFlags.None)
+    {
+        if (buffer == null || size < 64)
+        {
+            DebugConsole.WriteLine("[AsmLoader] LoadOwned: invalid buffer");
+            return InvalidAssemblyId;
+        }
+
+        // Mark as unloadable if in a non-kernel context
+        if (contextId != KernelContextId)
+        {
+            extraFlags = (AssemblyFlags)((uint)extraFlags | (uint)AssemblyFlags.Unloadable);
+        }
+
+        // Load the assembly
+        uint assemblyId = Load(buffer, size, extraFlags);
+        if (assemblyId == InvalidAssemblyId)
+        {
+            HeapAllocator.Free(buffer);
+            return InvalidAssemblyId;
+        }
+
+        // Mark that we own the image (for freeing on unload)
+        var asm = GetAssembly(assemblyId);
+        if (asm != null)
+        {
+            asm->OwnsImage = true;
+            asm->ContextId = contextId;
+        }
+
+        return assemblyId;
+    }
+
+    // ============================================================================
+    // Context Management
+    // ============================================================================
+
+    /// <summary>
+    /// Create a new context for loading driver/plugin assemblies.
+    /// Returns a new context ID that can be used with LoadFromPath.
+    /// </summary>
+    public static uint CreateContext()
+    {
+        return _nextContextId++;
+    }
+
+    /// <summary>
+    /// Unload all assemblies in a specific context.
+    /// Only works for non-kernel contexts (contextId > 0).
+    /// </summary>
+    /// <param name="contextId">Context to unload (must be > 0)</param>
+    /// <returns>Number of assemblies unloaded</returns>
+    public static int UnloadContext(uint contextId)
+    {
+        if (contextId == KernelContextId)
+        {
+            DebugConsole.WriteLine("[AsmLoader] Cannot unload kernel context");
+            return 0;
+        }
+
+        if (!_initialized)
+            return 0;
+
+        int unloaded = 0;
+        for (int i = 0; i < MaxAssemblies; i++)
+        {
+            if (_assemblies[i].IsLoaded && _assemblies[i].ContextId == contextId)
+            {
+                DebugConsole.Write("[AsmLoader] Unloading assembly ");
+                _assemblies[i].PrintName();
+                DebugConsole.WriteLine();
+
+                _assemblies[i].Free();
+                _assemblyCount--;
+                unloaded++;
+            }
+        }
+
+        DebugConsole.Write("[AsmLoader] Unloaded ");
+        DebugConsole.WriteDecimal(unloaded);
+        DebugConsole.Write(" assemblies from context ");
+        DebugConsole.WriteDecimal(contextId);
+        DebugConsole.WriteLine();
+
+        return unloaded;
     }
 
     /// <summary>
@@ -8274,6 +8405,51 @@ public static unsafe class AssemblyLoader
             if (StringEqualsLiteral(methodName, name))
             {
                 return 0x06000000 | methodRow;  // MethodDef token
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Find a MethodDef by name (byte* version for kernel exports).
+    /// Returns the MethodDef token (0x06xxxxxx) or 0 if not found.
+    /// </summary>
+    public static uint FindMethodDefByName(uint assemblyId, uint typeToken, byte* name)
+    {
+        LoadedAssembly* asm = GetAssembly(assemblyId);
+        if (asm == null || name == null)
+            return 0;
+
+        uint typeRow = typeToken & 0x00FFFFFF;
+        if (typeRow == 0)
+            return 0;
+
+        uint typeCount = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        uint methodCount = asm->Tables.RowCounts[(int)MetadataTableId.MethodDef];
+
+        // Get the method list start for this type
+        uint methodStart = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow);
+
+        // Get the method list end
+        uint methodEnd;
+        if (typeRow < typeCount)
+        {
+            methodEnd = MetadataReader.GetTypeDefMethodList(ref asm->Tables, ref asm->Sizes, typeRow + 1);
+        }
+        else
+        {
+            methodEnd = methodCount + 1;
+        }
+
+        // Search methods
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            uint methodNameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+            byte* methodName = MetadataReader.GetString(ref asm->Metadata, methodNameIdx);
+
+            if (StringEquals(methodName, name))
+            {
+                return 0x06000000 | methodRow;
             }
         }
         return 0;

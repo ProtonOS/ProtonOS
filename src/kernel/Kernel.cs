@@ -1573,6 +1573,46 @@ public static unsafe class Kernel
                 }
             }
         }
+
+        // Load drivers from /drivers on root filesystem (via JIT-compiled driver code)
+        LoadDriversFromFilesystem(ahciEntryToken);
+    }
+
+    /// <summary>
+    /// Load drivers from the /drivers directory on the root filesystem.
+    /// This calls into JIT-compiled code that has access to VFS.
+    /// </summary>
+    private static void LoadDriversFromFilesystem(uint ahciEntryToken)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Loading Drivers from VFS");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        // Find LoadDrivers method in AhciEntry (JIT-compiled, has VFS access)
+        uint loadDriversToken = AssemblyLoader.FindMethodDefByName(_ahciDriverId, ahciEntryToken, "LoadDrivers");
+        if (loadDriversToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] LoadDrivers method not found in AhciEntry");
+            return;
+        }
+
+        // JIT compile the method
+        var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_ahciDriverId, loadDriversToken);
+        if (!jitResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] Failed to JIT compile LoadDrivers");
+            return;
+        }
+
+        // Call it - returns number of drivers loaded
+        var loadDriversFunc = (delegate* unmanaged<int>)jitResult.CodeAddress;
+        int loaded = loadDriversFunc();
+
+        DebugConsole.Write("[Drivers] Loaded ");
+        DebugConsole.WriteDecimal(loaded);
+        DebugConsole.WriteLine(" driver(s) from /drivers");
     }
 
     /// <summary>

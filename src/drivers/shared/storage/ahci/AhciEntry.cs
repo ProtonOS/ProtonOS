@@ -1890,4 +1890,262 @@ public static unsafe class AhciEntry
     }
 
     #endregion
+
+    #region Dynamic Driver Loading
+
+    /// <summary>
+    /// Load drivers from the /drivers directory.
+    /// Each .dll file is loaded and its entry point is called.
+    /// Returns the number of drivers successfully loaded.
+    /// </summary>
+    public static int LoadDrivers()
+    {
+        return LoadDriversFromPath("/drivers");
+    }
+
+    /// <summary>
+    /// Load drivers from a specified VFS path.
+    /// </summary>
+    private static int LoadDriversFromPath(string path)
+    {
+        Debug.Write("[DriverLoad] Scanning ");
+        Debug.WriteLine(path);
+
+        // Open directory
+        IDirectoryHandle? dir;
+        var result = VFS.OpenDirectory(path, out dir);
+        if (result != FileResult.Success || dir == null)
+        {
+            Debug.Write("[DriverLoad] Failed to open directory: ");
+            Debug.WriteDecimal((int)result);
+            Debug.WriteLine();
+            return 0;
+        }
+
+        int loaded = 0;
+        FileInfo? entry;
+
+        while ((entry = dir.ReadNext()) != null)
+        {
+            // Skip directories
+            if (entry.IsDirectory)
+                continue;
+
+            string name = entry.Name;
+
+            // Check for .dll extension
+            if (!IsDllFile(name))
+                continue;
+
+            Debug.Write("[DriverLoad] Found: ");
+            Debug.WriteLine(name);
+
+            // Build full path
+            string fullPath = path + "/" + name;
+
+            // Try to load this driver
+            if (LoadSingleDriver(fullPath, name))
+            {
+                loaded++;
+            }
+        }
+
+        dir.Dispose();
+
+        Debug.Write("[DriverLoad] Loaded ");
+        Debug.WriteDecimal(loaded);
+        Debug.WriteLine(" driver(s)");
+
+        return loaded;
+    }
+
+    /// <summary>
+    /// Check if a filename ends with .dll
+    /// </summary>
+    private static bool IsDllFile(string name)
+    {
+        if (name.Length < 5)
+            return false;
+
+        int len = name.Length;
+        return name[len - 4] == '.' &&
+               (name[len - 3] == 'd' || name[len - 3] == 'D') &&
+               (name[len - 2] == 'l' || name[len - 2] == 'L') &&
+               (name[len - 1] == 'l' || name[len - 1] == 'L');
+    }
+
+    /// <summary>
+    /// Load a single driver from a VFS path.
+    /// </summary>
+    private static unsafe bool LoadSingleDriver(string path, string name)
+    {
+        Debug.Write("[DriverLoad] Loading: ");
+        Debug.WriteLine(path);
+
+        // Open file
+        IFileHandle? file;
+        var result = VFS.OpenFile(path, FileMode.Open, FileAccess.Read, out file);
+        if (result != FileResult.Success || file == null)
+        {
+            Debug.Write("[DriverLoad] Failed to open: ");
+            Debug.WriteDecimal((int)result);
+            Debug.WriteLine();
+            return false;
+        }
+
+        // Get file size
+        long size = file.Length;
+        if (size <= 0 || size > 16 * 1024 * 1024)
+        {
+            Debug.Write("[DriverLoad] Invalid size: ");
+            Debug.WriteDecimal((ulong)size);
+            Debug.WriteLine();
+            file.Dispose();
+            return false;
+        }
+
+        // Allocate buffer using Memory API (kernel export)
+        // Use page allocation to ensure alignment
+        ulong pages = ((ulong)size + 4095) / 4096;
+        ulong bufferAddr = Memory.AllocatePages(pages);
+        if (bufferAddr == 0)
+        {
+            Debug.WriteLine("[DriverLoad] Failed to allocate buffer");
+            file.Dispose();
+            return false;
+        }
+
+        byte* buffer = (byte*)bufferAddr;
+
+        // Read file
+        long totalRead = 0;
+        while (totalRead < size)
+        {
+            // Inline min to avoid System.Math dependency (not in korlib)
+            long remaining = size - totalRead;
+            int toRead = remaining < 65536 ? (int)remaining : 65536;
+            int bytesRead = file.Read(buffer + totalRead, toRead);
+            if (bytesRead <= 0)
+            {
+                Debug.Write("[DriverLoad] Read error at ");
+                Debug.WriteDecimal((ulong)totalRead);
+                Debug.WriteLine();
+                Memory.FreePages(bufferAddr, pages);
+                file.Dispose();
+                return false;
+            }
+            totalRead += bytesRead;
+        }
+
+        file.Dispose();
+
+        Debug.Write("[DriverLoad] Read ");
+        Debug.WriteDecimal((ulong)totalRead);
+        Debug.WriteLine(" bytes");
+
+        // Create a new context for this driver
+        uint contextId = CreateDriverContext();
+
+        // Load the assembly via PInvoke to AssemblyLoader
+        uint assemblyId = Kernel_LoadOwnedAssembly(buffer, (ulong)size, contextId);
+        if (assemblyId == 0)
+        {
+            Debug.WriteLine("[DriverLoad] Assembly load failed");
+            Memory.FreePages(bufferAddr, pages);
+            return false;
+        }
+
+        Debug.Write("[DriverLoad] Assembly loaded, ID=");
+        Debug.WriteDecimal(assemblyId);
+        Debug.WriteLine();
+
+        // Try to find and call the driver entry point
+        InitializeLoadedDriver(assemblyId, name);
+
+        return true;
+    }
+
+    // Static method name strings for PInvoke (avoids stackalloc issues)
+    private static readonly byte[] _initializeName = { (byte)'I', (byte)'n', (byte)'i', (byte)'t', (byte)'i', (byte)'a', (byte)'l', (byte)'i', (byte)'z', (byte)'e', 0 };
+    private static readonly byte[] _initName = { (byte)'I', (byte)'n', (byte)'i', (byte)'t', 0 };
+
+    /// <summary>
+    /// Initialize a loaded driver by finding and calling its entry point.
+    /// </summary>
+    private static unsafe void InitializeLoadedDriver(uint assemblyId, string name)
+    {
+        // Find entry type (look for "Entry" suffix)
+        uint entryTypeToken = Kernel_FindDriverEntryType(assemblyId);
+        if (entryTypeToken == 0)
+        {
+            Debug.Write("[DriverLoad] No entry type found in ");
+            Debug.WriteLine(name);
+            return;
+        }
+
+        // Find Initialize method using static byte array (pin it for PInvoke)
+        uint initMethodToken;
+        fixed (byte* initName = _initializeName)
+        {
+            initMethodToken = Kernel_FindMethodByName(assemblyId, entryTypeToken, initName);
+        }
+
+        if (initMethodToken == 0)
+        {
+            // Try "Init" as fallback
+            fixed (byte* initShortName = _initName)
+            {
+                initMethodToken = Kernel_FindMethodByName(assemblyId, entryTypeToken, initShortName);
+            }
+        }
+
+        if (initMethodToken == 0)
+        {
+            Debug.Write("[DriverLoad] No Initialize method in ");
+            Debug.WriteLine(name);
+            return;
+        }
+
+        Debug.Write("[DriverLoad] Calling Initialize for ");
+        Debug.WriteLine(name);
+
+        // JIT compile and call the Initialize method
+        bool success = Kernel_JitAndCallInit(assemblyId, initMethodToken);
+
+        if (success)
+        {
+            Debug.Write("[DriverLoad] ");
+            Debug.Write(name);
+            Debug.WriteLine(" initialized successfully");
+        }
+        else
+        {
+            Debug.Write("[DriverLoad] ");
+            Debug.Write(name);
+            Debug.WriteLine(" initialization failed");
+        }
+    }
+
+    // Context ID counter
+    private static uint _nextContextId = 1;
+
+    private static uint CreateDriverContext()
+    {
+        return _nextContextId++;
+    }
+
+    // PInvoke declarations for kernel assembly loader functions
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_LoadOwnedAssembly")]
+    private static extern unsafe uint Kernel_LoadOwnedAssembly(byte* buffer, ulong size, uint contextId);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_FindDriverEntryType")]
+    private static extern uint Kernel_FindDriverEntryType(uint assemblyId);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_FindMethodByName")]
+    private static extern unsafe uint Kernel_FindMethodByName(uint assemblyId, uint typeToken, byte* methodName);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_JitAndCallInit")]
+    private static extern bool Kernel_JitAndCallInit(uint assemblyId, uint methodToken);
+
+    #endregion
 }
