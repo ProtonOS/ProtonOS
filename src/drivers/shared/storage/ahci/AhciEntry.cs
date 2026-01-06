@@ -1956,6 +1956,16 @@ public static unsafe class AhciEntry
         Debug.WriteDecimal(loaded);
         Debug.WriteLine(" driver(s)");
 
+        // Test driver unloading - unload all drivers we just loaded
+        if (loaded > 0)
+        {
+            Debug.WriteLine("[DriverLoad] Testing driver unload...");
+            int unloaded = UnloadAllDrivers();
+            Debug.Write("[DriverLoad] Unloaded ");
+            Debug.WriteDecimal(unloaded);
+            Debug.WriteLine(" driver(s) - test complete");
+        }
+
         return loaded;
     }
 
@@ -2057,22 +2067,39 @@ public static unsafe class AhciEntry
 
         Debug.Write("[DriverLoad] Assembly loaded, ID=");
         Debug.WriteDecimal(assemblyId);
+        Debug.Write(" ctx=");
+        Debug.WriteDecimal(contextId);
         Debug.WriteLine();
 
         // Try to find and call the driver entry point
-        InitializeLoadedDriver(assemblyId, name);
+        int driverIdx = InitializeLoadedDriver(assemblyId, contextId, name);
 
-        return true;
+        return driverIdx >= 0;
     }
 
     // Static method name strings for PInvoke (avoids stackalloc issues)
     private static readonly byte[] _initializeName = { (byte)'I', (byte)'n', (byte)'i', (byte)'t', (byte)'i', (byte)'a', (byte)'l', (byte)'i', (byte)'z', (byte)'e', 0 };
     private static readonly byte[] _initName = { (byte)'I', (byte)'n', (byte)'i', (byte)'t', 0 };
+    private static readonly byte[] _shutdownName = { (byte)'S', (byte)'h', (byte)'u', (byte)'t', (byte)'d', (byte)'o', (byte)'w', (byte)'n', 0 };
+
+    // Track loaded drivers for unloading
+    private struct LoadedDriverInfo
+    {
+        public uint AssemblyId;
+        public uint ContextId;
+        public uint EntryTypeToken;
+        public bool IsLoaded;
+    }
+
+    private const int MaxLoadedDrivers = 32;
+    private static LoadedDriverInfo[] _loadedDrivers = new LoadedDriverInfo[MaxLoadedDrivers];
+    private static int _loadedDriverCount = 0;
 
     /// <summary>
     /// Initialize a loaded driver by finding and calling its entry point.
+    /// Returns the index in the loaded drivers array, or -1 on failure.
     /// </summary>
-    private static unsafe void InitializeLoadedDriver(uint assemblyId, string name)
+    private static unsafe int InitializeLoadedDriver(uint assemblyId, uint contextId, string name)
     {
         // Find entry type (look for "Entry" suffix)
         uint entryTypeToken = Kernel_FindDriverEntryType(assemblyId);
@@ -2080,7 +2107,7 @@ public static unsafe class AhciEntry
         {
             Debug.Write("[DriverLoad] No entry type found in ");
             Debug.WriteLine(name);
-            return;
+            return -1;
         }
 
         // Find Initialize method using static byte array (pin it for PInvoke)
@@ -2103,7 +2130,7 @@ public static unsafe class AhciEntry
         {
             Debug.Write("[DriverLoad] No Initialize method in ");
             Debug.WriteLine(name);
-            return;
+            return -1;
         }
 
         Debug.Write("[DriverLoad] Calling Initialize for ");
@@ -2117,6 +2144,17 @@ public static unsafe class AhciEntry
             Debug.Write("[DriverLoad] ");
             Debug.Write(name);
             Debug.WriteLine(" initialized successfully");
+
+            // Track the loaded driver
+            if (_loadedDriverCount < MaxLoadedDrivers)
+            {
+                int idx = _loadedDriverCount++;
+                _loadedDrivers[idx].AssemblyId = assemblyId;
+                _loadedDrivers[idx].ContextId = contextId;
+                _loadedDrivers[idx].EntryTypeToken = entryTypeToken;
+                _loadedDrivers[idx].IsLoaded = true;
+                return idx;
+            }
         }
         else
         {
@@ -2124,6 +2162,80 @@ public static unsafe class AhciEntry
             Debug.Write(name);
             Debug.WriteLine(" initialization failed");
         }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Unload a driver by its index in the loaded drivers array.
+    /// Calls Shutdown() if available, then unloads the context.
+    /// </summary>
+    public static unsafe bool UnloadDriver(int driverIndex)
+    {
+        if (driverIndex < 0 || driverIndex >= _loadedDriverCount)
+        {
+            Debug.WriteLine("[DriverUnload] Invalid driver index");
+            return false;
+        }
+
+        if (!_loadedDrivers[driverIndex].IsLoaded)
+        {
+            Debug.WriteLine("[DriverUnload] Driver already unloaded");
+            return false;
+        }
+
+        uint assemblyId = _loadedDrivers[driverIndex].AssemblyId;
+        uint contextId = _loadedDrivers[driverIndex].ContextId;
+        uint entryTypeToken = _loadedDrivers[driverIndex].EntryTypeToken;
+
+        Debug.Write("[DriverUnload] Unloading driver (asm=");
+        Debug.WriteDecimal(assemblyId);
+        Debug.Write(" ctx=");
+        Debug.WriteDecimal(contextId);
+        Debug.WriteLine(")");
+
+        // Try to find and call Shutdown method
+        uint shutdownMethodToken;
+        fixed (byte* shutdownName = _shutdownName)
+        {
+            shutdownMethodToken = Kernel_FindMethodByName(assemblyId, entryTypeToken, shutdownName);
+        }
+
+        if (shutdownMethodToken != 0)
+        {
+            Debug.WriteLine("[DriverUnload] Calling Shutdown...");
+            Kernel_JitAndCallShutdown(assemblyId, shutdownMethodToken);
+        }
+        else
+        {
+            Debug.WriteLine("[DriverUnload] No Shutdown method found");
+        }
+
+        // Unload the context (frees assembly memory)
+        int unloaded = Kernel_UnloadContext(contextId);
+        Debug.Write("[DriverUnload] Unloaded ");
+        Debug.WriteDecimal(unloaded);
+        Debug.WriteLine(" assembly(ies)");
+
+        _loadedDrivers[driverIndex].IsLoaded = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Unload all loaded drivers.
+    /// </summary>
+    public static int UnloadAllDrivers()
+    {
+        int unloaded = 0;
+        for (int i = _loadedDriverCount - 1; i >= 0; i--)
+        {
+            if (_loadedDrivers[i].IsLoaded)
+            {
+                if (UnloadDriver(i))
+                    unloaded++;
+            }
+        }
+        return unloaded;
     }
 
     // Context ID counter
@@ -2146,6 +2258,15 @@ public static unsafe class AhciEntry
 
     [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_JitAndCallInit")]
     private static extern bool Kernel_JitAndCallInit(uint assemblyId, uint methodToken);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_JitAndCallShutdown")]
+    private static extern void Kernel_JitAndCallShutdown(uint assemblyId, uint methodToken);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_UnloadContext")]
+    private static extern int Kernel_UnloadContext(uint contextId);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_CreateContext")]
+    private static extern uint Kernel_CreateContext();
 
     #endregion
 }

@@ -446,5 +446,28 @@ public static unsafe class KernelExportInit
         n[13]=0x43; n[14]=0x61; n[15]=0x6C; n[16]=0x6C; // Call
         n[17]=0x49; n[18]=0x6E; n[19]=0x69; n[20]=0x74; n[21]=0; // Init
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, uint, bool>)&AssemblyLoaderExports.JitAndCallInit);
+
+        // Kernel_JitAndCallShutdown
+        // "Kernel_JitAndCallShutdown" = 4B 65 72 6E 65 6C 5F 4A 69 74 41 6E 64 43 61 6C 6C 53 68 75 74 64 6F 77 6E
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x4A; n[8]=0x69; n[9]=0x74; // Jit
+        n[10]=0x41; n[11]=0x6E; n[12]=0x64; // And
+        n[13]=0x43; n[14]=0x61; n[15]=0x6C; n[16]=0x6C; // Call
+        n[17]=0x53; n[18]=0x68; n[19]=0x75; n[20]=0x74; n[21]=0x64; n[22]=0x6F; n[23]=0x77; n[24]=0x6E; n[25]=0; // Shutdown
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, uint, void>)&AssemblyLoaderExports.JitAndCallShutdown);
+
+        // Kernel_UnloadContext
+        // "Kernel_UnloadContext" = 4B 65 72 6E 65 6C 5F 55 6E 6C 6F 61 64 43 6F 6E 74 65 78 74
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x55; n[8]=0x6E; n[9]=0x6C; n[10]=0x6F; n[11]=0x61; n[12]=0x64; // Unload
+        n[13]=0x43; n[14]=0x6F; n[15]=0x6E; n[16]=0x74; n[17]=0x65; n[18]=0x78; n[19]=0x74; n[20]=0; // Context
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint, int>)&AssemblyLoaderExports.UnloadContext);
+
+        // Kernel_CreateContext
+        // "Kernel_CreateContext" = 4B 65 72 6E 65 6C 5F 43 72 65 61 74 65 43 6F 6E 74 65 78 74
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x43; n[8]=0x72; n[9]=0x65; n[10]=0x61; n[11]=0x74; n[12]=0x65; // Create
+        n[13]=0x43; n[14]=0x6F; n[15]=0x6E; n[16]=0x74; n[17]=0x65; n[18]=0x78; n[19]=0x74; n[20]=0; // Context
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint>)&AssemblyLoaderExports.CreateContext);
     }
 }

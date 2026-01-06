@@ -110,4 +110,57 @@ public static unsafe class AssemblyLoaderExports
             return false;
         }
     }
+
+    /// <summary>
+    /// JIT compile and call a driver's Shutdown method.
+    /// Assumes the method returns void.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_JitAndCallShutdown")]
+    public static void JitAndCallShutdown(uint assemblyId, uint methodToken)
+    {
+        // Get the assembly
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+        {
+            DebugConsole.WriteLine("[JitShutdown] Assembly not found");
+            return;
+        }
+
+        // JIT compile the method (this will resolve references as needed)
+        var result = Tier0JIT.CompileMethod(assemblyId, methodToken);
+        if (!result.Success)
+        {
+            DebugConsole.WriteLine("[JitShutdown] JIT compilation failed");
+            return;
+        }
+
+        // Call the method
+        var shutdownFunc = (delegate* unmanaged<void>)result.CodeAddress;
+        try
+        {
+            shutdownFunc();
+        }
+        catch
+        {
+            DebugConsole.WriteLine("[JitShutdown] Exception in Shutdown");
+        }
+    }
+
+    /// <summary>
+    /// Unload all assemblies in a context.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_UnloadContext")]
+    public static int UnloadContext(uint contextId)
+    {
+        return AssemblyLoader.UnloadContext(contextId);
+    }
+
+    /// <summary>
+    /// Create a new assembly context for driver isolation.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_CreateContext")]
+    public static uint CreateContext()
+    {
+        return AssemblyLoader.CreateContext();
+    }
 }
