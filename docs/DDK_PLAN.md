@@ -2,19 +2,34 @@
 
 ## Status
 
-**Last Updated**: December 2025
+**Last Updated**: January 2026
 
-### Recent Progress (Phase 3 Bootstrap)
+### Recent Progress (Phase 3 Complete!)
 
-- [x] Kernel loads DDK.dll, Virtio.dll, VirtioBlk.dll from UEFI boot image
+**Bootstrap Storage & Filesystem - DONE:**
+- [x] Kernel loads DDK.dll and drivers from UEFI boot image
 - [x] DDKInit.Initialize() works via JIT compilation
 - [x] Native kernel PCI enumeration detects all PCI devices
-- [x] Virtio-blk device detected at 00:03.00 (vendor 0x1AF4, device 0x1001)
-- [x] Driver binding (matching VirtioBlk driver to detected device) ✅ Complete
-  - VirtioBlkEntry.Probe() and Bind() JIT compiled and executed
-  - Kernel iterates PCI devices, calls Probe(), binds on match
-  - Successfully bound 1 driver to virtio-blk device
-- [ ] Virtio device initialization (queues, features) - TODO
+- [x] Virtio-blk driver complete (device init, queues, read/write)
+- [x] AHCI/SATA driver complete (port init, IDENTIFY, read/write)
+- [x] FAT filesystem driver complete (read/write, directory ops)
+- [x] EXT2 filesystem driver complete (read/write, directory ops)
+- [x] VFS layer complete (mount, read, write, delete, directory enumeration)
+
+**VFS Mount Points:**
+- `/` - EXT2 on SATA disk (read-write)
+- `/boot` - FAT on boot partition (read-only)
+
+**Dynamic Driver Loading:**
+- [x] Drivers load from `/drivers` directory on root filesystem
+- [x] Test driver demonstrates full Initialize/Shutdown lifecycle
+- [x] Driver unloading works correctly
+
+**JIT Compiler:**
+- [x] 666 tests passing
+- [x] Interface dispatch working across assemblies
+- [x] Generic method instantiation with type arguments
+- [x] Span<T> and inline array support
 
 ### Completed AOT Work
 
@@ -303,7 +318,7 @@ config space access on x64 uses port I/O which requires a small arch shim.
 - [x] **ddk/Drivers/PciDeviceInfo.cs** - PCI device info structures ✅ Complete
 - [x] **ddk/DDKInit.cs** - DDK entry point and initialization ✅ Complete
 
-### Phase 3: Bootstrap Storage & Filesystem
+### Phase 3: Bootstrap Storage & Filesystem ✅ COMPLETE
 
 These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 
@@ -312,10 +327,11 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 - [x] **ddk/Storage/VFS.cs** - Virtual filesystem / mount management ✅ Complete
 - [x] **drivers/shared/virtio/** - Virtio common library (virtqueue, device init) ✅ Complete
 - [x] **drivers/shared/storage/virtio-blk/** - Virtio block driver (QEMU) ✅ Complete
-- [ ] **drivers/shared/storage/ahci/** - AHCI/SATA driver
-- [ ] **drivers/shared/storage/nvme/** - NVMe driver
-- [ ] **drivers/shared/filesystem/fat32/** - FAT32 filesystem driver
-- [ ] **drivers/shared/filesystem/ext4/** - ext4 filesystem driver
+- [x] **drivers/shared/storage/ahci/** - AHCI/SATA driver ✅ Complete
+- [ ] **drivers/shared/storage/nvme/** - NVMe driver (future)
+- [x] **drivers/shared/storage/fat/** - FAT filesystem driver ✅ Complete
+- [x] **drivers/shared/storage/ext2/** - EXT2 filesystem driver ✅ Complete
+- [ ] **drivers/shared/filesystem/ext4/** - ext4 filesystem driver (future, ext2 works)
 
 ### Phase 4: Network Stack (in DDK, JIT)
 

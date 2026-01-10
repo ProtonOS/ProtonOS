@@ -31,6 +31,7 @@ dotnet ildasm build/x64/ProtonOS.Drivers.VirtioBlk.dll -o build/x64/ProtonOS.Dri
 dotnet ildasm build/x64/ProtonOS.Drivers.Fat.dll -o build/x64/ProtonOS.Drivers.Fat.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Ahci.dll -o build/x64/ProtonOS.Drivers.Ahci.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Ext2.dll -o build/x64/ProtonOS.Drivers.Ext2.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Drivers.VirtioNet.dll -o build/x64/ProtonOS.Drivers.VirtioNet.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Test.dll -o build/x64/ProtonOS.Drivers.Test.il 2>/dev/null || true
 echo "IL disassembly complete"
 

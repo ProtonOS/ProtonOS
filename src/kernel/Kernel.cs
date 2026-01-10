@@ -35,6 +35,8 @@ public static unsafe class Kernel
     private static ulong _ext2DriverSize;
     private static byte* _ahciDriverBytes;
     private static ulong _ahciDriverSize;
+    private static byte* _virtioNetDriverBytes;
+    private static ulong _virtioNetDriverSize;
 
     // korlib IL assembly (for JIT generic instantiation and token-based AOT lookup)
     private static byte* _korlibBytes;
@@ -49,6 +51,7 @@ public static unsafe class Kernel
     private static uint _fatDriverId;
     private static uint _ext2DriverId;
     private static uint _ahciDriverId;
+    private static uint _virtioNetDriverId;
     private static uint _korlibId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
@@ -262,6 +265,11 @@ public static unsafe class Kernel
             _ahciDriverId = AssemblyLoader.Load(_ahciDriverBytes, _ahciDriverSize);
         }
 
+        if (_virtioNetDriverBytes != null)
+        {
+            _virtioNetDriverId = AssemblyLoader.Load(_virtioNetDriverBytes, _virtioNetDriverSize);
+        }
+
         // Register the test assembly with AssemblyLoader (depends on TestSupport and DDK)
         if (_testAssemblyBytes != null)
         {
@@ -329,6 +337,7 @@ public static unsafe class Kernel
         _fatDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Fat.dll", out _fatDriverSize);
         _ext2DriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Ext2.dll", out _ext2DriverSize);
         _ahciDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.Ahci.dll", out _ahciDriverSize);
+        _virtioNetDriverBytes = BootInfoAccess.FindFile("ProtonOS.Drivers.VirtioNet.dll", out _virtioNetDriverSize);
 
         // Load korlib.dll (IL assembly for JIT generic instantiation)
         _korlibBytes = BootInfoAccess.FindFile("korlib.dll", out _korlibSize);
@@ -1066,6 +1075,9 @@ public static unsafe class Kernel
 
         // Now try AHCI driver
         BindAhciDriver();
+
+        // Now try VirtioNet driver
+        BindVirtioNetDriver();
     }
 
     /// <summary>
@@ -1176,6 +1188,168 @@ public static unsafe class Kernel
         {
             TestAhciIO(ahciEntryToken);
         }
+    }
+
+    /// <summary>
+    /// Bind VirtioNet driver to detected virtio network devices.
+    /// </summary>
+    private static void BindVirtioNetDriver()
+    {
+        if (_virtioNetDriverId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[Drivers] No VirtioNet driver loaded, skipping VirtioNet binding");
+            return;
+        }
+
+        // Find VirtioNetEntry type
+        uint virtioNetEntryToken = AssemblyLoader.FindTypeDefByFullName(
+            _virtioNetDriverId, "ProtonOS.Drivers.Network.VirtioNet", "VirtioNetEntry");
+
+        if (virtioNetEntryToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find VirtioNetEntry type");
+            return;
+        }
+
+        // Find Probe method
+        uint probeToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "Probe");
+        if (probeToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find VirtioNet Probe method");
+            return;
+        }
+
+        // Find Bind method
+        uint bindToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "Bind");
+        if (bindToken == 0)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Could not find VirtioNet Bind method");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Found VirtioNetEntry (0x{0}) Probe (0x{1}) Bind (0x{2})",
+            virtioNetEntryToken.ToString("X8", null), probeToken.ToString("X8", null), bindToken.ToString("X8", null)));
+
+        // JIT compile Probe method
+        DebugConsole.WriteLine("[Drivers] JIT compiling VirtioNetEntry.Probe...");
+        var probeResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, probeToken);
+        if (!probeResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile VirtioNet Probe");
+            return;
+        }
+
+        // JIT compile Bind method
+        DebugConsole.WriteLine("[Drivers] JIT compiling VirtioNetEntry.Bind...");
+        var bindResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, bindToken);
+        if (!bindResult.Success)
+        {
+            DebugConsole.WriteLine("[Drivers] ERROR: Failed to JIT compile VirtioNet Bind");
+            return;
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] VirtioNet Probe at 0x{0} Bind at 0x{1}",
+            ((ulong)probeResult.CodeAddress).ToString("X", null), ((ulong)bindResult.CodeAddress).ToString("X", null)));
+
+        // Create function pointers
+        var probeFunc = (delegate* unmanaged<ushort, ushort, bool>)probeResult.CodeAddress;
+        var bindFunc = (delegate* unmanaged<byte, byte, byte, bool>)bindResult.CodeAddress;
+
+        // Iterate through detected PCI devices
+        int deviceCount = Platform.PCI.DeviceCount;
+        int boundCount = 0;
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Checking {0} PCI device(s) for VirtioNet...", deviceCount));
+
+        for (int i = 0; i < deviceCount; i++)
+        {
+            var device = Platform.PCI.GetDevice(i);
+            if (device == null)
+                continue;
+
+            // Try VirtioNet driver
+            bool probeSuccess = probeFunc(device->VendorId, device->DeviceId);
+
+            if (probeSuccess)
+            {
+                DebugConsole.WriteLine(string.Format("[Drivers] VirtioNet matched {0}:{1}.{2} (Vendor:{3} Device:{4})",
+                    device->Bus.ToString("X2", null), device->Device.ToString("X2", null), device->Function.ToString("X2", null),
+                    device->VendorId.ToString("X4", null), device->DeviceId.ToString("X4", null)));
+
+                // Bind the driver
+                bool bindSuccess = bindFunc(device->Bus, device->Device, device->Function);
+                if (bindSuccess)
+                {
+                    DebugConsole.WriteLine("[Drivers]   VirtioNet Bind successful");
+                    boundCount++;
+                }
+                else
+                {
+                    DebugConsole.WriteLine("[Drivers]   VirtioNet Bind failed");
+                }
+            }
+        }
+
+        DebugConsole.WriteLine(string.Format("[Drivers] Bound {0} VirtioNet driver(s)", boundCount));
+
+        // Test network I/O if a driver was bound
+        if (boundCount > 0)
+        {
+            TestVirtioNetIO(virtioNetEntryToken);
+        }
+    }
+
+    /// <summary>
+    /// Test virtio network device I/O.
+    /// </summary>
+    private static void TestVirtioNetIO(uint virtioNetEntryToken)
+    {
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("[VirtioNet] Testing virtio network device...");
+
+        // Find TestSend method
+        uint testSendToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestSend");
+        if (testSendToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestSend method");
+            return;
+        }
+
+        // JIT compile TestSend method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestSend...");
+        var testSendResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testSendToken);
+        if (!testSendResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestSend");
+            return;
+        }
+
+        // Call TestSend
+        var testSendFunc = (delegate* unmanaged<int>)testSendResult.CodeAddress;
+        int sendResult = testSendFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestSend returned {0}", sendResult));
+
+        // Find TestReceive method
+        uint testReceiveToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestReceive");
+        if (testReceiveToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestReceive method");
+            return;
+        }
+
+        // JIT compile TestReceive method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestReceive...");
+        var testReceiveResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testReceiveToken);
+        if (!testReceiveResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestReceive");
+            return;
+        }
+
+        // Call TestReceive
+        var testReceiveFunc = (delegate* unmanaged<int>)testReceiveResult.CodeAddress;
+        int receiveResult = testReceiveFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestReceive returned {0}", receiveResult));
     }
 
     /// <summary>

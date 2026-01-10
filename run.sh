@@ -87,6 +87,8 @@ qemu-system-x86_64 \
     -device virtio-blk-pci,drive=virtio-disk0,disable-legacy=on \
     -drive id=sata-disk0,if=none,format=raw,file="$SATA_DISK" \
     -device ide-hd,drive=sata-disk0,bus=ide.2 \
+    -netdev user,id=net0 \
+    -device virtio-net-pci,netdev=net0,disable-legacy=on \
     -serial mon:stdio \
     -display none \
     -no-reboot \

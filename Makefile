@@ -87,6 +87,7 @@ DDK_DLL := $(BUILD_DIR)/ProtonOS.DDK.dll
 DRIVERS_DIR := src/drivers
 VIRTIO_DIR := $(DRIVERS_DIR)/shared/virtio
 VIRTIO_BLK_DIR := $(DRIVERS_DIR)/shared/storage/virtio-blk
+VIRTIO_NET_DIR := $(DRIVERS_DIR)/shared/network/virtio-net
 FAT_DIR := $(DRIVERS_DIR)/shared/storage/fat
 AHCI_DIR := $(DRIVERS_DIR)/shared/storage/ahci
 EXT2_DIR := $(DRIVERS_DIR)/shared/storage/ext2
@@ -95,6 +96,7 @@ TEST_DRIVER_DIR := $(DRIVERS_DIR)/shared/test
 # Driver DLLs
 VIRTIO_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Virtio.dll
 VIRTIO_BLK_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioBlk.dll
+VIRTIO_NET_DLL := $(BUILD_DIR)/ProtonOS.Drivers.VirtioNet.dll
 FAT_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Fat.dll
 AHCI_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ahci.dll
 EXT2_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ext2.dll
@@ -177,6 +179,12 @@ $(VIRTIO_BLK_DLL): $(VIRTIO_BLK_SRC) $(VIRTIO_BLK_DIR)/VirtioBlk.csproj $(VIRTIO
 	@echo "DOTNET build ProtonOS.Drivers.VirtioBlk"
 	dotnet build $(VIRTIO_BLK_DIR)/VirtioBlk.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
+# Build Virtio-net driver
+VIRTIO_NET_SRC := $(call rwildcard,$(VIRTIO_NET_DIR),*.cs)
+$(VIRTIO_NET_DLL): $(VIRTIO_NET_SRC) $(VIRTIO_NET_DIR)/VirtioNet.csproj $(VIRTIO_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.Drivers.VirtioNet"
+	dotnet build $(VIRTIO_NET_DIR)/VirtioNet.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
 # Build FAT filesystem driver
 FAT_SRC := $(call rwildcard,$(FAT_DIR),*.cs)
 $(FAT_DLL): $(FAT_SRC) $(FAT_DIR)/Fat.csproj $(DDK_DLL) | $(BUILD_DIR)
@@ -201,7 +209,7 @@ $(TEST_DRIVER_DLL): $(TEST_DRIVER_SRC) $(TEST_DRIVER_DIR)/TestDriver.csproj $(DD
 	@echo "DOTNET build ProtonOS.Drivers.Test"
 	dotnet build $(TEST_DRIVER_DIR)/TestDriver.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
-drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+drivers: $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 
 # Link UEFI executable with debug symbols
 $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
@@ -212,7 +220,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -227,6 +235,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TE
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/
+	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_NET_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(FAT_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(AHCI_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(EXT2_DLL) ::/drivers/
