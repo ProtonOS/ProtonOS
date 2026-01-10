@@ -769,7 +769,7 @@ public unsafe class Ext2FileSystem : IFileSystem
         Debug.Write("[FindInode] isEmpty=");
         Debug.Write(isEmpty ? "Y" : "N");
         Debug.WriteLine();
-        // Avoid path == "/" which crashes due to interface dispatch bug
+        // Root path optimization - no need to parse path components
         bool isRoot = isEmpty || (path.Length == 1 && path[0] == '/');
         Debug.Write("[FindInode] isRoot=");
         Debug.Write(isRoot ? "Y" : "N");
