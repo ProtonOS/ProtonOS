@@ -5825,9 +5825,57 @@ public static unsafe class AssemblyLoader
                 if (mt != null)
                     return mt;
             }
+
+            // For span types, create synthetic MTs
+            // Span layout: pointer (8 bytes) + length (4 bytes) = 12 bytes, aligned to 16
+            if (wellKnownToken == JIT.MetadataIntegration.WellKnownTypes.Span ||
+                wellKnownToken == JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan)
+            {
+                mt = CreateSpanTypeMethodTable(wellKnownToken);
+                if (mt != null)
+                    return mt;
+            }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Create a synthetic MethodTable for Span and ReadOnlySpan types.
+    /// These are 16-byte value types (pointer + length).
+    /// </summary>
+    private static MethodTable* CreateSpanTypeMethodTable(uint wellKnownToken)
+    {
+        // Allocate minimal MethodTable (just header, no vtable slots needed for simple value types)
+        MethodTable* mt = (MethodTable*)HeapAllocator.AllocZeroed((ulong)MethodTable.HeaderSize);
+        if (mt == null)
+            return null;
+
+        // Set flags for value type (in high 16 bits of combined flags)
+        mt->_usFlags = (ushort)(MTFlags.IsValueType >> 16);
+
+        // Span layout: pointer (8 bytes) + length (4 bytes) = 12 bytes
+        // Aligned to 16 bytes for stack operations
+        mt->_uBaseSize = 16;
+
+        // ComponentSize for primitives; not used for spans
+        mt->_usComponentSize = 0;
+
+        // No vtable slots needed for these simple value types
+        mt->_usNumVtableSlots = 0;
+        mt->_usNumInterfaces = 0;
+
+        // Register in the type registry
+        JIT.MetadataIntegration.RegisterType(wellKnownToken, mt);
+
+        DebugConsole.Write("[AsmLoader] Created span MT for token 0x");
+        DebugConsole.WriteHex(wellKnownToken);
+        DebugConsole.Write(" MT=0x");
+        DebugConsole.WriteHex((ulong)mt);
+        DebugConsole.Write(" size=16");
+        DebugConsole.WriteLine();
+
+        return mt;
     }
 
     /// <summary>
@@ -6882,6 +6930,88 @@ public static unsafe class AssemblyLoader
                         DebugConsole.Write(" args=");
                         DebugConsole.WriteDecimal(argCount);
                         DebugConsole.WriteLine();
+
+                        // Special case: ReadOnlySpan<T>.ctor(void*, int) and Span<T>.ctor(void*, int)
+                        // Redirect to SpanHelpers.InitSpanFromPointer which has the same semantics
+                        if ((typeDefToken == JIT.MetadataIntegration.WellKnownTypes.Span ||
+                             typeDefToken == JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan) &&
+                            memberName[0] == '.' && memberName[1] == 'c' && memberName[2] == 't' &&
+                            memberName[3] == 'o' && memberName[4] == 'r' && memberName[5] == 0 &&
+                            argCount == 2)
+                        {
+                            DebugConsole.WriteLine("[AsmLoader] Redirecting Span ctor to SpanHelpers.InitSpanFromPointer");
+                            // Look up SpanHelpers.InitSpanFromPointer
+                            byte* helperType = stackalloc byte[32];
+                            byte* helperMethod = stackalloc byte[24];
+                            // "ProtonOS.Runtime.SpanHelpers"
+                            helperType[0] = (byte)'P'; helperType[1] = (byte)'r'; helperType[2] = (byte)'o';
+                            helperType[3] = (byte)'t'; helperType[4] = (byte)'o'; helperType[5] = (byte)'n';
+                            helperType[6] = (byte)'O'; helperType[7] = (byte)'S'; helperType[8] = (byte)'.';
+                            helperType[9] = (byte)'R'; helperType[10] = (byte)'u'; helperType[11] = (byte)'n';
+                            helperType[12] = (byte)'t'; helperType[13] = (byte)'i'; helperType[14] = (byte)'m';
+                            helperType[15] = (byte)'e'; helperType[16] = (byte)'.'; helperType[17] = (byte)'S';
+                            helperType[18] = (byte)'p'; helperType[19] = (byte)'a'; helperType[20] = (byte)'n';
+                            helperType[21] = (byte)'H'; helperType[22] = (byte)'e'; helperType[23] = (byte)'l';
+                            helperType[24] = (byte)'p'; helperType[25] = (byte)'e'; helperType[26] = (byte)'r';
+                            helperType[27] = (byte)'s'; helperType[28] = 0;
+                            // "InitSpanFromPointer"
+                            helperMethod[0] = (byte)'I'; helperMethod[1] = (byte)'n'; helperMethod[2] = (byte)'i';
+                            helperMethod[3] = (byte)'t'; helperMethod[4] = (byte)'S'; helperMethod[5] = (byte)'p';
+                            helperMethod[6] = (byte)'a'; helperMethod[7] = (byte)'n'; helperMethod[8] = (byte)'F';
+                            helperMethod[9] = (byte)'r'; helperMethod[10] = (byte)'o'; helperMethod[11] = (byte)'m';
+                            helperMethod[12] = (byte)'P'; helperMethod[13] = (byte)'o'; helperMethod[14] = (byte)'i';
+                            helperMethod[15] = (byte)'n'; helperMethod[16] = (byte)'t'; helperMethod[17] = (byte)'e';
+                            helperMethod[18] = (byte)'r'; helperMethod[19] = 0;
+
+                            if (AotMethodRegistry.TryLookup(helperType, helperMethod, 3, out AotMethodEntry helperEntry))
+                            {
+                                methodToken = 0xFA000000 | (uint)(helperEntry.NativeCode & 0x00FFFFFF);
+                                DebugConsole.Write("[AsmLoader] Span ctor redirected to 0x");
+                                DebugConsole.WriteHex((ulong)helperEntry.NativeCode);
+                                DebugConsole.WriteLine();
+                                return true;
+                            }
+                        }
+
+                        // Special case: ReadOnlySpan<T>.get_Length() and Span<T>.get_Length()
+                        // Redirect to SpanHelpers.GetLength
+                        if ((typeDefToken == JIT.MetadataIntegration.WellKnownTypes.Span ||
+                             typeDefToken == JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan) &&
+                            memberName[0] == 'g' && memberName[1] == 'e' && memberName[2] == 't' &&
+                            memberName[3] == '_' && memberName[4] == 'L' && memberName[5] == 'e' &&
+                            memberName[6] == 'n' && memberName[7] == 'g' && memberName[8] == 't' &&
+                            memberName[9] == 'h' && memberName[10] == 0 &&
+                            argCount == 1)
+                        {
+                            DebugConsole.WriteLine("[AsmLoader] Redirecting Span.get_Length to SpanHelpers.GetLength");
+                            byte* helperType = stackalloc byte[32];
+                            byte* helperMethod = stackalloc byte[16];
+                            // "ProtonOS.Runtime.SpanHelpers"
+                            helperType[0] = (byte)'P'; helperType[1] = (byte)'r'; helperType[2] = (byte)'o';
+                            helperType[3] = (byte)'t'; helperType[4] = (byte)'o'; helperType[5] = (byte)'n';
+                            helperType[6] = (byte)'O'; helperType[7] = (byte)'S'; helperType[8] = (byte)'.';
+                            helperType[9] = (byte)'R'; helperType[10] = (byte)'u'; helperType[11] = (byte)'n';
+                            helperType[12] = (byte)'t'; helperType[13] = (byte)'i'; helperType[14] = (byte)'m';
+                            helperType[15] = (byte)'e'; helperType[16] = (byte)'.'; helperType[17] = (byte)'S';
+                            helperType[18] = (byte)'p'; helperType[19] = (byte)'a'; helperType[20] = (byte)'n';
+                            helperType[21] = (byte)'H'; helperType[22] = (byte)'e'; helperType[23] = (byte)'l';
+                            helperType[24] = (byte)'p'; helperType[25] = (byte)'e'; helperType[26] = (byte)'r';
+                            helperType[27] = (byte)'s'; helperType[28] = 0;
+                            // "GetLength"
+                            helperMethod[0] = (byte)'G'; helperMethod[1] = (byte)'e'; helperMethod[2] = (byte)'t';
+                            helperMethod[3] = (byte)'L'; helperMethod[4] = (byte)'e'; helperMethod[5] = (byte)'n';
+                            helperMethod[6] = (byte)'g'; helperMethod[7] = (byte)'t'; helperMethod[8] = (byte)'h';
+                            helperMethod[9] = 0;
+
+                            if (AotMethodRegistry.TryLookup(helperType, helperMethod, 1, out AotMethodEntry lengthEntry))
+                            {
+                                methodToken = 0xFA000000 | (uint)(lengthEntry.NativeCode & 0x00FFFFFF);
+                                DebugConsole.Write("[AsmLoader] Span.get_Length redirected to 0x");
+                                DebugConsole.WriteHex((ulong)lengthEntry.NativeCode);
+                                DebugConsole.WriteLine();
+                                return true;
+                            }
+                        }
 
                         // For certain well-known types (Span`1, ReadOnlySpan`1, Array), fall back to
                         // korlib.dll metadata lookup since generic methods need JIT compilation

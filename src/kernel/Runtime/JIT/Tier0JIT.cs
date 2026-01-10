@@ -35,6 +35,13 @@ public unsafe struct JitResult
 public static unsafe class Tier0JIT
 {
     /// <summary>
+    /// Nesting level for CompileMethod calls.
+    /// When 0, we're at top-level and should clear method type arg context.
+    /// When >0, we're in a nested call and should preserve context.
+    /// </summary>
+    private static int _compileNestingLevel = 0;
+
+    /// <summary>
     /// Compile a method given its assembly ID and method token.
     /// </summary>
     /// <param name="assemblyId">The assembly containing the method.</param>
@@ -42,6 +49,9 @@ public static unsafe class Tier0JIT
     /// <returns>JIT compilation result.</returns>
     public static JitResult CompileMethod(uint assemblyId, uint methodToken)
     {
+        // Track nesting to only clear context at top-level
+        _compileNestingLevel++;
+
         // DEBUG: Show every method being compiled
         DebugConsole.Write("[JIT] Compile asm=");
         DebugConsole.WriteDecimal(assemblyId);
@@ -54,7 +64,21 @@ public static unsafe class Tier0JIT
         if (AotMethodRegistry.TryLookupByToken(assemblyId, methodToken, out tokenEntry))
         {
             // Found in AOT registry - return native code directly
+            _compileNestingLevel--;
             return JitResult.Ok((void*)tokenEntry.NativeCode, 0);
+        }
+
+        // Save method type arg context - will restore on exit
+        // This ensures each method compilation starts with clean context
+        // but nested MethodSpec resolutions can still use outer context
+        int savedMethodTypeArgCount = MetadataIntegration.GetMethodTypeArgCount();
+
+        // Clear context for this method unless we're being called for a generic method
+        // (Generic methods have their context set up by ResolveMethodSpecMethod before CompileMethod)
+        // At nesting level 1, always clear. At level 2+, only clear if not coming from MethodSpec
+        if (_compileNestingLevel == 1)
+        {
+            MetadataIntegration.ClearMethodTypeArgContext();
         }
 
         // Save previous context for nested JIT compilation
@@ -214,17 +238,57 @@ public static unsafe class Tier0JIT
             //     DebugConsole.WriteLine();
             // }
 
+            // Debug: dump sig for InlineArrayAsSpan (0x060003AD)
+            if (methodToken == 0x060003AD && assemblyId == 9)
+            {
+                DebugConsole.Write("[JIT] Sig tok=0x");
+                DebugConsole.WriteHex(methodToken);
+                DebugConsole.Write(" len=");
+                DebugConsole.WriteDecimal(sigLen);
+                DebugConsole.Write(": ");
+                for (int i = 0; i < sigLen && i < 32; i++)
+                {
+                    DebugConsole.WriteHex((ulong)sigBlob[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+            }
             if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out var methodSig))
             {
                 paramCount = (int)methodSig.ParamCount;
                 hasThis = methodSig.HasThis;
                 returnKind = GetReturnKind(ref methodSig.ReturnType);
+                // Debug: trace return type for InlineArrayAsSpan (tok 0x060003AD asm 9)
+                if (methodToken == 0x060003AD && assemblyId == 9)
+                {
+                    DebugConsole.Write("[JIT] InlineArrayAsSpan ret elemType=0x");
+                    DebugConsole.WriteHex(methodSig.ReturnType.ElementType);
+                    DebugConsole.Write(" kind=");
+                    DebugConsole.WriteDecimal((uint)returnKind);
+                    DebugConsole.Write(" tok=0x");
+                    DebugConsole.WriteHex(methodSig.ReturnType.Token);
+                    DebugConsole.WriteLine();
+                }
+                // Debug: trace return type for struct returns
+                if (returnKind == ReturnKind.Struct)
+                {
+                    DebugConsole.Write("[JIT] Struct ret elemType=0x");
+                    DebugConsole.WriteHex(methodSig.ReturnType.ElementType);
+                    DebugConsole.Write(" tok=0x");
+                    DebugConsole.WriteHex(methodSig.ReturnType.Token);
+                    DebugConsole.Write(" asm=");
+                    DebugConsole.WriteDecimal(assemblyId);
+                    DebugConsole.WriteLine();
+                }
             }
             // Parse return type size for struct returns
             if (returnKind == ReturnKind.Struct)
             {
                 bool isValueType;
                 ParseMethodSigReturnType(sigBlob, sigLen, out isValueType, out returnStructSize);
+                DebugConsole.Write("[JIT] Parsed ret sz=");
+                DebugConsole.WriteDecimal(returnStructSize);
+                DebugConsole.WriteLine();
             }
         }
 
@@ -521,9 +585,11 @@ public static unsafe class Tier0JIT
                 compiler.SetReturnType(true, returnTypeSize);
                 if (returnTypeSize > 8)
                 {
-                    // DebugConsole.Write("[Tier0JIT] Struct return: size=");
-                    // DebugConsole.WriteDecimal(returnTypeSize);
-                    // DebugConsole.WriteLine();
+                    DebugConsole.Write("[Tier0JIT] Struct return: size=");
+                    DebugConsole.WriteDecimal(returnTypeSize);
+                    DebugConsole.Write(" method=0x");
+                    DebugConsole.WriteHex(methodToken);
+                    DebugConsole.WriteLine();
                 }
             }
         }
@@ -740,10 +806,13 @@ public static unsafe class Tier0JIT
     }
 
     /// <summary>
-    /// Restore the saved assembly context if it was valid.
+    /// Restore the saved assembly context if it was valid and decrement nesting level.
     /// </summary>
     private static void RestoreContext(uint savedAsmId)
     {
+        // Always decrement nesting level on exit
+        _compileNestingLevel--;
+
         if (savedAsmId != 0)
         {
             uint currentAsmId = MetadataIntegration.GetCurrentAssemblyId();
@@ -1123,14 +1192,22 @@ public static unsafe class Tier0JIT
                                 // Use resolved size if available, otherwise fall back to GetTypeSize
                                 uint baseSize = resolvedBaseSize > 0 ? resolvedBaseSize : MetadataIntegration.GetTypeSize(fullToken);
 
+                                // If we have a valid resolved size from the MethodTable, use it directly.
+                                // This handles types like ReadOnlySpan<T>, Span<T> where the element type
+                                // doesn't affect the container size (it's just pointer + length = 16 bytes).
+                                if (resolvedBaseSize >= 16)
+                                {
+                                    typeSize[i] = (ushort)resolvedBaseSize;
+                                }
                                 // Nullable<T> pattern: single primitive type arg AND small base size
                                 // Note: baseSize from generic definition MethodTable is unreliable for Nullable<T>
                                 // because the compiler doesn't know T's size. Generic definitions often have
                                 // placeholder sizes (like 16) that don't reflect the actual instantiated size.
                                 // For single-arg generics with primitive T, use Nullable<T> layout formula.
-                                // IMPORTANT: Only apply this for types with small base size (<=16).
-                                // List<T>.Enumerator has baseSize=24 and should NOT use the Nullable formula.
-                                if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8 && baseSize <= 16)
+                                // IMPORTANT: Only apply this for types where:
+                                // - List<T>.Enumerator has baseSize=24 and should NOT use the Nullable formula.
+                                // - ReadOnlySpan<T>/Span<T> have baseSize=16 from resolved MT - handled above!
+                                else if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8 && baseSize <= 16)
                                 {
                                     // Nullable<T> layout: 1 byte hasValue + padding to T alignment + T
                                     // - Nullable<byte/sbyte> (T=1): 1+1=2 -> aligned to 8 = 8
@@ -1225,12 +1302,18 @@ public static unsafe class Tier0JIT
             argIndex++;
         }
 
-        // Parse signature: CallingConv, ParamCount, ReturnType, Params...
+        // Parse signature: CallingConv, [GenericParamCount], ParamCount, ReturnType, Params...
         byte* ptr = sigBlob;
         byte* end = sigBlob + sigLen;
 
-        // Skip calling convention
+        // Read calling convention
         byte callConv = *ptr++;
+
+        // If GENERIC flag (0x10) is set, skip the generic parameter count
+        if ((callConv & 0x10) != 0)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr); // Skip generic param count
+        }
 
         // Skip param count (compressed uint)
         MetadataReader.ReadCompressedUInt(ref ptr);
@@ -1289,8 +1372,14 @@ public static unsafe class Tier0JIT
         byte* ptr = sigBlob;
         byte* end = sigBlob + sigLen;
 
-        // Skip calling convention
-        ptr++;
+        // Read calling convention header
+        byte header = *ptr++;
+
+        // For GENERIC methods (header & 0x10), skip GenParamCount before ParamCount
+        if ((header & 0x10) != 0)
+        {
+            MetadataReader.ReadCompressedUInt(ref ptr);  // Skip GenParamCount
+        }
 
         // Skip param count (compressed uint)
         MetadataReader.ReadCompressedUInt(ref ptr);
@@ -1443,9 +1532,27 @@ public static unsafe class Tier0JIT
                                 fullToken = 0x1B000000 | typeRid;  // TypeSpec
 
                             uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                            DebugConsole.Write("[RetType] GENERICINST tok=0x");
+                            DebugConsole.WriteHex(fullToken);
+                            DebugConsole.Write(" baseSize=");
+                            DebugConsole.WriteDecimal(baseSize);
+                            DebugConsole.Write(" argc=");
+                            DebugConsole.WriteDecimal(argCount);
+                            if (argCount > 0) {
+                                DebugConsole.Write(" arg0sz=");
+                                DebugConsole.WriteDecimal(typeArgSizes[0]);
+                            }
+                            DebugConsole.WriteLine();
+                            // Span<T>, ReadOnlySpan<T> and other fixed-size generic value types
+                            // that don't have embedded T (just ref T which is always 8 bytes)
+                            // Must check BEFORE Nullable pattern since Span<byte> has argCount==1
+                            if (baseSize >= 16)
+                            {
+                                typeSize = (ushort)baseSize;
+                            }
                             // Nullable<T> pattern: single primitive type arg
-                            // Note: baseSize from generic definition MethodTable is unreliable
-                            if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8)
+                            // Note: GetTypeSize is unreliable for Nullable<T> so we compute size directly
+                            else if (argCount == 1 && typeArgSizes[0] > 0 && typeArgSizes[0] <= 8)
                             {
                                 // Nullable<T> layout: 1 byte hasValue + padding to T alignment + T
                                 int tSize = typeArgSizes[0];
@@ -1699,7 +1806,8 @@ public static unsafe class Tier0JIT
                     else if (tag == 2)
                         fullToken = 0x1B000000 | typeRid;
 
-                    // Nullable<T> pattern: single primitive type arg
+                    uint baseSize = MetadataIntegration.GetTypeSize(fullToken);
+                    // Nullable<T> pattern: single primitive type arg (check BEFORE baseSize >= 16)
                     // Note: baseSize from generic definition MethodTable is unreliable for Nullable<T>
                     // because the compiler doesn't know T's size at definition time.
                     if (argCount == 1 && firstTypeArgSize > 0 && firstTypeArgSize <= 8)
@@ -1711,9 +1819,14 @@ public static unsafe class Tier0JIT
                         // - Nullable<long/ulong/double> (T=8): 1+7+8=16
                         typeSize = (ushort)(firstTypeArgSize <= 4 ? 8 : 16);
                     }
+                    // Span<T>, ReadOnlySpan<T> and other fixed-size generic value types
+                    else if (baseSize >= 16)
+                    {
+                        typeSize = (ushort)baseSize;
+                    }
                     else
                     {
-                        typeSize = (ushort)MetadataIntegration.GetTypeSize(fullToken);
+                        typeSize = (ushort)baseSize;
                     }
                 }
             }
@@ -1740,10 +1853,20 @@ public static unsafe class Tier0JIT
                 isValueType = (substitutedType >= 0x02 && substitutedType <= 0x0D) ||
                               (substitutedType >= 0x18 && substitutedType <= 0x19) ||
                               substitutedType == 0x11;
+                DebugConsole.Write("[GetVTSig] MVAR(");
+                DebugConsole.WriteDecimal(mvarIndex);
+                DebugConsole.Write(") sz=");
+                DebugConsole.WriteDecimal(typeSize);
+                DebugConsole.Write(" elem=0x");
+                DebugConsole.WriteHex(substitutedType);
+                DebugConsole.WriteLine();
             }
             else
             {
                 // No context - treat as pointer-sized (conservative fallback)
+                DebugConsole.Write("[GetVTSig] MVAR(");
+                DebugConsole.WriteDecimal(mvarIndex);
+                DebugConsole.WriteLine(") NO CONTEXT - fallback sz=8");
                 typeSize = 8;
                 isValueType = false;
             }

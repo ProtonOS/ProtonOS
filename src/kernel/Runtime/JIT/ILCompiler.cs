@@ -373,6 +373,18 @@ public unsafe struct ResolvedMethod
     /// <summary>MethodTable pointer for the type argument T in Activator.CreateInstance&lt;T&gt;().</summary>
     public void* ActivatorTypeArgMT;
 
+    /// <summary>True if this is Unsafe.As&lt;TFrom, TTo&gt;(ref TFrom) (JIT intrinsic).</summary>
+    public bool IsUnsafeAs;
+
+    /// <summary>True if this is Unsafe.Add&lt;T&gt;(ref T, int) (JIT intrinsic).</summary>
+    public bool IsUnsafeAdd;
+
+    /// <summary>Element size for Unsafe.Add (size of T).</summary>
+    public ushort UnsafeAddElementSize;
+
+    /// <summary>True if this is MemoryMarshal.CreateSpan&lt;T&gt;(ref T, int) (JIT intrinsic).</summary>
+    public bool IsCreateSpan;
+
     /// <summary>True if this is RuntimeHelpers.InitializeArray (JIT intrinsic).</summary>
     public bool IsInitializeArray;
 
@@ -1178,10 +1190,28 @@ public unsafe struct ILCompiler
         int calleeSaveSize = X64Emitter.CalleeSaveSize; // 40 bytes (5 regs * 8)
         int currentOffset = calleeSaveSize;
 
+        // Debug: check if any local is 16 bytes (Span type)
+        bool hasSpanLocal = false;
+        for (int i = 0; i < _localCount; i++)
+        {
+            int sz = (_localTypeSize != null) ? _localTypeSize[i] : 0;
+            if (sz == 16) hasSpanLocal = true;
+        }
+
         for (int i = 0; i < _localCount; i++)
         {
             // Get actual size for this local (from metadata parsing)
             int size = (_localTypeSize != null) ? _localTypeSize[i] : 0;
+
+            // Debug: trace locals for methods with Span locals
+            if (hasSpanLocal)
+            {
+                DebugConsole.Write("[Local] ");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write(" typeSize=");
+                DebugConsole.WriteDecimal((uint)size);
+            }
+
             // Minimum 64 bytes per slot, round up to 8-byte alignment
             if (size < 64) size = 64;
             else size = (size + 7) & ~7;  // Round up to 8
@@ -1190,6 +1220,13 @@ public unsafe struct ILCompiler
             // Store the offset (negative from RBP, points to START of slot)
             if (_localOffset != null)
                 _localOffset[i] = -currentOffset;
+
+            if (hasSpanLocal)
+            {
+                DebugConsole.Write(" offset=-");
+                DebugConsole.WriteDecimal((uint)(-_localOffset[i]));
+                DebugConsole.WriteLine();
+            }
         }
 
         // Add 64 bytes for eval stack scratch space
@@ -2440,22 +2477,6 @@ public unsafe struct ILCompiler
         bool isValueType = _localIsValueType != null && index >= 0 && index < _localCount && _localIsValueType[index];
         ushort typeSize = (_localTypeSize != null && index >= 0 && index < _localCount) ? _localTypeSize[index] : (ushort)0;
 
-        // Debug: trace ALL stloc.0 in FullTest to find problematic cases
-        if (_debugAssemblyId == 6 && index == 0)
-        {
-            EvalStackEntry dbgTos = PeekEntry();
-            DebugConsole.Write("[FT-stloc0] isVT=");
-            DebugConsole.WriteDecimal(isValueType ? 1U : 0U);
-            DebugConsole.Write(" typeSz=");
-            DebugConsole.WriteDecimal(typeSize);
-            DebugConsole.Write(" tosByteSz=");
-            DebugConsole.WriteDecimal((uint)dbgTos.ByteSize);
-            DebugConsole.Write(" tosKind=");
-            DebugConsole.WriteDecimal((uint)dbgTos.Kind);
-            DebugConsole.Write(" tok=0x");
-            DebugConsole.WriteHex(_debugMethodToken);
-            DebugConsole.WriteLine();
-        }
         // bool debugBind = IsDebugBindMethod();
         //
         // // Debug: trace stloc for AllocateBuffers (asm 3, method 0x0600001D)
@@ -2516,15 +2537,23 @@ public unsafe struct ILCompiler
         {
             int destOffset = GetLocalOffset(index);
             int copySize = effectiveSize > 0 ? effectiveSize : stackByteSize;
-            // DebugConsole.Write("[stloc VT] idx=");
-            // DebugConsole.WriteDecimal((uint)index);
-            // DebugConsole.Write(" off=-");
-            // DebugConsole.WriteDecimal((uint)(-destOffset));
-            // DebugConsole.Write(" cp=");
-            // DebugConsole.WriteDecimal((uint)copySize);
-            // DebugConsole.Write(" st=");
-            // DebugConsole.WriteDecimal((uint)stackByteSize);
-            // DebugConsole.WriteLine();
+            // Debug: trace 16-byte struct stlocs (Span returns)
+            if (copySize == 16)
+            {
+                DebugConsole.Write("[stloc16] idx=");
+                DebugConsole.WriteDecimal((uint)index);
+                DebugConsole.Write(" destOff=");
+                DebugConsole.WriteDecimal((uint)(-destOffset));
+                DebugConsole.Write(" stackSz=");
+                DebugConsole.WriteDecimal((uint)stackByteSize);
+                DebugConsole.Write(" tok=0x");
+                DebugConsole.WriteHex(_debugMethodToken);
+                if (stackByteSize != 16)
+                {
+                    DebugConsole.Write(" MISMATCH!");
+                }
+                DebugConsole.WriteLine();
+            }
 
             // Copy from [RSP] (top of eval stack) into the local slot
             int copyOffset = 0;
@@ -4680,6 +4709,28 @@ public unsafe struct ILCompiler
             return CompileActivatorCreateInstance((MethodTable*)method.ActivatorTypeArgMT);
         }
 
+        // Handle Unsafe.As<TFrom, TTo>(ref TFrom) as JIT intrinsic
+        // Stack: [ref TFrom] -> [ref TTo]
+        // No-op: just reinterpret the pointer type (pointer value unchanged)
+        if (method.IsUnsafeAs)
+        {
+            return CompileUnsafeAs();
+        }
+
+        // Handle Unsafe.Add<T>(ref T, int) as JIT intrinsic
+        // Stack: [ref T, offset] -> [ref T + offset * sizeof(T)]
+        if (method.IsUnsafeAdd)
+        {
+            return CompileUnsafeAdd(method.UnsafeAddElementSize);
+        }
+
+        // Handle MemoryMarshal.CreateSpan<T>(ref T, int) as JIT intrinsic
+        // Stack: [ref T, length] -> [Span<T>] (16-byte struct)
+        if (method.IsCreateSpan)
+        {
+            return CompileCreateSpan();
+        }
+
         // Handle RuntimeHelpers.InitializeArray as JIT intrinsic
         if (method.IsInitializeArray)
         {
@@ -5495,9 +5546,11 @@ public unsafe struct ILCompiler
 
             case ReturnKind.Struct:
                 // Handle struct returns based on size
-                // DebugConsole.Write("[JIT Call] structRet=");
-                // DebugConsole.WriteDecimal(method.ReturnStructSize);
-                // DebugConsole.WriteLine();
+                DebugConsole.Write("[JIT Call] tok=0x");
+                DebugConsole.WriteHex(token);
+                DebugConsole.Write(" structRet=");
+                DebugConsole.WriteDecimal(method.ReturnStructSize);
+                DebugConsole.WriteLine();
                 if (method.ReturnStructSize <= 8)
                 {
                     // Small struct (1-8 bytes): value in RAX, push directly
@@ -12493,6 +12546,95 @@ public unsafe struct ILCompiler
         }
 
         DebugConsole.WriteLine("[JIT] CompileActivatorCreateInstance done");
+        return true;
+    }
+
+    /// <summary>
+    /// Compile Unsafe.As&lt;TFrom, TTo&gt;(ref TFrom) as a JIT intrinsic.
+    /// Simply reinterprets the pointer type - no code generation needed.
+    /// Stack: [ref TFrom] -> [ref TTo]
+    /// </summary>
+    private bool CompileUnsafeAs()
+    {
+        DebugConsole.WriteLine("[JIT] CompileUnsafeAs - no-op (pointer reinterpret)");
+
+        // Stack already has the pointer (ref TFrom) on top
+        // Just leave it there - it becomes ref TTo with no actual code needed
+        // The eval stack tracking is already correct (NativeInt for pointer)
+
+        // Nothing to do - the value on the stack is already valid
+        // The type system reinterpretation is compile-time only
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile Unsafe.Add&lt;T&gt;(ref T, int offset) as a JIT intrinsic.
+    /// Computes pointer + offset * sizeof(T).
+    /// Stack: [ref T, offset] -> [ref T + offset * sizeof(T)]
+    /// </summary>
+    private bool CompileUnsafeAdd(ushort elementSize)
+    {
+        DebugConsole.Write("[JIT] CompileUnsafeAdd sizeof(T)=");
+        DebugConsole.WriteDecimal(elementSize);
+        DebugConsole.WriteLine();
+
+        // Stack has: [ref T (pointer), offset (int)] with offset on top
+        // Result: pointer + offset * elementSize
+
+        // Pop offset into R2 (RDX)
+        PopReg(VReg.R2);  // RDX = offset
+
+        // Pop pointer into R0 (RAX)
+        PopReg(VReg.R0);  // RAX = ref T (pointer)
+
+        // Calculate: RAX = RAX + RDX * elementSize
+        if (elementSize == 1)
+        {
+            // Simply add: RAX = RAX + RDX
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+        }
+        else
+        {
+            // IMUL RDX, elementSize (RDX = RDX * elementSize)
+            // ADD RAX, RDX (RAX = RAX + RDX)
+            X64Emitter.ImulRI(ref _code, VReg.R2, elementSize);
+            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+        }
+
+        // Push result back onto eval stack
+        X64Emitter.Push(ref _code, VReg.R0);
+        PushEntry(EvalStackEntry.NativeInt);  // Result is a pointer (ref T)
+
+        return true;
+    }
+
+    /// <summary>
+    /// Compile MemoryMarshal.CreateSpan&lt;T&gt;(ref T reference, int length) as a JIT intrinsic.
+    /// Creates a Span&lt;T&gt; from a reference and length.
+    /// Stack: [ref T, length] -> [Span&lt;T&gt;] (16-byte struct: pointer + length)
+    /// </summary>
+    private bool CompileCreateSpan()
+    {
+        DebugConsole.WriteLine("[JIT] CompileCreateSpan");
+
+        // Stack has: [ref T (pointer), length (int)] with length on top
+        // Result: Span<T> struct { void* _pointer; int _length; } = 16 bytes
+
+        // Pop length into R2 (RDX)
+        PopReg(VReg.R2);  // RDX = length
+
+        // Pop pointer into R0 (RAX)
+        PopReg(VReg.R0);  // RAX = ref T (pointer)
+
+        // Span<T> layout is: { void* _pointer (8 bytes), int _length (8 bytes with padding) }
+        // Push in reverse order: length first (becomes higher address), then pointer
+        X64Emitter.Push(ref _code, VReg.R2);  // Push length (goes to higher address)
+        X64Emitter.Push(ref _code, VReg.R0);  // Push pointer (goes to lower address)
+
+        // Track the 16-byte struct on eval stack
+        PushEntry(EvalStackEntry.Struct(16));
+
         return true;
     }
 

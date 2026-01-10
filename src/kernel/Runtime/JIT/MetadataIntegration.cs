@@ -1992,11 +1992,22 @@ public static unsafe class MetadataIntegration
 
         if (isStatic)
         {
-            // Static field - allocate or look up storage from per-assembly storage
+            // Static field - first check if it has RVA data (array initializers, etc.)
             void* addr = null;
 
-            // Try per-assembly storage first if we have an assembly context
+            // Check for FieldRVA entry - used for embedded static data like <PrivateImplementationDetails>
             if (_currentAssemblyId != 0)
+            {
+                byte* rvaData = AssemblyLoader.GetFieldDataAddress(_currentAssemblyId, rowId);
+                if (rvaData != null)
+                {
+                    // Field has RVA data embedded in PE - use that address directly
+                    addr = rvaData;
+                }
+            }
+
+            // If no RVA data, allocate or look up storage from per-assembly storage
+            if (addr == null && _currentAssemblyId != 0)
             {
                 var asm = AssemblyLoader.GetAssembly(_currentAssemblyId);
                 if (asm != null)
@@ -3956,11 +3967,51 @@ public static unsafe class MetadataIntegration
 
     /// <summary>
     /// Clear the method type argument context.
-    /// Should be called after resolving a MethodSpec to avoid stale context affecting other methods.
+    /// Should be called at the start of top-level method compilation to avoid stale context.
     /// </summary>
-    private static void ClearMethodTypeArgContext()
+    public static void ClearMethodTypeArgContext()
     {
+        DebugConsole.Write("[MetaInt] CLEAR context: count ");
+        DebugConsole.WriteDecimal((uint)_methodTypeArgCount);
+        DebugConsole.Write(" -> 0");
+        DebugConsole.WriteLine();
         _methodTypeArgCount = 0;
+        // Also clear the MT array to prevent stale MTs from being saved
+        for (int i = 0; i < MaxMethodTypeArgs; i++)
+            _methodTypeArgMTs[i] = null;
+    }
+
+    /// <summary>
+    /// Restore the method type argument context from saved values.
+    /// Used to preserve outer context during nested MethodSpec resolution.
+    /// </summary>
+    private static void RestoreMethodTypeArgContext(int savedCount, MethodTable** savedMTs, byte* savedTypes, ushort* savedSizes)
+    {
+        DebugConsole.Write("[MetaInt] RESTORE context: count ");
+        DebugConsole.WriteDecimal((uint)_methodTypeArgCount);
+        DebugConsole.Write(" -> ");
+        DebugConsole.WriteDecimal((uint)savedCount);
+        if (savedCount > 0)
+        {
+            DebugConsole.Write(" MT[0]=0x");
+            DebugConsole.WriteHex((ulong)savedMTs[0]);
+        }
+        DebugConsole.WriteLine();
+        _methodTypeArgCount = savedCount;
+        for (int i = 0; i < MaxMethodTypeArgs; i++)
+        {
+            _methodTypeArgMTs[i] = savedMTs[i];
+            _methodTypeArgs[i] = savedTypes[i];
+            _methodTypeArgSizes[i] = savedSizes[i];
+        }
+    }
+
+    /// <summary>
+    /// Get the current method type argument count.
+    /// </summary>
+    public static int GetMethodTypeArgCount()
+    {
+        return _methodTypeArgCount;
     }
 
     /// <summary>
@@ -4085,6 +4136,31 @@ public static unsafe class MetadataIntegration
             {
                 // Mix in each MT pointer with rotation to spread bits
                 ulong mtVal = (ulong)_typeTypeArgMTs[i];
+                hash ^= mtVal;
+                hash = (hash << 13) | (hash >> 51);  // Rotate
+            }
+        }
+        return hash;
+    }
+
+    /// <summary>
+    /// Compute a hash of the current method type arguments.
+    /// Returns 0 if there are no method type arguments (non-generic method).
+    /// This is used to distinguish generic method instantiations for code caching.
+    /// </summary>
+    public static ulong GetMethodTypeArgHash()
+    {
+        if (_methodTypeArgCount == 0)
+            return 0;
+
+        // XOR all type argument MTs together for a simple hash
+        ulong hash = 0;
+        for (int i = 0; i < _methodTypeArgCount; i++)
+        {
+            if (_methodTypeArgMTs[i] != null)
+            {
+                // Mix in each MT pointer with rotation to spread bits
+                ulong mtVal = (ulong)_methodTypeArgMTs[i];
                 hash ^= mtVal;
                 hash = (hash << 13) | (hash >> 51);  // Rotate
             }
@@ -4421,11 +4497,26 @@ public static unsafe class MetadataIntegration
         if (rowId == 0)
             return false;
 
+        // Save outer context for nested MethodSpec resolution
+        // When compiling InlineArrayAsSpan<A,B> which calls CreateSpan<B>,
+        // we must preserve InlineArrayAsSpan's type args during nested resolution
+        int savedOuterCount = _methodTypeArgCount;
+        MethodTable** savedOuterMTs = stackalloc MethodTable*[MaxMethodTypeArgs];
+        byte* savedOuterTypes = stackalloc byte[MaxMethodTypeArgs];
+        ushort* savedOuterSizes = stackalloc ushort[MaxMethodTypeArgs];
+        for (int i = 0; i < MaxMethodTypeArgs; i++)
+        {
+            savedOuterMTs[i] = _methodTypeArgMTs[i];
+            savedOuterTypes[i] = _methodTypeArgs[i];
+            savedOuterSizes[i] = _methodTypeArgSizes[i];
+        }
+
         // Get the underlying method (MethodDefOrRef coded index)
         uint methodDefOrRef = MetadataReader.GetMethodSpecMethod(ref *_tablesHeader, ref *_tableSizes, rowId, ref *_tablesHeader);
         if (methodDefOrRef == 0)
         {
             DebugConsole.WriteLine("[MetaInt] MethodSpec has null method reference");
+            RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
             return false;
         }
 
@@ -4437,6 +4528,7 @@ public static unsafe class MetadataIntegration
         if (!ParseMethodSpecInstantiation(instantiationBlob, blobLen))
         {
             DebugConsole.WriteLine("[MetaInt] Failed to parse MethodSpec instantiation blob");
+            RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
             return false;
         }
 
@@ -4488,15 +4580,129 @@ public static unsafe class MetadataIntegration
                 {
                     result.ReturnKind = ReturnKind.IntPtr;
                 }
-                // Clear context and return success - don't resolve the actual method
-                ClearMethodTypeArgContext();
+                // Restore outer context and return success - don't resolve the actual method
+                RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
                 return true;
+            }
+        }
+
+        // Check for Unsafe.As<TFrom, TTo>(ref TFrom) - JIT intrinsic for type coercion
+        // Takes ref TFrom (1 arg) and returns ref TTo - we just pass through the reference
+        if (tag == 1 && _methodTypeArgCount == 2)  // MemberRef with 2 type args
+        {
+            if (IsUnsafeAsMemberRef(underlyingRowId))
+            {
+                DebugConsole.WriteLine("[MetaInt] Detected Unsafe.As<TFrom, TTo>!");
+                result.IsUnsafeAs = true;
+                result.IsValid = true;
+                result.NativeCode = null;  // No native code - JIT intrinsic
+                result.ArgCount = 1;  // Takes ref TFrom
+                result.HasThis = false;
+                result.RegistryEntry = null;
+                result.ReturnKind = ReturnKind.IntPtr;  // Returns ref TTo (pointer)
+                RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
+                return true;
+            }
+        }
+
+        // Check for Unsafe.Add<T>(ref T, int) - JIT intrinsic for pointer arithmetic
+        // Takes ref T (arg0) and int offset (arg1), returns ref T
+        if (tag == 1 && _methodTypeArgCount == 1)  // MemberRef with 1 type arg
+        {
+            if (IsUnsafeAddMemberRef(underlyingRowId))
+            {
+                DebugConsole.Write("[MetaInt] Detected Unsafe.Add<T>! sizeof(T)=");
+                ushort elemSize = _methodTypeArgSizes[0];
+                DebugConsole.WriteDecimal(elemSize);
+                DebugConsole.WriteLine();
+                result.IsUnsafeAdd = true;
+                result.UnsafeAddElementSize = elemSize;
+                result.IsValid = true;
+                result.NativeCode = null;  // No native code - JIT intrinsic
+                result.ArgCount = 2;  // Takes ref T and int
+                result.HasThis = false;
+                result.RegistryEntry = null;
+                result.ReturnKind = ReturnKind.IntPtr;  // Returns ref T (pointer)
+                RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
+                return true;
+            }
+        }
+
+        // Check for MemoryMarshal.CreateSpan<T>(ref T, int) - JIT intrinsic for span creation
+        // Takes ref T (arg0) and int length (arg1), returns Span<T> (16-byte struct: pointer + length)
+        if (tag == 1 && _methodTypeArgCount == 1)  // MemberRef with 1 type arg
+        {
+            if (IsMemoryMarshalCreateSpanMemberRef(underlyingRowId))
+            {
+                DebugConsole.WriteLine("[MetaInt] Detected MemoryMarshal.CreateSpan<T>!");
+                result.IsCreateSpan = true;
+                result.IsValid = true;
+                result.NativeCode = null;  // No native code - JIT intrinsic
+                result.ArgCount = 2;  // Takes ref T and int length
+                result.HasThis = false;
+                result.RegistryEntry = null;
+                result.ReturnKind = ReturnKind.Struct;  // Returns Span<T> (16 bytes)
+                result.ReturnStructSize = 16;
+                RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
+                return true;
+            }
+        }
+
+        // For generic methods (MethodDef with type args), we need to handle code sharing correctly.
+        // Different instantiations with different-sized value types need different native code
+        // because operations like sizeof(T) and Unsafe.Add<T> depend on the actual type size.
+        // Compare the current method type arg hash with the stored hash to detect mismatches.
+        if (tag == 0 && _methodTypeArgCount > 0)  // MethodDef with type args
+        {
+            CompiledMethodInfo* existingInfo = CompiledMethodRegistry.Lookup(underlyingToken, _currentAssemblyId);
+            if (existingInfo != null && existingInfo->IsCompiled)
+            {
+                // Check if the compiled code was for a different instantiation
+                ulong currentHash = GetMethodTypeArgHash();
+                if (existingInfo->TypeArgHash != currentHash)
+                {
+                    // Different instantiation - need to recompile with current type args
+                    // DebugConsole.Write("[MetaInt] Hash mismatch for generic method 0x");
+                    // DebugConsole.WriteHex(underlyingToken);
+                    // DebugConsole.Write(" stored=0x");
+                    // DebugConsole.WriteHex(existingInfo->TypeArgHash);
+                    // DebugConsole.Write(" current=0x");
+                    // DebugConsole.WriteHex(currentHash);
+                    // DebugConsole.WriteLine();
+                    existingInfo->IsCompiled = false;
+                    // Update the stored hash to current
+                    existingInfo->TypeArgHash = currentHash;
+                }
             }
         }
 
         // Now resolve the underlying method with type args in context
         // The signature parsing functions will use GetMethodTypeArgSize() for MVAR types
         bool success = ResolveMethod(underlyingToken, out result);
+
+        // For generic methods, ensure the TypeArgHash is updated after compilation
+        // to reflect the method type args used for this instantiation
+        if (success && tag == 0 && _methodTypeArgCount > 0)
+        {
+            CompiledMethodInfo* info = CompiledMethodRegistry.Lookup(underlyingToken, _currentAssemblyId);
+            if (info != null)
+            {
+                ulong methodHash = GetMethodTypeArgHash();
+                info->TypeArgHash = methodHash;
+            }
+        }
+
+        // Debug: trace return type for MethodSpec resolution (always trace for MethodDef tokens)
+        if (success && tag == 0 && _methodTypeArgCount > 0)
+        {
+            DebugConsole.Write("[MetaInt] MethodSpec->MethodDef tok=0x");
+            DebugConsole.WriteHex(underlyingToken);
+            DebugConsole.Write(" retKind=");
+            DebugConsole.WriteDecimal((uint)result.ReturnKind);
+            DebugConsole.Write(" structSz=");
+            DebugConsole.WriteDecimal(result.ReturnStructSize);
+            DebugConsole.WriteLine();
+        }
 
         // Check if this is Activator.CreateInstance<T>() - handle as JIT intrinsic (backup check after resolution)
         if (success && tag == 1 && _methodTypeArgCount == 1)  // MemberRef with 1 type arg
@@ -4539,8 +4745,8 @@ public static unsafe class MetadataIntegration
             }
         }
 
-        // Clear the context after resolution to avoid affecting other methods
-        ClearMethodTypeArgContext();
+        // Restore the outer context after resolution to avoid affecting other methods
+        RestoreMethodTypeArgContext(savedOuterCount, savedOuterMTs, savedOuterTypes, savedOuterSizes);
 
         return success;
     }
@@ -4690,6 +4896,175 @@ public static unsafe class MetadataIntegration
                ns[20] == 'l' && ns[21] == 'e' && ns[22] == 'r' && ns[23] == 'S' &&
                ns[24] == 'e' && ns[25] == 'r' && ns[26] == 'v' && ns[27] == 'i' &&
                ns[28] == 'c' && ns[29] == 'e' && ns[30] == 's' && ns[31] == 0;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef row refers to System.Runtime.CompilerServices.Unsafe.As.
+    /// </summary>
+    private static bool IsUnsafeAsMemberRef(uint memberRefRowId)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the member name
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        if (name == null)
+            return false;
+
+        // Check if name is "As"
+        if (!IsAsName(name))
+            return false;
+
+        // Get the class (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+
+        // Must be a TypeRef to Unsafe
+        if (classRef.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+        byte* typeName = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+
+        // Check if type is "Unsafe" in namespace "System.Runtime.CompilerServices"
+        return IsUnsafeName(typeName) && IsCompilerServicesNamespace(typeNs);
+    }
+
+    /// <summary>
+    /// Check if a MemberRef row refers to System.Runtime.CompilerServices.Unsafe.Add.
+    /// </summary>
+    private static bool IsUnsafeAddMemberRef(uint memberRefRowId)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the member name
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        if (name == null)
+            return false;
+
+        // Check if name is "Add"
+        if (!IsAddName(name))
+            return false;
+
+        // Get the class (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+
+        // Must be a TypeRef to Unsafe
+        if (classRef.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+        byte* typeName = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+
+        // Check if type is "Unsafe" in namespace "System.Runtime.CompilerServices"
+        return IsUnsafeName(typeName) && IsCompilerServicesNamespace(typeNs);
+    }
+
+    /// <summary>Check if name equals "As".</summary>
+    private static bool IsAsName(byte* name)
+    {
+        if (name == null) return false;
+        // "As" = 2 chars
+        return name[0] == 'A' && name[1] == 's' && name[2] == 0;
+    }
+
+    /// <summary>Check if name equals "Add".</summary>
+    private static bool IsAddName(byte* name)
+    {
+        if (name == null) return false;
+        // "Add" = 3 chars
+        return name[0] == 'A' && name[1] == 'd' && name[2] == 'd' && name[3] == 0;
+    }
+
+    /// <summary>Check if name equals "Unsafe".</summary>
+    private static bool IsUnsafeName(byte* name)
+    {
+        if (name == null) return false;
+        // "Unsafe" = 6 chars
+        return name[0] == 'U' && name[1] == 'n' && name[2] == 's' && name[3] == 'a' &&
+               name[4] == 'f' && name[5] == 'e' && name[6] == 0;
+    }
+
+    /// <summary>
+    /// Check if a MemberRef row refers to System.Runtime.InteropServices.MemoryMarshal.CreateSpan.
+    /// </summary>
+    private static bool IsMemoryMarshalCreateSpanMemberRef(uint memberRefRowId)
+    {
+        if (_tablesHeader == null || _tableSizes == null || _metadataRoot == null)
+            return false;
+
+        // Get the member name
+        uint nameIdx = MetadataReader.GetMemberRefName(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+        byte* name = MetadataReader.GetString(ref *_metadataRoot, nameIdx);
+        if (name == null)
+            return false;
+
+        // Check if name is "CreateSpan"
+        if (!IsCreateSpanName(name))
+            return false;
+
+        // Get the class (MemberRefParent)
+        CodedIndex classRef = MetadataReader.GetMemberRefClass(ref *_tablesHeader, ref *_tableSizes, memberRefRowId);
+
+        // Must be a TypeRef to MemoryMarshal
+        if (classRef.Table != MetadataTableId.TypeRef)
+            return false;
+
+        // Get type name and namespace
+        uint typeNameIdx = MetadataReader.GetTypeRefName(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+        uint typeNsIdx = MetadataReader.GetTypeRefNamespace(ref *_tablesHeader, ref *_tableSizes, classRef.RowId);
+
+        byte* typeName = MetadataReader.GetString(ref *_metadataRoot, typeNameIdx);
+        byte* typeNs = MetadataReader.GetString(ref *_metadataRoot, typeNsIdx);
+
+        // Check if type is "MemoryMarshal" in namespace "System.Runtime.InteropServices"
+        return IsMemoryMarshalName(typeName) && IsInteropServicesNamespace(typeNs);
+    }
+
+    /// <summary>Check if name equals "CreateSpan".</summary>
+    private static bool IsCreateSpanName(byte* name)
+    {
+        if (name == null) return false;
+        // "CreateSpan" = 10 chars
+        return name[0] == 'C' && name[1] == 'r' && name[2] == 'e' && name[3] == 'a' &&
+               name[4] == 't' && name[5] == 'e' && name[6] == 'S' && name[7] == 'p' &&
+               name[8] == 'a' && name[9] == 'n' && name[10] == 0;
+    }
+
+    /// <summary>Check if name equals "MemoryMarshal".</summary>
+    private static bool IsMemoryMarshalName(byte* name)
+    {
+        if (name == null) return false;
+        // "MemoryMarshal" = 13 chars
+        return name[0] == 'M' && name[1] == 'e' && name[2] == 'm' && name[3] == 'o' &&
+               name[4] == 'r' && name[5] == 'y' && name[6] == 'M' && name[7] == 'a' &&
+               name[8] == 'r' && name[9] == 's' && name[10] == 'h' && name[11] == 'a' &&
+               name[12] == 'l' && name[13] == 0;
+    }
+
+    /// <summary>Check if namespace equals "System.Runtime.InteropServices".</summary>
+    private static bool IsInteropServicesNamespace(byte* ns)
+    {
+        if (ns == null) return false;
+        // "System.Runtime.InteropServices" = 30 chars
+        return ns[0] == 'S' && ns[1] == 'y' && ns[2] == 's' && ns[3] == 't' &&
+               ns[4] == 'e' && ns[5] == 'm' && ns[6] == '.' && ns[7] == 'R' &&
+               ns[8] == 'u' && ns[9] == 'n' && ns[10] == 't' && ns[11] == 'i' &&
+               ns[12] == 'm' && ns[13] == 'e' && ns[14] == '.' && ns[15] == 'I' &&
+               ns[16] == 'n' && ns[17] == 't' && ns[18] == 'e' && ns[19] == 'r' &&
+               ns[20] == 'o' && ns[21] == 'p' && ns[22] == 'S' && ns[23] == 'e' &&
+               ns[24] == 'r' && ns[25] == 'v' && ns[26] == 'i' && ns[27] == 'c' &&
+               ns[28] == 'e' && ns[29] == 's' && ns[30] == 0;
     }
 
     /// <summary>
@@ -5693,6 +6068,9 @@ public static unsafe class MetadataIntegration
         return name[expected.Length] == 0;
     }
 
+    // Cached MethodTable for Span/ReadOnlySpan types (they all have the same layout)
+    private static MethodTable* _spanMT = null;
+
     /// <summary>
     /// Get the MethodTable for a type given its full name (e.g., "System.AggregateException").
     /// Used when resolving AOT constructors to provide the MethodTable for newobj allocation.
@@ -5702,6 +6080,58 @@ public static unsafe class MetadataIntegration
         // Special case for ArgIterator - uses cached MT
         if (NameEquals(typeName, "System.ArgIterator"))
             return _argIteratorMT;
+
+        // Special case for Span and ReadOnlySpan - they are value types with fixed size
+        // Layout: pointer (8 bytes) + length (4 bytes) = 12 bytes, padded to 16 bytes
+        if (NameEquals(typeName, "System.Span`1"))
+        {
+            // First check if already registered via well-known type
+            MethodTable* registered = LookupType(WellKnownTypes.Span);
+            if (registered != null)
+                return registered;
+
+            if (_spanMT == null)
+            {
+                // Create a minimal MethodTable for span types
+                _spanMT = (MethodTable*)HeapAllocator.AllocZeroed((nuint)sizeof(MethodTable));
+                if (_spanMT != null)
+                {
+                    _spanMT->_uBaseSize = 16;  // Span layout: pointer(8) + length(4) = 12, aligned to 16
+                    // MTFlags.IsValueType is 0x00200000, high 16 bits go in _usFlags
+                    _spanMT->_usFlags = (ushort)(MTFlags.IsValueType >> 16);  // 0x0020
+                    _spanMT->_usNumVtableSlots = 0;
+                    _spanMT->_usNumInterfaces = 0;
+                    // Register so all paths use the same MT
+                    RegisterType(WellKnownTypes.Span, _spanMT);
+                }
+            }
+            return _spanMT;
+        }
+
+        if (NameEquals(typeName, "System.ReadOnlySpan`1"))
+        {
+            // First check if already registered via well-known type
+            MethodTable* registered = LookupType(WellKnownTypes.ReadOnlySpan);
+            if (registered != null)
+                return registered;
+
+            if (_spanMT == null)
+            {
+                // Create a minimal MethodTable for span types
+                _spanMT = (MethodTable*)HeapAllocator.AllocZeroed((nuint)sizeof(MethodTable));
+                if (_spanMT != null)
+                {
+                    _spanMT->_uBaseSize = 16;  // Span layout: pointer(8) + length(4) = 12, aligned to 16
+                    // MTFlags.IsValueType is 0x00200000, high 16 bits go in _usFlags
+                    _spanMT->_usFlags = (ushort)(MTFlags.IsValueType >> 16);  // 0x0020
+                    _spanMT->_usNumVtableSlots = 0;
+                    _spanMT->_usNumInterfaces = 0;
+                    // Register so all paths use the same MT
+                    RegisterType(WellKnownTypes.ReadOnlySpan, _spanMT);
+                }
+            }
+            return _spanMT;
+        }
 
         // Map well-known type names to their tokens
         uint wellKnownToken = 0;

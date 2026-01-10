@@ -196,6 +196,22 @@ public static unsafe class KernelExportInit
         n[17]=0x44; n[18]=0x65; n[19]=0x63; n[20]=0x69; n[21]=0x6D; n[22]=0x61; n[23]=0x6C;
         n[24]=0x36; n[25]=0x34; n[26]=0; // Decimal64
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, void>)&DebugExports.DebugWriteDecimal64);
+
+        // Kernel_TestByteSum - test function for JIT pointer passing
+        // "Kernel_TestByteSum" = 4B 65 72 6E 65 6C 5F 54 65 73 74 42 79 74 65 53 75 6D
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x54; n[8]=0x65; n[9]=0x73; n[10]=0x74; // Test
+        n[11]=0x42; n[12]=0x79; n[13]=0x74; n[14]=0x65; // Byte
+        n[15]=0x53; n[16]=0x75; n[17]=0x6D; n[18]=0; // Sum
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte*, int, int>)&DebugExports.TestByteSum);
+
+        // Kernel_TestFirstByte - test function for JIT pointer passing
+        // "Kernel_TestFirstByte" = 4B 65 72 6E 65 6C 5F 54 65 73 74 46 69 72 73 74 42 79 74 65
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x54; n[8]=0x65; n[9]=0x73; n[10]=0x74; // Test
+        n[11]=0x46; n[12]=0x69; n[13]=0x72; n[14]=0x73; n[15]=0x74; // First
+        n[16]=0x42; n[17]=0x79; n[18]=0x74; n[19]=0x65; n[20]=0; // Byte
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<byte*, int>)&DebugExports.TestFirstByte);
     }
 
     private static void RegisterPCIExports()

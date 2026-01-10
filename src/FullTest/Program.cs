@@ -72,6 +72,18 @@ public static class TestRunner
         // Pointer field tests (test stfld/ldfld with pointer types - VirtIO bug scenario)
         RunPointerFieldTests();
 
+        // Stackalloc PInvoke tests (test localloc with PInvoke calls)
+        RunStackallocPInvokeTests();
+
+        // UTF-8 string literal tests ("text"u8)
+        RunUtf8LiteralTests();
+
+        // Static span from inline array tests
+        RunStaticSpanTests();
+
+        // C# 12 inline array tests
+        RunInlineArrayTests();
+
         // Span<T> tests (actual Span usage with SpanHelpers)
         RunSpanTests();
 
@@ -1103,6 +1115,50 @@ public static class TestRunner
         RecordResult("PointerFieldTests.TestVirtioPatternWithDups", PointerFieldTests.TestVirtioPatternWithDups() == 201);
         RecordResult("PointerFieldTests.TestVirtioPatternFromArray", PointerFieldTests.TestVirtioPatternFromArray() == 202);
         RecordResult("PointerFieldTests.TestHighAddressConversion", PointerFieldTests.TestHighAddressConversion() == 1);
+    }
+
+    private static void RunStackallocPInvokeTests()
+    {
+        // Tests for stackalloc pointer passing to PInvoke - reproducing a known JIT issue
+        RecordResult("StackallocPInvokeTests.TestStackallocDirectToPInvoke", StackallocPInvokeTests.TestStackallocDirectToPInvoke() == 15);
+        RecordResult("StackallocPInvokeTests.TestStackallocFirstByte", StackallocPInvokeTests.TestStackallocFirstByte() == 42);
+        RecordResult("StackallocPInvokeTests.TestStaticArrayFixedToPInvoke", StackallocPInvokeTests.TestStaticArrayFixedToPInvoke() == 150);
+        RecordResult("StackallocPInvokeTests.TestLocalArrayFixedToPInvoke", StackallocPInvokeTests.TestLocalArrayFixedToPInvoke() == 75);
+        RecordResult("StackallocPInvokeTests.TestStackallocInitializerToPInvoke", StackallocPInvokeTests.TestStackallocInitializerToPInvoke() == 175);
+        RecordResult("StackallocPInvokeTests.TestStackallocViaLocalVar", StackallocPInvokeTests.TestStackallocViaLocalVar() == 77);
+        RecordResult("StackallocPInvokeTests.TestStackallocLocalVsPInvoke", StackallocPInvokeTests.TestStackallocLocalVsPInvoke() == 0);
+        RecordResult("StackallocPInvokeTests.TestStackallocSpillReload", StackallocPInvokeTests.TestStackallocSpillReload() == 33);
+    }
+
+    private static void RunUtf8LiteralTests()
+    {
+        // UTF-8 string literal tests ("text"u8)
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralLength", Utf8LiteralTests.TestUtf8LiteralLength() == 5);
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralFirstByte", Utf8LiteralTests.TestUtf8LiteralFirstByte() == 72);
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralSum", Utf8LiteralTests.TestUtf8LiteralSum() == 198);
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralToPInvoke", Utf8LiteralTests.TestUtf8LiteralToPInvoke() == 416);
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralEscapes", Utf8LiteralTests.TestUtf8LiteralEscapes() == 32);
+        RecordResult("Utf8LiteralTests.TestUtf8LiteralEmpty", Utf8LiteralTests.TestUtf8LiteralEmpty() == 0);
+    }
+
+    private static void RunStaticSpanTests()
+    {
+        // ReadOnlySpan from static array data tests
+        RecordResult("StaticSpanTests.TestSpanFromInlineArray", StaticSpanTests.TestSpanFromInlineArray() == 150);
+        RecordResult("StaticSpanTests.TestSpanFromInlineArrayToPInvoke", StaticSpanTests.TestSpanFromInlineArrayToPInvoke() == 50);
+        RecordResult("StaticSpanTests.TestSpanFromLargerArray", StaticSpanTests.TestSpanFromLargerArray() == 55);
+        RecordResult("StaticSpanTests.TestMultipleInlineSpans", StaticSpanTests.TestMultipleInlineSpans() == 66);
+    }
+
+    private static void RunInlineArrayTests()
+    {
+        // C# 12 inline array tests
+        RecordResult("InlineArrayTests.TestInlineArrayBasic", InlineArrayTests.TestInlineArrayBasic() == 60);
+        RecordResult("InlineArrayTests.TestInlineArrayAsSpan", InlineArrayTests.TestInlineArrayAsSpan() == 50);
+        RecordResult("InlineArrayTests.TestInlineArrayToPInvoke", InlineArrayTests.TestInlineArrayToPInvoke() == 15);
+        RecordResult("InlineArrayTests.TestInlineArrayInt", InlineArrayTests.TestInlineArrayInt() == 1000);
+        RecordResult("InlineArrayTests.TestInlineArrayLength", InlineArrayTests.TestInlineArrayLength() == 8);
+        RecordResult("InlineArrayTests.TestInlineArrayFill", InlineArrayTests.TestInlineArrayFill() == 336);
     }
 
     private static void RunSpanTests()
@@ -3175,6 +3231,435 @@ public static unsafe class PointerFieldTests
         // Check if the conversion preserved the high bits
         ulong result = (ulong)(void*)ptr;
         return (result == virtAddr) ? 1 : 0;  // Should be 1 if preserved
+    }
+}
+
+// =============================================================================
+// Stackalloc PInvoke Tests
+// =============================================================================
+// Tests for passing stackalloc pointers to PInvoke calls.
+// This was a known issue where stackalloc data wasn't correctly passed to kernel calls.
+
+public static unsafe class StackallocPInvokeTests
+{
+    // PInvoke declarations for kernel test functions
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestByteSum")]
+    private static extern int Kernel_TestByteSum(byte* data, int len);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestFirstByte")]
+    private static extern int Kernel_TestFirstByte(byte* data);
+
+    // Static array for comparison test
+    private static readonly byte[] _staticTestData = { 10, 20, 30, 40, 50 };
+
+    /// <summary>
+    /// Test passing stackalloc pointer directly to PInvoke.
+    /// This tests the JIT's handling of localloc with PInvoke calls.
+    /// Expected: sum = 1+2+3+4+5 = 15
+    /// </summary>
+    public static int TestStackallocDirectToPInvoke()
+    {
+        byte* data = stackalloc byte[5];
+        data[0] = 1;
+        data[1] = 2;
+        data[2] = 3;
+        data[3] = 4;
+        data[4] = 5;
+
+        // Pass stackalloc pointer directly to PInvoke
+        return Kernel_TestByteSum(data, 5);  // Should return 15
+    }
+
+    /// <summary>
+    /// Test passing stackalloc pointer to PInvoke for first byte only.
+    /// Expected: 42
+    /// </summary>
+    public static int TestStackallocFirstByte()
+    {
+        byte* data = stackalloc byte[4];
+        data[0] = 42;
+        data[1] = 99;
+        data[2] = 88;
+        data[3] = 77;
+
+        return Kernel_TestFirstByte(data);  // Should return 42
+    }
+
+    /// <summary>
+    /// Test passing static array via fixed to PInvoke.
+    /// This is the workaround that was found to work.
+    /// Expected: sum = 10+20+30+40+50 = 150
+    /// </summary>
+    public static int TestStaticArrayFixedToPInvoke()
+    {
+        fixed (byte* data = _staticTestData)
+        {
+            return Kernel_TestByteSum(data, 5);  // Should return 150
+        }
+    }
+
+    /// <summary>
+    /// Test passing local array via fixed to PInvoke.
+    /// Expected: sum = 5+10+15+20+25 = 75
+    /// </summary>
+    public static int TestLocalArrayFixedToPInvoke()
+    {
+        byte[] localData = { 5, 10, 15, 20, 25 };
+        fixed (byte* data = localData)
+        {
+            return Kernel_TestByteSum(data, 5);  // Should return 75
+        }
+    }
+
+    /// <summary>
+    /// Test stackalloc with inline initialization and PInvoke.
+    /// This uses the stackalloc byte[] { ... } syntax.
+    /// Expected: sum = 100+50+25 = 175
+    /// </summary>
+    public static int TestStackallocInitializerToPInvoke()
+    {
+        byte* data = stackalloc byte[] { 100, 50, 25 };
+
+        return Kernel_TestByteSum(data, 3);  // Should return 175
+    }
+
+    /// <summary>
+    /// Test storing stackalloc to local variable before PInvoke.
+    /// This tests if the issue is with how the pointer is passed.
+    /// Expected: first byte = 77
+    /// </summary>
+    public static int TestStackallocViaLocalVar()
+    {
+        byte* data = stackalloc byte[4];
+        data[0] = 77;
+        data[1] = 88;
+        data[2] = 99;
+        data[3] = 11;
+
+        // Store to a local pointer variable first
+        byte* localPtr = data;
+
+        return Kernel_TestFirstByte(localPtr);  // Should return 77
+    }
+
+    /// <summary>
+    /// Test reading stackalloc data locally before PInvoke.
+    /// Verifies the data is correct before the call.
+    /// Returns: local sum (should be 15), then PInvoke sum (may differ if bug exists)
+    /// </summary>
+    public static int TestStackallocLocalVsPInvoke()
+    {
+        byte* data = stackalloc byte[5];
+        data[0] = 1;
+        data[1] = 2;
+        data[2] = 3;
+        data[3] = 4;
+        data[4] = 5;
+
+        // Compute sum locally first
+        int localSum = 0;
+        for (int i = 0; i < 5; i++)
+            localSum += data[i];
+
+        // Now call PInvoke
+        int pinvokeSum = Kernel_TestByteSum(data, 5);
+
+        // Return difference - should be 0 if both are correct
+        return localSum - pinvokeSum;  // Should return 0
+    }
+
+    /// <summary>
+    /// Test stackalloc with store/reload pattern before PInvoke.
+    /// Tests if spilling the pointer affects correctness.
+    /// Expected: 33
+    /// </summary>
+    public static int TestStackallocSpillReload()
+    {
+        byte* data = stackalloc byte[4];
+        data[0] = 33;
+        data[1] = 66;
+
+        // Force spill by using a volatile-like pattern
+        byte* temp = data;
+        byte* ptr = temp;
+
+        return Kernel_TestFirstByte(ptr);  // Should return 33
+    }
+}
+
+// =============================================================================
+// FieldRVA Static Data Tests
+// =============================================================================
+// Tests for various patterns that use FieldRVA static data in the PE file.
+// These patterns include UTF-8 string literals, ReadOnlySpan from static data,
+// and C# 12 inline arrays.
+
+/// <summary>
+/// Tests for UTF-8 string literals ("text"u8) which create ReadOnlySpan pointing to RVA data.
+/// </summary>
+public static unsafe class Utf8LiteralTests
+{
+    // PInvoke to kernel test function
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestByteSum")]
+    private static extern int Kernel_TestByteSum(byte* data, int len);
+
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestFirstByte")]
+    private static extern int Kernel_TestFirstByte(byte* data);
+
+    /// <summary>
+    /// Test UTF-8 string literal length.
+    /// "Hello"u8 should have length 5.
+    /// </summary>
+    public static int TestUtf8LiteralLength()
+    {
+        ReadOnlySpan<byte> span = "Hello"u8;
+        return span.Length;  // Should be 5
+    }
+
+    /// <summary>
+    /// Test UTF-8 string literal first byte.
+    /// "Hello"u8[0] should be 'H' = 72.
+    /// </summary>
+    public static int TestUtf8LiteralFirstByte()
+    {
+        ReadOnlySpan<byte> span = "Hello"u8;
+        return span[0];  // Should be 72 ('H')
+    }
+
+    /// <summary>
+    /// Test UTF-8 string literal sum of bytes.
+    /// "ABC"u8 = { 65, 66, 67 } = 198
+    /// </summary>
+    public static int TestUtf8LiteralSum()
+    {
+        ReadOnlySpan<byte> span = "ABC"u8;
+        int sum = 0;
+        for (int i = 0; i < span.Length; i++)
+            sum += span[i];
+        return sum;  // Should be 198
+    }
+
+    /// <summary>
+    /// Test UTF-8 literal passed to PInvoke via fixed.
+    /// "Test"u8 = { 84, 101, 115, 116 } = 416
+    /// </summary>
+    public static int TestUtf8LiteralToPInvoke()
+    {
+        ReadOnlySpan<byte> span = "Test"u8;
+        fixed (byte* ptr = span)
+        {
+            return Kernel_TestByteSum(ptr, span.Length);  // Should be 416
+        }
+    }
+
+    /// <summary>
+    /// Test UTF-8 literal with special characters.
+    /// "\n\r\t"u8 = { 10, 13, 9 } = 32
+    /// </summary>
+    public static int TestUtf8LiteralEscapes()
+    {
+        ReadOnlySpan<byte> span = "\n\r\t"u8;
+        int sum = 0;
+        for (int i = 0; i < span.Length; i++)
+            sum += span[i];
+        return sum;  // Should be 32
+    }
+
+    /// <summary>
+    /// Test empty UTF-8 literal.
+    /// ""u8 should have length 0.
+    /// </summary>
+    public static int TestUtf8LiteralEmpty()
+    {
+        ReadOnlySpan<byte> span = ""u8;
+        return span.Length;  // Should be 0
+    }
+}
+
+/// <summary>
+/// Tests for ReadOnlySpan from static array data.
+/// The C# compiler can optimize this to point directly to RVA data.
+/// </summary>
+public static unsafe class StaticSpanTests
+{
+    // PInvoke to kernel test function
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestByteSum")]
+    private static extern int Kernel_TestByteSum(byte* data, int len);
+
+    /// <summary>
+    /// Test ReadOnlySpan from inline byte array.
+    /// This may be optimized to point directly to static data.
+    /// </summary>
+    public static int TestSpanFromInlineArray()
+    {
+        ReadOnlySpan<byte> span = new byte[] { 10, 20, 30, 40, 50 };
+        int sum = 0;
+        for (int i = 0; i < span.Length; i++)
+            sum += span[i];
+        return sum;  // Should be 150
+    }
+
+    /// <summary>
+    /// Test ReadOnlySpan from inline array with PInvoke.
+    /// </summary>
+    public static int TestSpanFromInlineArrayToPInvoke()
+    {
+        ReadOnlySpan<byte> span = new byte[] { 5, 10, 15, 20 };
+        fixed (byte* ptr = span)
+        {
+            return Kernel_TestByteSum(ptr, span.Length);  // Should be 50
+        }
+    }
+
+    /// <summary>
+    /// Test ReadOnlySpan from larger inline array.
+    /// Tests that larger static data is correctly mapped.
+    /// </summary>
+    public static int TestSpanFromLargerArray()
+    {
+        ReadOnlySpan<byte> span = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        int sum = 0;
+        for (int i = 0; i < span.Length; i++)
+            sum += span[i];
+        return sum;  // Should be 55
+    }
+
+    /// <summary>
+    /// Test multiple spans from inline arrays in same method.
+    /// </summary>
+    public static int TestMultipleInlineSpans()
+    {
+        ReadOnlySpan<byte> span1 = new byte[] { 1, 2, 3 };
+        ReadOnlySpan<byte> span2 = new byte[] { 10, 20, 30 };
+
+        int sum = 0;
+        for (int i = 0; i < span1.Length; i++)
+            sum += span1[i];
+        for (int i = 0; i < span2.Length; i++)
+            sum += span2[i];
+
+        return sum;  // Should be 6 + 60 = 66
+    }
+}
+
+/// <summary>
+/// Tests for C# 12 inline arrays.
+/// Inline arrays are fixed-size buffers that can be stack-allocated.
+/// </summary>
+public static unsafe class InlineArrayTests
+{
+    // Define an inline array type (C# 12 feature)
+    [System.Runtime.CompilerServices.InlineArray(8)]
+    public struct ByteBuffer8
+    {
+        private byte _element0;
+    }
+
+    [System.Runtime.CompilerServices.InlineArray(4)]
+    public struct IntBuffer4
+    {
+        private int _element0;
+    }
+
+    // PInvoke to kernel test function
+    [System.Runtime.InteropServices.DllImport("*", EntryPoint = "Kernel_TestByteSum")]
+    private static extern int Kernel_TestByteSum(byte* data, int len);
+
+    /// <summary>
+    /// Test inline array basic read/write.
+    /// </summary>
+    public static int TestInlineArrayBasic()
+    {
+        ByteBuffer8 buffer = default;
+        buffer[0] = 10;
+        buffer[1] = 20;
+        buffer[2] = 30;
+        return buffer[0] + buffer[1] + buffer[2];  // Should be 60
+    }
+
+    /// <summary>
+    /// Test inline array as span.
+    /// </summary>
+    public static int TestInlineArrayAsSpan()
+    {
+        ByteBuffer8 buffer = default;
+        Span<byte> span = buffer;
+        span[0] = 5;
+        span[1] = 10;
+        span[2] = 15;
+        span[3] = 20;
+
+        int sum = 0;
+        for (int i = 0; i < 4; i++)
+            sum += span[i];
+        return sum;  // Should be 50
+    }
+
+    /// <summary>
+    /// Test inline array with PInvoke.
+    /// </summary>
+    public static int TestInlineArrayToPInvoke()
+    {
+        ByteBuffer8 buffer = default;
+        buffer[0] = 1;
+        buffer[1] = 2;
+        buffer[2] = 3;
+        buffer[3] = 4;
+        buffer[4] = 5;
+
+        // Get pointer via fixed statement on the span (uses GetPinnableReference)
+        Span<byte> span = buffer;
+        fixed (byte* ptr = span)
+        {
+            return Kernel_TestByteSum(ptr, 5);  // Should be 15
+        }
+    }
+
+    /// <summary>
+    /// Test inline array of integers.
+    /// </summary>
+    public static int TestInlineArrayInt()
+    {
+        IntBuffer4 buffer = default;
+        buffer[0] = 100;
+        buffer[1] = 200;
+        buffer[2] = 300;
+        buffer[3] = 400;
+        return buffer[0] + buffer[1] + buffer[2] + buffer[3];  // Should be 1000
+    }
+
+    /// <summary>
+    /// Test inline array length via span.
+    /// </summary>
+    public static int TestInlineArrayLength()
+    {
+        ByteBuffer8 buffer = default;
+        Span<byte> span = buffer;
+        int len = span.Length;
+        Debug.Write("[InlineArrayLength] span.Length = ");
+        Debug.WriteDecimal((uint)len);
+        Debug.WriteLine();
+        return len;  // Should be 8
+    }
+
+    /// <summary>
+    /// Test inline array fill pattern.
+    /// Uses manual loop instead of Span.Fill since korlib.dll doesn't include Span.cs
+    /// (it uses bflat-specific ref field features not available in standard .NET builds).
+    /// </summary>
+    public static int TestInlineArrayFill()
+    {
+        ByteBuffer8 buffer = default;
+        Span<byte> span = buffer;
+
+        // Manual fill - Span<T>.Fill not available in korlib.dll JIT build
+        for (int i = 0; i < span.Length; i++)
+            span[i] = 42;
+
+        int sum = 0;
+        for (int i = 0; i < span.Length; i++)
+            sum += span[i];
+        return sum;  // Should be 42 * 8 = 336
     }
 }
 

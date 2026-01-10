@@ -1510,6 +1510,74 @@ public static unsafe class AotMethodRegistry
             "ProtonOS.Runtime.SpanHelpers", "FillByteSpan",
             (nint)(delegate*<nint, byte, void>)&SpanHelpers.FillByteSpan,
             2, ReturnKind.Void, false, false);
+
+        // Also register under actual span type names for direct MemberRef resolution
+        // These allow MetadataIntegration to resolve span method calls without special redirects
+        // NOTE: argCount is from method signature param count (excludes 'this')
+
+        // System.ReadOnlySpan`1..ctor(void*, int) - 2 explicit params (pointer, length)
+        Register(
+            "System.ReadOnlySpan`1", ".ctor",
+            (nint)(delegate*<nint, void*, int, void>)&SpanHelpers.InitSpanFromPointer,
+            2, ReturnKind.Void, true, false);
+
+        // System.ReadOnlySpan`1.get_Length - 0 explicit params (property getter)
+        Register(
+            "System.ReadOnlySpan`1", "get_Length",
+            (nint)(delegate*<nint, int>)&SpanHelpers.GetLength,
+            0, ReturnKind.Int32, true, false);
+
+        // System.ReadOnlySpan`1.get_Item - 1 explicit param (index)
+        // Returns ref T (pointer to element) - caller uses ldind to load actual value
+        Register(
+            "System.ReadOnlySpan`1", "get_Item",
+            (nint)(delegate*<nint, int, nint>)&SpanHelpers.GetByteRef,
+            1, ReturnKind.IntPtr, true, false);
+
+        // System.ReadOnlySpan`1.get_IsEmpty - 0 explicit params (property getter)
+        Register(
+            "System.ReadOnlySpan`1", "get_IsEmpty",
+            (nint)(delegate*<nint, bool>)&SpanHelpers.IsEmpty,
+            0, ReturnKind.Int32, true, false);
+
+        // System.ReadOnlySpan`1.GetPinnableReference - 0 explicit params (returns ref to first element)
+        // Used by 'fixed' statement - returns pointer to span data
+        Register(
+            "System.ReadOnlySpan`1", "GetPinnableReference",
+            (nint)(delegate*<nint, nint>)&SpanHelpers.GetPointer,
+            0, ReturnKind.IntPtr, true, false);
+
+        // System.Span`1..ctor(void*, int) - 2 explicit params (pointer, length)
+        Register(
+            "System.Span`1", ".ctor",
+            (nint)(delegate*<nint, void*, int, void>)&SpanHelpers.InitSpanFromPointer,
+            2, ReturnKind.Void, true, false);
+
+        // System.Span`1.get_Length - 0 explicit params (property getter)
+        Register(
+            "System.Span`1", "get_Length",
+            (nint)(delegate*<nint, int>)&SpanHelpers.GetLength,
+            0, ReturnKind.Int32, true, false);
+
+        // System.Span`1.get_Item - 1 explicit param (index)
+        // Returns ref T (pointer to element) - caller uses ldind to load actual value
+        Register(
+            "System.Span`1", "get_Item",
+            (nint)(delegate*<nint, int, nint>)&SpanHelpers.GetByteRef,
+            1, ReturnKind.IntPtr, true, false);
+
+        // System.Span`1.get_IsEmpty - 0 explicit params (property getter)
+        Register(
+            "System.Span`1", "get_IsEmpty",
+            (nint)(delegate*<nint, bool>)&SpanHelpers.IsEmpty,
+            0, ReturnKind.Int32, true, false);
+
+        // System.Span`1.GetPinnableReference - 0 explicit params (returns ref to first element)
+        // Used by 'fixed' statement - returns pointer to span data
+        Register(
+            "System.Span`1", "GetPinnableReference",
+            (nint)(delegate*<nint, nint>)&SpanHelpers.GetPointer,
+            0, ReturnKind.IntPtr, true, false);
     }
 
     /// <summary>
@@ -2015,6 +2083,12 @@ public static unsafe class AotMethodRegistry
 
         // GC type (for Dispose pattern support)
         if (StringMatches(typeName, "System.GC"))
+            return true;
+
+        // Span types (for UTF-8 literals and inline array support)
+        if (StringMatches(typeName, "System.Span`1"))
+            return true;
+        if (StringMatches(typeName, "System.ReadOnlySpan`1"))
             return true;
 
         return false;
@@ -4623,6 +4697,34 @@ public static unsafe class SpanHelpers
 
         byte* data = (byte*)*(nint*)spanPtr;
         return data[index];
+    }
+
+    /// <summary>
+    /// Get a reference (pointer) to a byte at the specified index.
+    /// This is what get_Item actually returns - a ref byte, not the value.
+    /// The caller then uses ldind.u1 to load the actual value.
+    /// </summary>
+    public static nint GetByteRef(nint spanPtr, int index)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        byte* data = (byte*)*(nint*)spanPtr;
+        return (nint)(data + index);
+    }
+
+    /// <summary>
+    /// Get a reference (pointer) to an int at the specified index.
+    /// </summary>
+    public static nint GetIntRef(nint spanPtr, int index)
+    {
+        int length = *(int*)((byte*)spanPtr + 8);
+        if ((uint)index >= (uint)length)
+            Environment.FailFast(null);
+
+        int* data = (int*)*(nint*)spanPtr;
+        return (nint)(data + index);
     }
 
     /// <summary>

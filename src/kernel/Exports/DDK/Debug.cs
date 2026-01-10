@@ -98,4 +98,37 @@ public static unsafe class DebugExports
     {
         DebugConsole.WriteDecimal(value);
     }
+
+    /// <summary>
+    /// Test function: compute sum of bytes at pointer.
+    /// Used to verify pointer data integrity when passed from JIT code.
+    /// Returns sum of first 'len' bytes, or -1 if pointer is null.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_TestByteSum")]
+    public static int TestByteSum(byte* data, int len)
+    {
+        if (data == null)
+            return -1;
+
+        int sum = 0;
+        for (int i = 0; i < len; i++)
+        {
+            sum += data[i];
+        }
+        return sum;
+    }
+
+    /// <summary>
+    /// Test function: return first byte at pointer.
+    /// Used to verify pointer data integrity when passed from JIT code.
+    /// Returns first byte, or -1 if pointer is null.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_TestFirstByte")]
+    public static int TestFirstByte(byte* data)
+    {
+        if (data == null)
+            return -1;
+
+        return data[0];
+    }
 }
