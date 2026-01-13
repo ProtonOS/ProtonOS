@@ -656,6 +656,177 @@ public static unsafe class VirtioNetEntry
         return responseReceived;
     }
 
+    /// <summary>
+    /// Test TCP protocol: Connect to QEMU's DNS server on port 53.
+    /// DNS supports TCP (RFC 7766), so this tests full three-way handshake.
+    /// </summary>
+    public static int TestTcp()
+    {
+        if (_device == null)
+        {
+            Debug.WriteLine("[virtio-net] TestTcp: No device bound");
+            return 0;
+        }
+
+        // Create network stack if not already created
+        if (_netStack == null)
+        {
+            _netStack = new NetworkStack(_device.MacAddress);
+
+            uint guestIP = ARP.MakeIP(10, 0, 2, 15);
+            uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
+            uint gateway = ARP.MakeIP(10, 0, 2, 2);
+
+            _netStack.Configure(guestIP, subnetMask, gateway);
+        }
+
+        // Connect to QEMU's DNS server which accepts TCP connections (DNS over TCP, RFC 7766)
+        uint dnsServerIP = ARP.MakeIP(10, 0, 2, 3);
+        ushort dnsPort = 53;
+
+        // First, ensure we have the DNS server MAC (via ARP if needed)
+        byte* serverMac = stackalloc byte[6];
+        if (!_netStack.ArpCache.Lookup(dnsServerIP, serverMac))
+        {
+            Debug.WriteLine("[virtio-net] TestTcp: Need ARP resolution for DNS server...");
+
+            // Send ARP request
+            int arpLen = _netStack.SendArpRequest(dnsServerIP);
+            if (arpLen > 0)
+            {
+                byte* txBuffer = _netStack.GetTxBuffer();
+                _device.SendFrame(txBuffer, arpLen);
+            }
+
+            // Wait for ARP reply
+            byte* rxBuffer = stackalloc byte[1514];
+            int attempts = 50000;
+            while (attempts > 0 && !_netStack.ArpCache.Lookup(dnsServerIP, serverMac))
+            {
+                int len = _device.ReceiveFrame(rxBuffer, 1514);
+                if (len > 0)
+                    _netStack.ProcessFrame(rxBuffer, len);
+                attempts--;
+            }
+
+            if (!_netStack.ArpCache.Lookup(dnsServerIP, serverMac))
+            {
+                Debug.WriteLine("[virtio-net] TestTcp: Failed to resolve DNS server MAC");
+                return 0;
+            }
+        }
+
+        Debug.WriteLine("[virtio-net] TestTcp: Initiating TCP connection to 10.0.2.3:53 (DNS)...");
+
+        // Initiate TCP connection
+        int connIndex = _netStack.TcpConnect(dnsServerIP, dnsPort);
+        if (connIndex < 0)
+        {
+            if (connIndex == -2)
+                Debug.WriteLine("[virtio-net] TestTcp: ARP needed (should have been resolved)");
+            else
+                Debug.WriteLine("[virtio-net] TestTcp: Failed to initiate connection");
+            return 0;
+        }
+
+        // Send the SYN packet that was built by TcpConnect
+        int synLen = _netStack.GetPendingTxLen();
+        if (synLen > 0)
+        {
+            byte* synBuffer = _netStack.GetTxBuffer();
+            _device.SendFrame(synBuffer, synLen);
+            Debug.Write("[virtio-net] TestTcp: SYN sent (");
+            Debug.WriteDecimal(synLen);
+            Debug.WriteLine(" bytes)");
+        }
+
+        var conn = _netStack.GetTcpConnection(connIndex);
+        if (conn == null)
+        {
+            Debug.WriteLine("[virtio-net] TestTcp: Connection object is null");
+            return 0;
+        }
+
+        Debug.Write("[virtio-net] TestTcp: Connection state: ");
+        Debug.WriteDecimal((int)conn.State);
+        Debug.WriteLine();
+
+        // Poll for SYN-ACK response
+        byte* rxBuf = stackalloc byte[1514];
+        int pollAttempts = 100000;
+        int connected = 0;
+
+        while (pollAttempts > 0)
+        {
+            int len = _device.ReceiveFrame(rxBuf, 1514);
+            if (len > 0)
+            {
+                _netStack.ProcessFrame(rxBuf, len);
+
+                // Send any queued response (like ACK after SYN-ACK)
+                int pendingLen = _netStack.GetPendingTxLen();
+                if (pendingLen > 0)
+                {
+                    byte* txBuf = _netStack.GetTxBuffer();
+                    _device.SendFrame(txBuf, pendingLen);
+                    Debug.Write("[virtio-net] TestTcp: Sent response (");
+                    Debug.WriteDecimal(pendingLen);
+                    Debug.WriteLine(" bytes)");
+                }
+
+                // Check if connection is established
+                conn = _netStack.GetTcpConnection(connIndex);
+                if (conn != null && conn.IsConnected)
+                {
+                    Debug.WriteLine("[virtio-net] TestTcp: Connection ESTABLISHED!");
+                    connected = 1;
+                    break;
+                }
+            }
+            pollAttempts--;
+
+            // Check for state changes
+            if (pollAttempts % 10000 == 0)
+            {
+                conn = _netStack.GetTcpConnection(connIndex);
+                if (conn != null)
+                {
+                    Debug.Write("[virtio-net] TestTcp: State=");
+                    Debug.WriteDecimal((int)conn.State);
+                    Debug.WriteLine();
+                }
+            }
+        }
+
+        // Print TCP stats
+        ulong tcpSent, tcpRecv;
+        int activeConns;
+        _netStack.GetTcpStats(out tcpSent, out tcpRecv, out activeConns);
+        Debug.Write("[virtio-net] TCP Stats: Sent=");
+        Debug.WriteDecimal((uint)tcpSent);
+        Debug.Write(" Recv=");
+        Debug.WriteDecimal((uint)tcpRecv);
+        Debug.Write(" Active=");
+        Debug.WriteDecimal(activeConns);
+        Debug.WriteLine();
+
+        // Close the connection
+        if (connected == 1)
+        {
+            Debug.WriteLine("[virtio-net] TestTcp: Closing connection...");
+            _netStack.TcpClose(connIndex);
+        }
+
+        if (connected == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestTcp: Connection not established (timeout)");
+            // Return 0 - we require successful connection for this test
+            return 0;
+        }
+
+        return connected;
+    }
+
     // Static counter for allocating BAR addresses
     private static ulong _nextBarAddress;
     private static bool _barAddressInitialized;

@@ -56,6 +56,16 @@ public static unsafe class NetworkStackTests
         TestUdpParse();
         TestUdpChecksum();
 
+        // TCP tests
+        TestTcpBuildPacket();
+        TestTcpBuildPacketWithChecksum();
+        TestTcpParse();
+        TestTcpChecksum();
+        TestTcpBuildSyn();
+        TestTcpBuildAck();
+        TestTcpBuildFinAck();
+        TestTcpBuildData();
+
         // Report results
         Debug.Write("[NetTests] Results: ");
         Debug.WriteDecimal(_passed);
@@ -835,5 +845,384 @@ public static unsafe class NetworkStackTests
         }
 
         Pass("UdpChecksum");
+    }
+
+    // ===== TCP Tests =====
+
+    private static void TestTcpBuildPacket()
+    {
+        byte* buffer = stackalloc byte[64];
+        byte* payload = stackalloc byte[4];
+        payload[0] = 0xDE; payload[1] = 0xAD; payload[2] = 0xBE; payload[3] = 0xEF;
+
+        int len = TCP.BuildPacket(buffer, 12345, 80, 0x12345678, 0xABCDEF00,
+                                  TcpFlags.ACK, 8192, payload, 4);
+
+        if (len != 24) // 20 header + 4 payload
+        {
+            Fail("TcpBuildPacket", "wrong length");
+            return;
+        }
+
+        // Source port (big-endian): 12345 = 0x3039
+        if (buffer[0] != 0x30 || buffer[1] != 0x39)
+        {
+            Fail("TcpBuildPacket", "wrong source port");
+            return;
+        }
+
+        // Dest port (big-endian): 80 = 0x0050
+        if (buffer[2] != 0x00 || buffer[3] != 0x50)
+        {
+            Fail("TcpBuildPacket", "wrong dest port");
+            return;
+        }
+
+        // Sequence number (big-endian): 0x12345678
+        if (buffer[4] != 0x12 || buffer[5] != 0x34 || buffer[6] != 0x56 || buffer[7] != 0x78)
+        {
+            Fail("TcpBuildPacket", "wrong seq number");
+            return;
+        }
+
+        // ACK number (big-endian): 0xABCDEF00
+        if (buffer[8] != 0xAB || buffer[9] != 0xCD || buffer[10] != 0xEF || buffer[11] != 0x00)
+        {
+            Fail("TcpBuildPacket", "wrong ack number");
+            return;
+        }
+
+        // Data offset: 5 (20 bytes / 4) in upper nibble
+        if ((buffer[12] >> 4) != 5)
+        {
+            Fail("TcpBuildPacket", "wrong data offset");
+            return;
+        }
+
+        // Flags: ACK = 0x10
+        if (buffer[13] != TcpFlags.ACK)
+        {
+            Fail("TcpBuildPacket", "wrong flags");
+            return;
+        }
+
+        // Window (big-endian): 8192 = 0x2000
+        if (buffer[14] != 0x20 || buffer[15] != 0x00)
+        {
+            Fail("TcpBuildPacket", "wrong window");
+            return;
+        }
+
+        // Payload
+        if (buffer[20] != 0xDE || buffer[21] != 0xAD || buffer[22] != 0xBE || buffer[23] != 0xEF)
+        {
+            Fail("TcpBuildPacket", "payload not copied");
+            return;
+        }
+
+        Pass("TcpBuildPacket");
+    }
+
+    private static void TestTcpBuildPacketWithChecksum()
+    {
+        byte* buffer = stackalloc byte[64];
+        byte* payload = stackalloc byte[4];
+        payload[0] = 0x48; payload[1] = 0x45; payload[2] = 0x4C; payload[3] = 0x4F; // "HELO"
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildPacketWithChecksum(buffer, 1234, 5678, 0x11111111, 0x22222222,
+                                               TcpFlags.PSH | TcpFlags.ACK, 4096,
+                                               payload, 4, srcIP, destIP);
+
+        if (len != 24) // 20 header + 4 payload
+        {
+            Fail("TcpBuildPacketWithChecksum", "wrong length");
+            return;
+        }
+
+        // Checksum should NOT be zero
+        ushort checksum = (ushort)((buffer[16] << 8) | buffer[17]);
+        if (checksum == 0)
+        {
+            Fail("TcpBuildPacketWithChecksum", "checksum is zero");
+            return;
+        }
+
+        // Verify the checksum is correct
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpBuildPacketWithChecksum", "checksum verification failed");
+            return;
+        }
+
+        Pass("TcpBuildPacketWithChecksum");
+    }
+
+    private static void TestTcpParse()
+    {
+        // Build a TCP packet and parse it
+        byte* buffer = stackalloc byte[64];
+        byte* payload = stackalloc byte[5];
+        payload[0] = (byte)'H'; payload[1] = (byte)'E'; payload[2] = (byte)'L'; payload[3] = (byte)'L'; payload[4] = (byte)'O';
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildPacketWithChecksum(buffer, 8080, 80, 0xDEADBEEF, 0xCAFEBABE,
+                                               TcpFlags.PSH | TcpFlags.ACK, 16384,
+                                               payload, 5, srcIP, destIP);
+
+        TcpPacket packet;
+        bool ok = TCP.Parse(buffer, len, out packet);
+
+        if (!ok)
+        {
+            Fail("TcpParse", "parse failed");
+            return;
+        }
+
+        if (packet.SourcePort != 8080)
+        {
+            Fail("TcpParse", "wrong source port");
+            return;
+        }
+
+        if (packet.DestPort != 80)
+        {
+            Fail("TcpParse", "wrong dest port");
+            return;
+        }
+
+        if (packet.SeqNum != 0xDEADBEEF)
+        {
+            Fail("TcpParse", "wrong seq number");
+            return;
+        }
+
+        if (packet.AckNum != 0xCAFEBABE)
+        {
+            Fail("TcpParse", "wrong ack number");
+            return;
+        }
+
+        if (packet.HeaderLength != 20)
+        {
+            Fail("TcpParse", "wrong header length");
+            return;
+        }
+
+        if (packet.Flags != (TcpFlags.PSH | TcpFlags.ACK))
+        {
+            Fail("TcpParse", "wrong flags");
+            return;
+        }
+
+        if (packet.Window != 16384)
+        {
+            Fail("TcpParse", "wrong window");
+            return;
+        }
+
+        if (packet.PayloadLength != 5)
+        {
+            Fail("TcpParse", "wrong payload length");
+            return;
+        }
+
+        // Verify payload content
+        if (packet.Payload[0] != (byte)'H' || packet.Payload[1] != (byte)'E' ||
+            packet.Payload[2] != (byte)'L' || packet.Payload[3] != (byte)'L' || packet.Payload[4] != (byte)'O')
+        {
+            Fail("TcpParse", "payload mismatch");
+            return;
+        }
+
+        Pass("TcpParse");
+    }
+
+    private static void TestTcpChecksum()
+    {
+        byte* buffer = stackalloc byte[64];
+        byte* payload = stackalloc byte[8];
+        for (int i = 0; i < 8; i++) payload[i] = (byte)(i + 1);
+
+        uint srcIP = ARP.MakeIP(192, 168, 1, 100);
+        uint destIP = ARP.MakeIP(192, 168, 1, 1);
+
+        int len = TCP.BuildPacketWithChecksum(buffer, 54321, 12345, 0x99999999, 0x88888888,
+                                               TcpFlags.ACK, 32768, payload, 8, srcIP, destIP);
+
+        // Verify checksum is valid
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpChecksum", "checksum verification failed");
+            return;
+        }
+
+        // Corrupt the packet and verify checksum fails
+        buffer[22] ^= 0xFF;
+        if (TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpChecksum", "corrupted packet passed checksum");
+            return;
+        }
+
+        Pass("TcpChecksum");
+    }
+
+    private static void TestTcpBuildSyn()
+    {
+        byte* buffer = stackalloc byte[64];
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildSyn(buffer, 49152, 80, 0x12345678, 8192, srcIP, destIP);
+
+        if (len != 20) // 20 bytes for SYN (no options)
+        {
+            Fail("TcpBuildSyn", "wrong length");
+            return;
+        }
+
+        // Flags should be SYN only
+        if (buffer[13] != TcpFlags.SYN)
+        {
+            Fail("TcpBuildSyn", "wrong flags");
+            return;
+        }
+
+        // ACK number should be 0
+        if (buffer[8] != 0 || buffer[9] != 0 || buffer[10] != 0 || buffer[11] != 0)
+        {
+            Fail("TcpBuildSyn", "ack number not zero");
+            return;
+        }
+
+        // Verify checksum
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpBuildSyn", "checksum invalid");
+            return;
+        }
+
+        Pass("TcpBuildSyn");
+    }
+
+    private static void TestTcpBuildAck()
+    {
+        byte* buffer = stackalloc byte[64];
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildAck(buffer, 49152, 80, 0x12345679, 0xABCDEF01, 8192, srcIP, destIP);
+
+        if (len != 20)
+        {
+            Fail("TcpBuildAck", "wrong length");
+            return;
+        }
+
+        // Flags should be ACK only
+        if (buffer[13] != TcpFlags.ACK)
+        {
+            Fail("TcpBuildAck", "wrong flags");
+            return;
+        }
+
+        // Verify checksum
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpBuildAck", "checksum invalid");
+            return;
+        }
+
+        Pass("TcpBuildAck");
+    }
+
+    private static void TestTcpBuildFinAck()
+    {
+        byte* buffer = stackalloc byte[64];
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildFinAck(buffer, 49152, 80, 0x12345700, 0xABCDEF02, 8192, srcIP, destIP);
+
+        if (len != 20)
+        {
+            Fail("TcpBuildFinAck", "wrong length");
+            return;
+        }
+
+        // Flags should be FIN|ACK
+        if (buffer[13] != (TcpFlags.FIN | TcpFlags.ACK))
+        {
+            Fail("TcpBuildFinAck", "wrong flags");
+            return;
+        }
+
+        // Verify checksum
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpBuildFinAck", "checksum invalid");
+            return;
+        }
+
+        Pass("TcpBuildFinAck");
+    }
+
+    private static void TestTcpBuildData()
+    {
+        byte* buffer = stackalloc byte[128];
+        byte* data = stackalloc byte[10];
+        for (int i = 0; i < 10; i++) data[i] = (byte)(0x41 + i); // 'A', 'B', 'C', ...
+
+        uint srcIP = ARP.MakeIP(10, 0, 2, 15);
+        uint destIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = TCP.BuildData(buffer, 49152, 80, 0x12345800, 0xABCDEF10, 8192,
+                                data, 10, srcIP, destIP);
+
+        if (len != 30) // 20 header + 10 data
+        {
+            Fail("TcpBuildData", "wrong length");
+            return;
+        }
+
+        // Flags should be PSH|ACK
+        if (buffer[13] != (TcpFlags.PSH | TcpFlags.ACK))
+        {
+            Fail("TcpBuildData", "wrong flags");
+            return;
+        }
+
+        // Verify payload
+        bool payloadOk = true;
+        for (int i = 0; i < 10; i++)
+        {
+            if (buffer[20 + i] != (byte)(0x41 + i))
+            {
+                payloadOk = false;
+                break;
+            }
+        }
+        if (!payloadOk)
+        {
+            Fail("TcpBuildData", "payload mismatch");
+            return;
+        }
+
+        // Verify checksum
+        if (!TCP.VerifyChecksum(buffer, len, srcIP, destIP))
+        {
+            Fail("TcpBuildData", "checksum invalid");
+            return;
+        }
+
+        Pass("TcpBuildData");
     }
 }

@@ -1435,6 +1435,28 @@ public static unsafe class Kernel
         var testUdpFunc = (delegate* unmanaged<int>)testUdpResult.CodeAddress;
         int udpResult = testUdpFunc();
         DebugConsole.WriteLine(string.Format("[VirtioNet] TestUdp returned {0}", udpResult));
+
+        // Find TestTcp method
+        uint testTcpToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestTcp");
+        if (testTcpToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestTcp method");
+            return;
+        }
+
+        // JIT compile TestTcp method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestTcp...");
+        var testTcpResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testTcpToken);
+        if (!testTcpResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestTcp");
+            return;
+        }
+
+        // Call TestTcp
+        var testTcpFunc = (delegate* unmanaged<int>)testTcpResult.CodeAddress;
+        int tcpResult = testTcpFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestTcp returned {0}", tcpResult));
     }
 
     /// <summary>

@@ -41,6 +41,9 @@ public static unsafe class KernelExportInit
         // Register Assembly Loader exports
         RegisterAssemblyLoaderExports();
 
+        // Register Timer exports
+        RegisterTimerExports();
+
         KernelExportRegistry.DebugPrint();
     }
 
@@ -485,5 +488,18 @@ public static unsafe class KernelExportInit
         n[7]=0x43; n[8]=0x72; n[9]=0x65; n[10]=0x61; n[11]=0x74; n[12]=0x65; // Create
         n[13]=0x43; n[14]=0x6F; n[15]=0x6E; n[16]=0x74; n[17]=0x65; n[18]=0x78; n[19]=0x74; n[20]=0; // Context
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<uint>)&AssemblyLoaderExports.CreateContext);
+    }
+
+    private static void RegisterTimerExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_GetTickCount
+        // "Kernel_GetTickCount" = 4B 65 72 6E 65 6C 5F 47 65 74 54 69 63 6B 43 6F 75 6E 74
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x47; n[8]=0x65; n[9]=0x74; // Get
+        n[10]=0x54; n[11]=0x69; n[12]=0x63; n[13]=0x6B; // Tick
+        n[14]=0x43; n[15]=0x6F; n[16]=0x75; n[17]=0x6E; n[18]=0x74; n[19]=0; // Count
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong>)&TimerExports.GetTickCount);
     }
 }

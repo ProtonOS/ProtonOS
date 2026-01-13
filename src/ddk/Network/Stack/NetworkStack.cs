@@ -82,6 +82,14 @@ public unsafe class NetworkStack
     private ulong _icmpReceived;
     private ulong _udpSent;
     private ulong _udpReceived;
+    private ulong _tcpSent;
+    private ulong _tcpReceived;
+
+    // TCP connections
+    private const int MaxTcpConnections = 16;
+    private TcpConnection[] _tcpConnections;
+    private int _tcpConnectionCount;
+    private ushort _nextEphemeralPort;
 
     // UDP receive queue (simple ring buffer)
     private const int MaxUdpQueueSize = 16;
@@ -97,6 +105,9 @@ public unsafe class NetworkStack
     private bool _pingPending;
     private uint _pingTargetIP;
     private ulong _pingTimestamp;
+
+    // Pending TX frame length (for TCP auto-responses)
+    private int _pendingTxLen;
 
     /// <summary>
     /// Create a new network stack instance.
@@ -116,6 +127,11 @@ public unsafe class NetworkStack
         _udpQueueHead = 0;
         _udpQueueTail = 0;
         _udpQueueCount = 0;
+
+        // Initialize TCP connections
+        _tcpConnections = new TcpConnection[MaxTcpConnections];
+        _tcpConnectionCount = 0;
+        _nextEphemeralPort = 49152; // Start of ephemeral port range
     }
 
     /// <summary>
@@ -273,6 +289,10 @@ public unsafe class NetworkStack
 
             case UDP.ProtocolNumber:
                 ProcessUdp(payload, payloadLen, srcIP, destIP);
+                break;
+
+            case TCP.ProtocolNumber:
+                ProcessTcp(payload, payloadLen, srcIP, destIP);
                 break;
 
             default:
@@ -500,6 +520,340 @@ public unsafe class NetworkStack
         _udpQueueCount--;
 
         return copyLen;
+    }
+
+    // ===========================================
+    // TCP Methods
+    // ===========================================
+
+    /// <summary>
+    /// Process a TCP packet.
+    /// </summary>
+    private void ProcessTcp(byte* data, int length, uint srcIP, uint destIP)
+    {
+        _tcpReceived++;
+
+        TcpPacket packet;
+        if (!TCP.Parse(data, length, out packet))
+        {
+            Debug.WriteLine("[NetStack] Failed to parse TCP packet");
+            return;
+        }
+
+        // Verify checksum
+        if (!TCP.VerifyChecksum(data, length, srcIP, destIP))
+        {
+            Debug.WriteLine("[NetStack] TCP checksum invalid");
+            return;
+        }
+
+        Debug.Write("[NetStack] TCP from ");
+        PrintIP(srcIP);
+        Debug.Write(":");
+        Debug.WriteDecimal(packet.SourcePort);
+        Debug.Write(" to port ");
+        Debug.WriteDecimal(packet.DestPort);
+        Debug.Write(" flags=");
+        PrintTcpFlags(packet.Flags);
+        Debug.Write(" seq=");
+        Debug.WriteHex((uint)packet.SeqNum);
+        Debug.Write(" ack=");
+        Debug.WriteHex((uint)packet.AckNum);
+        Debug.WriteLine();
+
+        // Find matching connection
+        TcpConnection conn = FindConnection(srcIP, packet.SourcePort, packet.DestPort);
+
+        if (conn == null)
+        {
+            // No connection found - could send RST for unsolicited packets
+            Debug.WriteLine("[NetStack] No TCP connection found for packet");
+            return;
+        }
+
+        // Process packet through connection state machine
+        byte* responseBuffer = stackalloc byte[TcpHeader.MaxSize + 64];
+        int responseLen = conn.ProcessPacket(&packet, responseBuffer);
+
+        if (responseLen > 0)
+        {
+            // Send response - put it in TX buffer for caller to transmit
+            int frameLen = BuildIPv4Frame(srcIP, TCP.ProtocolNumber, responseBuffer, responseLen);
+            if (frameLen > 0)
+            {
+                _pendingTxLen = frameLen;
+                _tcpSent++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get and clear pending TX frame length (set by TCP auto-responses).
+    /// Returns 0 if no pending frame.
+    /// </summary>
+    public int GetPendingTxLen()
+    {
+        int len = _pendingTxLen;
+        _pendingTxLen = 0;
+        return len;
+    }
+
+    /// <summary>
+    /// Find a TCP connection matching the given parameters.
+    /// </summary>
+    private TcpConnection FindConnection(uint remoteIP, ushort remotePort, ushort localPort)
+    {
+        for (int i = 0; i < _tcpConnectionCount; i++)
+        {
+            if (_tcpConnections[i] != null &&
+                _tcpConnections[i].Matches(remoteIP, remotePort, localPort))
+            {
+                return _tcpConnections[i];
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Add a TCP connection to the connection table.
+    /// </summary>
+    private int AddConnection(TcpConnection conn)
+    {
+        if (_tcpConnectionCount >= MaxTcpConnections)
+            return -1;
+
+        // Find empty slot
+        for (int i = 0; i < MaxTcpConnections; i++)
+        {
+            if (_tcpConnections[i] == null)
+            {
+                _tcpConnections[i] = conn;
+                _tcpConnectionCount++;
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Remove a TCP connection from the connection table.
+    /// </summary>
+    private void RemoveConnection(int index)
+    {
+        if (index >= 0 && index < MaxTcpConnections && _tcpConnections[index] != null)
+        {
+            _tcpConnections[index] = null;
+            _tcpConnectionCount--;
+        }
+    }
+
+    /// <summary>
+    /// Allocate an ephemeral port.
+    /// </summary>
+    private ushort AllocateEphemeralPort()
+    {
+        ushort port = _nextEphemeralPort;
+        _nextEphemeralPort++;
+        if (_nextEphemeralPort < 49152)
+            _nextEphemeralPort = 49152;
+        return port;
+    }
+
+    /// <summary>
+    /// Initiate a TCP connection.
+    /// </summary>
+    /// <param name="destIP">Destination IP address (host byte order).</param>
+    /// <param name="destPort">Destination port.</param>
+    /// <returns>Connection index, or -1 on error. Returns -2 if ARP needed.</returns>
+    public int TcpConnect(uint destIP, ushort destPort)
+    {
+        if (_tcpConnectionCount >= MaxTcpConnections)
+        {
+            Debug.WriteLine("[NetStack] TCP connection table full");
+            return -1;
+        }
+
+        ushort localPort = AllocateEphemeralPort();
+        var conn = new TcpConnection(_config.IPAddress, localPort, destIP, destPort);
+
+        int index = AddConnection(conn);
+        if (index < 0)
+            return -1;
+
+        // Build SYN packet
+        byte* synBuffer = stackalloc byte[TcpHeader.MinSize];
+        int synLen = conn.InitiateConnect(synBuffer);
+        if (synLen == 0)
+        {
+            RemoveConnection(index);
+            return -1;
+        }
+
+        // Send SYN
+        int frameLen = BuildIPv4Frame(destIP, TCP.ProtocolNumber, synBuffer, synLen);
+        if (frameLen == 0)
+        {
+            // Need ARP resolution
+            Debug.Write("[NetStack] TCP connect to ");
+            PrintIP(destIP);
+            Debug.WriteLine(" - need ARP first");
+            RemoveConnection(index);
+            return -2;
+        }
+
+        _pendingTxLen = frameLen;
+        _tcpSent++;
+
+        Debug.Write("[NetStack] TCP connecting to ");
+        PrintIP(destIP);
+        Debug.Write(":");
+        Debug.WriteDecimal(destPort);
+        Debug.Write(" from port ");
+        Debug.WriteDecimal(localPort);
+        Debug.WriteLine();
+
+        return index;
+    }
+
+    /// <summary>
+    /// Get a TCP connection by index.
+    /// </summary>
+    public TcpConnection GetTcpConnection(int index)
+    {
+        if (index >= 0 && index < MaxTcpConnections)
+            return _tcpConnections[index];
+        return null;
+    }
+
+    /// <summary>
+    /// Send data on a TCP connection.
+    /// </summary>
+    /// <param name="connIndex">Connection index from TcpConnect.</param>
+    /// <param name="data">Data to send.</param>
+    /// <param name="length">Data length.</param>
+    /// <returns>Number of bytes sent, or 0 on error.</returns>
+    public int TcpSend(int connIndex, byte* data, int length)
+    {
+        var conn = GetTcpConnection(connIndex);
+        if (conn == null || !conn.IsConnected)
+            return 0;
+
+        // Build data packet
+        int maxTcpLen = TcpHeader.MinSize + length;
+        byte* tcpBuffer = stackalloc byte[maxTcpLen];
+        int tcpLen = conn.BuildDataPacket(tcpBuffer, data, length);
+        if (tcpLen == 0)
+            return 0;
+
+        // Send packet
+        int frameLen = BuildIPv4Frame(conn.RemoteEndpoint.IP, TCP.ProtocolNumber, tcpBuffer, tcpLen);
+        if (frameLen == 0)
+            return 0;
+
+        _tcpSent++;
+
+        Debug.Write("[NetStack] TCP sent ");
+        Debug.WriteDecimal(length);
+        Debug.Write(" bytes to ");
+        PrintIP(conn.RemoteEndpoint.IP);
+        Debug.Write(":");
+        Debug.WriteDecimal(conn.RemoteEndpoint.Port);
+        Debug.WriteLine();
+
+        return length;
+    }
+
+    /// <summary>
+    /// Receive data from a TCP connection.
+    /// </summary>
+    /// <param name="connIndex">Connection index from TcpConnect.</param>
+    /// <param name="buffer">Buffer to receive data.</param>
+    /// <param name="maxLength">Maximum bytes to read.</param>
+    /// <returns>Number of bytes read, or 0 if no data available.</returns>
+    public int TcpReceive(int connIndex, byte* buffer, int maxLength)
+    {
+        var conn = GetTcpConnection(connIndex);
+        if (conn == null)
+            return 0;
+
+        return conn.Read(buffer, maxLength);
+    }
+
+    /// <summary>
+    /// Check how many bytes are available to read on a TCP connection.
+    /// </summary>
+    public int TcpAvailable(int connIndex)
+    {
+        var conn = GetTcpConnection(connIndex);
+        if (conn == null)
+            return 0;
+        return conn.Available;
+    }
+
+    /// <summary>
+    /// Close a TCP connection.
+    /// </summary>
+    /// <param name="connIndex">Connection index from TcpConnect.</param>
+    /// <returns>True if close initiated.</returns>
+    public bool TcpClose(int connIndex)
+    {
+        var conn = GetTcpConnection(connIndex);
+        if (conn == null)
+            return false;
+
+        if (conn.IsClosed)
+        {
+            RemoveConnection(connIndex);
+            return true;
+        }
+
+        // Build FIN packet
+        byte* finBuffer = stackalloc byte[TcpHeader.MinSize];
+        int finLen = conn.InitiateClose(finBuffer);
+        if (finLen == 0)
+        {
+            // Already closing or closed
+            if (conn.IsClosed)
+                RemoveConnection(connIndex);
+            return true;
+        }
+
+        // Send FIN
+        int frameLen = BuildIPv4Frame(conn.RemoteEndpoint.IP, TCP.ProtocolNumber, finBuffer, finLen);
+        if (frameLen > 0)
+        {
+            _tcpSent++;
+            Debug.Write("[NetStack] TCP closing connection to ");
+            PrintIP(conn.RemoteEndpoint.IP);
+            Debug.Write(":");
+            Debug.WriteDecimal(conn.RemoteEndpoint.Port);
+            Debug.WriteLine();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Get TCP statistics.
+    /// </summary>
+    public void GetTcpStats(out ulong sent, out ulong received, out int activeConnections)
+    {
+        sent = _tcpSent;
+        received = _tcpReceived;
+        activeConnections = _tcpConnectionCount;
+    }
+
+    /// <summary>
+    /// Print TCP flags.
+    /// </summary>
+    private void PrintTcpFlags(byte flags)
+    {
+        if ((flags & TcpFlags.SYN) != 0) Debug.Write("S");
+        if ((flags & TcpFlags.ACK) != 0) Debug.Write("A");
+        if ((flags & TcpFlags.FIN) != 0) Debug.Write("F");
+        if ((flags & TcpFlags.RST) != 0) Debug.Write("R");
+        if ((flags & TcpFlags.PSH) != 0) Debug.Write("P");
+        if ((flags & TcpFlags.URG) != 0) Debug.Write("U");
     }
 
     /// <summary>
