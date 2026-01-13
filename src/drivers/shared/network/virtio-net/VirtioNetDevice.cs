@@ -136,6 +136,10 @@ public unsafe class VirtioNetDevice : VirtioDevice
         // Mark device as ready
         SetDriverOk();
 
+        // Re-notify RX queue now that device is DRIVER_OK
+        // (Notifications before DRIVER_OK may be ignored per virtio spec)
+        NotifyQueue(RX_QUEUE);
+
         Debug.WriteLine("[virtio-net] Device initialized successfully");
         return true;
     }
@@ -212,7 +216,8 @@ public unsafe class VirtioNetDevice : VirtioDevice
         byte* buffer = _txBuffers + (bufIdx * TX_BUFFER_SIZE);
         ulong bufferPhys = _txBuffersPhys + (ulong)(bufIdx * TX_BUFFER_SIZE);
 
-        // Build virtio-net header (10 bytes without mrg_rxbuf, 12 with)
+        // Build virtio-net header
+        // For modern virtio (VIRTIO_F_VERSION_1), use 12-byte header:
         // struct virtio_net_hdr {
         //   u8 flags;
         //   u8 gso_type;
@@ -220,7 +225,9 @@ public unsafe class VirtioNetDevice : VirtioDevice
         //   u16 gso_size;
         //   u16 csum_start;
         //   u16 csum_offset;
+        //   u16 num_buffers;  // Always present with VERSION_1
         // }
+        const int HDR_SIZE = 12;
         buffer[0] = 0;  // flags
         buffer[1] = 0;  // gso_type (VIRTIO_NET_HDR_GSO_NONE)
         buffer[2] = 0;  // hdr_len low
@@ -231,17 +238,18 @@ public unsafe class VirtioNetDevice : VirtioDevice
         buffer[7] = 0;  // csum_start high
         buffer[8] = 0;  // csum_offset low
         buffer[9] = 0;  // csum_offset high
+        buffer[10] = 0; // num_buffers low (unused for TX, but must be present)
+        buffer[11] = 0; // num_buffers high
 
-        // Copy frame data after header (10 bytes)
-        byte* frameData = buffer + 10;
+        // Copy frame data after header
+        byte* frameData = buffer + HDR_SIZE;
         for (int i = 0; i < length; i++)
         {
             frameData[i] = data[i];
         }
 
         // Set up descriptor - device reads from this buffer
-        // Total length = header (10) + frame data
-        queue.SetDescriptor(descIdx, bufferPhys, (uint)(10 + length),
+        queue.SetDescriptor(descIdx, bufferPhys, (uint)(HDR_SIZE + length),
             VirtqDescFlags.None, 0);
 
         // Submit to available ring
@@ -313,8 +321,9 @@ public unsafe class VirtioNetDevice : VirtioDevice
 
         byte* rxBuffer = _rxBuffers + (bufIdx * RX_BUFFER_SIZE);
 
-        // Skip virtio-net header (10 bytes without mrg_rxbuf)
-        int frameLen = (int)usedLen - 10;
+        // Skip virtio-net header (12 bytes for VERSION_1)
+        const int HDR_SIZE = 12;
+        int frameLen = (int)usedLen - HDR_SIZE;
         if (frameLen <= 0 || frameLen > maxLength)
         {
             // Re-add buffer to queue
@@ -323,7 +332,7 @@ public unsafe class VirtioNetDevice : VirtioDevice
         }
 
         // Copy frame data (skip header)
-        byte* frameData = rxBuffer + 10;
+        byte* frameData = rxBuffer + HDR_SIZE;
         for (int i = 0; i < frameLen; i++)
         {
             buffer[i] = frameData[i];

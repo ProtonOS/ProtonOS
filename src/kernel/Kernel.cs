@@ -1307,6 +1307,25 @@ public static unsafe class Kernel
         DebugConsole.WriteLine();
         DebugConsole.WriteLine("[VirtioNet] Testing virtio network device...");
 
+        // Run unit tests first
+        uint unitTestToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "RunUnitTests");
+        if (unitTestToken != 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.RunUnitTests...");
+            var unitTestResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, unitTestToken);
+            if (unitTestResult.Success)
+            {
+                var unitTestFunc = (delegate* unmanaged<int>)unitTestResult.CodeAddress;
+                int unitResult = unitTestFunc();
+                if (unitResult != 1)
+                {
+                    DebugConsole.WriteLine("[VirtioNet] ERROR: Unit tests failed!");
+                    return;
+                }
+                DebugConsole.WriteLine("[VirtioNet] Unit tests passed");
+            }
+        }
+
         // Find TestSend method
         uint testSendToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestSend");
         if (testSendToken == 0)
@@ -1350,6 +1369,72 @@ public static unsafe class Kernel
         var testReceiveFunc = (delegate* unmanaged<int>)testReceiveResult.CodeAddress;
         int receiveResult = testReceiveFunc();
         DebugConsole.WriteLine(string.Format("[VirtioNet] TestReceive returned {0}", receiveResult));
+
+        // Find TestNetworkStack method
+        uint testNetStackToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestNetworkStack");
+        if (testNetStackToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestNetworkStack method");
+            return;
+        }
+
+        // JIT compile TestNetworkStack method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestNetworkStack...");
+        var testNetStackResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testNetStackToken);
+        if (!testNetStackResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestNetworkStack");
+            return;
+        }
+
+        // Call TestNetworkStack
+        var testNetStackFunc = (delegate* unmanaged<int>)testNetStackResult.CodeAddress;
+        int netStackResult = testNetStackFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestNetworkStack returned {0}", netStackResult));
+
+        // Find TestPing method
+        uint testPingToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestPing");
+        if (testPingToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestPing method");
+            return;
+        }
+
+        // JIT compile TestPing method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestPing...");
+        var testPingResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testPingToken);
+        if (!testPingResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestPing");
+            return;
+        }
+
+        // Call TestPing
+        var testPingFunc = (delegate* unmanaged<int>)testPingResult.CodeAddress;
+        int pingResult = testPingFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestPing returned {0}", pingResult));
+
+        // Find TestUdp method
+        uint testUdpToken = AssemblyLoader.FindMethodDefByName(_virtioNetDriverId, virtioNetEntryToken, "TestUdp");
+        if (testUdpToken == 0)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Could not find TestUdp method");
+            return;
+        }
+
+        // JIT compile TestUdp method
+        DebugConsole.WriteLine("[VirtioNet] JIT compiling VirtioNetEntry.TestUdp...");
+        var testUdpResult = Runtime.JIT.Tier0JIT.CompileMethod(_virtioNetDriverId, testUdpToken);
+        if (!testUdpResult.Success)
+        {
+            DebugConsole.WriteLine("[VirtioNet] ERROR: Failed to JIT compile TestUdp");
+            return;
+        }
+
+        // Call TestUdp
+        var testUdpFunc = (delegate* unmanaged<int>)testUdpResult.CodeAddress;
+        int udpResult = testUdpFunc();
+        DebugConsole.WriteLine(string.Format("[VirtioNet] TestUdp returned {0}", udpResult));
     }
 
     /// <summary>

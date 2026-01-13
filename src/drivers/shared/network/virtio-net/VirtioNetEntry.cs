@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using ProtonOS.DDK.Drivers;
 using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Platform;
+using ProtonOS.DDK.Network.Stack;
 using ProtonOS.Drivers.Virtio;
 
 namespace ProtonOS.Drivers.Network.VirtioNet;
@@ -17,6 +18,16 @@ public static unsafe class VirtioNetEntry
 {
     // Active device instance
     private static VirtioNetDevice? _device;
+
+    /// <summary>
+    /// Run network stack unit tests.
+    /// Call this before device binding to verify protocol logic.
+    /// </summary>
+    /// <returns>1 if all tests pass, 0 if any fail.</returns>
+    public static int RunUnitTests()
+    {
+        return NetworkStackTests.RunAll() ? 1 : 0;
+    }
 
     /// <summary>
     /// Check if this driver supports the given PCI device.
@@ -240,6 +251,409 @@ public static unsafe class VirtioNetEntry
         Debug.WriteLine(" frame(s)");
 
         return count;
+    }
+
+    // Network stack instance for protocol handling
+    private static NetworkStack? _netStack;
+
+    /// <summary>
+    /// Test the network stack with ARP resolution.
+    /// </summary>
+    public static int TestNetworkStack()
+    {
+        if (_device == null)
+        {
+            Debug.WriteLine("[virtio-net] TestNetworkStack: No device bound");
+            return 0;
+        }
+
+        Debug.WriteLine("[virtio-net] TestNetworkStack: Testing network stack...");
+
+        // Create network stack if not already created
+        if (_netStack == null)
+        {
+            _netStack = new NetworkStack(_device.MacAddress);
+
+            // Configure with QEMU user-mode network defaults:
+            // Guest IP: 10.0.2.15, Subnet: 255.255.255.0, Gateway: 10.0.2.2
+            uint guestIP = ARP.MakeIP(10, 0, 2, 15);
+            uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
+            uint gateway = ARP.MakeIP(10, 0, 2, 2);
+
+            _netStack.Configure(guestIP, subnetMask, gateway);
+        }
+
+        // Check if gateway MAC is already cached
+        byte* gatewayMac = stackalloc byte[6];
+        uint gateway2 = ARP.MakeIP(10, 0, 2, 2);
+
+        if (_netStack.ArpCache.Lookup(gateway2, gatewayMac))
+        {
+            Debug.Write("[virtio-net] Gateway MAC already cached: ");
+            for (int i = 0; i < 6; i++)
+            {
+                Debug.WriteHex(gatewayMac[i]);
+                if (i < 5) Debug.Write(":");
+            }
+            Debug.WriteLine();
+            return 1;
+        }
+
+        // Send ARP request for gateway
+        int frameLen = _netStack.SendArpRequest(gateway2);
+        if (frameLen == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestNetworkStack: Failed to build ARP request");
+            return 0;
+        }
+
+        // Transmit the ARP request
+        byte* txBuffer = _netStack.GetTxBuffer();
+        bool sent = _device.SendFrame(txBuffer, frameLen);
+        if (!sent)
+        {
+            Debug.WriteLine("[virtio-net] TestNetworkStack: Failed to send ARP request");
+            return 0;
+        }
+
+        Debug.WriteLine("[virtio-net] TestNetworkStack: ARP request sent, waiting for reply...");
+
+        // Poll for ARP reply (simple busy-wait for demo)
+        byte* rxBuffer = stackalloc byte[1514];
+        int attempts = 100000;
+        int repliesReceived = 0;
+
+        while (attempts > 0)
+        {
+            int len = _device.ReceiveFrame(rxBuffer, 1514);
+            if (len > 0)
+            {
+                // Process the received frame through the network stack
+                _netStack.ProcessFrame(rxBuffer, len);
+
+                // Check if we now have the gateway in our cache
+                if (_netStack.ArpCache.Lookup(gateway2, gatewayMac))
+                {
+                    Debug.Write("[virtio-net] TestNetworkStack: Resolved gateway MAC: ");
+                    for (int i = 0; i < 6; i++)
+                    {
+                        Debug.WriteHex(gatewayMac[i]);
+                        if (i < 5) Debug.Write(":");
+                    }
+                    Debug.WriteLine();
+                    repliesReceived = 1;
+                    break;
+                }
+            }
+            attempts--;
+        }
+
+        if (repliesReceived == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestNetworkStack: No ARP reply received (timeout)");
+        }
+
+        // Print stats
+        ulong rxFrames, txFrames, arpReq, arpRep;
+        _netStack.GetStats(out rxFrames, out txFrames, out arpReq, out arpRep);
+        Debug.Write("[virtio-net] Stats: RX=");
+        Debug.WriteDecimal((uint)rxFrames);
+        Debug.Write(" TX=");
+        Debug.WriteDecimal((uint)txFrames);
+        Debug.Write(" ARP-Req=");
+        Debug.WriteDecimal((uint)arpReq);
+        Debug.Write(" ARP-Rep=");
+        Debug.WriteDecimal((uint)arpRep);
+        Debug.WriteLine();
+
+        return repliesReceived;
+    }
+
+    /// <summary>
+    /// Test sending a ping (ICMP echo request) to the gateway.
+    /// </summary>
+    public static int TestPing()
+    {
+        if (_device == null)
+        {
+            Debug.WriteLine("[virtio-net] TestPing: No device bound");
+            return 0;
+        }
+
+        // Create network stack if not already created
+        if (_netStack == null)
+        {
+            _netStack = new NetworkStack(_device.MacAddress);
+
+            uint guestIP = ARP.MakeIP(10, 0, 2, 15);
+            uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
+            uint gateway = ARP.MakeIP(10, 0, 2, 2);
+
+            _netStack.Configure(guestIP, subnetMask, gateway);
+        }
+
+        uint gatewayIP = ARP.MakeIP(10, 0, 2, 2);
+
+        // First, ensure we have the gateway MAC (via ARP if needed)
+        byte* gatewayMac = stackalloc byte[6];
+        if (!_netStack.ArpCache.Lookup(gatewayIP, gatewayMac))
+        {
+            Debug.WriteLine("[virtio-net] TestPing: Need ARP resolution first...");
+
+            // Send ARP request
+            int arpLen = _netStack.SendArpRequest(gatewayIP);
+            if (arpLen > 0)
+            {
+                byte* txBuffer = _netStack.GetTxBuffer();
+                _device.SendFrame(txBuffer, arpLen);
+            }
+
+            // Wait for ARP reply
+            byte* rxBuffer = stackalloc byte[1514];
+            int attempts = 50000;
+            while (attempts > 0 && !_netStack.ArpCache.Lookup(gatewayIP, gatewayMac))
+            {
+                int len = _device.ReceiveFrame(rxBuffer, 1514);
+                if (len > 0)
+                    _netStack.ProcessFrame(rxBuffer, len);
+                attempts--;
+            }
+
+            if (!_netStack.ArpCache.Lookup(gatewayIP, gatewayMac))
+            {
+                Debug.WriteLine("[virtio-net] TestPing: Failed to resolve gateway MAC");
+                return 0;
+            }
+        }
+
+        Debug.WriteLine("[virtio-net] TestPing: Sending ping to gateway 10.0.2.2...");
+
+        // Send ping
+        int pingLen = _netStack.SendPing(gatewayIP);
+        if (pingLen == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestPing: Failed to build ping");
+            return 0;
+        }
+
+        // Transmit the ping
+        byte* pingBuffer = _netStack.GetTxBuffer();
+        bool sent = _device.SendFrame(pingBuffer, pingLen);
+        if (!sent)
+        {
+            Debug.WriteLine("[virtio-net] TestPing: Failed to send ping");
+            return 0;
+        }
+
+        // Wait for ping reply
+        byte* rxBuf = stackalloc byte[1514];
+        int pollAttempts = 100000;
+        int pingReceived = 0;
+
+        while (pollAttempts > 0)
+        {
+            int len = _device.ReceiveFrame(rxBuf, 1514);
+            if (len > 0)
+            {
+                _netStack.ProcessFrame(rxBuf, len);
+
+                // Check if ping was received
+                if (!_netStack.IsPingPending())
+                {
+                    Debug.WriteLine("[virtio-net] TestPing: Ping reply received!");
+                    pingReceived = 1;
+                    break;
+                }
+            }
+            pollAttempts--;
+        }
+
+        if (pingReceived == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestPing: No ping reply received (timeout)");
+        }
+
+        // Print ICMP stats
+        ulong icmpSent, icmpRecv;
+        _netStack.GetIcmpStats(out icmpSent, out icmpRecv);
+        Debug.Write("[virtio-net] ICMP Stats: Sent=");
+        Debug.WriteDecimal((uint)icmpSent);
+        Debug.Write(" Recv=");
+        Debug.WriteDecimal((uint)icmpRecv);
+        Debug.WriteLine();
+
+        return pingReceived;
+    }
+
+    /// <summary>
+    /// Test sending a UDP packet (DNS query) to QEMU's DNS server.
+    /// </summary>
+    public static int TestUdp()
+    {
+        if (_device == null)
+        {
+            Debug.WriteLine("[virtio-net] TestUdp: No device bound");
+            return 0;
+        }
+
+        // Create network stack if not already created
+        if (_netStack == null)
+        {
+            _netStack = new NetworkStack(_device.MacAddress);
+
+            uint guestIP = ARP.MakeIP(10, 0, 2, 15);
+            uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
+            uint gateway = ARP.MakeIP(10, 0, 2, 2);
+
+            _netStack.Configure(guestIP, subnetMask, gateway);
+        }
+
+        // QEMU's DNS server is at 10.0.2.3
+        uint dnsServerIP = ARP.MakeIP(10, 0, 2, 3);
+
+        // First, ensure we have the DNS server MAC (via ARP if needed)
+        byte* dnsServerMac = stackalloc byte[6];
+        if (!_netStack.ArpCache.Lookup(dnsServerIP, dnsServerMac))
+        {
+            Debug.WriteLine("[virtio-net] TestUdp: Need ARP resolution for DNS server...");
+
+            // Send ARP request
+            int arpLen = _netStack.SendArpRequest(dnsServerIP);
+            if (arpLen > 0)
+            {
+                byte* txBuffer = _netStack.GetTxBuffer();
+                _device.SendFrame(txBuffer, arpLen);
+            }
+
+            // Wait for ARP reply
+            byte* rxBuffer = stackalloc byte[1514];
+            int attempts = 50000;
+            while (attempts > 0 && !_netStack.ArpCache.Lookup(dnsServerIP, dnsServerMac))
+            {
+                int len = _device.ReceiveFrame(rxBuffer, 1514);
+                if (len > 0)
+                    _netStack.ProcessFrame(rxBuffer, len);
+                attempts--;
+            }
+
+            if (!_netStack.ArpCache.Lookup(dnsServerIP, dnsServerMac))
+            {
+                Debug.WriteLine("[virtio-net] TestUdp: Failed to resolve DNS server MAC");
+                return 0;
+            }
+        }
+
+        Debug.WriteLine("[virtio-net] TestUdp: Sending DNS query to 10.0.2.3...");
+
+        // Build a minimal DNS query for "test.local"
+        // DNS header: ID (2), Flags (2), QDCOUNT (2), ANCOUNT (2), NSCOUNT (2), ARCOUNT (2)
+        // Query: Name, Type (2), Class (2)
+        byte* dnsQuery = stackalloc byte[32];
+
+        // Transaction ID
+        dnsQuery[0] = 0x12; dnsQuery[1] = 0x34;
+        // Flags: Standard query
+        dnsQuery[2] = 0x01; dnsQuery[3] = 0x00;
+        // QDCOUNT: 1 question
+        dnsQuery[4] = 0x00; dnsQuery[5] = 0x01;
+        // ANCOUNT, NSCOUNT, ARCOUNT: 0
+        dnsQuery[6] = 0x00; dnsQuery[7] = 0x00;
+        dnsQuery[8] = 0x00; dnsQuery[9] = 0x00;
+        dnsQuery[10] = 0x00; dnsQuery[11] = 0x00;
+
+        // Query name: "test" (4 chars) + "local" (5 chars) + root
+        dnsQuery[12] = 4;  // length of "test"
+        dnsQuery[13] = (byte)'t'; dnsQuery[14] = (byte)'e'; dnsQuery[15] = (byte)'s'; dnsQuery[16] = (byte)'t';
+        dnsQuery[17] = 5;  // length of "local"
+        dnsQuery[18] = (byte)'l'; dnsQuery[19] = (byte)'o'; dnsQuery[20] = (byte)'c'; dnsQuery[21] = (byte)'a'; dnsQuery[22] = (byte)'l';
+        dnsQuery[23] = 0;  // root label
+
+        // Type: A (host address)
+        dnsQuery[24] = 0x00; dnsQuery[25] = 0x01;
+        // Class: IN (Internet)
+        dnsQuery[26] = 0x00; dnsQuery[27] = 0x01;
+
+        int dnsQueryLen = 28;
+
+        // Send UDP to DNS port 53
+        ushort srcPort = 54321;  // Ephemeral source port
+        ushort destPort = 53;    // DNS port
+
+        int frameLen = _netStack.SendUdp(dnsServerIP, srcPort, destPort, dnsQuery, dnsQueryLen);
+        if (frameLen == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestUdp: Failed to build UDP packet");
+            return 0;
+        }
+
+        // Transmit the packet
+        byte* udpBuffer = _netStack.GetTxBuffer();
+        bool sent = _device.SendFrame(udpBuffer, frameLen);
+        if (!sent)
+        {
+            Debug.WriteLine("[virtio-net] TestUdp: Failed to send UDP packet");
+            return 0;
+        }
+
+        // Wait for DNS response
+        byte* rxBuf = stackalloc byte[1514];
+        int pollAttempts = 100000;
+        int responseReceived = 0;
+
+        while (pollAttempts > 0)
+        {
+            int len = _device.ReceiveFrame(rxBuf, 1514);
+            if (len > 0)
+            {
+                _netStack.ProcessFrame(rxBuf, len);
+
+                // Check if we received any UDP packets
+                if (_netStack.UdpAvailable() > 0)
+                {
+                    Debug.WriteLine("[virtio-net] TestUdp: DNS response received!");
+                    responseReceived = 1;
+
+                    // Read and discard the response
+                    uint srcIP;
+                    ushort rSrcPort, rDestPort;
+                    byte* respBuf = stackalloc byte[512];
+                    int respLen = _netStack.ReceiveUdp(out srcIP, out rSrcPort, out rDestPort, respBuf, 512);
+
+                    Debug.Write("[virtio-net] TestUdp: Response from ");
+                    Debug.WriteDecimal((srcIP >> 24) & 0xFF);
+                    Debug.Write(".");
+                    Debug.WriteDecimal((srcIP >> 16) & 0xFF);
+                    Debug.Write(".");
+                    Debug.WriteDecimal((srcIP >> 8) & 0xFF);
+                    Debug.Write(".");
+                    Debug.WriteDecimal(srcIP & 0xFF);
+                    Debug.Write(":");
+                    Debug.WriteDecimal(rSrcPort);
+                    Debug.Write(" len=");
+                    Debug.WriteDecimal(respLen);
+                    Debug.WriteLine();
+
+                    break;
+                }
+            }
+            pollAttempts--;
+        }
+
+        if (responseReceived == 0)
+        {
+            Debug.WriteLine("[virtio-net] TestUdp: No DNS response received (timeout)");
+        }
+
+        // Print UDP stats
+        ulong udpSent, udpRecv;
+        _netStack.GetUdpStats(out udpSent, out udpRecv);
+        Debug.Write("[virtio-net] UDP Stats: Sent=");
+        Debug.WriteDecimal((uint)udpSent);
+        Debug.Write(" Recv=");
+        Debug.WriteDecimal((uint)udpRecv);
+        Debug.WriteLine();
+
+        return responseReceived;
     }
 
     // Static counter for allocating BAR addresses

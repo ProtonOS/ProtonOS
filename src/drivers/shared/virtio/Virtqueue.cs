@@ -352,6 +352,41 @@ public unsafe class Virtqueue : IDisposable
     }
 
     /// <summary>
+    /// Get debugging info for used ring state.
+    /// </summary>
+    public void GetUsedDebugInfo(out ushort usedIdx, out ushort lastUsedIdx, out ushort usedFlags)
+    {
+        usedIdx = *_usedIdx;
+        lastUsedIdx = _lastUsedIdx;
+        usedFlags = *_usedFlags;
+    }
+
+    /// <summary>
+    /// Get debugging info for available ring state.
+    /// </summary>
+    public void GetAvailDebugInfo(out ushort availIdx, out ushort availFlags)
+    {
+        availIdx = *_availIdx;
+        availFlags = *_availFlags;
+    }
+
+    /// <summary>
+    /// Get pointer to used ring for debug dumping.
+    /// </summary>
+    public byte* GetUsedRingBase()
+    {
+        return (byte*)_usedFlags;
+    }
+
+    /// <summary>
+    /// Get physical address of used ring.
+    /// </summary>
+    public ulong GetUsedPhysAddr()
+    {
+        return _usedBuffer.PhysicalAddress;
+    }
+
+    /// <summary>
     /// Get the next completed buffer from the used ring.
     /// </summary>
     /// <param name="length">Output: total length written by device</param>
