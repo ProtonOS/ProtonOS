@@ -42,6 +42,14 @@ public static unsafe class Kernel
     private static byte* _korlibBytes;
     private static ulong _korlibSize;
 
+    // ProtonOS.Net library (application-level networking)
+    private static byte* _protonOsNetBytes;
+    private static ulong _protonOsNetSize;
+
+    // AppTest assembly (application-level tests)
+    private static byte* _appTestBytes;
+    private static ulong _appTestSize;
+
     // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
     private static uint _testSupportId;
@@ -53,6 +61,8 @@ public static unsafe class Kernel
     private static uint _ahciDriverId;
     private static uint _virtioNetDriverId;
     private static uint _korlibId;
+    private static uint _protonOsNetId;
+    private static uint _appTestId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -270,10 +280,22 @@ public static unsafe class Kernel
             _virtioNetDriverId = AssemblyLoader.Load(_virtioNetDriverBytes, _virtioNetDriverSize);
         }
 
+        // Register ProtonOS.Net library (depends on DDK)
+        if (_protonOsNetBytes != null)
+        {
+            _protonOsNetId = AssemblyLoader.Load(_protonOsNetBytes, _protonOsNetSize);
+        }
+
         // Register the test assembly with AssemblyLoader (depends on TestSupport and DDK)
         if (_testAssemblyBytes != null)
         {
             _testAssemblyId = AssemblyLoader.Load(_testAssemblyBytes, _testAssemblySize);
+        }
+
+        // Register AppTest assembly (depends on DDK and ProtonOS.Net)
+        if (_appTestBytes != null)
+        {
+            _appTestId = AssemblyLoader.Load(_appTestBytes, _appTestSize);
         }
 
         // Initialize metadata integration layer (requires HeapAllocator)
@@ -304,6 +326,9 @@ public static unsafe class Kernel
 
         // Run the FullTest assembly to exercise JIT functionality
         RunFullTestAssembly();
+
+        // Run the AppTest assembly (application-level tests after drivers loaded)
+        RunAppTestAssembly();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
@@ -342,8 +367,14 @@ public static unsafe class Kernel
         // Load korlib.dll (IL assembly for JIT generic instantiation)
         _korlibBytes = BootInfoAccess.FindFile("korlib.dll", out _korlibSize);
 
+        // Load ProtonOS.Net.dll (application-level networking library)
+        _protonOsNetBytes = BootInfoAccess.FindFile("ProtonOS.Net.dll", out _protonOsNetSize);
+
         // Load FullTest.dll
         _testAssemblyBytes = BootInfoAccess.FindFile("FullTest.dll", out _testAssemblySize);
+
+        // Load AppTest.dll (application-level tests)
+        _appTestBytes = BootInfoAccess.FindFile("AppTest.dll", out _appTestSize);
 
         if (_testAssemblyBytes == null)
         {
@@ -607,6 +638,74 @@ public static unsafe class Kernel
         else
         {
             DebugConsole.WriteLine("[FullTest] ERROR: JIT compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Run the AppTest assembly via JIT compilation.
+    /// Tests application-level functionality like HTTP.
+    /// </summary>
+    private static void RunAppTestAssembly()
+    {
+        if (_appTestId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[AppTest] No AppTest assembly loaded, skipping");
+            return;
+        }
+
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Running AppTest Assembly");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        // Find TestRunner type
+        uint testRunnerToken = AssemblyLoader.FindTypeDefByFullName(_appTestId, "AppTest", "TestRunner");
+        if (testRunnerToken == 0)
+        {
+            DebugConsole.WriteLine("[AppTest] ERROR: Could not find AppTest.TestRunner type");
+            return;
+        }
+
+        // Find RunAllTests method
+        uint runAllTestsToken = AssemblyLoader.FindMethodDefByName(_appTestId, testRunnerToken, "RunAllTests");
+        if (runAllTestsToken == 0)
+        {
+            DebugConsole.WriteLine("[AppTest] ERROR: Could not find RunAllTests method");
+            return;
+        }
+
+        // JIT compile the method
+        var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_appTestId, runAllTestsToken);
+        if (jitResult.Success)
+        {
+            // Execute the compiled method
+            var testMethod = (delegate*<int>)jitResult.CodeAddress;
+            int result = testMethod();
+
+            // Decode result
+            int passCount = (result >> 16) & 0xFFFF;
+            int failCount = result & 0xFFFF;
+
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.WriteLine("  AppTest Results");
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.WriteLine(string.Format("[AppTest] Passed: {0}", passCount));
+            DebugConsole.WriteLine(string.Format("[AppTest] Failed: {0}", failCount));
+
+            if (failCount == 0)
+            {
+                DebugConsole.WriteLine("[AppTest] ALL TESTS PASSED!");
+            }
+            else
+            {
+                DebugConsole.WriteLine("[AppTest] SOME TESTS FAILED");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[AppTest] ERROR: JIT compilation failed");
         }
     }
 

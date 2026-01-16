@@ -83,6 +83,15 @@ TESTSUPPORT_DLL := $(BUILD_DIR)/TestSupport.dll
 DDK_DIR := src/ddk
 DDK_DLL := $(BUILD_DIR)/ProtonOS.DDK.dll
 
+# Standard libraries
+LIB_DIR := src/lib
+PROTONOS_NET_DIR := $(LIB_DIR)/ProtonOS.Net
+PROTONOS_NET_DLL := $(BUILD_DIR)/ProtonOS.Net.dll
+
+# Application test assembly
+APPTEST_DIR := src/AppTest
+APPTEST_DLL := $(BUILD_DIR)/AppTest.dll
+
 # Driver directories
 DRIVERS_DIR := src/drivers
 VIRTIO_DIR := $(DRIVERS_DIR)/shared/virtio
@@ -103,7 +112,7 @@ EXT2_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ext2.dll
 TEST_DRIVER_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Test.dll
 
 # Targets
-.PHONY: all clean native kernel bootloader test korlibdll testsupport ddk drivers image run deps install-deps check-deps
+.PHONY: all clean native kernel bootloader test korlibdll testsupport ddk protonos-net apptest drivers image run deps install-deps check-deps
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -167,6 +176,22 @@ $(DDK_DLL): $(DDK_SRC) $(DDK_DIR)/DDK.csproj | $(BUILD_DIR)
 
 ddk: $(DDK_DLL)
 
+# Build ProtonOS.Net library (application-level networking)
+PROTONOS_NET_SRC := $(call rwildcard,$(PROTONOS_NET_DIR),*.cs)
+$(PROTONOS_NET_DLL): $(PROTONOS_NET_SRC) $(PROTONOS_NET_DIR)/ProtonOS.Net.csproj $(DDK_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build ProtonOS.Net"
+	dotnet build $(PROTONOS_NET_DIR)/ProtonOS.Net.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+protonos-net: $(PROTONOS_NET_DLL)
+
+# Build AppTest assembly (application-level tests)
+APPTEST_SRC := $(call rwildcard,$(APPTEST_DIR),*.cs)
+$(APPTEST_DLL): $(APPTEST_SRC) $(APPTEST_DIR)/AppTest.csproj $(DDK_DLL) $(PROTONOS_NET_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build AppTest"
+	dotnet build $(APPTEST_DIR)/AppTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+apptest: $(APPTEST_DLL)
+
 # Build Virtio common library
 VIRTIO_SRC := $(call rwildcard,$(VIRTIO_DIR),*.cs)
 $(VIRTIO_DLL): $(VIRTIO_SRC) $(VIRTIO_DIR)/Virtio.csproj $(DDK_DLL) | $(BUILD_DIR)
@@ -220,25 +245,28 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI
 	mmd -i $(BUILD_DIR)/boot.img ::/EFI/BOOT
 	mmd -i $(BUILD_DIR)/boot.img ::/drivers
+	mmd -i $(BUILD_DIR)/boot.img ::/lib
 	mcopy -i $(BUILD_DIR)/boot.img $(BOOTLOADER_EFI) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/BOOTX64.EFI ::/EFI/BOOT/$(KERNEL_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(KORLIB_DLL) ::/korlib.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(APPTEST_DLL) ::/AppTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_NET_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(FAT_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(AHCI_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(EXT2_DLL) ::/drivers/
+	mcopy -i $(BUILD_DIR)/boot.img $(PROTONOS_NET_DLL) ::/lib/
 	@echo "Boot image: $(BUILD_DIR)/boot.img"
 	@echo "Contents:"
 	@mdir -i $(BUILD_DIR)/boot.img ::/

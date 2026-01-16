@@ -1814,6 +1814,8 @@ public static unsafe class MetadataIntegration
             result.IsDeclaringTypeValueType = cached.IsDeclaringTypeValueType;
             result.DeclaringTypeSize = cached.DeclaringTypeSize;
             result.IsFieldTypeValueType = cached.IsFieldTypeValueType;
+            result.DeclaringTypeToken = cached.DeclaringTypeToken;
+            result.DeclaringTypeAssemblyId = cached.DeclaringTypeAssemblyId;
             result.IsValid = true;
             return true;
         }
@@ -7103,10 +7105,7 @@ public static unsafe class MetadataIntegration
         // Allocate StaticClassConstructionContext (single IntPtr field)
         nint* context = (nint*)HeapAllocator.AllocZeroed((ulong)sizeof(nint));
         if (context == null)
-        {
-            DebugConsole.WriteLine("[MetaInt] Failed to allocate cctor context");
             return null;
-        }
 
         // IMPORTANT: Register the context BEFORE compiling the cctor.
         // The cctor may access static fields of its own type, which would trigger
@@ -7121,20 +7120,8 @@ public static unsafe class MetadataIntegration
         if (result.Success && result.CodeAddress != null)
         {
             *context = (nint)result.CodeAddress;
-
-            // DebugConsole.Write("[MetaInt] Cctor compiled for type 0x");
-            // DebugConsole.WriteHex(typeToken);
-            // DebugConsole.Write(" addr=0x");
-            // DebugConsole.WriteHex((ulong)result.CodeAddress);
-            // DebugConsole.WriteLine();
         }
-        else
-        {
-            DebugConsole.Write("[MetaInt] Failed to compile cctor for type 0x");
-            DebugConsole.WriteHex(typeToken);
-            DebugConsole.WriteLine();
-            // Leave context as 0 - will be treated as "already run"
-        }
+        // If compile failed, leave context as 0 - will be treated as "already run"
 
         return context;
     }

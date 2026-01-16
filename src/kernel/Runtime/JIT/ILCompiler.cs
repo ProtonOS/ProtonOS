@@ -678,7 +678,7 @@ public unsafe struct ILCompiler
     private int _branchCount;
 
     // Label mapping: IL offset -> code offset (heap-allocated)
-    private const int MaxLabels = 512;
+    private const int MaxLabels = 2048;
     private int* _labelILOffset;    // [MaxLabels]
     private int* _labelCodeOffset;  // [MaxLabels]
     private int _labelCount;
@@ -5256,9 +5256,9 @@ public unsafe struct ILCompiler
             // Mark that we handled shadow space allocation
             needsShadowSpace = false;
         }
-        else
+        else if (!needsHiddenBuffer)
         {
-            // More than 4 args - need to handle stack args
+            // More than 4 args WITHOUT hidden buffer - need to handle stack args
             //
             // Eval stack layout (before any modifications):
             //   [RSP + 0]               = argN-1 (top of stack, last pushed)
@@ -5269,54 +5269,14 @@ public unsafe struct ILCompiler
             // x64 ABI requires:
             //   RCX = arg0, RDX = arg1, R8 = arg2, R9 = arg3
             //   [RSP+32] = arg4, [RSP+40] = arg5, etc.
-            //
-            // Strategy: First consume the eval stack, then allocate outgoing space
-            // 1. Load register args from eval stack
-            // 2. Save stack args to scratch regs (R10, R11) or push them
-            // 3. Add totalArgs*8 to RSP (consume eval stack)
-            // 4. Sub extraStackSpace from RSP (allocate call frame)
-            // 5. Store stack args to [RSP+32], [RSP+40], etc.
-
-            // SIMPLER APPROACH:
-            // 1. First save all stack args to scratch registers (R10, R11, etc.)
-            // 2. Load register args (arg0-3) into RCX, RDX, R8, R9
-            // 3. Pop the eval stack (ADD RSP, totalArgs*8)
-            // 4. Allocate call frame (SUB RSP, 32 + extraStackSpace)
-            // 5. Store stack args at [RSP+32], [RSP+40], etc.
 
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
 
-            // Stack args debug (verbose - commented out)
-            // DebugConsole.WriteDecimal((uint)totalArgs);
-            // DebugConsole.Write(" stackArgs=");
-            // DebugConsole.WriteDecimal((uint)stackArgs);
-            // DebugConsole.Write(" extraStackSpace=");
-            // DebugConsole.WriteDecimal((uint)extraStackSpace);
-            // DebugConsole.WriteLine();
-
             // Step 1: Allocate call frame first (shadow space + stack args)
-            // This way we can copy args directly from eval stack to call frame
             int callFrameSize = 32 + extraStackSpace;
             X64Emitter.SubRI(ref _code, VReg.SP, callFrameSize);
 
-            // Now the layout is:
-            //   [RSP+0..31]               = shadow space (for callee to home regs)
-            //   [RSP+32]                  = slot for arg4
-            //   [RSP+40]                  = slot for arg5
-            //   ... etc for more stack args
-            //   [RSP+callFrameSize+0]     = argN-1 (top of old eval stack)
-            //   [RSP+callFrameSize+8]     = argN-2
-            //   ...
-            //   [RSP+callFrameSize+(N-1)*8] = arg0 (bottom)
-
             // Step 2: Copy stack args from eval stack to their proper call frame positions
-            // Stack args are arg4, arg5, ... argN-1
-            // They need to go to [RSP+32], [RSP+40], ...
-            // On the eval stack (now offset by callFrameSize):
-            //   argN-1 at [RSP+callFrameSize+0]
-            //   argN-2 at [RSP+callFrameSize+8]
-            //   ...
-            //   arg4 at [RSP+callFrameSize+(stackArgs-1)*8]
             for (int i = 0; i < stackArgs; i++)
             {
                 // arg(4+i) is at eval stack position (stackArgs - 1 - i) from top
@@ -5327,18 +5287,70 @@ public unsafe struct ILCompiler
             }
 
             // Step 3: Load register args from eval stack (offset by callFrameSize)
-            // arg0 at [RSP + callFrameSize + (totalArgs-1)*8]
-            // arg1 at [RSP + callFrameSize + (totalArgs-2)*8]
-            // arg2 at [RSP + callFrameSize + (totalArgs-3)*8]
-            // arg3 at [RSP + callFrameSize + (totalArgs-4)*8]
             X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, callFrameSize + (totalArgs - 1) * 8);  // RCX = arg0
             X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, callFrameSize + (totalArgs - 2) * 8);  // RDX = arg1
             X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, callFrameSize + (totalArgs - 3) * 8);  // R8 = arg2
             X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, callFrameSize + (totalArgs - 4) * 8);  // R9 = arg3
 
             for (int i = 0; i < totalArgs; i++) PopEntry();
-            // For >4 args, we already allocated shadow space as part of callFrameSize
             needsShadowSpace = false;
+        }
+        else
+        {
+            // More than 4 args WITH hidden buffer - need special handling
+            //
+            // With hidden buffer:
+            //   Physical args = totalArgs + 1 (buffer is first physical arg)
+            //   RCX = buffer pointer, RDX = arg0, R8 = arg1, R9 = arg2
+            //   [RSP+32] = arg3, [RSP+40] = arg4, etc.
+            //
+            // Eval stack layout (before any modifications):
+            //   [RSP + 0]               = argN-1 (top of stack, last pushed)
+            //   [RSP + 8]               = argN-2
+            //   ...
+            //   [RSP + (N-1)*8]         = arg0 (bottom, first pushed)
+
+            int physicalArgs = totalArgs + 1;
+            int physicalStackArgs = physicalArgs > 4 ? physicalArgs - 4 : 0;
+            int physicalExtraStackSpace = ((physicalStackArgs * 8) + 15) & ~15;
+            int bufferRounded = (hiddenBufferSize + 15) & ~15;
+
+            // Allocate: shadow (32) + stack args + buffer
+            int callFrameSize = 32 + physicalExtraStackSpace + bufferRounded;
+            X64Emitter.SubRI(ref _code, VReg.SP, callFrameSize);
+
+            // Copy stack args (arg3 through argN-1) from eval stack to their positions
+            // With hidden buffer, stack args start at arg3 (not arg4)
+            // arg3 goes to [RSP+32], arg4 to [RSP+40], etc.
+            for (int i = 0; i < physicalStackArgs; i++)
+            {
+                // arg(3+i) is at eval stack position from top: totalArgs - 4 - i
+                int srcOffset = callFrameSize + (totalArgs - 4 - i) * 8;
+                int dstOffset = 32 + i * 8;
+                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
+            }
+
+            // Load register args: RDX=arg0, R8=arg1, R9=arg2
+            // arg0 at [RSP + callFrameSize + (totalArgs-1)*8]
+            // arg1 at [RSP + callFrameSize + (totalArgs-2)*8]
+            // arg2 at [RSP + callFrameSize + (totalArgs-3)*8]
+            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, callFrameSize + (totalArgs - 1) * 8);  // RDX = arg0
+            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, callFrameSize + (totalArgs - 2) * 8);  // R8 = arg1
+            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, callFrameSize + (totalArgs - 3) * 8);  // R9 = arg2
+
+            // Set RCX = buffer address (after shadow + stack args)
+            int bufferOffset = 32 + physicalExtraStackSpace;
+            X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, bufferOffset);
+
+            for (int i = 0; i < totalArgs; i++) PopEntry();
+            needsShadowSpace = false;
+
+            // Override stackArgs to prevent the default >4 args cleanup path
+            stackArgs = 0;
+
+            // Track cleanup: shadow + physical stack args + eval stack (buffer stays for return)
+            fourArgsHiddenBufferCleanup = 32 + physicalExtraStackSpace + totalArgs * 8;
         }
 
         // Allocate shadow space for calls with 0-4 args
@@ -6294,130 +6306,238 @@ public unsafe struct ILCompiler
             return false;
         }
 
-        // The rest is identical to CompileCall - pop args, set up registers, call, handle return
-        int stackArgs = totalArgs > 4 ? totalArgs - 4 : 0;
+        // Check if we need a hidden return buffer for large struct returns FIRST
+        // This affects argument placement (hidden buffer becomes first physical arg)
+        bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
+        int hiddenBufferSize = needsHiddenBuffer ? (int)((method.ReturnStructSize + 7) & ~7) : 0;
+
+        // With hidden buffer, we have one extra physical argument
+        // Physical args: [buffer, this, arg1, arg2, ...] instead of [this, arg1, arg2, ...]
+        int physicalArgs = needsHiddenBuffer ? totalArgs + 1 : totalArgs;
+        int stackArgs = physicalArgs > 4 ? physicalArgs - 4 : 0;
 
         // x64 ABI ALWAYS requires 32 bytes shadow space, even for >4 args
         bool needsShadowSpace = true;
 
-        if (totalArgs == 0)
-        {
-            // No arguments - just call (shouldn't happen for callvirt)
-        }
-        else if (totalArgs == 1)
-        {
-            // Single arg (this): pop to RCX
-            X64Emitter.Pop(ref _code, VReg.R1);
-            PopEntry();
-        }
-        else if (totalArgs == 2)
-        {
-            // Two args: pop to RDX (arg1), then RCX (this)
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R1);
-            PopEntry(); PopEntry();
-        }
-        else if (totalArgs == 3)
-        {
-            // Three args: pop to R8, RDX, RCX
-            X64Emitter.Pop(ref _code, VReg.R3);
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R1);
-            PopEntry(); PopEntry(); PopEntry();
-        }
-        else if (totalArgs == 4)
-        {
-            // Four args: pop to R9, R8, RDX, RCX
-            X64Emitter.Pop(ref _code, VReg.R4);
-            X64Emitter.Pop(ref _code, VReg.R3);
-            X64Emitter.Pop(ref _code, VReg.R2);
-            X64Emitter.Pop(ref _code, VReg.R1);
-            PopEntry(); PopEntry(); PopEntry(); PopEntry();
-        }
-        else
-        {
-            // More than 4 args - handle stack args (same as CompileCall)
-            int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
+        // Track if we handled shadow+buffer allocation for special cases
+        bool handledAllocation = false;
+        int cleanupAmount = 0;
 
-            X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);
-            X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);
-            X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);
-            X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);
-
-            // Copy stack args to their final locations (relative to current RSP)
-            // Note: shadow space (32 bytes) is allocated AFTER rspAdjust, so positions are
-            // calculated relative to the pre-shadow RSP. After shadow space allocation,
-            // these will be at [finalRSP + 32], [finalRSP + 40], etc. as required.
-            for (int i = 0; i < stackArgs; i++)
+        if (!needsHiddenBuffer)
+        {
+            // No hidden buffer - use simple argument setup
+            if (totalArgs == 0)
             {
-                int srcOffset = (stackArgs - 1 - i) * 8;
-                int dstOffset = totalArgs * 8 - extraStackSpace + i * 8;
-                X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
-                X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
+                // No arguments - just call (shouldn't happen for callvirt)
             }
-
-            int rspAdjust = totalArgs * 8 - extraStackSpace;
-            if (rspAdjust > 0)
+            else if (totalArgs == 1)
             {
-                X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
+                // Single arg (this): pop to RCX
+                X64Emitter.Pop(ref _code, VReg.R1);
+                PopEntry();
             }
-            else if (rspAdjust < 0)
+            else if (totalArgs == 2)
             {
-                X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
+                // Two args: pop to RDX (arg1), then RCX (this)
+                X64Emitter.Pop(ref _code, VReg.R2);
+                X64Emitter.Pop(ref _code, VReg.R1);
+                PopEntry(); PopEntry();
             }
-
-            for (int i = 0; i < totalArgs; i++) PopEntry();
-        }
-
-        // Check if we need a hidden return buffer for large struct returns
-        bool needsHiddenBuffer = method.ReturnKind == ReturnKind.Struct && method.ReturnStructSize > 16;
-        int hiddenBufferSize = needsHiddenBuffer ? (int)((method.ReturnStructSize + 7) & ~7) : 0;
-
-        // Debug: trace callvirt in TestDictForeach
-        if (_debugAssemblyId == 6 && _debugMethodToken == 0x060002E7)
-        {
-            DebugConsole.Write("[DF-CVirt] tok=0x");
-            DebugConsole.WriteHex(token);
-            DebugConsole.Write(" ret=");
-            DebugConsole.WriteDecimal((uint)method.ReturnKind);
-            DebugConsole.Write(" retSz=");
-            DebugConsole.WriteDecimal((uint)method.ReturnStructSize);
-            DebugConsole.Write(" hidden=");
-            DebugConsole.Write(needsHiddenBuffer ? "Y" : "N");
-            DebugConsole.Write(" bufSz=");
-            DebugConsole.WriteDecimal((uint)hiddenBufferSize);
-            DebugConsole.WriteLine();
-        }
-
-        // Allocate shadow space (x64 ABI ALWAYS requires 32 bytes)
-        // x64 ABI requires 32 bytes for the callee to home register arguments
-        // For large struct returns, also allocate buffer space
-        if (needsShadowSpace)
-        {
-            if (needsHiddenBuffer)
+            else if (totalArgs == 3)
             {
-                // Allocate shadow space + buffer space (aligned to 16 bytes)
-                int totalAlloc = 32 + ((hiddenBufferSize + 15) & ~15);
-                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
-
-                // For callvirt, 'this' is already in RCX, we need to shift args
-                // Hidden buffer pointer becomes RCX, this goes to RDX, etc.
-                // Save current args first
-                if (totalArgs >= 4)
-                    X64Emitter.MovRR(ref _code, VReg.R11, VReg.R4);  // Save R9
-                if (totalArgs >= 3)
-                    X64Emitter.MovRR(ref _code, VReg.R4, VReg.R3);   // R9 = R8 (arg2)
-                if (totalArgs >= 2)
-                    X64Emitter.MovRR(ref _code, VReg.R3, VReg.R2);   // R8 = RDX (arg1)
-                X64Emitter.MovRR(ref _code, VReg.R2, VReg.R1);       // RDX = RCX (this)
-
-                // Set RCX = buffer address (RSP + 32, after shadow space)
-                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+                // Three args: pop to R8, RDX, RCX
+                X64Emitter.Pop(ref _code, VReg.R3);
+                X64Emitter.Pop(ref _code, VReg.R2);
+                X64Emitter.Pop(ref _code, VReg.R1);
+                PopEntry(); PopEntry(); PopEntry();
+            }
+            else if (totalArgs == 4)
+            {
+                // Four args: pop to R9, R8, RDX, RCX
+                X64Emitter.Pop(ref _code, VReg.R4);
+                X64Emitter.Pop(ref _code, VReg.R3);
+                X64Emitter.Pop(ref _code, VReg.R2);
+                X64Emitter.Pop(ref _code, VReg.R1);
+                PopEntry(); PopEntry(); PopEntry(); PopEntry();
             }
             else
             {
-                X64Emitter.SubRI(ref _code, VReg.SP, 32);
+                // More than 4 args - handle stack args
+                int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
+
+                X64Emitter.MovRM(ref _code, VReg.R1, VReg.SP, (totalArgs - 1) * 8);
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, (totalArgs - 2) * 8);
+                X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, (totalArgs - 3) * 8);
+                X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, (totalArgs - 4) * 8);
+
+                for (int i = 0; i < stackArgs; i++)
+                {
+                    int srcOffset = (stackArgs - 1 - i) * 8;
+                    int dstOffset = totalArgs * 8 - extraStackSpace + i * 8;
+                    X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                    X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
+                }
+
+                int rspAdjust = totalArgs * 8 - extraStackSpace;
+                if (rspAdjust > 0)
+                    X64Emitter.AddRI(ref _code, VReg.SP, rspAdjust);
+                else if (rspAdjust < 0)
+                    X64Emitter.SubRI(ref _code, VReg.SP, -rspAdjust);
+
+                for (int i = 0; i < totalArgs; i++) PopEntry();
             }
+        }
+        else
+        {
+            // Hidden buffer needed - physical args = logical args + 1
+            // Layout: RCX=buffer, RDX=this, R8=arg1, R9=arg2, Stack=[arg3, arg4, ...]
+
+            if (totalArgs == 1)
+            {
+                // One logical arg (this) + buffer = 2 physical args
+                // RCX=buffer, RDX=this
+                X64Emitter.Pop(ref _code, VReg.R2);  // this -> RDX
+                PopEntry();
+
+                // Allocate shadow space (32) + buffer
+                int bufferRounded = (hiddenBufferSize + 15) & ~15;
+                int totalAlloc = 32 + bufferRounded;
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // Set RCX = buffer address (after shadow space)
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+
+                handledAllocation = true;
+                cleanupAmount = 32;  // just shadow space (buffer stays for return)
+                needsShadowSpace = false;
+            }
+            else if (totalArgs == 2)
+            {
+                // Two logical args + buffer = 3 physical args
+                // RCX=buffer, RDX=this, R8=arg1
+                X64Emitter.Pop(ref _code, VReg.R3);  // arg1 -> R8
+                X64Emitter.Pop(ref _code, VReg.R2);  // this -> RDX
+                PopEntry(); PopEntry();
+
+                // Allocate shadow space (32) + buffer
+                int bufferRounded = (hiddenBufferSize + 15) & ~15;
+                int totalAlloc = 32 + bufferRounded;
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // Set RCX = buffer address (after shadow space)
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+
+                handledAllocation = true;
+                cleanupAmount = 32;  // just shadow space (buffer stays for return)
+                needsShadowSpace = false;
+            }
+            else if (totalArgs == 3)
+            {
+                // Three logical args + buffer = 4 physical args
+                // RCX=buffer, RDX=this, R8=arg1, R9=arg2
+                X64Emitter.Pop(ref _code, VReg.R4);  // arg2 -> R9
+                X64Emitter.Pop(ref _code, VReg.R3);  // arg1 -> R8
+                X64Emitter.Pop(ref _code, VReg.R2);  // this -> RDX
+                PopEntry(); PopEntry(); PopEntry();
+
+                // Allocate shadow space (32) + buffer
+                int bufferRounded = (hiddenBufferSize + 15) & ~15;
+                int totalAlloc = 32 + bufferRounded;
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // Set RCX = buffer address (after shadow space)
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 32);
+
+                handledAllocation = true;
+                cleanupAmount = 32;  // just shadow space (buffer stays for return)
+                needsShadowSpace = false;
+            }
+            else if (totalArgs == 4)
+            {
+                // Four logical args + buffer = 5 physical args
+                // RCX=buffer, RDX=this, R8=arg1, R9=arg2, [RSP+32]=arg3
+                X64Emitter.Pop(ref _code, VReg.R5);  // arg3 -> R10 (temp, will go to stack)
+                X64Emitter.Pop(ref _code, VReg.R4);  // arg2 -> R9
+                X64Emitter.Pop(ref _code, VReg.R3);  // arg1 -> R8
+                X64Emitter.Pop(ref _code, VReg.R2);  // this -> RDX
+                PopEntry(); PopEntry(); PopEntry(); PopEntry();
+
+                // Allocate: shadow (32) + stack arg (8) + buffer (rounded to 16)
+                int bufferRounded = (hiddenBufferSize + 15) & ~15;
+                int totalAlloc = ((32 + 8 + bufferRounded) + 15) & ~15;
+                X64Emitter.SubRI(ref _code, VReg.SP, totalAlloc);
+
+                // Store arg3 at [RSP+32]
+                X64Emitter.MovMR(ref _code, VReg.SP, 32, VReg.R5);
+
+                // Set RCX = buffer address (after shadow+stack arg)
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, 40);
+
+                handledAllocation = true;
+                cleanupAmount = 40;  // shadow + stack arg (buffer stays for return)
+                needsShadowSpace = false;
+            }
+            else
+            {
+                // More than 4 logical args + buffer = 5+ physical args
+                // Physical layout: RCX=buf, RDX=this, R8=arg1, R9=arg2, Stack=[arg3, arg4, ...]
+                //
+                // stackArgs = physicalArgs - 4 = (totalArgs + 1) - 4 = totalArgs - 3
+                //
+                // x64 ABI: stack args must be at [RSP+32], [RSP+40], etc.
+                // Buffer can be anywhere that RCX points to.
+                //
+                // Strategy: Allocate full call frame first, then copy from eval stack
+
+                int physicalStackArgs = stackArgs;  // already calculated as totalArgs - 3
+                int physicalExtraStackSpace = ((physicalStackArgs * 8) + 15) & ~15;
+                int bufferRounded = (hiddenBufferSize + 15) & ~15;
+
+                // Allocate: shadow (32) + stack args + buffer
+                int callFrameSize = 32 + physicalExtraStackSpace + bufferRounded;
+                X64Emitter.SubRI(ref _code, VReg.SP, callFrameSize);
+
+                // Now layout is:
+                //   [RSP+0..31] = shadow
+                //   [RSP+32..32+physicalExtraStackSpace) = stack arg slots
+                //   [RSP+32+physicalExtraStackSpace..] = buffer
+                //   [RSP+callFrameSize..] = eval stack (args still there)
+
+                // Copy stack args (arg3 through argN-1) from eval stack to [RSP+32], [RSP+40], etc.
+                for (int i = 0; i < physicalStackArgs; i++)
+                {
+                    // arg(3+i) is at eval stack position: totalArgs - 4 - i from top
+                    int srcOffset = callFrameSize + (totalArgs - 4 - i) * 8;
+                    int dstOffset = 32 + i * 8;
+                    X64Emitter.MovRM(ref _code, VReg.R5, VReg.SP, srcOffset);
+                    X64Emitter.MovMR(ref _code, VReg.SP, dstOffset, VReg.R5);
+                }
+
+                // Load register args from eval stack (offset by callFrameSize)
+                // this at [RSP + callFrameSize + (totalArgs-1)*8]
+                // arg1 at [RSP + callFrameSize + (totalArgs-2)*8]
+                // arg2 at [RSP + callFrameSize + (totalArgs-3)*8]
+                X64Emitter.MovRM(ref _code, VReg.R2, VReg.SP, callFrameSize + (totalArgs - 1) * 8);  // this -> RDX
+                X64Emitter.MovRM(ref _code, VReg.R3, VReg.SP, callFrameSize + (totalArgs - 2) * 8);  // arg1 -> R8
+                X64Emitter.MovRM(ref _code, VReg.R4, VReg.SP, callFrameSize + (totalArgs - 3) * 8);  // arg2 -> R9
+
+                // Set RCX = buffer address (after shadow + stack args)
+                int bufferOffset = 32 + physicalExtraStackSpace;
+                X64Emitter.Lea(ref _code, VReg.R1, VReg.SP, bufferOffset);
+
+                for (int i = 0; i < totalArgs; i++) PopEntry();
+
+                handledAllocation = true;
+                // Cleanup: shadow + stack args + eval stack (buffer stays for return)
+                cleanupAmount = 32 + physicalExtraStackSpace + totalArgs * 8;
+                needsShadowSpace = false;
+            }
+        }
+
+        // Allocate shadow space if not already done
+        if (needsShadowSpace)
+        {
+            X64Emitter.SubRI(ref _code, VReg.SP, 32);
         }
 
         // Load target address and call
@@ -6577,22 +6697,21 @@ public unsafe struct ILCompiler
         RecordSafePoint();
 
         // Clean up stack space if we allocated any
-        if (needsShadowSpace)
+        if (handledAllocation)
         {
-            if (needsHiddenBuffer)
-            {
-                // Only deallocate shadow space, keep the buffer on stack for struct return
-                X64Emitter.AddRI(ref _code, VReg.SP, 32);
-            }
-            else
-            {
-                // Deallocate the 32-byte shadow space we allocated for 0-4 args
-                X64Emitter.AddRI(ref _code, VReg.SP, 32);
-            }
+            // We handled shadow+buffer allocation specially for hidden buffer case
+            // cleanupAmount tells us how much to deallocate (buffer stays for struct return)
+            if (cleanupAmount > 0)
+                X64Emitter.AddRI(ref _code, VReg.SP, cleanupAmount);
         }
-        else if (stackArgs > 0)
+        else if (needsShadowSpace)
         {
-            // Deallocate the full call frame (shadow space + extra stack args space)
+            // Simple case: just deallocate the 32-byte shadow space
+            X64Emitter.AddRI(ref _code, VReg.SP, 32);
+        }
+        else if (stackArgs > 0 && !needsHiddenBuffer)
+        {
+            // No hidden buffer, more than 4 args: deallocate full call frame
             int extraStackSpace = ((stackArgs * 8) + 15) & ~15;
             int callFrameSize = 32 + extraStackSpace;
             X64Emitter.AddRI(ref _code, VReg.SP, callFrameSize);

@@ -921,6 +921,13 @@ public static class TestRunner
         RecordResult("ComparisonTests.TestCeqLongNonZero", ComparisonTests.TestCeqLongNonZero() == 0);
         RecordResult("ComparisonTests.TestCeqLongEquals", ComparisonTests.TestCeqLongEquals() == 1);
         RecordResult("ComparisonTests.TestCeqLongNotEquals", ComparisonTests.TestCeqLongNotEquals() == 0);
+        // Ref struct comparison tests (reproduces HTTP.ParseResponse bug)
+        RecordResult("ComparisonTests.TestRefStructCompareZero", ComparisonTests.TestRefStructCompareZero() == 1);
+        RecordResult("ComparisonTests.TestRefStructCompareValue", ComparisonTests.TestRefStructCompareValue() == 1);
+        RecordResult("ComparisonTests.TestRefStructLocalCopy", ComparisonTests.TestRefStructLocalCopy() == 1);
+        RecordResult("ComparisonTests.TestRefStructMultipleFields", ComparisonTests.TestRefStructMultipleFields() == 1);
+        RecordResult("ComparisonTests.TestRefStructBoolField", ComparisonTests.TestRefStructBoolField() == 1);
+        RecordResult("ComparisonTests.TestComplexMethodWithManyLocals", ComparisonTests.TestComplexMethodWithManyLocals() == 1);
     }
 
     private static void RunBitwiseTests()
@@ -1065,6 +1072,7 @@ public static class TestRunner
         RecordResult("ArrayTests.TestBoundsCheckWriteOverflow", ArrayTests.TestBoundsCheckWriteOverflow() == 42);
         RecordResult("ArrayTests.TestBoundsCheckNegativeIndex", ArrayTests.TestBoundsCheckNegativeIndex() == 42);
         RecordResult("ArrayTests.TestBoundsCheckValidLastIndex", ArrayTests.TestBoundsCheckValidLastIndex() == 42);
+        RecordResult("ArrayTests.TestStaticByteArrayField", ArrayTests.TestStaticByteArrayField() == 141);
         Debug.WriteLine("[DBG] RunArrayTests: done");
     }
 
@@ -1475,6 +1483,149 @@ public static class ComparisonTests
         ulong a = 0x123456789ABCDEF0;
         ulong b = 0x123456789ABCDEF1;
         return a == b ? 1 : 0;
+    }
+
+    // JIT ref struct comparison bug reproduction tests
+    // This tests the exact pattern that failed in HTTP.ParseResponse:
+    // - Struct passed by ref
+    // - Method modifies struct fields
+    // - After call, field comparison fails even with correct value
+
+    private struct TestStruct
+    {
+        public int StatusCode;
+        public int ContentLength;
+        public bool HeadersComplete;
+        public bool ConnectionClose;
+        public int BodyOffset;
+        public int BodyLength;
+        public bool Complete;
+    }
+
+    private static void FillStruct(ref TestStruct s, int statusCode, int contentLength)
+    {
+        s.StatusCode = statusCode;
+        s.ContentLength = contentLength;
+        s.HeadersComplete = true;
+        s.ConnectionClose = true;
+        s.BodyOffset = 100;
+        s.BodyLength = contentLength;
+        s.Complete = true;
+    }
+
+    public static int TestRefStructCompareZero()
+    {
+        // Test: after ref call, compare field == 0 (should be false when field is 200)
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        // s.StatusCode should be 200, so this should return 0 (false)
+        if (s.StatusCode == 0)
+            return 0;  // Bug: this path should NOT be taken
+        return 1;      // Correct: field is not 0
+    }
+
+    public static int TestRefStructCompareValue()
+    {
+        // Test: after ref call, compare field != expected (should be false when equal)
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        // s.StatusCode should be 200, so this should return 1 (true, they are equal)
+        if (s.StatusCode != 200)
+            return 0;  // Bug: this path should NOT be taken
+        return 1;      // Correct: field equals 200
+    }
+
+    public static int TestRefStructLocalCopy()
+    {
+        // Test: copy to local before compare (potential workaround check)
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        int statusCode = s.StatusCode;
+        // statusCode should be 200, so this should return 1
+        if (statusCode == 200)
+            return 1;  // Correct
+        return 0;      // Bug: local copy comparison failed
+    }
+
+    public static int TestRefStructMultipleFields()
+    {
+        // Test: multiple field comparisons after ref call
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        // All these should be true
+        if (s.StatusCode != 200) return 0;
+        if (s.ContentLength != 5) return 0;
+        if (!s.HeadersComplete) return 0;
+        if (!s.Complete) return 0;
+        return 1;
+    }
+
+    public static int TestRefStructBoolField()
+    {
+        // Test: bool field comparison after ref call
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        if (s.HeadersComplete)
+            return 1;  // Correct: HeadersComplete was set to true
+        return 0;      // Bug
+    }
+
+    // Complex test with many local assignments like in HTTP test
+    public static unsafe int TestComplexMethodWithManyLocals()
+    {
+        // Simulate the pattern from TestHttpParseResponseWithBody
+        byte* buffer = stackalloc byte[128];
+        int pos = 0;
+
+        // 48 assignments to binary search threshold
+        buffer[pos++] = (byte)'H'; buffer[pos++] = (byte)'T'; buffer[pos++] = (byte)'T'; buffer[pos++] = (byte)'P';
+        buffer[pos++] = (byte)'/'; buffer[pos++] = (byte)'1'; buffer[pos++] = (byte)'.'; buffer[pos++] = (byte)'1';
+        buffer[pos++] = (byte)' '; buffer[pos++] = (byte)'2'; buffer[pos++] = (byte)'0'; buffer[pos++] = (byte)'0';
+        buffer[pos++] = (byte)' '; buffer[pos++] = (byte)'O'; buffer[pos++] = (byte)'K';
+        buffer[pos++] = (byte)'\r'; buffer[pos++] = (byte)'\n';
+        buffer[pos++] = (byte)'C'; buffer[pos++] = (byte)'o'; buffer[pos++] = (byte)'n'; buffer[pos++] = (byte)'t';
+        buffer[pos++] = (byte)'e'; buffer[pos++] = (byte)'n'; buffer[pos++] = (byte)'t'; buffer[pos++] = (byte)'-';
+        buffer[pos++] = (byte)'L'; buffer[pos++] = (byte)'e'; buffer[pos++] = (byte)'n'; buffer[pos++] = (byte)'g';
+        buffer[pos++] = (byte)'t'; buffer[pos++] = (byte)'h'; buffer[pos++] = (byte)':'; buffer[pos++] = (byte)' ';
+        buffer[pos++] = (byte)'5'; buffer[pos++] = (byte)'\r'; buffer[pos++] = (byte)'\n';
+        buffer[pos++] = (byte)'C'; buffer[pos++] = (byte)'o'; buffer[pos++] = (byte)'n'; buffer[pos++] = (byte)'n';
+        buffer[pos++] = (byte)'e'; buffer[pos++] = (byte)'c'; buffer[pos++] = (byte)'t'; buffer[pos++] = (byte)'i';
+        buffer[pos++] = (byte)'o'; buffer[pos++] = (byte)'n'; buffer[pos++] = (byte)':'; buffer[pos++] = (byte)' ';
+
+        int dataLen = pos;
+
+        // Now call a method with ref struct
+        TestStruct s = new TestStruct();
+        FillStruct(ref s, 200, 5);
+
+        // Compare after - this is where the bug might manifest
+        int okAsInt = s.StatusCode == 200 ? 1 : 0;
+
+        Debug.Write("[Complex] okAsInt=");
+        Debug.WriteDecimal(okAsInt);
+        Debug.Write(" StatusCode=");
+        Debug.WriteDecimal(s.StatusCode);
+        Debug.WriteLine();
+
+        if (okAsInt == 0)
+        {
+            Debug.WriteLine("[Complex] FAIL: okAsInt==0 returned true");
+            return 0;  // Bug: should not enter here
+        }
+
+        if (s.StatusCode != 200)
+        {
+            Debug.WriteLine("[Complex] FAIL: StatusCode!=200 returned true");
+            return 0;  // Bug: should not enter here
+        }
+
+        Debug.WriteLine("[Complex] PASS");
+        return 1;  // Correct
     }
 }
 
@@ -2448,6 +2599,9 @@ public static class ObjectTests
 
 public static class ArrayTests
 {
+    // Static byte array without initializer values - tests heap allocation in static init
+    private static byte[] _staticBuffer = new byte[128];
+
     public static int TestNewarr()
     {
         int[] arr = new int[10];
@@ -2581,6 +2735,20 @@ public static class ArrayTests
         int[] arr = new int[5];
         arr[4] = 42;  // Last valid index
         return arr[4];  // Should return 42
+    }
+
+    /// <summary>
+    /// Test static byte array field initialized with new byte[N].
+    /// This tests heap allocation in static field initialization (same as network driver issue).
+    /// </summary>
+    public static int TestStaticByteArrayField()
+    {
+        // Write to the static buffer and read back
+        _staticBuffer[0] = 42;
+        _staticBuffer[127] = 99;
+
+        // Sum first and last
+        return _staticBuffer[0] + _staticBuffer[127];  // 42 + 99 = 141
     }
 }
 

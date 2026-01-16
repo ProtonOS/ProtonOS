@@ -33,6 +33,8 @@ dotnet ildasm build/x64/ProtonOS.Drivers.Ahci.dll -o build/x64/ProtonOS.Drivers.
 dotnet ildasm build/x64/ProtonOS.Drivers.Ext2.dll -o build/x64/ProtonOS.Drivers.Ext2.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.VirtioNet.dll -o build/x64/ProtonOS.Drivers.VirtioNet.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Test.dll -o build/x64/ProtonOS.Drivers.Test.il 2>/dev/null || true
+dotnet ildasm build/x64/ProtonOS.Net.dll -o build/x64/ProtonOS.Net.il 2>/dev/null || true
+dotnet ildasm build/x64/AppTest.dll -o build/x64/AppTest.il 2>/dev/null || true
 echo "IL disassembly complete"
 
 # Create test disk image for FAT filesystem testing

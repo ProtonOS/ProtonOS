@@ -66,6 +66,10 @@ public static unsafe class NetworkStackTests
         TestTcpBuildFinAck();
         TestTcpBuildData();
 
+        // Static byte array tests (cctor/JIT validation)
+        TestStaticByteArray();
+        TestStaticByteArrayReadWrite();
+
         // Report results
         Debug.Write("[NetTests] Results: ");
         Debug.WriteDecimal(_passed);
@@ -1224,5 +1228,71 @@ public static unsafe class NetworkStackTests
         }
 
         Pass("TcpBuildData");
+    }
+
+    // ===== Static Array Tests (JIT/cctor validation) =====
+
+    // Static byte[] for testing cctor issue
+    private static byte[] _staticByteArray = new byte[128];
+
+    private static void TestStaticByteArray()
+    {
+        Debug.WriteLine("[StaticByteTest] Start");
+
+        // Access the static byte array
+        byte[] arr = _staticByteArray;
+
+        if (arr == null)
+        {
+            Debug.WriteLine("[StaticByteTest] FAIL: array is null!");
+            Fail("StaticByteArray", "array is null");
+            return;
+        }
+
+        Debug.Write("[StaticByteTest] Array length: ");
+        Debug.WriteDecimal(arr.Length);
+        Debug.WriteLine();
+
+        // Try to write to it using fixed
+        Debug.WriteLine("[StaticByteTest] About to use fixed statement");
+        fixed (byte* ptr = arr)
+        {
+            Debug.WriteLine("[StaticByteTest] Inside fixed block");
+            ptr[0] = 42;
+            if (ptr[0] != 42)
+            {
+                Fail("StaticByteArray", "write via fixed failed");
+                return;
+            }
+        }
+
+        Pass("StaticByteArray");
+    }
+
+    private static void TestStaticByteArrayReadWrite()
+    {
+        // Test read/write to static byte array via fixed statement
+        byte[] arr = _staticByteArray;
+        if (arr == null)
+        {
+            Fail("StaticByteArrayReadWrite", "static array is null");
+            return;
+        }
+
+        // Write some bytes and read them back
+        fixed (byte* ptr = arr)
+        {
+            ptr[0] = 0x48;  // 'H'
+            ptr[1] = 0x69;  // 'i'
+            ptr[2] = 0x00;  // null terminator
+
+            if (ptr[0] != 0x48 || ptr[1] != 0x69)
+            {
+                Fail("StaticByteArrayReadWrite", "write/read failed");
+                return;
+            }
+        }
+
+        Pass("StaticByteArrayReadWrite");
     }
 }

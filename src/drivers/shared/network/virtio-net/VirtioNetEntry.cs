@@ -131,6 +131,51 @@ public static unsafe class VirtioNetEntry
     public static VirtioNetDevice? GetDevice() => _device;
 
     /// <summary>
+    /// Get the network stack instance.
+    /// Creates one if not already created (device must be bound first).
+    /// </summary>
+    public static NetworkStack? GetNetworkStack()
+    {
+        if (_device == null)
+            return null;
+
+        if (_netStack == null)
+        {
+            _netStack = new NetworkStack(_device.MacAddress);
+
+            // Configure with QEMU user-mode network defaults
+            uint guestIP = ARP.MakeIP(10, 0, 2, 15);
+            uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
+            uint gateway = ARP.MakeIP(10, 0, 2, 2);
+
+            _netStack.Configure(guestIP, subnetMask, gateway);
+        }
+
+        return _netStack;
+    }
+
+    /// <summary>
+    /// Transmit a frame through the device.
+    /// </summary>
+    public static bool TransmitFrame(byte* data, int length)
+    {
+        if (_device == null)
+            return false;
+        return _device.SendFrame(data, length);
+    }
+
+    /// <summary>
+    /// Receive a frame from the device.
+    /// </summary>
+    /// <returns>Length of received frame, 0 if none available.</returns>
+    public static int ReceiveFrame(byte* buffer, int maxLength)
+    {
+        if (_device == null)
+            return 0;
+        return _device.ReceiveFrame(buffer, maxLength);
+    }
+
+    /// <summary>
     /// Test sending a packet (for debugging).
     /// </summary>
     public static int TestSend()

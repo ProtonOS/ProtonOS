@@ -479,37 +479,17 @@ public static unsafe class RuntimeHelpers
     /// </summary>
     public static void* RhpNewArray(MethodTable* pMT, int numElements)
     {
-        // DebugConsole.Write("[RhpNewArray] MT=0x");
-        // DebugConsole.WriteHex((ulong)pMT);
-        // DebugConsole.Write(" compSz=");
-        // DebugConsole.WriteDecimal(pMT != null ? pMT->ComponentSize : 0);
-        // DebugConsole.Write(" count=");
-        // DebugConsole.WriteDecimal((uint)numElements);
-
         if (pMT == null || numElements < 0)
-        {
-            // DebugConsole.WriteLine(" INVALID!");
             return null;
-        }
 
         uint totalSize = pMT->BaseSize + (uint)numElements * pMT->ComponentSize;
 
-        // DebugConsole.Write(" size=");
-        // DebugConsole.WriteDecimal(totalSize);
-
         byte* result = (byte*)GCHeap.Alloc(totalSize);
         if (result == null)
-        {
-            // DebugConsole.WriteLine(" ALLOC FAILED!");
             return null;
-        }
 
         *(MethodTable**)result = pMT;
         *(int*)(result + 8) = numElements;
-
-        // DebugConsole.Write(" -> 0x");
-        // DebugConsole.WriteHex((ulong)result);
-        // DebugConsole.WriteLine();
 
         return result;
     }

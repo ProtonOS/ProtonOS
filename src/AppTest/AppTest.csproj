@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Suppress CS0436: Our types intentionally shadow .NET BCL types -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference DDK for debug output and network stack -->
+    <ProjectReference Include="../ddk/DDK.csproj" />
+    <!-- Reference ProtonOS.Net for HTTP testing -->
+    <ProjectReference Include="../lib/ProtonOS.Net/ProtonOS.Net.csproj" />
+    <!-- Reference VirtioNet driver for real network testing -->
+    <ProjectReference Include="../drivers/shared/virtio/Virtio.csproj" />
+    <ProjectReference Include="../drivers/shared/network/virtio-net/VirtioNet.csproj" />
+  </ItemGroup>
+
+</Project>
