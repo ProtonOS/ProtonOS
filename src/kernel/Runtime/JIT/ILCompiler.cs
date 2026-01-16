@@ -2843,8 +2843,17 @@ public unsafe struct ILCompiler
             // Integer add
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
-            X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(EvalStackEntry.NativeInt);
+            if (AreBothInt32(entry1, entry2))
+            {
+                // Use 32-bit add which auto-zero-extends result to 64-bit
+                X64Emitter.Add32RR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.Int32);
+            }
+            else
+            {
+                X64Emitter.AddRR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.NativeInt);
+            }
         }
         return true;
     }
@@ -2854,6 +2863,28 @@ public unsafe struct ILCompiler
     /// </summary>
     private bool IsFloatEntry(EvalStackEntry entry) =>
         entry.Kind == EvalStackKind.Float32 || entry.Kind == EvalStackKind.Float64;
+
+    /// <summary>
+    /// Check if an entry represents a 32-bit integer value.
+    /// This includes:
+    /// - Int32 kind (from ldc.i4, etc.)
+    /// - ValueType with size <= 4 (from ldarg/ldloc/ldfld on uint, int, etc.)
+    /// </summary>
+    private bool Is32BitInt(EvalStackEntry entry)
+    {
+        if (entry.Kind == EvalStackKind.Int32)
+            return true;
+        if (entry.Kind == EvalStackKind.ValueType && entry.RawSize <= 4)
+            return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Check if both operands are 32-bit integers.
+    /// Used to determine whether to use 32-bit x86 operations (which auto-zero-extend).
+    /// </summary>
+    private bool AreBothInt32(EvalStackEntry entry1, EvalStackEntry entry2) =>
+        Is32BitInt(entry1) && Is32BitInt(entry2);
 
     private bool CompileSub()
     {
@@ -2892,8 +2923,17 @@ public unsafe struct ILCompiler
             // Integer subtract
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
-            X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(EvalStackEntry.NativeInt);
+            if (AreBothInt32(entry1, entry2))
+            {
+                // Use 32-bit sub which auto-zero-extends result to 64-bit
+                X64Emitter.Sub32RR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.Int32);
+            }
+            else
+            {
+                X64Emitter.SubRR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.NativeInt);
+            }
         }
         return true;
     }
@@ -2935,8 +2975,17 @@ public unsafe struct ILCompiler
             // Integer multiply
             PopReg(VReg.R2);  // Second operand -> R2
             PopR0();          // First operand -> R0
-            X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
-            PushR0(EvalStackEntry.NativeInt);
+            if (AreBothInt32(entry1, entry2))
+            {
+                // Use 32-bit imul which auto-zero-extends result to 64-bit
+                X64Emitter.Imul32RR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.Int32);
+            }
+            else
+            {
+                X64Emitter.ImulRR(ref _code, VReg.R0, VReg.R2);
+                PushR0(EvalStackEntry.NativeInt);
+            }
         }
         return true;
     }
@@ -3262,19 +3311,27 @@ public unsafe struct ILCompiler
             }
             else
             {
-                // For unsigned 32-bit division, we need to zero-extend the operands
-                // to ensure they're treated as unsigned 32-bit values, not sign-extended 64-bit
-                X64Emitter.ZeroExtend32(ref _code, VReg.R0);
-                X64Emitter.ZeroExtend32(ref _code, VReg.R1);
+                // For unsigned division, only zero-extend if both operands are 32-bit
+                // If either is 64-bit (Int64 or NativeInt), do full 64-bit division
+                bool is32Bit = AreBothInt32(entry1, entry2);
+                if (is32Bit)
+                {
+                    // Zero-extend 32-bit values to ensure correct unsigned semantics
+                    X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+                    X64Emitter.ZeroExtend32(ref _code, VReg.R1);
+                }
                 // Zero RDX for unsigned division
                 X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
                 // Unsigned divide
                 X64Emitter.DivR(ref _code, VReg.R1);
             }
 
-            // Quotient is in RAX
+            // Quotient is in RAX - preserve type information
             X64Emitter.Push(ref _code, VReg.R0);
-            PushEntry(EvalStackEntry.NativeInt);
+            if (!signed && AreBothInt32(entry1, entry2))
+                PushEntry(EvalStackEntry.Int32);
+            else
+                PushEntry(EvalStackEntry.NativeInt);
         }
         return true;
     }
@@ -3283,9 +3340,12 @@ public unsafe struct ILCompiler
     {
         // Remainder: dividend % divisor
         // IL stack: [..., dividend, divisor] -> [..., remainder]
+        EvalStackEntry entry2 = PeekEntryAt(0);  // Top (divisor)
+        EvalStackEntry entry1 = PeekEntryAt(1);  // Second from top (dividend)
+        PopEntry(); PopEntry();
+
         X64Emitter.Pop(ref _code, VReg.R1);  // Divisor to RCX
         X64Emitter.Pop(ref _code, VReg.R0);  // Dividend to RAX
-        PopEntry(); PopEntry();
 
         if (signed)
         {
@@ -3294,16 +3354,24 @@ public unsafe struct ILCompiler
         }
         else
         {
-            // For unsigned 32-bit remainder, zero-extend operands
-            X64Emitter.ZeroExtend32(ref _code, VReg.R0);
-            X64Emitter.ZeroExtend32(ref _code, VReg.R1);
+            // For unsigned remainder, only zero-extend if both operands are 32-bit
+            bool is32Bit = AreBothInt32(entry1, entry2);
+            if (is32Bit)
+            {
+                // Zero-extend 32-bit values to ensure correct unsigned semantics
+                X64Emitter.ZeroExtend32(ref _code, VReg.R0);
+                X64Emitter.ZeroExtend32(ref _code, VReg.R1);
+            }
             X64Emitter.XorRR(ref _code, VReg.R2, VReg.R2);
             X64Emitter.DivR(ref _code, VReg.R1);
         }
 
-        // Remainder is in RDX
+        // Remainder is in RDX - preserve type information
         X64Emitter.Push(ref _code, VReg.R2);
-        PushEntry(EvalStackEntry.NativeInt);
+        if (!signed && AreBothInt32(entry1, entry2))
+            PushEntry(EvalStackEntry.Int32);
+        else
+            PushEntry(EvalStackEntry.NativeInt);
         return true;
     }
 

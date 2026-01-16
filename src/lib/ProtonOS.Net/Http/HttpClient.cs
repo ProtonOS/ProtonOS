@@ -178,13 +178,13 @@ public unsafe class HttpClient
 
         // Wait for connection
         byte* rxBuf = stackalloc byte[1514];
-        ulong startTick = Timer.GetTickCount();
+        ulong startTick = Timer.GetUptimeMilliseconds();
         bool connected = false;
 
         while (!connected)
         {
             // Check timeout
-            ulong elapsed = Timer.GetTickCount() - startTick;
+            ulong elapsed = Timer.GetUptimeMilliseconds() - startTick;
             if (elapsed > (ulong)_timeoutMs)
             {
                 _stack.TcpClose(connIndex);
@@ -240,16 +240,30 @@ public unsafe class HttpClient
         // Receive response
         _responseLength = 0;
         HttpResponse response = new HttpResponse();
-        startTick = Timer.GetTickCount();
+        startTick = Timer.GetUptimeMilliseconds();
+        int pollCount = 0;
+
+        Debug.Write("[HTTP] Starting receive loop, startTick=");
+        Debug.WriteDecimal((uint)startTick);
+        Debug.Write(" timeout=");
+        Debug.WriteDecimal(_timeoutMs);
+        Debug.WriteLine();
 
         fixed (byte* respBuf = _responseBuffer)
         {
             while (true)
             {
+                pollCount++;
+
                 // Check timeout
-                ulong elapsed = Timer.GetTickCount() - startTick;
+                ulong elapsed = Timer.GetUptimeMilliseconds() - startTick;
                 if (elapsed > (ulong)_timeoutMs)
                 {
+                    Debug.Write("[HTTP] Timeout after ");
+                    Debug.WriteDecimal(pollCount);
+                    Debug.Write(" polls, elapsed=");
+                    Debug.WriteDecimal((uint)elapsed);
+                    Debug.WriteLine();
                     _stack.TcpClose(connIndex);
                     result.Error = "Response timeout";
                     return result;
@@ -259,6 +273,9 @@ public unsafe class HttpClient
                 int rxLen = receiveFrame(rxBuf, 1514);
                 if (rxLen > 0)
                 {
+                    Debug.Write("[HTTP] Received frame ");
+                    Debug.WriteDecimal(rxLen);
+                    Debug.WriteLine(" bytes");
                     _stack.ProcessFrame(rxBuf, rxLen);
 
                     // Send any pending ACKs

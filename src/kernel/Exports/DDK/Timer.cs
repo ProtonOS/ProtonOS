@@ -39,6 +39,28 @@ public static class TimerExports
     }
 
     /// <summary>
+    /// Get system uptime in milliseconds.
+    /// This is provided as a kernel export because JIT-compiled code has a bug
+    /// with 64-bit unsigned division that truncates the result.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_GetUptimeMs")]
+    public static ulong GetUptimeMilliseconds()
+    {
+        return HPET.TicksToNanoseconds(HPET.ReadCounter()) / 1_000_000;
+    }
+
+    /// <summary>
+    /// Get system uptime in seconds.
+    /// This is provided as a kernel export because JIT-compiled code has a bug
+    /// with 64-bit unsigned division that truncates the result.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_GetUptimeSec")]
+    public static ulong GetUptimeSeconds()
+    {
+        return HPET.TicksToNanoseconds(HPET.ReadCounter()) / 1_000_000_000;
+    }
+
+    /// <summary>
     /// Delay for a number of microseconds (busy-wait).
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Kernel_DelayMicroseconds")]

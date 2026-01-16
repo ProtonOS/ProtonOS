@@ -297,11 +297,11 @@ public static class TestRunner
             return;
         }
 
-        Debug.WriteLine("[AppTest] Testing real HTTP over TCP to 10.0.2.2:80...");
+        Debug.WriteLine("[AppTest] Testing real HTTP over TCP to 10.0.2.2:8080...");
 
         // QEMU user-mode networking: host is at 10.0.2.2
         uint hostIP = ARP.MakeIP(10, 0, 2, 2);
-        ushort port = 80;
+        ushort port = 8080;  // Use port 8080 where test server runs
 
         // First, ensure ARP resolution is done for the gateway
         byte* gatewayMac = stackalloc byte[6];
@@ -344,7 +344,7 @@ public static class TestRunner
         Debug.WriteLine();
 
         // Initiate TCP connection
-        Debug.WriteLine("[AppTest] Connecting TCP to 10.0.2.2:80...");
+        Debug.WriteLine("[AppTest] Connecting TCP to 10.0.2.2:8080...");
         int connIndex = stack.TcpConnect(hostIP, port);
         if (connIndex < 0)
         {
@@ -406,7 +406,7 @@ public static class TestRunner
 
         // Build and send HTTP GET request
         byte* httpReq = stackalloc byte[256];
-        int reqLen = HTTP.BuildGetRequest(httpReq, 256, "10.0.2.2", "/");
+        int reqLen = HTTP.BuildGetRequest(httpReq, 256, "10.0.2.2:8080", "/test.json");
         if (reqLen == 0)
         {
             Fail("RealHttpRequest", "Failed to build HTTP request");
@@ -547,16 +547,16 @@ public static class TestRunner
 
         // QEMU user-mode networking: host is at 10.0.2.2
         uint hostIP = ARP.MakeIP(10, 0, 2, 2);
-        ushort port = 80;
+        ushort port = 8080;  // Use port 8080 where test server runs
 
-        // Create HTTP client
-        var httpClient = new ProtonOS.Net.Http.HttpClient(stack, 2000);
+        // Create HTTP client with longer timeout for real network
+        var httpClient = new ProtonOS.Net.Http.HttpClient(stack, 10000);
 
         // Make HTTP GET request using static method delegates
         HttpResult result = httpClient.Get(
             hostIP, port,
-            "10.0.2.2",
-            "/",
+            "10.0.2.2:8080",
+            "/test.json",
             TransmitFrameDelegate,
             ReceiveFrameDelegate);
 

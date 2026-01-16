@@ -750,6 +750,7 @@ public unsafe class NetworkStack
         if (frameLen == 0)
             return 0;
 
+        _pendingTxLen = frameLen;  // Queue frame for transmission
         _tcpSent++;
 
         Debug.Write("[NetStack] TCP sent ");
@@ -822,6 +823,7 @@ public unsafe class NetworkStack
         int frameLen = BuildIPv4Frame(conn.RemoteEndpoint.IP, TCP.ProtocolNumber, finBuffer, finLen);
         if (frameLen > 0)
         {
+            _pendingTxLen = frameLen;  // Queue frame for transmission
             _tcpSent++;
             Debug.Write("[NetStack] TCP closing connection to ");
             PrintIP(conn.RemoteEndpoint.IP);
