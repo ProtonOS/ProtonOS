@@ -75,6 +75,12 @@ public static unsafe class NetworkStackTests
         TestDnsBuildQuery();
         TestDnsParseResponse();
 
+        // DHCP tests
+        TestDhcpBuildDiscover();
+        TestDhcpBuildRequest();
+        TestDhcpParseOffer();
+        TestDhcpParseAck();
+
         // Report results
         Debug.Write("[NetTests] Results: ");
         Debug.WriteDecimal(_passed);
@@ -1474,5 +1480,337 @@ public static unsafe class NetworkStackTests
         }
 
         Pass("DnsParseResponse");
+    }
+
+    // ===== DHCP Tests =====
+
+    private static unsafe void TestDhcpBuildDiscover()
+    {
+        byte* buffer = stackalloc byte[DHCP.MaxPacketSize];
+        byte* mac = stackalloc byte[6];
+        mac[0] = 0x52; mac[1] = 0x54; mac[2] = 0x00;
+        mac[3] = 0x12; mac[4] = 0x34; mac[5] = 0x56;
+
+        uint xid = 0x12345678;
+        int len = DHCP.BuildDiscover(buffer, xid, mac);
+
+        if (len < DHCP.MinPacketSize)
+        {
+            Fail("DhcpBuildDiscover", "packet too short");
+            return;
+        }
+
+        // Check BOOTP header
+        if (buffer[0] != DHCP.OpRequest)
+        {
+            Fail("DhcpBuildDiscover", "wrong op code");
+            return;
+        }
+
+        if (buffer[1] != DHCP.HtypeEthernet || buffer[2] != DHCP.HlenEthernet)
+        {
+            Fail("DhcpBuildDiscover", "wrong hardware type/len");
+            return;
+        }
+
+        // Check XID
+        uint parsedXid = ((uint)buffer[4] << 24) | ((uint)buffer[5] << 16) |
+                         ((uint)buffer[6] << 8) | buffer[7];
+        if (parsedXid != xid)
+        {
+            Fail("DhcpBuildDiscover", "wrong XID");
+            return;
+        }
+
+        // Check MAC address at offset 28
+        if (buffer[28] != 0x52 || buffer[29] != 0x54 || buffer[30] != 0x00 ||
+            buffer[31] != 0x12 || buffer[32] != 0x34 || buffer[33] != 0x56)
+        {
+            Fail("DhcpBuildDiscover", "wrong MAC address");
+            return;
+        }
+
+        // Check magic cookie at offset 236
+        if (buffer[236] != 0x63 || buffer[237] != 0x82 ||
+            buffer[238] != 0x53 || buffer[239] != 0x63)
+        {
+            Fail("DhcpBuildDiscover", "wrong magic cookie");
+            return;
+        }
+
+        // Check message type option (should be DISCOVER = 1)
+        // Options start at 240
+        if (buffer[240] != DHCP.OptionMessageType || buffer[241] != 1 ||
+            buffer[242] != DHCP.MessageDiscover)
+        {
+            Fail("DhcpBuildDiscover", "wrong message type option");
+            return;
+        }
+
+        Pass("DhcpBuildDiscover");
+    }
+
+    private static unsafe void TestDhcpBuildRequest()
+    {
+        byte* buffer = stackalloc byte[DHCP.MaxPacketSize];
+        byte* mac = stackalloc byte[6];
+        mac[0] = 0x52; mac[1] = 0x54; mac[2] = 0x00;
+        mac[3] = 0x12; mac[4] = 0x34; mac[5] = 0x56;
+
+        uint xid = 0xABCDEF01;
+        uint requestedIP = ARP.MakeIP(10, 0, 2, 15);
+        uint serverIP = ARP.MakeIP(10, 0, 2, 2);
+
+        int len = DHCP.BuildRequest(buffer, xid, mac, requestedIP, serverIP);
+
+        if (len < DHCP.MinPacketSize)
+        {
+            Fail("DhcpBuildRequest", "packet too short");
+            return;
+        }
+
+        // Check op code
+        if (buffer[0] != DHCP.OpRequest)
+        {
+            Fail("DhcpBuildRequest", "wrong op code");
+            return;
+        }
+
+        // Check magic cookie
+        if (buffer[236] != 0x63 || buffer[237] != 0x82 ||
+            buffer[238] != 0x53 || buffer[239] != 0x63)
+        {
+            Fail("DhcpBuildRequest", "wrong magic cookie");
+            return;
+        }
+
+        // Check message type option (should be REQUEST = 3)
+        if (buffer[240] != DHCP.OptionMessageType || buffer[241] != 1 ||
+            buffer[242] != DHCP.MessageRequest)
+        {
+            Fail("DhcpBuildRequest", "wrong message type option");
+            return;
+        }
+
+        // Check requested IP option (option 50)
+        if (buffer[243] != DHCP.OptionRequestedIP || buffer[244] != 4)
+        {
+            Fail("DhcpBuildRequest", "missing requested IP option");
+            return;
+        }
+
+        // Check server ID option (option 54)
+        if (buffer[249] != DHCP.OptionServerId || buffer[250] != 4)
+        {
+            Fail("DhcpBuildRequest", "missing server ID option");
+            return;
+        }
+
+        Pass("DhcpBuildRequest");
+    }
+
+    private static unsafe void TestDhcpParseOffer()
+    {
+        // Build a mock DHCP OFFER response
+        byte* response = stackalloc byte[300];
+        for (int i = 0; i < 300; i++) response[i] = 0;
+
+        // BOOTP header
+        response[0] = DHCP.OpReply;      // op
+        response[1] = DHCP.HtypeEthernet; // htype
+        response[2] = DHCP.HlenEthernet;  // hlen
+        response[3] = 0;                  // hops
+
+        // XID
+        response[4] = 0x12;
+        response[5] = 0x34;
+        response[6] = 0x56;
+        response[7] = 0x78;
+
+        // yiaddr (offered IP: 10.0.2.15)
+        response[16] = 10;
+        response[17] = 0;
+        response[18] = 2;
+        response[19] = 15;
+
+        // siaddr (server IP: 10.0.2.2)
+        response[20] = 10;
+        response[21] = 0;
+        response[22] = 2;
+        response[23] = 2;
+
+        // Magic cookie at offset 236
+        response[236] = 0x63;
+        response[237] = 0x82;
+        response[238] = 0x53;
+        response[239] = 0x63;
+
+        // Options starting at 240
+        int opt = 240;
+
+        // Option 53: Message Type = OFFER (2)
+        response[opt++] = DHCP.OptionMessageType;
+        response[opt++] = 1;
+        response[opt++] = DHCP.MessageOffer;
+
+        // Option 1: Subnet Mask = 255.255.255.0
+        response[opt++] = DHCP.OptionSubnetMask;
+        response[opt++] = 4;
+        response[opt++] = 255;
+        response[opt++] = 255;
+        response[opt++] = 255;
+        response[opt++] = 0;
+
+        // Option 3: Router = 10.0.2.2
+        response[opt++] = DHCP.OptionRouter;
+        response[opt++] = 4;
+        response[opt++] = 10;
+        response[opt++] = 0;
+        response[opt++] = 2;
+        response[opt++] = 2;
+
+        // Option 6: DNS = 10.0.2.3
+        response[opt++] = DHCP.OptionDns;
+        response[opt++] = 4;
+        response[opt++] = 10;
+        response[opt++] = 0;
+        response[opt++] = 2;
+        response[opt++] = 3;
+
+        // Option 255: End
+        response[opt++] = DHCP.OptionEnd;
+
+        DhcpResponse parsed;
+        bool success = DHCP.ParseResponse(response, opt, 0x12345678, out parsed);
+
+        if (!success)
+        {
+            Fail("DhcpParseOffer", "parse failed");
+            return;
+        }
+
+        if (parsed.MessageType != DHCP.MessageOffer)
+        {
+            Fail("DhcpParseOffer", "wrong message type");
+            return;
+        }
+
+        uint expectedIP = ARP.MakeIP(10, 0, 2, 15);
+        if (parsed.YourIP != expectedIP)
+        {
+            Fail("DhcpParseOffer", "wrong offered IP");
+            return;
+        }
+
+        uint expectedMask = ARP.MakeIP(255, 255, 255, 0);
+        if (parsed.SubnetMask != expectedMask)
+        {
+            Fail("DhcpParseOffer", "wrong subnet mask");
+            return;
+        }
+
+        uint expectedGateway = ARP.MakeIP(10, 0, 2, 2);
+        if (parsed.Gateway != expectedGateway)
+        {
+            Fail("DhcpParseOffer", "wrong gateway");
+            return;
+        }
+
+        uint expectedDns = ARP.MakeIP(10, 0, 2, 3);
+        if (parsed.DnsServer != expectedDns)
+        {
+            Fail("DhcpParseOffer", "wrong DNS server");
+            return;
+        }
+
+        Pass("DhcpParseOffer");
+    }
+
+    private static unsafe void TestDhcpParseAck()
+    {
+        // Build a mock DHCP ACK response
+        byte* response = stackalloc byte[300];
+        for (int i = 0; i < 300; i++) response[i] = 0;
+
+        // BOOTP header
+        response[0] = DHCP.OpReply;
+        response[1] = DHCP.HtypeEthernet;
+        response[2] = DHCP.HlenEthernet;
+        response[3] = 0;
+
+        // XID
+        response[4] = 0xAB;
+        response[5] = 0xCD;
+        response[6] = 0xEF;
+        response[7] = 0x01;
+
+        // yiaddr (assigned IP: 10.0.2.15)
+        response[16] = 10;
+        response[17] = 0;
+        response[18] = 2;
+        response[19] = 15;
+
+        // Magic cookie
+        response[236] = 0x63;
+        response[237] = 0x82;
+        response[238] = 0x53;
+        response[239] = 0x63;
+
+        // Options
+        int opt = 240;
+
+        // Option 53: Message Type = ACK (5)
+        response[opt++] = DHCP.OptionMessageType;
+        response[opt++] = 1;
+        response[opt++] = DHCP.MessageAck;
+
+        // Option 51: Lease Time = 86400 seconds (1 day)
+        response[opt++] = DHCP.OptionLeaseTime;
+        response[opt++] = 4;
+        response[opt++] = 0x00;
+        response[opt++] = 0x01;
+        response[opt++] = 0x51;
+        response[opt++] = 0x80;
+
+        // Option 54: Server ID = 10.0.2.2
+        response[opt++] = DHCP.OptionServerId;
+        response[opt++] = 4;
+        response[opt++] = 10;
+        response[opt++] = 0;
+        response[opt++] = 2;
+        response[opt++] = 2;
+
+        // Option 255: End
+        response[opt++] = DHCP.OptionEnd;
+
+        DhcpResponse parsed;
+        bool success = DHCP.ParseResponse(response, opt, 0xABCDEF01, out parsed);
+
+        if (!success)
+        {
+            Fail("DhcpParseAck", "parse failed");
+            return;
+        }
+
+        if (parsed.MessageType != DHCP.MessageAck)
+        {
+            Fail("DhcpParseAck", "wrong message type");
+            return;
+        }
+
+        if (parsed.LeaseTime != 86400)
+        {
+            Fail("DhcpParseAck", "wrong lease time");
+            return;
+        }
+
+        uint expectedServer = ARP.MakeIP(10, 0, 2, 2);
+        if (parsed.ServerIP != expectedServer)
+        {
+            Fail("DhcpParseAck", "wrong server IP");
+            return;
+        }
+
+        Pass("DhcpParseAck");
     }
 }

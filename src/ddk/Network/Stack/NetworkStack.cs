@@ -182,6 +182,11 @@ public unsafe class NetworkStack
     public NetworkConfig Config => _config;
 
     /// <summary>
+    /// Get the MAC address.
+    /// </summary>
+    public byte* MacAddress => _macAddress;
+
+    /// <summary>
     /// Process a received Ethernet frame.
     /// </summary>
     /// <param name="data">Pointer to frame data.</param>
@@ -492,6 +497,101 @@ public unsafe class NetworkStack
         Debug.WriteLine();
 
         return frameLen;
+    }
+
+    /// <summary>
+    /// Send a UDP broadcast for DHCP (source IP 0.0.0.0, dest IP 255.255.255.255).
+    /// Used during DHCP bootstrap when client doesn't have an IP yet.
+    /// </summary>
+    /// <param name="srcPort">Source port (typically 68 for DHCP client).</param>
+    /// <param name="destPort">Destination port (typically 67 for DHCP server).</param>
+    /// <param name="data">Payload data.</param>
+    /// <param name="dataLen">Payload length.</param>
+    /// <returns>Frame length, or 0 on error.</returns>
+    public int SendDhcpBroadcast(ushort srcPort, ushort destPort, byte* data, int dataLen)
+    {
+        if (dataLen > UDP.MaxPayloadSize)
+            return 0;
+
+        // Source and destination IPs for DHCP
+        uint srcIP = 0;           // 0.0.0.0 - client has no IP yet
+        uint destIP = 0xFFFFFFFF; // 255.255.255.255 - broadcast
+
+        // Build UDP packet with checksum
+        int maxUdpLen = UdpHeader.Size + dataLen;
+        byte* udpBuffer = stackalloc byte[maxUdpLen];
+        int udpLen = UDP.BuildPacketWithChecksum(udpBuffer, srcPort, destPort, data, dataLen,
+                                                  srcIP, destIP);
+        if (udpLen == 0)
+            return 0;
+
+        // Build IPv4 header manually (can't use BuildIPv4Frame - it needs ARP)
+        int ipLen = 20 + udpLen;  // IPv4 header (no options) + UDP
+        byte* ipBuffer = _txBuffer + EthernetHeader.Size;
+
+        // IPv4 header
+        ipBuffer[0] = 0x45;  // Version 4, IHL 5 (20 bytes)
+        ipBuffer[1] = 0x00;  // DSCP/ECN
+        ipBuffer[2] = (byte)(ipLen >> 8);   // Total length
+        ipBuffer[3] = (byte)ipLen;
+        ipBuffer[4] = 0x00;  // Identification
+        ipBuffer[5] = 0x00;
+        ipBuffer[6] = 0x00;  // Flags/Fragment offset
+        ipBuffer[7] = 0x00;
+        ipBuffer[8] = 64;    // TTL
+        ipBuffer[9] = UDP.ProtocolNumber;  // Protocol: UDP
+        ipBuffer[10] = 0x00; // Checksum (calculated below)
+        ipBuffer[11] = 0x00;
+        // Source IP: 0.0.0.0
+        ipBuffer[12] = 0;
+        ipBuffer[13] = 0;
+        ipBuffer[14] = 0;
+        ipBuffer[15] = 0;
+        // Dest IP: 255.255.255.255
+        ipBuffer[16] = 255;
+        ipBuffer[17] = 255;
+        ipBuffer[18] = 255;
+        ipBuffer[19] = 255;
+
+        // Calculate IP header checksum
+        uint sum = 0;
+        for (int i = 0; i < 20; i += 2)
+            sum += (uint)((ipBuffer[i] << 8) | ipBuffer[i + 1]);
+        while ((sum >> 16) != 0)
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        ushort ipChecksum = (ushort)~sum;
+        ipBuffer[10] = (byte)(ipChecksum >> 8);
+        ipBuffer[11] = (byte)ipChecksum;
+
+        // Copy UDP data after IPv4 header
+        for (int i = 0; i < udpLen; i++)
+            ipBuffer[20 + i] = udpBuffer[i];
+
+        // Build Ethernet header with broadcast MAC
+        byte* broadcastMac = stackalloc byte[6];
+        Ethernet.SetBroadcast(broadcastMac);
+        int ethLen = Ethernet.BuildHeader(_txBuffer, broadcastMac, _macAddress, EtherType.IPv4);
+
+        int totalLen = EthernetHeader.Size + ipLen;
+
+        // Pad to minimum frame size
+        if (totalLen < EthernetHeader.MinFrameSize)
+        {
+            for (int i = totalLen; i < EthernetHeader.MinFrameSize; i++)
+                _txBuffer[i] = 0;
+            totalLen = EthernetHeader.MinFrameSize;
+        }
+
+        _pendingTxLen = totalLen;
+        _udpSent++;
+
+        Debug.Write("[NetStack] DHCP broadcast to port ");
+        Debug.WriteDecimal(destPort);
+        Debug.Write(" len=");
+        Debug.WriteDecimal(dataLen);
+        Debug.WriteLine();
+
+        return totalLen;
     }
 
     /// <summary>
