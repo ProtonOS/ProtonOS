@@ -70,6 +70,11 @@ public static unsafe class NetworkStackTests
         TestStaticByteArray();
         TestStaticByteArrayReadWrite();
 
+        // DNS tests
+        TestDnsEncodeName();
+        TestDnsBuildQuery();
+        TestDnsParseResponse();
+
         // Report results
         Debug.Write("[NetTests] Results: ");
         Debug.WriteDecimal(_passed);
@@ -1294,5 +1299,180 @@ public static unsafe class NetworkStackTests
         }
 
         Pass("StaticByteArrayReadWrite");
+    }
+
+    // ========================================
+    // DNS Tests
+    // ========================================
+
+    private static void TestDnsEncodeName()
+    {
+        // Test encoding "example.com" -> "\x07example\x03com\x00"
+        byte* hostname = stackalloc byte[11];
+        hostname[0] = (byte)'e';
+        hostname[1] = (byte)'x';
+        hostname[2] = (byte)'a';
+        hostname[3] = (byte)'m';
+        hostname[4] = (byte)'p';
+        hostname[5] = (byte)'l';
+        hostname[6] = (byte)'e';
+        hostname[7] = (byte)'.';
+        hostname[8] = (byte)'c';
+        hostname[9] = (byte)'o';
+        hostname[10] = (byte)'m';
+
+        byte* encoded = stackalloc byte[64];
+        int len = DNS.EncodeName(encoded, hostname, 11);
+
+        // Expected: 7 "example" 3 "com" 0
+        // Total: 1 + 7 + 1 + 3 + 1 = 13 bytes
+        if (len != 13)
+        {
+            Fail("DnsEncodeName", "wrong length");
+            return;
+        }
+
+        if (encoded[0] != 7)
+        {
+            Fail("DnsEncodeName", "first label length wrong");
+            return;
+        }
+
+        if (encoded[8] != 3)
+        {
+            Fail("DnsEncodeName", "second label length wrong");
+            return;
+        }
+
+        if (encoded[12] != 0)
+        {
+            Fail("DnsEncodeName", "missing null terminator");
+            return;
+        }
+
+        Pass("DnsEncodeName");
+    }
+
+    private static void TestDnsBuildQuery()
+    {
+        // Test building a DNS query for "test.com"
+        byte* hostname = stackalloc byte[8];
+        hostname[0] = (byte)'t';
+        hostname[1] = (byte)'e';
+        hostname[2] = (byte)'s';
+        hostname[3] = (byte)'t';
+        hostname[4] = (byte)'.';
+        hostname[5] = (byte)'c';
+        hostname[6] = (byte)'o';
+        hostname[7] = (byte)'m';
+
+        byte* buffer = stackalloc byte[DNS.MaxMessageSize];
+        ushort txId = 0x1234;
+
+        int queryLen = DNS.BuildQuery(buffer, txId, hostname, 8);
+
+        // Minimum: 12 (header) + 1+4+1+3+1 (qname) + 4 (qtype+qclass) = 26 bytes
+        if (queryLen < 26)
+        {
+            Fail("DnsBuildQuery", "query too short");
+            return;
+        }
+
+        // Check transaction ID
+        if (buffer[0] != 0x12 || buffer[1] != 0x34)
+        {
+            Fail("DnsBuildQuery", "wrong transaction ID");
+            return;
+        }
+
+        // Check flags (0x0100 = standard query, recursion desired)
+        if (buffer[2] != 0x01 || buffer[3] != 0x00)
+        {
+            Fail("DnsBuildQuery", "wrong flags");
+            return;
+        }
+
+        // Check QDCOUNT = 1
+        if (buffer[4] != 0x00 || buffer[5] != 0x01)
+        {
+            Fail("DnsBuildQuery", "wrong question count");
+            return;
+        }
+
+        Pass("DnsBuildQuery");
+    }
+
+    private static void TestDnsParseResponse()
+    {
+        // Build a mock DNS response for "test.com" -> 93.184.216.34 (example.com's IP)
+        byte* response = stackalloc byte[64];
+        int offset = 0;
+
+        // Header
+        response[offset++] = 0x12;  // Transaction ID
+        response[offset++] = 0x34;
+        response[offset++] = 0x81;  // Flags: QR=1 (response), RD=1, RA=1
+        response[offset++] = 0x80;
+        response[offset++] = 0x00;  // QDCOUNT = 1
+        response[offset++] = 0x01;
+        response[offset++] = 0x00;  // ANCOUNT = 1
+        response[offset++] = 0x01;
+        response[offset++] = 0x00;  // NSCOUNT = 0
+        response[offset++] = 0x00;
+        response[offset++] = 0x00;  // ARCOUNT = 0
+        response[offset++] = 0x00;
+
+        // Question section: test.com
+        response[offset++] = 0x04;  // "test"
+        response[offset++] = (byte)'t';
+        response[offset++] = (byte)'e';
+        response[offset++] = (byte)'s';
+        response[offset++] = (byte)'t';
+        response[offset++] = 0x03;  // "com"
+        response[offset++] = (byte)'c';
+        response[offset++] = (byte)'o';
+        response[offset++] = (byte)'m';
+        response[offset++] = 0x00;  // End of name
+        response[offset++] = 0x00;  // QTYPE = A (1)
+        response[offset++] = 0x01;
+        response[offset++] = 0x00;  // QCLASS = IN (1)
+        response[offset++] = 0x01;
+
+        // Answer section
+        response[offset++] = 0xC0;  // Name compression pointer
+        response[offset++] = 0x0C;  // Points to offset 12 (question name)
+        response[offset++] = 0x00;  // TYPE = A (1)
+        response[offset++] = 0x01;
+        response[offset++] = 0x00;  // CLASS = IN (1)
+        response[offset++] = 0x01;
+        response[offset++] = 0x00;  // TTL = 300 (0x0000012C)
+        response[offset++] = 0x00;
+        response[offset++] = 0x01;
+        response[offset++] = 0x2C;
+        response[offset++] = 0x00;  // RDLENGTH = 4
+        response[offset++] = 0x04;
+        response[offset++] = 93;    // RDATA: 93.184.216.34
+        response[offset++] = 184;
+        response[offset++] = 216;
+        response[offset++] = 34;
+
+        uint ip;
+        bool success = DNS.ParseResponse(response, offset, 0x1234, out ip);
+
+        if (!success)
+        {
+            Fail("DnsParseResponse", "parse failed");
+            return;
+        }
+
+        // Expected: 93.184.216.34 = 0x5DB8D822
+        uint expected = (93U << 24) | (184U << 16) | (216U << 8) | 34U;
+        if (ip != expected)
+        {
+            Fail("DnsParseResponse", "wrong IP address");
+            return;
+        }
+
+        Pass("DnsParseResponse");
     }
 }

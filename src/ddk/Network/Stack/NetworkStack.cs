@@ -20,6 +20,12 @@ public struct NetworkConfig
     /// <summary>Gateway address in host byte order.</summary>
     public uint Gateway;
 
+    /// <summary>Primary DNS server address in host byte order.</summary>
+    public uint DnsServer;
+
+    /// <summary>Secondary DNS server address in host byte order (optional).</summary>
+    public uint DnsServer2;
+
     /// <summary>Check if an IP is on the local subnet.</summary>
     public bool IsLocalSubnet(uint ip)
     {
@@ -137,11 +143,19 @@ public unsafe class NetworkStack
     /// <summary>
     /// Configure the network interface.
     /// </summary>
-    public void Configure(uint ipAddress, uint subnetMask, uint gateway)
+    /// <param name="ipAddress">IPv4 address in host byte order.</param>
+    /// <param name="subnetMask">Subnet mask in host byte order.</param>
+    /// <param name="gateway">Gateway address in host byte order.</param>
+    /// <param name="dnsServer">Primary DNS server (0 to skip).</param>
+    /// <param name="dnsServer2">Secondary DNS server (0 to skip).</param>
+    public void Configure(uint ipAddress, uint subnetMask, uint gateway,
+                          uint dnsServer = 0, uint dnsServer2 = 0)
     {
         _config.IPAddress = ipAddress;
         _config.SubnetMask = subnetMask;
         _config.Gateway = gateway;
+        _config.DnsServer = dnsServer;
+        _config.DnsServer2 = dnsServer2;
 
         Debug.Write("[NetStack] Configured IP: ");
         PrintIP(ipAddress);
@@ -149,6 +163,11 @@ public unsafe class NetworkStack
         PrintIP(subnetMask);
         Debug.Write(" Gateway: ");
         PrintIP(gateway);
+        if (dnsServer != 0)
+        {
+            Debug.Write(" DNS: ");
+            PrintIP(dnsServer);
+        }
         Debug.WriteLine();
     }
 
@@ -460,6 +479,8 @@ public unsafe class NetworkStack
             return 0;
         }
 
+        // Queue frame for transmission
+        _pendingTxLen = frameLen;
         _udpSent++;
 
         Debug.Write("[NetStack] Sent UDP to ");

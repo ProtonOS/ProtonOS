@@ -147,8 +147,9 @@ public static unsafe class VirtioNetEntry
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
+            uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
-            _netStack.Configure(guestIP, subnetMask, gateway);
+            _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
         }
 
         return _netStack;
@@ -324,8 +325,9 @@ public static unsafe class VirtioNetEntry
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
+            uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
-            _netStack.Configure(guestIP, subnetMask, gateway);
+            _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
         }
 
         // Check if gateway MAC is already cached
@@ -433,8 +435,9 @@ public static unsafe class VirtioNetEntry
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
+            uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
-            _netStack.Configure(guestIP, subnetMask, gateway);
+            _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
         }
 
         uint gatewayIP = ARP.MakeIP(10, 0, 2, 2);
@@ -549,8 +552,9 @@ public static unsafe class VirtioNetEntry
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
+            uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
-            _netStack.Configure(guestIP, subnetMask, gateway);
+            _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
         }
 
         // QEMU's DNS server is at 10.0.2.3
@@ -721,8 +725,9 @@ public static unsafe class VirtioNetEntry
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
+            uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
-            _netStack.Configure(guestIP, subnetMask, gateway);
+            _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
         }
 
         // Connect to QEMU's DNS server which accepts TCP connections (DNS over TCP, RFC 7766)

@@ -36,6 +36,7 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### Networking
 - **Network Stack** - Ethernet, ARP, IPv4, ICMP (ping), UDP, TCP
+- **DNS Resolution** - Hostname-to-IP resolution via UDP queries
 - **TCP Client** - Connection management, data transmission, graceful close
 - **HTTP/1.1** - Client library for HTTP requests over TCP
 
@@ -71,17 +72,18 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | EXT2 filesystem (read/write) | Complete |
 | VFS with mount support | Complete |
 | TCP/IP network stack | Complete |
+| DNS resolution | Complete |
 | HTTP/1.1 client | Complete |
 | GDB debugging support | Complete |
 | Userspace processes | Not Started |
 
 ### Test Results
 
-The kernel runs comprehensive test suites on boot: **708 tests passing**
+The kernel runs comprehensive test suites on boot: **712 tests passing**
 
 - **673** JIT/runtime tests (FullTest)
-- **29** network stack tests
-- **6** application-level tests (HTTP, etc.)
+- **32** network stack tests (including DNS)
+- **7** application-level tests (HTTP, DNS, etc.)
 
 ### Supported C# Features
 
