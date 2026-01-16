@@ -1,6 +1,6 @@
 # ProtonOS
 
-A bare-metal operating system written entirely in C#, targeting x86-64 UEFI systems. Features a custom JIT compiler, garbage collector, and minimal runtime library.
+A bare-metal operating system written entirely in C#, targeting x86-64 UEFI systems. Features a custom JIT compiler, garbage collector, device drivers, filesystems, and TCP/IP networking.
 
 ## The Idea
 
@@ -8,7 +8,8 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ## Features
 
-- **UEFI Boot** - Native UEFI application, no legacy BIOS
+### Core Kernel
+- **UEFI Boot** - Two-stage bootloader with predictable kernel load addresses
 - **Custom Runtime (korlib)** - Minimal .NET runtime with collections (List, Dictionary, StringBuilder)
 - **Compacting GC** - Mark-sweep with Lisp-2 compaction, Large Object Heap (LOH)
 - **Full Exception Handling** - try/catch/finally/filter with funclet-based unwinding
@@ -16,8 +17,31 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 - **NUMA Awareness** - Topology detection and NUMA-aware memory allocation
 - **Preemptive Scheduler** - Multi-threaded with APIC timer, per-CPU run queues, thread cleanup
 - **Virtual Memory** - 4-level paging with higher-half kernel
+
+### JIT Compiler
 - **Tier 0 JIT** - Full IL compiler supporting generics, delegates, interfaces, reflection
 - **Cross-Assembly Loading** - Load and link multiple .NET assemblies at runtime
+- **AOT↔JIT Interop** - Seamless calls between AOT kernel code and JIT-compiled drivers
+- **GDB Debugging** - JIT methods visible in GDB via JIT interface
+
+### Device Drivers
+- **VirtIO** - Common infrastructure, virtio-blk (storage), virtio-net (networking)
+- **AHCI/SATA** - Native SATA controller support
+- **Dynamic Loading** - Drivers loaded from /drivers at runtime with lifecycle management
+
+### Filesystems
+- **FAT32** - Full read/write support
+- **EXT2** - Full read/write support
+- **VFS** - Virtual filesystem abstraction with mount support
+
+### Networking
+- **Network Stack** - Ethernet, ARP, IPv4, ICMP (ping), UDP, TCP
+- **TCP Client** - Connection management, data transmission, graceful close
+- **HTTP/1.1** - Client library for HTTP requests over TCP
+
+### Debugging
+- **GDB Support** - Automatic symbol loading for AOT and JIT code
+- **JIT Debugging** - Set breakpoints in JIT-compiled methods by name
 - **Reflection API** - Type introspection, method enumeration, dynamic invocation
 
 ## Current Status
@@ -39,13 +63,25 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | Assembly loading and execution | Complete |
 | Cross-assembly type resolution | Complete |
 | Reflection API (types, methods, fields, invoke) | Complete |
-| Driver Development Kit (DDK) | In Progress |
-| VirtIO drivers | In Progress |
-| FAT filesystem driver | In Progress |
+| Driver Development Kit (DDK) | Complete |
+| VirtIO-blk driver (block storage) | Complete |
+| VirtIO-net driver (networking) | Complete |
+| AHCI/SATA driver | Complete |
+| FAT32 filesystem (read/write) | Complete |
+| EXT2 filesystem (read/write) | Complete |
+| VFS with mount support | Complete |
+| TCP/IP network stack | Complete |
+| HTTP/1.1 client | Complete |
+| GDB debugging support | Complete |
+| Userspace processes | Not Started |
 
-### JIT Test Results
+### Test Results
 
-The JIT runs a comprehensive test suite on boot: **619 tests passing**
+The kernel runs comprehensive test suites on boot: **708 tests passing**
+
+- **673** JIT/runtime tests (FullTest)
+- **29** network stack tests
+- **6** application-level tests (HTTP, etc.)
 
 ### Supported C# Features
 
@@ -123,17 +159,27 @@ src/
 │   ├── Runtime/         # PE loader, metadata reader, JIT compiler
 │   ├── Threading/       # Scheduler, threads, per-CPU state
 │   └── x64/             # x64-specific (GDT, IDT, APIC, SMP, assembly)
+├── bootloader/          # UEFI bootloader (loads kernel at fixed address)
 ├── ddk/                 # Driver Development Kit (JIT-loaded)
+│   ├── Kernel/          # Kernel API wrappers (Timer, Memory, Debug, etc.)
+│   ├── Network/         # Network stack (Ethernet, ARP, IP, TCP, UDP)
+│   └── VFS/             # Virtual filesystem abstraction
 ├── drivers/             # Device drivers (JIT-compiled)
 │   └── shared/
-│       ├── virtio/      # VirtIO common infrastructure
-│       └── storage/     # Block device drivers (virtio-blk, FAT)
+│       ├── virtio/      # VirtIO common, virtio-blk, virtio-net
+│       ├── storage/     # AHCI/SATA driver
+│       └── filesystem/  # FAT32, EXT2 drivers
+├── lib/                 # Application libraries
+│   └── ProtonOS.Net/    # HTTP client library
+├── AppTest/             # Application-level tests (HTTP, etc.)
 ├── TestSupport/         # Cross-assembly test helpers
 └── FullTest/            # JIT test assembly (runs on boot)
 
 tools/
 ├── runtime/             # ProtonOS/runtime submodule (NativeAOT ILCompiler)
-└── bflat/               # ProtonOS/bflat submodule (C# AOT compiler)
+├── bflat/               # ProtonOS/bflat submodule (C# AOT compiler)
+├── gdb-protonos.py      # GDB helper script for debugging
+└── gen_elf_syms.py      # PDB to ELF symbol converter
 ```
 
 ## How It Works
@@ -161,6 +207,7 @@ Everything else is C#.
 ## Documentation
 
 - [Architecture Reference](docs/ARCHITECTURE.md) - System design and memory layout
+- [Boot Protocol](docs/BOOT_PROTOCOL.md) - UEFI bootloader and kernel handoff
 - [korlib Plan](docs/KORLIB_PLAN.md) - Runtime library roadmap
 - [DDK Plan](docs/DDK_PLAN.md) - Driver development kit design
 
