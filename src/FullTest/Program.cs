@@ -928,6 +928,16 @@ public static class TestRunner
         RecordResult("ComparisonTests.TestRefStructMultipleFields", ComparisonTests.TestRefStructMultipleFields() == 1);
         RecordResult("ComparisonTests.TestRefStructBoolField", ComparisonTests.TestRefStructBoolField() == 1);
         RecordResult("ComparisonTests.TestComplexMethodWithManyLocals", ComparisonTests.TestComplexMethodWithManyLocals() == 1);
+
+        // Uint comparison tests (high bytes set)
+        RecordResult("ComparisonTests.TestUintHighBytesEqual", ComparisonTests.TestUintHighBytesEqual() == 1);
+        RecordResult("ComparisonTests.TestUintHighBytesNotEqual", ComparisonTests.TestUintHighBytesNotEqual() == 1);
+        RecordResult("ComparisonTests.TestUintFromBytesHighBits", ComparisonTests.TestUintFromBytesHighBits() == 1);
+        RecordResult("ComparisonTests.TestUintBit31Set", ComparisonTests.TestUintBit31Set() == 1);
+        RecordResult("ComparisonTests.TestUintAllBitsSet", ComparisonTests.TestUintAllBitsSet() == 1);
+        RecordResult("ComparisonTests.TestUintHighVsLow", ComparisonTests.TestUintHighVsLow() == 1);
+        RecordResult("ComparisonTests.TestUintHighBytesViaMethod", ComparisonTests.TestUintHighBytesViaMethod() == 1);
+        RecordResult("ComparisonTests.TestUintAssembleAndCompare", ComparisonTests.TestUintAssembleAndCompare() == 1);
     }
 
     private static void RunBitwiseTests()
@@ -1626,6 +1636,128 @@ public static class ComparisonTests
 
         Debug.WriteLine("[Complex] PASS");
         return 1;  // Correct
+    }
+
+    // Tests for uint comparison with high bytes set (bug found in DHCP XID comparison)
+    // The bug: comparing uint values like 0xABCDEF01 incorrectly returns not-equal
+    // even when both values are identical.
+
+    public static int TestUintHighBytesEqual()
+    {
+        // Direct comparison of uint with high bytes set
+        uint a = 0xABCDEF01;
+        uint b = 0xABCDEF01;
+        if (a != b)
+            return 0;  // Bug: should be equal
+        return 1;
+    }
+
+    public static int TestUintHighBytesNotEqual()
+    {
+        // Two different uint values with high bytes set
+        uint a = 0xABCDEF01;
+        uint b = 0xABCDEF02;
+        if (a == b)
+            return 0;  // Bug: should not be equal
+        return 1;
+    }
+
+    public static unsafe int TestUintFromBytesHighBits()
+    {
+        // Reproduce the exact DHCP XID pattern:
+        // Assemble uint from bytes, then compare to parameter
+        byte* data = stackalloc byte[4];
+        data[0] = 0xAB;
+        data[1] = 0xCD;
+        data[2] = 0xEF;
+        data[3] = 0x01;
+
+        uint assembled = ((uint)data[0] << 24) | ((uint)data[1] << 16) |
+                         ((uint)data[2] << 8) | data[3];
+        uint expected = 0xABCDEF01;
+
+        Debug.Write("[UintFromBytes] assembled=0x");
+        Debug.WriteHex((ulong)assembled);
+        Debug.Write(" expected=0x");
+        Debug.WriteHex((ulong)expected);
+        Debug.WriteLine();
+
+        if (assembled != expected)
+        {
+            Debug.WriteLine("[UintFromBytes] FAIL: assembled != expected");
+            return 0;
+        }
+        return 1;
+    }
+
+    public static int TestUintBit31Set()
+    {
+        // Test with bit 31 set (sign bit if interpreted as signed)
+        uint a = 0x80000001;
+        uint b = 0x80000001;
+        if (a != b)
+            return 0;
+        return 1;
+    }
+
+    public static int TestUintAllBitsSet()
+    {
+        // Test with all bits set
+        uint a = 0xFFFFFFFF;
+        uint b = 0xFFFFFFFF;
+        if (a != b)
+            return 0;
+        return 1;
+    }
+
+    public static int TestUintHighVsLow()
+    {
+        // Compare high-byte value to low-byte value
+        uint high = 0xABCDEF01;
+        uint low = 0x12345678;
+        if (high == low)
+            return 0;  // Should not be equal
+        return 1;
+    }
+
+    private static bool CompareUints(uint a, uint b)
+    {
+        return a == b;
+    }
+
+    public static int TestUintHighBytesViaMethod()
+    {
+        // Test comparison via method call
+        uint a = 0xABCDEF01;
+        uint b = 0xABCDEF01;
+        if (!CompareUints(a, b))
+            return 0;
+        return 1;
+    }
+
+    private static uint AssembleUint(byte b0, byte b1, byte b2, byte b3)
+    {
+        return ((uint)b0 << 24) | ((uint)b1 << 16) | ((uint)b2 << 8) | b3;
+    }
+
+    public static int TestUintAssembleAndCompare()
+    {
+        // Assemble via method and compare
+        uint assembled = AssembleUint(0xAB, 0xCD, 0xEF, 0x01);
+        uint expected = 0xABCDEF01;
+
+        Debug.Write("[AssembleCompare] assembled=0x");
+        Debug.WriteHex((ulong)assembled);
+        Debug.Write(" expected=0x");
+        Debug.WriteHex((ulong)expected);
+        Debug.WriteLine();
+
+        if (assembled != expected)
+        {
+            Debug.WriteLine("[AssembleCompare] FAIL");
+            return 0;
+        }
+        return 1;
     }
 }
 

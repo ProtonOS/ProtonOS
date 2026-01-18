@@ -3236,10 +3236,11 @@ public unsafe struct ILCompiler
         }
         else
         {
-            // Integer negation
+            // Integer negation - preserve Int32 type if input is Int32
+            bool isInt32 = (entry.Kind == EvalStackKind.Int32);
             PopR0();
             X64Emitter.Neg(ref _code, VReg.R0);
-            PushR0(EvalStackEntry.NativeInt);
+            PushR0(isInt32 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         }
         return true;
     }
@@ -3247,39 +3248,58 @@ public unsafe struct ILCompiler
     private bool CompileAnd()
     {
         // Binary op: pop two, AND, push result
+        // Preserve Int32 type if both operands are Int32
+        EvalStackEntry entry2 = PeekEntryAt(0);
+        EvalStackEntry entry1 = PeekEntryAt(1);
+        bool bothInt32 = (entry1.Kind == EvalStackKind.Int32 && entry2.Kind == EvalStackKind.Int32);
+
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.AndRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(EvalStackEntry.NativeInt);
+        PushR0(bothInt32 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileOr()
     {
         // Binary op: pop two, OR, push result
+        // Preserve Int32 type if both operands are Int32
+        EvalStackEntry entry2 = PeekEntryAt(0);
+        EvalStackEntry entry1 = PeekEntryAt(1);
+        bool bothInt32 = (entry1.Kind == EvalStackKind.Int32 && entry2.Kind == EvalStackKind.Int32);
+
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.OrRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(EvalStackEntry.NativeInt);
+        PushR0(bothInt32 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileXor()
     {
         // Binary op: pop two, XOR, push result
+        // Preserve Int32 type if both operands are Int32
+        EvalStackEntry entry2 = PeekEntryAt(0);
+        EvalStackEntry entry1 = PeekEntryAt(1);
+        bool bothInt32 = (entry1.Kind == EvalStackKind.Int32 && entry2.Kind == EvalStackKind.Int32);
+
         PopReg(VReg.R2);  // Second operand
         PopR0();          // First operand
         X64Emitter.XorRR(ref _code, VReg.R0, VReg.R2);
-        PushR0(EvalStackEntry.NativeInt);
+        PushR0(bothInt32 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
     private bool CompileNot()
     {
         // Unary op: pop one, NOT, push result
+        // Preserve Int32 type if operand is Int32
+        EvalStackEntry entry = PeekEntryAt(0);
+        bool isInt32 = (entry.Kind == EvalStackKind.Int32);
+
         PopR0();
         X64Emitter.Not(ref _code, VReg.R0);
-        PushR0(EvalStackEntry.NativeInt);
+        PushR0(isInt32 ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 
@@ -3402,10 +3422,17 @@ public unsafe struct ILCompiler
     {
         // Shift left: value << shiftAmount
         // IL stack: [..., value, shiftAmount] -> [..., result]
+
+        // Check the type of the value being shifted (second from top, under shiftAmount)
+        EvalStackEntry valueEntry = PeekEntryAt(1);
+        bool is32Bit = (valueEntry.Kind == EvalStackKind.Int32);
+
         PopReg(VReg.R1);  // Shift amount to CL (part of RCX)
         PopR0();          // Value to shift
         X64Emitter.ShlCL(ref _code, VReg.R0);
-        PushR0(EvalStackEntry.NativeInt);
+
+        // Result type matches input type (preserves Int32 for 32-bit comparisons)
+        PushR0(is32Bit ? EvalStackEntry.Int32 : EvalStackEntry.NativeInt);
         return true;
     }
 

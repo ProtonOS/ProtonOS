@@ -1746,11 +1746,11 @@ public static unsafe class NetworkStackTests
         response[2] = DHCP.HlenEthernet;
         response[3] = 0;
 
-        // XID (use similar value to DhcpParseOffer)
-        response[4] = 0x12;
-        response[5] = 0x34;
-        response[6] = 0x56;
-        response[7] = 0x79;  // 0x12345679
+        // XID - use value with high byte set to verify JIT comparison fix
+        response[4] = 0xAB;
+        response[5] = 0xCD;
+        response[6] = 0xEF;
+        response[7] = 0x01;  // 0xABCDEF01
 
         // yiaddr (assigned IP: 10.0.2.15)
         response[16] = 10;
@@ -1798,7 +1798,7 @@ public static unsafe class NetworkStackTests
         response[opt++] = DHCP.OptionEnd;
 
         DhcpResponse parsed;
-        bool success = DHCP.ParseResponse(response, opt, 0x12345679, out parsed);
+        bool success = DHCP.ParseResponse(response, opt, 0xABCDEF01, out parsed);
 
         if (!success)
         {
