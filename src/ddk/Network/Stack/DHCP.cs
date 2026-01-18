@@ -19,6 +19,8 @@ public struct DhcpResponse
     public uint DnsServer;       // From option 6 (host byte order)
     public uint DnsServer2;      // Second DNS if provided (host byte order)
     public uint LeaseTime;       // In seconds
+    public uint RenewalTime;     // T1: seconds until renewal (option 58, default 0.5 * lease)
+    public uint RebindingTime;   // T2: seconds until rebinding (option 59, default 0.875 * lease)
 }
 
 /// <summary>
@@ -69,6 +71,8 @@ public static unsafe class DHCP
     public const byte OptionMessageType = 53;
     public const byte OptionServerId = 54;
     public const byte OptionParamRequest = 55;
+    public const byte OptionRenewalTime = 58;    // T1: Renewal time
+    public const byte OptionRebindingTime = 59;  // T2: Rebinding time
     public const byte OptionEnd = 255;
 
     // DHCP magic cookie (identifies DHCP vs BOOTP)
@@ -291,143 +295,220 @@ public static unsafe class DHCP
     public static bool ParseResponse(byte* data, int length, uint expectedXid,
                                      out DhcpResponse response)
     {
-        response = new DhcpResponse();
+        // Store parameters in locals to prevent JIT issues with complex expressions
+        byte* pData = data;
+        int len = length;
+        uint xid = expectedXid;
 
-        if (data == null || length < MinPacketSize)
+        response = default;
+
+        if (pData == null)
+            return false;
+        if (len < MinPacketSize)
             return false;
 
-        // Check operation (must be reply)
-        if (data[0] != OpReply)
+        // Verify XID matches
+        uint packetXid = ((uint)pData[4] << 24) | ((uint)pData[5] << 16) |
+                         ((uint)pData[6] << 8) | pData[7];
+        if (packetXid != xid)
             return false;
 
-        // Check hardware type
-        if (data[1] != HtypeEthernet || data[2] != HlenEthernet)
+        // Verify this is a reply (op == 2)
+        if (pData[0] != OpReply)
             return false;
 
-        // Parse XID
-        uint xid = ((uint)data[4] << 24) | ((uint)data[5] << 16) |
-                   ((uint)data[6] << 8) | data[7];
-        if (xid != expectedXid)
+        // Parse yiaddr (your IP address) at offset 16
+        response.YourIP = ((uint)pData[16] << 24) | ((uint)pData[17] << 16) |
+                          ((uint)pData[18] << 8) | pData[19];
+
+        // Parse siaddr (server IP) at offset 20
+        response.ServerIP = ((uint)pData[20] << 24) | ((uint)pData[21] << 16) |
+                            ((uint)pData[22] << 8) | pData[23];
+
+        // Check magic cookie at offset 236
+        int optOffset = HeaderSize;
+        if (pData[optOffset] != 0x63 || pData[optOffset + 1] != 0x82 ||
+            pData[optOffset + 2] != 0x53 || pData[optOffset + 3] != 0x63)
+            return false;
+
+        optOffset += 4;  // Skip magic cookie
+
+        // Parse options
+        while (optOffset < len)
         {
-            Debug.Write("[DHCP] XID mismatch: got ");
-            Debug.WriteHex(xid);
-            Debug.Write(" expected ");
-            Debug.WriteHex(expectedXid);
-            Debug.WriteLine();
-            return false;
-        }
+            byte optCode = pData[optOffset++];
 
-        // Parse yiaddr (your IP address)
-        response.YourIP = ((uint)data[16] << 24) | ((uint)data[17] << 16) |
-                          ((uint)data[18] << 8) | data[19];
-
-        // Parse siaddr (server IP) as fallback
-        response.ServerIP = ((uint)data[20] << 24) | ((uint)data[21] << 16) |
-                            ((uint)data[22] << 8) | data[23];
-
-        // Verify magic cookie at offset 236
-        if (data[236] != 0x63 || data[237] != 0x82 ||
-            data[238] != 0x53 || data[239] != 0x63)
-        {
-            Debug.WriteLine("[DHCP] Invalid magic cookie");
-            return false;
-        }
-
-        // Parse options starting at offset 240
-        int offset = 240;
-        while (offset < length)
-        {
-            byte option = data[offset++];
-
-            if (option == OptionEnd)
+            if (optCode == OptionEnd)
                 break;
 
-            if (option == OptionPad)
+            if (optCode == OptionPad)
                 continue;
 
-            if (offset >= length)
+            if (optOffset >= len)
                 break;
 
-            byte optLen = data[offset++];
-            if (offset + optLen > length)
+            byte optLen = pData[optOffset++];
+
+            if (optOffset + optLen > len)
                 break;
 
-            switch (option)
+            if (optCode == OptionMessageType && optLen >= 1)
             {
-                case OptionMessageType:
-                    if (optLen >= 1)
-                        response.MessageType = data[offset];
-                    break;
-
-                case OptionSubnetMask:
-                    if (optLen >= 4)
-                    {
-                        response.SubnetMask = ((uint)data[offset] << 24) |
-                                              ((uint)data[offset + 1] << 16) |
-                                              ((uint)data[offset + 2] << 8) |
-                                              data[offset + 3];
-                    }
-                    break;
-
-                case OptionRouter:
-                    if (optLen >= 4)
-                    {
-                        response.Gateway = ((uint)data[offset] << 24) |
-                                           ((uint)data[offset + 1] << 16) |
-                                           ((uint)data[offset + 2] << 8) |
-                                           data[offset + 3];
-                    }
-                    break;
-
-                case OptionDns:
-                    if (optLen >= 4)
-                    {
-                        response.DnsServer = ((uint)data[offset] << 24) |
-                                             ((uint)data[offset + 1] << 16) |
-                                             ((uint)data[offset + 2] << 8) |
-                                             data[offset + 3];
-                        if (optLen >= 8)
-                        {
-                            response.DnsServer2 = ((uint)data[offset + 4] << 24) |
-                                                  ((uint)data[offset + 5] << 16) |
-                                                  ((uint)data[offset + 6] << 8) |
-                                                  data[offset + 7];
-                        }
-                    }
-                    break;
-
-                case OptionLeaseTime:
-                    if (optLen >= 4)
-                    {
-                        response.LeaseTime = ((uint)data[offset] << 24) |
-                                             ((uint)data[offset + 1] << 16) |
-                                             ((uint)data[offset + 2] << 8) |
-                                             data[offset + 3];
-                    }
-                    break;
-
-                case OptionServerId:
-                    if (optLen >= 4)
-                    {
-                        response.ServerIP = ((uint)data[offset] << 24) |
-                                            ((uint)data[offset + 1] << 16) |
-                                            ((uint)data[offset + 2] << 8) |
-                                            data[offset + 3];
-                    }
-                    break;
+                response.MessageType = pData[optOffset];
+            }
+            else if (optCode == OptionSubnetMask && optLen >= 4)
+            {
+                response.SubnetMask = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                      ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
+            }
+            else if (optCode == OptionRouter && optLen >= 4)
+            {
+                response.Gateway = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                   ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
+            }
+            else if (optCode == OptionLeaseTime && optLen >= 4)
+            {
+                response.LeaseTime = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                     ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
+            }
+            else if (optCode == OptionDns && optLen >= 4)
+            {
+                response.DnsServer = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                     ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
+                if (optLen >= 8)
+                {
+                    response.DnsServer2 = ((uint)pData[optOffset + 4] << 24) | ((uint)pData[optOffset + 5] << 16) |
+                                          ((uint)pData[optOffset + 6] << 8) | pData[optOffset + 7];
+                }
+            }
+            else if (optCode == OptionRenewalTime && optLen >= 4)
+            {
+                response.RenewalTime = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                       ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
+            }
+            else if (optCode == OptionRebindingTime && optLen >= 4)
+            {
+                response.RebindingTime = ((uint)pData[optOffset] << 24) | ((uint)pData[optOffset + 1] << 16) |
+                                         ((uint)pData[optOffset + 2] << 8) | pData[optOffset + 3];
             }
 
-            offset += optLen;
-        }
-
-        // Must have a message type
-        if (response.MessageType == 0)
-        {
-            Debug.WriteLine("[DHCP] No message type in response");
-            return false;
+            optOffset += optLen;
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Build a DHCP REQUEST packet for lease renewal (RENEWING/REBINDING state).
+    /// Per RFC 2131: ciaddr is set to current IP, no requested-ip or server-id options.
+    /// </summary>
+    /// <param name="buffer">Buffer to write packet to.</param>
+    /// <param name="xid">Transaction ID.</param>
+    /// <param name="macAddress">Client MAC address (6 bytes).</param>
+    /// <param name="clientIP">Current client IP address (host byte order).</param>
+    /// <param name="broadcast">True for REBINDING (broadcast), false for RENEWING (unicast).</param>
+    /// <returns>Total packet length, or 0 on error.</returns>
+    public static int BuildRenewalRequest(byte* buffer, uint xid, byte* macAddress,
+                                          uint clientIP, bool broadcast)
+    {
+        if (buffer == null || macAddress == null)
+            return 0;
+
+        // Clear buffer
+        for (int i = 0; i < MaxPacketSize; i++)
+            buffer[i] = 0;
+
+        int offset = 0;
+
+        // BOOTP header
+        buffer[offset++] = OpRequest;
+        buffer[offset++] = HtypeEthernet;
+        buffer[offset++] = HlenEthernet;
+        buffer[offset++] = 0;  // hops
+
+        // xid
+        buffer[offset++] = (byte)(xid >> 24);
+        buffer[offset++] = (byte)(xid >> 16);
+        buffer[offset++] = (byte)(xid >> 8);
+        buffer[offset++] = (byte)xid;
+
+        // secs
+        buffer[offset++] = 0;
+        buffer[offset++] = 0;
+
+        // flags - broadcast flag only for REBINDING
+        if (broadcast)
+        {
+            buffer[offset++] = 0x80;  // High byte of 0x8000
+            buffer[offset++] = 0x00;
+        }
+        else
+        {
+            buffer[offset++] = 0;
+            buffer[offset++] = 0;
+        }
+
+        // ciaddr - set to current IP (we have a lease)
+        buffer[offset++] = (byte)(clientIP >> 24);
+        buffer[offset++] = (byte)(clientIP >> 16);
+        buffer[offset++] = (byte)(clientIP >> 8);
+        buffer[offset++] = (byte)clientIP;
+
+        // yiaddr
+        offset += 4;
+
+        // siaddr
+        offset += 4;
+
+        // giaddr
+        offset += 4;
+
+        // chaddr
+        for (int i = 0; i < 6; i++)
+            buffer[offset++] = macAddress[i];
+        offset += 10;
+
+        // sname
+        offset += 64;
+
+        // file
+        offset += 128;
+
+        // Magic cookie
+        buffer[offset++] = 0x63;
+        buffer[offset++] = 0x82;
+        buffer[offset++] = 0x53;
+        buffer[offset++] = 0x63;
+
+        // DHCP options
+
+        // Option 53: DHCP Message Type = REQUEST
+        buffer[offset++] = OptionMessageType;
+        buffer[offset++] = 1;
+        buffer[offset++] = MessageRequest;
+
+        // NOTE: Per RFC 2131, renewal requests do NOT include:
+        // - Option 50 (Requested IP Address) - ciaddr is used instead
+        // - Option 54 (Server Identifier) - any server can respond in REBINDING
+
+        // Option 55: Parameter Request List
+        buffer[offset++] = OptionParamRequest;
+        buffer[offset++] = 6;  // length
+        buffer[offset++] = OptionSubnetMask;
+        buffer[offset++] = OptionRouter;
+        buffer[offset++] = OptionDns;
+        buffer[offset++] = OptionLeaseTime;
+        buffer[offset++] = OptionRenewalTime;
+        buffer[offset++] = OptionRebindingTime;
+
+        // Option 255: End
+        buffer[offset++] = OptionEnd;
+
+        // Pad to minimum size
+        if (offset < 300)
+            offset = 300;
+
+        return offset;
     }
 
     /// <summary>

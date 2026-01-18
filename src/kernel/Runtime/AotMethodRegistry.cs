@@ -264,6 +264,9 @@ public static unsafe class AotMethodRegistry
         // Register well-known Object methods
         RegisterObjectMethods();
 
+        // Register well-known ValueType methods (for boxed value types/enums)
+        RegisterValueTypeMethods();
+
         // Register well-known Type methods (for reflection)
         RegisterTypeMethods();
 
@@ -639,6 +642,38 @@ public static unsafe class AotMethodRegistry
             "System.Object", "GetType",
             (nint)(delegate*<object, Type>)&ObjectHelpers.GetType,
             0, ReturnKind.IntPtr, true, false);  // Not virtual - GetType is final
+    }
+
+    /// <summary>
+    /// Register ValueType methods.
+    /// These provide proper Equals and GetHashCode for boxed value types (structs, enums).
+    /// When called via vtable dispatch, 'this' is passed as nint pointer, not object reference.
+    /// </summary>
+    private static void RegisterValueTypeMethods()
+    {
+        // ValueType.GetHashCode() - instance method, returns int
+        // Virtual - overrides Object.GetHashCode
+        // thisPtr is the boxed object pointer (nint)
+        nint ghcAddr = (nint)(delegate*<nint, int>)&ValueTypeHelpers.GetHashCode;
+        DebugConsole.Write("[AOT Reg] ValueType.GetHashCode at 0x");
+        DebugConsole.WriteHex((ulong)ghcAddr);
+        DebugConsole.WriteLine();
+        Register(
+            "System.ValueType", "GetHashCode",
+            ghcAddr,
+            0, ReturnKind.Int32, true, true);
+
+        // ValueType.Equals(object) - instance method, 1 parameter, returns bool
+        // Virtual - overrides Object.Equals
+        // thisPtr is the boxed object pointer (nint), other is managed object reference
+        nint eqAddr = (nint)(delegate*<nint, object?, bool>)&ValueTypeHelpers.Equals;
+        DebugConsole.Write("[AOT Reg] ValueType.Equals at 0x");
+        DebugConsole.WriteHex((ulong)eqAddr);
+        DebugConsole.WriteLine();
+        Register(
+            "System.ValueType", "Equals",
+            eqAddr,
+            1, ReturnKind.Int32, true, true);
     }
 
     /// <summary>
@@ -2915,6 +2950,20 @@ public static unsafe class ObjectHelpers
         //   - structs up to ~24 bytes data = 32
         bool isSmallBoxedValue = (mtA->_uBaseSize >= 12 && mtA->_uBaseSize <= 32);
         bool likelyValueType = mtA->IsValueType || isSmallBoxedValue;
+
+        // Debug: check if InterfaceType enum MT (around 0x58B498)
+        if ((ulong)mtA >= 0x58B000 && (ulong)mtA <= 0x58C000)
+        {
+            DebugConsole.Write("[StaticEquals Enum] BaseSize=");
+            DebugConsole.WriteDecimal(mtA->_uBaseSize);
+            DebugConsole.Write(" IsVT=");
+            DebugConsole.Write(mtA->IsValueType ? "Y" : "N");
+            DebugConsole.Write(" isSmall=");
+            DebugConsole.Write(isSmallBoxedValue ? "Y" : "N");
+            DebugConsole.Write(" likely=");
+            DebugConsole.Write(likelyValueType ? "Y" : "N");
+            DebugConsole.WriteLine();
+        }
         if (likelyValueType)
         {
             // Get object addresses by dereferencing the object references
@@ -2932,12 +2981,23 @@ public static unsafe class ObjectHelpers
             for (uint i = 0; i < valueSize; i++)
             {
                 if (dataA[i] != dataB[i])
+                {
+                    DebugConsole.Write("[StaticEquals] Byte mismatch at ");
+                    DebugConsole.WriteDecimal(i);
+                    DebugConsole.Write(": ");
+                    DebugConsole.WriteHex(dataA[i]);
+                    DebugConsole.Write(" vs ");
+                    DebugConsole.WriteHex(dataB[i]);
+                    DebugConsole.WriteLine();
                     return false;
+                }
             }
+            DebugConsole.WriteLine("[StaticEquals] Value bytes match -> true");
             return true;
         }
 
         // For reference types with same MT but different references, they're not equal
+        DebugConsole.WriteLine("[StaticEquals] Ref types, different refs -> false");
         return false;
     }
 
@@ -2978,6 +3038,155 @@ public static unsafe class ObjectHelpers
     private static bool ReferenceEquals(object? a, object? b)
     {
         return (object?)a == (object?)b;
+    }
+}
+
+/// <summary>
+/// Wrapper methods for ValueType operations (Equals and GetHashCode).
+/// These handle boxed value types (structs, enums) where virtual dispatch
+/// needs to compare/hash the actual value bytes.
+/// When called via vtable dispatch, 'this' is the boxed object pointer (nint),
+/// not a managed object reference.
+/// </summary>
+public static unsafe class ValueTypeHelpers
+{
+    /// <summary>
+    /// Wrapper for ValueType.GetHashCode() when called on a value type.
+    /// Computes FNV-1a hash of the value bytes.
+    ///
+    /// This method is called in two scenarios:
+    /// 1. Boxed object (vtable dispatch): thisPtr points to [MethodTable*][value bytes]
+    /// 2. Byref (constrained call): thisPtr points directly to [value bytes]
+    ///
+    /// We detect which case by checking if the first 8 bytes look like a MethodTable pointer
+    /// (large address > 0x100000) or a small value.
+    /// </summary>
+    public static int GetHashCode(nint thisPtr)
+    {
+        if (thisPtr == 0)
+            return 0;
+
+        // Read the first 8 bytes at thisPtr
+        ulong firstQword = *(ulong*)thisPtr;
+
+        // If it looks like a MethodTable pointer (large address in kernel/heap space),
+        // then this is a boxed object and we can get the size from the MethodTable.
+        // MethodTable pointers are typically > 0x100000 (1MB).
+        if (firstQword > 0x100000)
+        {
+            // Boxed object: get size from MethodTable and hash value at offset 8
+            Runtime.MethodTable* mt = (Runtime.MethodTable*)firstQword;
+            uint valueSize = mt->_uBaseSize > 8 ? mt->_uBaseSize - 8 : 0;
+            if (valueSize == 0)
+                return 0;
+
+            byte* data = (byte*)thisPtr + 8;
+            int hash = unchecked((int)2166136261);
+            for (uint i = 0; i < valueSize; i++)
+            {
+                hash ^= data[i];
+                hash *= 16777619;
+            }
+            return hash;
+        }
+        else
+        {
+            // Byref: value is directly at thisPtr
+            // For most value types (enums, int, etc.), we treat it as a 4-byte value
+            // and hash those bytes. This covers the common case of enum keys in Dictionary.
+            int* valuePtr = (int*)thisPtr;
+            int value = *valuePtr;
+
+            // FNV-1a hash of the 4 bytes
+            int hash = unchecked((int)2166136261);
+            hash ^= (value & 0xFF);
+            hash *= 16777619;
+            hash ^= ((value >> 8) & 0xFF);
+            hash *= 16777619;
+            hash ^= ((value >> 16) & 0xFF);
+            hash *= 16777619;
+            hash ^= ((value >> 24) & 0xFF);
+            hash *= 16777619;
+            return hash;
+        }
+    }
+
+    /// <summary>
+    /// Wrapper for ValueType.Equals(object) when called on a value type.
+    /// Compares value bytes for equality.
+    ///
+    /// This method is called in two scenarios:
+    /// 1. Boxed object: thisPtr points to [MethodTable*][value bytes]
+    /// 2. Byref (constrained call): thisPtr points directly to [value bytes]
+    ///
+    /// otherObj is always a managed object reference to a boxed value.
+    /// </summary>
+    public static bool Equals(nint thisPtr, object? otherObj)
+    {
+        if (thisPtr == 0)
+            return otherObj == null;
+        if (otherObj == null)
+            return false;
+
+        // Read the first 8 bytes at thisPtr to detect boxed vs byref
+        ulong firstQword = *(ulong*)thisPtr;
+
+        // Get pointer to other object (always boxed - dereference the object reference)
+        void* otherPtr = *(void**)System.Runtime.CompilerServices.Unsafe.AsPointer(ref otherObj);
+        Runtime.MethodTable* otherMT = *(Runtime.MethodTable**)otherPtr;
+
+        if (firstQword > 0x100000)
+        {
+            // thisPtr is a boxed object
+            Runtime.MethodTable* thisMT = (Runtime.MethodTable*)firstQword;
+
+            // Must be same type
+            if (thisMT != otherMT)
+                return false;
+
+            // Get value size: BaseSize - 8 (sizeof MethodTable*)
+            uint valueSize = thisMT->_uBaseSize > 8 ? thisMT->_uBaseSize - 8 : 0;
+            if (valueSize == 0)
+                return true;  // Zero-size types are always equal
+
+            // Value data starts after MethodTable pointer (offset 8)
+            byte* thisData = (byte*)thisPtr + 8;
+            byte* otherData = (byte*)otherPtr + 8;
+
+            // Compare bytes
+            for (uint i = 0; i < valueSize; i++)
+            {
+                if (thisData[i] != otherData[i])
+                    return false;
+            }
+            return true;
+        }
+        else
+        {
+            // thisPtr is a byref to the raw value
+            // Assume 4-byte value (covers enums, int, etc.)
+            // Compare against the value in the boxed other object
+
+            // Get value size from other's MethodTable
+            uint valueSize = otherMT->_uBaseSize > 8 ? otherMT->_uBaseSize - 8 : 0;
+            if (valueSize == 0)
+                return true;  // Zero-size types are always equal
+
+            // Cap at reasonable size for byref comparison (avoid reading garbage)
+            if (valueSize > 8)
+                valueSize = 8;  // Handle up to 8 bytes for byref
+
+            byte* thisData = (byte*)thisPtr;  // Byref: value at offset 0
+            byte* otherData = (byte*)otherPtr + 8;  // Boxed: value at offset 8
+
+            // Compare bytes
+            for (uint i = 0; i < valueSize; i++)
+            {
+                if (thisData[i] != otherData[i])
+                    return false;
+            }
+            return true;
+        }
     }
 }
 

@@ -15,6 +15,8 @@ public enum DhcpState
     Selecting,  // Sent DISCOVER, waiting for OFFER
     Requesting, // Sent REQUEST, waiting for ACK
     Bound,      // Have valid lease
+    Renewing,   // T1 expired, unicast REQUEST to server
+    Rebinding,  // T2 expired, broadcast REQUEST to any server
     Failed      // DHCP failed
 }
 
@@ -37,6 +39,7 @@ public unsafe class DhcpClient
     private uint _xid;
     private DhcpState _state;
     private DhcpResponse _currentLease;
+    private ulong _leaseAcquiredTime;  // Uptime (ms) when lease was acquired
 
     /// <summary>
     /// Get current DHCP state.
@@ -47,6 +50,75 @@ public unsafe class DhcpClient
     /// Get current lease information (valid when State == Bound).
     /// </summary>
     public DhcpResponse CurrentLease => _currentLease;
+
+    /// <summary>
+    /// Get uptime (ms) when current lease was acquired.
+    /// </summary>
+    public ulong LeaseAcquiredTime => _leaseAcquiredTime;
+
+    /// <summary>
+    /// Check if the current lease has expired.
+    /// </summary>
+    public bool IsLeaseExpired
+    {
+        get
+        {
+            if (_state != DhcpState.Bound && _state != DhcpState.Renewing && _state != DhcpState.Rebinding)
+                return true;
+            ulong elapsedSec = (Timer.GetUptimeMilliseconds() - _leaseAcquiredTime) / 1000;
+            return elapsedSec >= _currentLease.LeaseTime;
+        }
+    }
+
+    /// <summary>
+    /// Check if the lease needs renewal (T1 expired but lease still valid).
+    /// </summary>
+    public bool NeedsRenewal
+    {
+        get
+        {
+            if (_state != DhcpState.Bound)
+                return false;
+            ulong elapsedSec = (Timer.GetUptimeMilliseconds() - _leaseAcquiredTime) / 1000;
+            // TODO: Use T1 from DHCP response after fixing JIT struct parameter issue
+            // Default T1 = 50% of lease
+            uint t1 = _currentLease.LeaseTime / 2;
+            return elapsedSec >= t1;
+        }
+    }
+
+    /// <summary>
+    /// Check if the lease needs rebinding (T2 expired but lease still valid).
+    /// </summary>
+    public bool NeedsRebinding
+    {
+        get
+        {
+            if (_state != DhcpState.Bound && _state != DhcpState.Renewing)
+                return false;
+            ulong elapsedSec = (Timer.GetUptimeMilliseconds() - _leaseAcquiredTime) / 1000;
+            // TODO: Use T2 from DHCP response after fixing JIT struct parameter issue
+            // Default T2 = 87.5% of lease
+            uint t2 = (_currentLease.LeaseTime * 7) / 8;
+            return elapsedSec >= t2;
+        }
+    }
+
+    /// <summary>
+    /// Get seconds remaining until lease expires (0 if expired).
+    /// </summary>
+    public uint SecondsRemaining
+    {
+        get
+        {
+            if (_currentLease.LeaseTime == 0)
+                return 0;
+            ulong elapsedSec = (Timer.GetUptimeMilliseconds() - _leaseAcquiredTime) / 1000;
+            if (elapsedSec >= _currentLease.LeaseTime)
+                return 0;
+            return _currentLease.LeaseTime - (uint)elapsedSec;
+        }
+    }
 
     /// <summary>
     /// Create a new DHCP client.
@@ -121,6 +193,7 @@ public unsafe class DhcpClient
         // Success! Configure the network stack
         _currentLease = ack;
         _state = DhcpState.Bound;
+        _leaseAcquiredTime = Timer.GetUptimeMilliseconds();
 
         Debug.WriteLine("[DHCP] Configuration complete:");
         Debug.Write("  IP: ");
@@ -137,7 +210,11 @@ public unsafe class DhcpClient
         Debug.WriteLine();
         Debug.Write("  Lease: ");
         Debug.WriteDecimal(ack.LeaseTime);
-        Debug.WriteLine(" seconds");
+        Debug.Write("s, T1=");
+        Debug.WriteDecimal(ack.LeaseTime / 2);  // Default T1
+        Debug.Write("s, T2=");
+        Debug.WriteDecimal((ack.LeaseTime * 7) / 8);  // Default T2
+        Debug.WriteLine("s");
 
         // Apply configuration to network stack
         _stack.Configure(ack.YourIP, ack.SubnetMask, ack.Gateway,
@@ -281,6 +358,142 @@ public unsafe class DhcpClient
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Attempt to renew the DHCP lease.
+    /// Should be called periodically when NeedsRenewal or NeedsRebinding returns true.
+    /// </summary>
+    /// <param name="timeoutMs">Timeout for the renewal attempt.</param>
+    /// <param name="transmit">Frame transmit delegate.</param>
+    /// <param name="receive">Frame receive delegate.</param>
+    /// <returns>True if lease was renewed, false on failure.</returns>
+    public bool Renew(int timeoutMs, TransmitFrameDelegate transmit,
+                      ReceiveFrameDelegate receive)
+    {
+        if (transmit == null || receive == null)
+            return false;
+
+        // Must be in Bound, Renewing, or Rebinding state
+        if (_state != DhcpState.Bound && _state != DhcpState.Renewing && _state != DhcpState.Rebinding)
+        {
+            Debug.WriteLine("[DHCP] Cannot renew: not in valid state");
+            return false;
+        }
+
+        // Check if lease has expired
+        if (IsLeaseExpired)
+        {
+            Debug.WriteLine("[DHCP] Lease expired, need full reconfiguration");
+            _state = DhcpState.Failed;
+            return false;
+        }
+
+        byte* macAddress = _stack.MacAddress;
+        if (macAddress == null)
+            return false;
+
+        // Determine if we should RENEW (T1 expired) or REBIND (T2 expired)
+        bool rebinding = NeedsRebinding;
+        DhcpState previousState = _state;
+
+        if (rebinding)
+        {
+            _state = DhcpState.Rebinding;
+            Debug.WriteLine("[DHCP] Rebinding (T2 expired, broadcast)...");
+        }
+        else
+        {
+            _state = DhcpState.Renewing;
+            Debug.WriteLine("[DHCP] Renewing (T1 expired)...");
+        }
+
+        // Generate new XID for renewal
+        _xid = (uint)(Timer.GetUptimeMilliseconds() & 0xFFFFFFFF);
+
+        // Build renewal REQUEST packet
+        byte* requestBuf = stackalloc byte[DHCP.MaxPacketSize];
+        int requestLen = DHCP.BuildRenewalRequest(requestBuf, _xid, macAddress,
+                                                   _currentLease.YourIP, rebinding);
+        if (requestLen == 0)
+        {
+            _state = previousState;
+            return false;
+        }
+
+        // Send as broadcast (works for both states; unicast optimization could be added later)
+        int frameLen = _stack.SendDhcpBroadcast(DHCP.ClientPort, DHCP.ServerPort,
+                                                 requestBuf, requestLen);
+        if (frameLen == 0)
+        {
+            Debug.WriteLine("[DHCP] Failed to build renewal frame");
+            _state = previousState;
+            return false;
+        }
+
+        // Transmit
+        byte* txBuf = _stack.GetTxBuffer();
+        transmit(txBuf, frameLen);
+
+        // Wait for ACK (or NAK)
+        DhcpResponse response;
+        if (!WaitForResponse(timeoutMs, receive, 0, out response))
+        {
+            Debug.WriteLine("[DHCP] No renewal response received");
+            _state = previousState;  // Stay in previous state, can retry
+            return false;
+        }
+
+        // Check response type
+        if (response.MessageType == DHCP.MessageNak)
+        {
+            Debug.WriteLine("[DHCP] Renewal rejected (NAK)");
+            _state = DhcpState.Failed;
+            return false;
+        }
+
+        if (response.MessageType != DHCP.MessageAck)
+        {
+            Debug.WriteLine("[DHCP] Unexpected response type");
+            _state = previousState;
+            return false;
+        }
+
+        // Success! Update lease
+        _currentLease = response;
+        _state = DhcpState.Bound;
+        _leaseAcquiredTime = Timer.GetUptimeMilliseconds();
+
+        Debug.WriteLine("[DHCP] Lease renewed:");
+        Debug.Write("  IP: ");
+        DHCP.PrintIP(response.YourIP);
+        Debug.Write(", Lease: ");
+        Debug.WriteDecimal(response.LeaseTime);
+        Debug.Write("s, T1=");
+        Debug.WriteDecimal(response.LeaseTime / 2);  // Default T1
+        Debug.Write("s, T2=");
+        Debug.WriteDecimal((response.LeaseTime * 7) / 8);  // Default T2
+        Debug.WriteLine("s");
+
+        // Update network stack configuration in case anything changed
+        _stack.Configure(response.YourIP, response.SubnetMask, response.Gateway,
+                        response.DnsServer, response.DnsServer2);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Release the current DHCP lease.
+    /// </summary>
+    public void Release()
+    {
+        if (_state == DhcpState.Bound || _state == DhcpState.Renewing || _state == DhcpState.Rebinding)
+        {
+            Debug.WriteLine("[DHCP] Releasing lease");
+            _state = DhcpState.Init;
+            _currentLease = new DhcpResponse();
+            _leaseAcquiredTime = 0;
         }
     }
 }

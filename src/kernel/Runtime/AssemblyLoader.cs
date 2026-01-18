@@ -2260,6 +2260,13 @@ public static unsafe class AssemblyLoader
                 baseVtableSlots = 3;
             }
         }
+        else if (isValueType)
+        {
+            // Value types (including enums) inherit from ValueType which inherits from Object
+            // They need 3 vtable slots for ToString, Equals, GetHashCode
+            // ValueType overrides Equals and GetHashCode, so we'll populate those slots later
+            baseVtableSlots = 3;
+        }
 
         // Delegates: AOT MulticastDelegate only has 3 slots but korlib expects 5
         // (3 Object slots + CombineImpl + RemoveImpl)
@@ -2338,7 +2345,10 @@ public static unsafe class AssemblyLoader
         }
 
         mt->_usFlags = flags;
-        mt->_uBaseSize = instanceSize;
+        // For value types, _uBaseSize should include the 8-byte MethodTable pointer header
+        // because boxed value types have MT* followed by the value data.
+        // ComputeInstanceSize returns just the value size for value types.
+        mt->_uBaseSize = isValueType ? (instanceSize + 8) : instanceSize;
         mt->_relatedType = baseMT;  // Point to base class MT
         mt->_usNumVtableSlots = totalVtableSlots;
         mt->_usNumInterfaces = numInterfaces;
@@ -2367,15 +2377,39 @@ public static unsafe class AssemblyLoader
         }
         else if (baseVtableSlots == 3 || (isDelegate && baseMT == null))
         {
-            // Direct Object base - get AOT vtable entries for Object's methods
+            // Direct Object base or value type - get AOT vtable entries
             // But skip slots that are overridden
             nint* vtable = mt->GetVtablePtr();
             if ((overriddenSlots & 0x01) == 0)  // ToString not overridden
                 vtable[0] = AotMethodRegistry.LookupByName("System.Object", "ToString");
-            if ((overriddenSlots & 0x02) == 0)  // Equals not overridden
-                vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
-            if ((overriddenSlots & 0x04) == 0)  // GetHashCode not overridden
-                vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+
+            if (isValueType)
+            {
+                // Value types use ValueType.Equals and ValueType.GetHashCode
+                // These do proper byte-by-byte comparison/hashing for boxed value types
+                if ((overriddenSlots & 0x02) == 0)  // Equals not overridden
+                {
+                    vtable[1] = AotMethodRegistry.LookupByName("System.ValueType", "Equals");
+                    DebugConsole.Write("[VT vtable] Equals=0x");
+                    DebugConsole.WriteHex((ulong)vtable[1]);
+                    DebugConsole.WriteLine();
+                }
+                if ((overriddenSlots & 0x04) == 0)  // GetHashCode not overridden
+                {
+                    vtable[2] = AotMethodRegistry.LookupByName("System.ValueType", "GetHashCode");
+                    DebugConsole.Write("[VT vtable] GetHashCode=0x");
+                    DebugConsole.WriteHex((ulong)vtable[2]);
+                    DebugConsole.WriteLine();
+                }
+            }
+            else
+            {
+                // Reference types use Object.Equals and Object.GetHashCode
+                if ((overriddenSlots & 0x02) == 0)  // Equals not overridden
+                    vtable[1] = AotMethodRegistry.LookupByName("System.Object", "Equals");
+                if ((overriddenSlots & 0x04) == 0)  // GetHashCode not overridden
+                    vtable[2] = AotMethodRegistry.LookupByName("System.Object", "GetHashCode");
+            }
         }
 
         // Delegates: populate slots 3 and 4 with CombineImpl and RemoveImpl from korlib
@@ -4504,6 +4538,7 @@ public static unsafe class AssemblyLoader
                     {
                         byte elemType = sig[1];
                         // Enum underlying types are primitive integers
+                        // Return just the value size - header is added in GetOrCreateTypeMethodTable
                         switch (elemType)
                         {
                             case 0x02: // Boolean
@@ -4539,6 +4574,7 @@ public static unsafe class AssemblyLoader
                 if (classLayoutSize > 0)
                 {
                     // For reference types, add object header (8 bytes)
+                    // For value types, return just the value size
                     return isValueType ? classLayoutSize : (classLayoutSize + 8);
                 }
                 // If ClassSize is 0, fall through to calculate from fields
@@ -4557,6 +4593,8 @@ public static unsafe class AssemblyLoader
         }
 
         // For reference types, start with pointer size (for MethodTable*)
+        // For value types, we compute just the value size here - the 8-byte header
+        // is added later when setting _uBaseSize in the MethodTable
         uint size = isValueType ? 0u : 8u;
 
         // Get base class size if not a value type and has a base class
@@ -4837,8 +4875,8 @@ public static unsafe class AssemblyLoader
                             // For AOT primitives, ComponentSize is the raw value size
                             if (typeArgMT->_usComponentSize > 0)
                                 return typeArgMT->_usComponentSize;
-                            // For JIT value types, BaseSize IS the raw struct size
-                            return typeArgMT->_uBaseSize;
+                            // For JIT value types, BaseSize includes header, subtract 8 for raw size
+                            return typeArgMT->_uBaseSize >= 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize;
                         }
                         else
                         {
@@ -5851,7 +5889,7 @@ public static unsafe class AssemblyLoader
         if (mt == null)
             return null;
 
-        // Set flags for value type (in high 16 bits of combined flags)
+        // Set flags for value type (bit 5, from MTFlags.IsValueType >> 16)
         mt->_usFlags = (ushort)(MTFlags.IsValueType >> 16);
 
         // Span layout: pointer (8 bytes) + length (4 bytes) = 12 bytes
@@ -5889,7 +5927,7 @@ public static unsafe class AssemblyLoader
         if (mt == null)
             return null;
 
-        // Set flags for value type (in high 16 bits of combined flags)
+        // Set flags for value type (bit 5, from MTFlags.IsValueType >> 16)
         mt->_usFlags = (ushort)(MTFlags.IsValueType >> 16);
 
         // Base size is 8 bytes (sizeof nint) - no object header for unboxed value types
@@ -9235,7 +9273,8 @@ public static unsafe class AssemblyLoader
                 JIT.MetadataIntegration.SetTypeTypeArgs(typeArgMTs, typeArgCount);
 
                 // Recalculate the instance size with type context set
-                uint computedSize = ComputeInstanceSize(defAsm, typeDefRow, true);
+                // Add 8-byte header for boxed value types
+                uint computedSize = ComputeInstanceSize(defAsm, typeDefRow, true) + 8;
                 instMT->_uBaseSize = computedSize;
 
                 DebugConsole.Write("[GenInst] ValueType recalculated size: ");

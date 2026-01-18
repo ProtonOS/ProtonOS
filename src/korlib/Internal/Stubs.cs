@@ -43,8 +43,8 @@ namespace System.Runtime
         private uint _uHashCode;
 
         // Helper property to check if this is a value type
-        // Bit 2 (0x0004) in _usFlags indicates value type
-        internal bool IsValueType => (_usFlags & 0x0004) != 0;
+        // Bit 5 (0x0020) in _usFlags indicates value type (MTFlags.IsValueType = 0x00200000)
+        internal bool IsValueType => (_usFlags & 0x0020) != 0;
 
         // Get the size of value type data (excluding object header)
         internal uint ValueTypeSize => _uBaseSize - (uint)sizeof(MethodTable*);

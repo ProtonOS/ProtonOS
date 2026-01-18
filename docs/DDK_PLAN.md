@@ -333,21 +333,26 @@ These are critical for Phase 2 bootstrap - must be loadable from UEFI:
 - [x] **drivers/shared/storage/ext2/** - EXT2 filesystem driver ✅ Complete
 - [ ] **drivers/shared/filesystem/ext4/** - ext4 filesystem driver (future, ext2 works)
 
-### Phase 4: Network Stack (in DDK, JIT)
+### Phase 4: Network Stack (in DDK, JIT) ✅ COMPLETE
 
 - [x] **ddk/Network/INetworkDevice.cs** - Network device interface ✅ Complete
-- [ ] **ddk/Network/Stack/Ethernet.cs** - L2 frame parsing
-- [ ] **ddk/Network/Stack/ARP.cs** - Address resolution
-- [ ] **ddk/Network/Stack/IPv4.cs** - L3 packet routing
-- [ ] **ddk/Network/Stack/ICMP.cs** - Ping support
-- [ ] **ddk/Network/Stack/UDP.cs** - Connectionless transport
-- [ ] **ddk/Network/Stack/TCP.cs** - Connection-oriented transport
+- [x] **ddk/Network/Stack/NetworkStack.cs** - Core stack (Ethernet, ARP, IPv4, ICMP, routing) ✅ Complete
+- [x] **ddk/Network/Stack/UDP.cs** - UDP protocol helpers ✅ Complete
+- [x] **ddk/Network/Stack/TCP.cs** - TCP state machine and helpers ✅ Complete
+- [x] **ddk/Network/Stack/DNS.cs** - DNS packet building/parsing ✅ Complete
+- [x] **ddk/Network/Stack/DnsResolver.cs** - High-level DNS resolver ✅ Complete
+- [x] **ddk/Network/Stack/DHCP.cs** - DHCP packet building/parsing ✅ Complete
+- [x] **ddk/Network/Stack/DhcpClient.cs** - DHCP client with state machine ✅ Complete
+- [x] **lib/ProtonOS.Net/HTTP.cs** - HTTP/1.1 request/response handling ✅ Complete
+- [x] **lib/ProtonOS.Net/HttpClient.cs** - High-level HTTP client ✅ Complete
+
+**717 tests passing** (36 network stack tests + integration tests)
 
 ### Phase 5: Network Drivers (Shared)
 
-- [ ] **drivers/shared/network/virtio-net/** - Virtio network driver (QEMU)
-- [ ] **drivers/shared/network/e1000/** - Intel e1000 driver
-- [ ] **drivers/shared/network/rtl8139/** - Realtek RTL8139 driver
+- [x] **drivers/shared/network/virtio-net/** - Virtio network driver (QEMU) ✅ Complete
+- [ ] **drivers/shared/network/e1000/** - Intel e1000 driver (future)
+- [ ] **drivers/shared/network/rtl8139/** - Realtek RTL8139 driver (future)
 
 ### Phase 6: USB Core (in DDK, JIT)
 

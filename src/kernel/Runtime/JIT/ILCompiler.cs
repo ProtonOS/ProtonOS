@@ -678,7 +678,8 @@ public unsafe struct ILCompiler
     private int _branchCount;
 
     // Label mapping: IL offset -> code offset (heap-allocated)
-    private const int MaxLabels = 2048;
+    // Note: Buffer allocates 4096 bytes per array = 1024 ints
+    private const int MaxLabels = 1024;
     private int* _labelILOffset;    // [MaxLabels]
     private int* _labelCodeOffset;  // [MaxLabels]
     private int _labelCount;
@@ -731,7 +732,8 @@ public unsafe struct ILCompiler
     // funcletInfo = 32 funclets * 4 ints * 4 bytes = 512 bytes (doubled for filter clause support)
     // Finally call tracking: each entry is 2 ints (patchOffset, ehClauseIndex)
     private const int MaxFinallyCalls = 16;
-    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 2048 + 2048 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8) + 32 + 256; // 6784 bytes (+256 for _localOffset)
+    // Buffer layout: each label array is 4096 bytes (1024 ints) to support MaxLabels=1024
+    private const int HeapBufferSize = (MaxStackDepth * EvalStackEntrySize) + 256 + 256 + 256 + 64 + 4096 + 4096 + 384 + 512 + 64 + 32 + 128 + 64 + (MaxFinallyCalls * 8) + 32 + 256; // 10880 bytes
 
     /// <summary>
     /// Create an IL compiler with GC reference tracking.
@@ -810,24 +812,24 @@ public unsafe struct ILCompiler
         if (compiler._heapBuffers != null)
         {
             // Set up pointers into the heap buffer
-            // Layout with evalStack at offset 0
+            // Layout with evalStack at offset 0 (updated for 1024 labels = 4096 bytes per array)
             byte* p = compiler._heapBuffers;
             compiler._evalStack = (EvalStackEntry*)p;          // offset 0, 256 bytes (32 * 8)
             compiler._branchSources = (int*)(p + 256);         // offset 256, 256 bytes
             compiler._branchTargetIL = (int*)(p + 512);        // offset 512, 256 bytes
             compiler._branchPatchOffset = (int*)(p + 768);     // offset 768, 256 bytes
             compiler._branchTargetStackDepth = p + 1024;       // offset 1024, 64 bytes
-            compiler._labelILOffset = (int*)(p + 1088);        // offset 1088, 2048 bytes
-            compiler._labelCodeOffset = (int*)(p + 3136);      // offset 3136, 2048 bytes
-            compiler._ehClauseData = (int*)(p + 5184);         // offset 5184, 384 bytes (16 * 6 * 4)
-            compiler._funcletInfo = (int*)(p + 5568);          // offset 5568, 512 bytes (32 funclets * 4 ints * 4 bytes)
-            compiler._localIsValueType = (bool*)(p + 6080);    // offset 6080, 64 bytes
-            compiler._argIsValueType = (bool*)(p + 6144);      // offset 6144, 32 bytes
-            compiler._localTypeSize = (ushort*)(p + 6176);     // offset 6176, 128 bytes
-            compiler._argTypeSize = (ushort*)(p + 6304);       // offset 6304, 64 bytes (MaxArgs * 2)
-            compiler._finallyCallPatches = (int*)(p + 6368);   // offset 6368, 128 bytes (MaxFinallyCalls * 8)
-            compiler._argFloatKind = (byte*)(p + 6496);        // offset 6496, 32 bytes (MaxArgs * 1)
-            compiler._localOffset = (int*)(p + 6528);            // offset 6528, 256 bytes (MaxLocals * 4)
+            compiler._labelILOffset = (int*)(p + 1088);        // offset 1088, 4096 bytes (1024 ints)
+            compiler._labelCodeOffset = (int*)(p + 5184);      // offset 5184, 4096 bytes (1024 ints)
+            compiler._ehClauseData = (int*)(p + 9280);         // offset 9280, 384 bytes (16 * 6 * 4)
+            compiler._funcletInfo = (int*)(p + 9664);          // offset 9664, 512 bytes (32 funclets * 4 ints * 4 bytes)
+            compiler._localIsValueType = (bool*)(p + 10176);   // offset 10176, 64 bytes
+            compiler._argIsValueType = (bool*)(p + 10240);     // offset 10240, 32 bytes
+            compiler._localTypeSize = (ushort*)(p + 10272);    // offset 10272, 128 bytes
+            compiler._argTypeSize = (ushort*)(p + 10400);      // offset 10400, 64 bytes (MaxArgs * 2)
+            compiler._finallyCallPatches = (int*)(p + 10464);  // offset 10464, 128 bytes (MaxFinallyCalls * 8)
+            compiler._argFloatKind = (byte*)(p + 10592);       // offset 10592, 32 bytes (MaxArgs * 1)
+            compiler._localOffset = (int*)(p + 10624);         // offset 10624, 256 bytes (MaxLocals * 4)
         }
 
         // Create code buffer sized based on IL length
@@ -1353,47 +1355,68 @@ public unsafe struct ILCompiler
 
     private void PatchBranches()
     {
-        // bool debug = IsDebugBoolBugMethod() || IsDebugBarMethod();
-        // if (debug)
-        // {
-        //     // DebugConsole.Write("[BindDbg] patch branches count=");
-        //     DebugConsole.WriteDecimal((uint)_branchCount);
-        //     DebugConsole.WriteLine();
-        // }
+        // Debug large methods with many branches
+        bool debug = _branchCount > 25 && _ilLength > 0x400;
+        if (debug)
+        {
+            DebugConsole.Write("[JIT-Dbg] PatchBranches brCnt=");
+            DebugConsole.WriteDecimal((uint)_branchCount);
+            DebugConsole.Write(" ilLen=0x");
+            DebugConsole.WriteHex((ulong)_ilLength);
+            DebugConsole.Write(" lblCnt=");
+            DebugConsole.WriteDecimal((uint)_labelCount);
+            DebugConsole.Write(" codePos=0x");
+            DebugConsole.WriteHex((ulong)_code.Position);
+            DebugConsole.WriteLine();
+
+            // Check if label count exceeds capacity
+            if (_labelCount >= MaxLabels)
+            {
+                DebugConsole.WriteLine("[JIT-Dbg] WARNING: labelCount at max!");
+            }
+        }
         for (int i = 0; i < _branchCount; i++)
         {
             int targetIL = _branchTargetIL[i];
             int patchOffset = _branchPatchOffset[i];
             int codeOffset = FindCodeOffset(targetIL);
 
-            // if (debug)
-            // {
-            //     // DebugConsole.Write("[BindDbg] patch idx=");
-            //     DebugConsole.WriteDecimal((uint)i);
-            //     DebugConsole.Write(" tgtIL=0x");
-            //     DebugConsole.WriteHex((ulong)targetIL);
-            //     DebugConsole.Write(" pOff=0x");
-            //     DebugConsole.WriteHex((ulong)patchOffset);
-            //     DebugConsole.Write(" cOff=");
-            //     DebugConsole.WriteDecimal((uint)codeOffset);
-            // }
+            if (debug && i < 10)
+            {
+                DebugConsole.Write("[JIT-Dbg] br ");
+                DebugConsole.WriteDecimal((uint)i);
+                DebugConsole.Write(" tgtIL=0x");
+                DebugConsole.WriteHex((ulong)targetIL);
+                DebugConsole.Write(" pOff=0x");
+                DebugConsole.WriteHex((ulong)patchOffset);
+                DebugConsole.Write(" cOff=0x");
+                DebugConsole.WriteHex((ulong)(uint)codeOffset);
+            }
 
             if (codeOffset >= 0)
             {
                 // Calculate relative offset: target - (patch + 4)
                 int rel = codeOffset - (patchOffset + 4);
                 _code.PatchInt32(patchOffset, rel);
-                // if (debug)
-                // {
-                //     DebugConsole.Write(" rel=0x");
-                //     DebugConsole.WriteHex((ulong)(uint)rel);
-                //     DebugConsole.WriteLine();
-                // }
+                if (debug && i < 10)
+                {
+                    DebugConsole.Write(" rel=0x");
+                    DebugConsole.WriteHex((ulong)(uint)rel);
+                    DebugConsole.WriteLine();
+                }
             }
-            // else if (debug)
-            // {
-            //     DebugConsole.WriteLine(" UNRESOLVED");
-            // }
+            else
+            {
+                // Unresolved branch - this is a bug!
+                if (debug)
+                {
+                    DebugConsole.Write("[JIT-Dbg] br ");
+                    DebugConsole.WriteDecimal((uint)i);
+                    DebugConsole.Write(" UNRESOLVED tgtIL=0x");
+                    DebugConsole.WriteHex((ulong)targetIL);
+                    DebugConsole.WriteLine();
+                }
+            }
         }
     }
 
@@ -5912,7 +5935,7 @@ public unsafe struct ILCompiler
                     int numArgs = tempMethod.ArgCount;  // Args NOT including 'this'
 
                     // Get the value size from the MethodTable
-                    // For value types, baseSize IS the raw struct size (no MT pointer included)
+                    // For value types, _uBaseSize includes the 8-byte MT pointer header
                     uint baseSize = constraintMT->_uBaseSize;
                     int valueSize;
                     ushort componentSize = constraintMT->_usComponentSize;
@@ -5923,8 +5946,8 @@ public unsafe struct ILCompiler
                     }
                     else
                     {
-                        // JIT value type: baseSize is the raw struct size
-                        valueSize = (int)baseSize;
+                        // JIT value type: baseSize includes 8-byte header, subtract it
+                        valueSize = (int)(baseSize >= 8 ? baseSize - 8 : baseSize);
                     }
                     if (valueSize <= 0) valueSize = 8;  // Minimum
 
@@ -9583,7 +9606,9 @@ public unsafe struct ILCompiler
                 // We'll use a temp slot in the frame for the value
 
                 // Get the actual size of the value type from its MethodTable
-                uint vtSize = mt->BaseSize;
+                // Use ComponentSize if available (AOT primitives), else BaseSize - 8 (header)
+                uint vtSize = mt->_usComponentSize > 0 ? mt->_usComponentSize :
+                    (mt->BaseSize >= 8 ? mt->BaseSize - 8 : mt->BaseSize);
 
                 // Special handling for Nullable<T>: BaseSize from generic definition is unreliable
                 // Nullable<T> has layout: bool _hasValue (1 byte) + padding + T _value
@@ -9727,7 +9752,9 @@ public unsafe struct ILCompiler
             if (isValueType)
             {
                 // For value types, push the entire struct onto the eval stack
-                uint vtSize = mt->BaseSize;
+                // Use ComponentSize if available (AOT primitives), else BaseSize - 8 (header)
+                uint vtSize = mt->_usComponentSize > 0 ? mt->_usComponentSize :
+                    (mt->BaseSize >= 8 ? mt->BaseSize - 8 : mt->BaseSize);
 
                 // Same Nullable<T> size fix as above
                 if (mt->IsNullable && ctorArgs == 1 && vtSize == 16)
@@ -10026,7 +10053,9 @@ public unsafe struct ILCompiler
                     if (innerMt != null)
                     {
                         innerMtAddress = (ulong)innerMt;
-                        innerValueSize = innerMt->BaseSize - 8;  // Inner value size
+                        // Inner value size - use ComponentSize if available
+                        innerValueSize = innerMt->_usComponentSize > 0 ? innerMt->_usComponentSize :
+                            (innerMt->BaseSize >= 8 ? innerMt->BaseSize - 8 : innerMt->BaseSize);
 
                         DebugConsole.Write(" innerMT=0x");
                         DebugConsole.WriteHex((uint)innerMtAddress);
@@ -10037,9 +10066,7 @@ public unsafe struct ILCompiler
 
                 // For value types, we need the raw value size (bytes to copy when boxing).
                 // - AOT primitives: ComponentSize is raw size, BaseSize may differ
-                // - JIT value types (TypeSpec or TypeDef): BaseSize IS the raw struct size (no +8)
-                //   This was corrected in GetOrCreateGenericInstMethodTable to use ComputeInstanceSize
-                //   with isValueType=true, which returns the raw struct size without MT pointer.
+                // - JIT value types (TypeSpec or TypeDef): BaseSize includes 8-byte header
                 // For reference types (boxing a ref type is a no-op), just return - leave value on stack.
                 if (mt->IsValueType)
                 {
@@ -10051,8 +10078,8 @@ public unsafe struct ILCompiler
                     }
                     else
                     {
-                        // For JIT-resolved value types, baseSize is the raw struct size
-                        valueSize = baseSize;
+                        // For JIT-resolved value types, baseSize includes 8-byte header
+                        valueSize = baseSize >= 8 ? baseSize - 8 : baseSize;
                     }
                     DebugConsole.Write(" valueSize=");
                     DebugConsole.WriteHex(valueSize);
@@ -10622,8 +10649,8 @@ public unsafe struct ILCompiler
                     }
                     else
                     {
-                        // JIT value types: baseSize is the raw struct size
-                        nullableSize = baseSize;
+                        // JIT value types: baseSize includes 8-byte header, subtract it
+                        nullableSize = baseSize >= 8 ? baseSize - 8 : baseSize;
                     }
 
                     // Get the inner type's MethodTable (Nullable<T> -> T)
@@ -10636,13 +10663,14 @@ public unsafe struct ILCompiler
                         if (innerComponentSize > 0)
                             innerValueSize = innerComponentSize;
                         else
-                            innerValueSize = innerMt->BaseSize;
+                            // JIT value types: baseSize includes 8-byte header
+                            innerValueSize = innerMt->BaseSize >= 8 ? innerMt->BaseSize - 8 : innerMt->BaseSize;
                     }
                 }
 
                 // For value types, we need the raw value size (bytes to copy when unboxing).
                 // - AOT primitives: ComponentSize is raw size
-                // - JIT value types: BaseSize IS the raw struct size (no +8)
+                // - JIT value types: BaseSize includes 8-byte header
                 ushort componentSize = mt->_usComponentSize;
                 if (componentSize > 0)
                 {
@@ -10651,8 +10679,8 @@ public unsafe struct ILCompiler
                 }
                 else
                 {
-                    // JIT value type: baseSize is the raw struct size
-                    valueSize = baseSize;
+                    // JIT value type: baseSize includes 8-byte header, subtract it
+                    valueSize = baseSize >= 8 ? baseSize - 8 : baseSize;
                 }
             }
         }
@@ -12642,7 +12670,9 @@ public unsafe struct ILCompiler
 
             // Value types: allocate on stack and zero-initialize
             // For simplicity, push a zeroed value onto the eval stack
-            uint vtSize = typeMT->BaseSize;
+            // For JIT value types, BaseSize includes 8-byte header, subtract it
+            uint vtSize = typeMT->_usComponentSize > 0 ? typeMT->_usComponentSize :
+                (typeMT->BaseSize >= 8 ? typeMT->BaseSize - 8 : typeMT->BaseSize);
             int alignedVtSize = (int)((vtSize + 7) & ~7UL);
 
             // Push zeroed slots for the struct

@@ -1415,7 +1415,7 @@ public static unsafe class MetadataIntegration
 
         // For value types, we need the raw struct size (no object header).
         // - Primitive types (Int32, etc.): ComponentSize is set to raw size, BaseSize is boxed size
-        // - User-defined structs: ComponentSize is 0, BaseSize IS the raw size already
+        // - User-defined structs: ComponentSize is 0, BaseSize is boxed size (raw + 8)
         if (mt->IsValueType)
         {
             // For primitives, ComponentSize is the raw value size
@@ -1424,8 +1424,8 @@ public static unsafe class MetadataIntegration
             {
                 return componentSize;
             }
-            // For user-defined structs, BaseSize is already the raw struct size
-            return baseSize;
+            // For user-defined structs, BaseSize includes header, subtract 8 for raw size
+            return baseSize >= 8 ? baseSize - 8 : baseSize;
         }
 
         // For reference types, return pointer size
@@ -2833,8 +2833,18 @@ public static unsafe class MetadataIntegration
         if (kind == MDArrayMethodKind.None)
             return false;
 
-        // Get element size
-        ushort elemSize = elemMt->IsValueType ? (ushort)elemMt->BaseSize : (ushort)8;
+        // Get element size - for value types, use raw size (BaseSize includes header)
+        ushort elemSize;
+        if (elemMt->IsValueType)
+        {
+            // Use ComponentSize if available (AOT primitives), otherwise BaseSize - 8
+            elemSize = elemMt->_usComponentSize > 0 ? elemMt->_usComponentSize :
+                       (ushort)(elemMt->BaseSize >= 8 ? elemMt->BaseSize - 8 : elemMt->BaseSize);
+        }
+        else
+        {
+            elemSize = 8;  // Reference types are pointers
+        }
 
         // Get or create the MD array MethodTable
         MethodTable* arrayMT = AssemblyLoader.GetOrCreateMDArrayMethodTable(elemMt, (int)rank);
@@ -3809,9 +3819,11 @@ public static unsafe class MetadataIntegration
                             // Determine element type and size from MethodTable properties
                             if (mt->IsValueType)
                             {
-                                // Value type - get size from BaseSize - object header (16)
+                                // Value type - use ComponentSize if available, else BaseSize - 8 (header)
                                 _methodTypeArgs[i] = 0x11; // ValueType
-                                _methodTypeArgSizes[i] = (ushort)(mt->BaseSize > 16 ? mt->BaseSize - 16 : 4);
+                                ushort compSize = mt->_usComponentSize;
+                                _methodTypeArgSizes[i] = compSize > 0 ? compSize :
+                                    (ushort)(mt->BaseSize >= 8 ? mt->BaseSize - 8 : 4);
                             }
                             else
                             {
@@ -4571,7 +4583,10 @@ public static unsafe class MetadataIntegration
                     if ((typeArgMT->CombinedFlags & MTFlags.IsValueType) != 0)
                     {
                         result.ReturnKind = ReturnKind.Struct;
-                        result.ReturnStructSize = (ushort)(typeArgMT->_uBaseSize);
+                        // For value types, _uBaseSize includes header (8 bytes), use raw size
+                        result.ReturnStructSize = (ushort)(typeArgMT->_usComponentSize > 0 ?
+                            typeArgMT->_usComponentSize :
+                            (typeArgMT->_uBaseSize >= 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize));
                     }
                     else
                     {
@@ -4733,7 +4748,10 @@ public static unsafe class MetadataIntegration
                     if ((typeArgMT->CombinedFlags & MTFlags.IsValueType) != 0)
                     {
                         result.ReturnKind = ReturnKind.Struct;
-                        result.ReturnStructSize = (ushort)(typeArgMT->_uBaseSize);
+                        // For value types, _uBaseSize includes header (8 bytes), use raw size
+                        result.ReturnStructSize = (ushort)(typeArgMT->_usComponentSize > 0 ?
+                            typeArgMT->_usComponentSize :
+                            (typeArgMT->_uBaseSize >= 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize));
                     }
                     else
                     {
@@ -5657,8 +5675,7 @@ public static unsafe class MetadataIntegration
                     MethodTable* typeArgMT = GetTypeTypeArgMethodTable((int)varIndex);
                     if (typeArgMT != null)
                     {
-                        // For value types: _uBaseSize IS the raw struct size (no MT pointer)
-                        // This is consistent with ComputeInstanceSize(isValueType=true)
+                        // For value types: _uBaseSize now includes header (8 bytes)
                         // For reference types: always 8 bytes (pointer size)
                         if (typeArgMT->IsValueType)
                         {
@@ -5666,7 +5683,7 @@ public static unsafe class MetadataIntegration
                             if (typeArgMT->_usComponentSize > 0)
                                 size = typeArgMT->_usComponentSize;
                             else
-                                size = (int)typeArgMT->_uBaseSize;
+                                size = (int)(typeArgMT->_uBaseSize >= 8 ? typeArgMT->_uBaseSize - 8 : typeArgMT->_uBaseSize);
                         }
                         else
                             size = 8;

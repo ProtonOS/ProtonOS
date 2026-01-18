@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using ProtonOS.DDK.Drivers;
 using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Platform;
+using ProtonOS.DDK.Network;
 using ProtonOS.DDK.Network.Stack;
 using ProtonOS.Drivers.Virtio;
 
@@ -18,6 +19,7 @@ public static unsafe class VirtioNetEntry
 {
     // Active device instance
     private static VirtioNetDevice? _device;
+    private static NetworkInterface? _interface;
 
     /// <summary>
     /// Run network stack unit tests.
@@ -143,16 +145,45 @@ public static unsafe class VirtioNetEntry
         {
             _netStack = new NetworkStack(_device.MacAddress);
 
+            // Register with NetworkManager
+            // TODO: VirtioNetDevice should implement INetworkDevice
+            _interface = NetworkManager.RegisterInterface(InterfaceType.Ethernet, null);
+            if (_interface != null)
+            {
+                _interface.Stack = _netStack;
+                _interface.Up();
+            }
+
             // Configure with QEMU user-mode network defaults
+            // (This will be replaced by DHCP or config file in production)
             uint guestIP = ARP.MakeIP(10, 0, 2, 15);
             uint subnetMask = ARP.MakeIP(255, 255, 255, 0);
             uint gateway = ARP.MakeIP(10, 0, 2, 2);
             uint dnsServer = ARP.MakeIP(10, 0, 2, 3);  // QEMU's built-in DNS
 
             _netStack.Configure(guestIP, subnetMask, gateway, dnsServer);
+
+            // Update interface state
+            if (_interface != null)
+            {
+                _interface.IPAddress = guestIP;
+                _interface.SubnetMask = subnetMask;
+                _interface.Gateway = gateway;
+                _interface.DnsServer = dnsServer;
+                _interface.Mode = ConfigMode.Static;
+                _interface.State = InterfaceState.Configured;
+            }
         }
 
         return _netStack;
+    }
+
+    /// <summary>
+    /// Get the network interface registered with NetworkManager.
+    /// </summary>
+    public static NetworkInterface? GetNetworkInterface()
+    {
+        return _interface;
     }
 
     /// <summary>

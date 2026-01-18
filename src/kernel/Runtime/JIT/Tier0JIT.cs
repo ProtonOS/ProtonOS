@@ -1143,7 +1143,8 @@ public static unsafe class Tier0JIT
                                 if (mt->_usComponentSize > 0)
                                     resolvedBaseSize = mt->_usComponentSize;
                                 else
-                                    resolvedBaseSize = mt->_uBaseSize;
+                                    // For JIT value types, _uBaseSize includes 8-byte header, subtract it
+                                    resolvedBaseSize = mt->_uBaseSize >= 8 ? mt->_uBaseSize - 8 : mt->_uBaseSize;
                             }
                         }
 
