@@ -81,8 +81,7 @@ public static unsafe class NetworkStackTests
         TestDhcpBuildRequest();
         TestDhcpParseOffer();
         TestDhcpParseAck();
-        // TODO: Temporarily disabled due to JIT issue with struct field changes
-        // TestDhcpParseRenewalTimes();
+        TestDhcpParseRenewalTimes();
         TestDhcpBuildRenewalRequest();
 
         // Network configuration tests
