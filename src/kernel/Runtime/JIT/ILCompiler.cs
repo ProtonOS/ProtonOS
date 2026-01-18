@@ -9634,6 +9634,7 @@ public unsafe struct ILCompiler
 
                 // Get the actual size of the value type from its MethodTable
                 // Use ComponentSize if available (AOT primitives), else BaseSize - 8 (header)
+                // Note: For JIT synthetic MTs, BaseSize = actual_size + 8 to be consistent
                 uint vtSize = mt->_usComponentSize > 0 ? mt->_usComponentSize :
                     (mt->BaseSize >= 8 ? mt->BaseSize - 8 : mt->BaseSize);
 

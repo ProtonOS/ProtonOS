@@ -267,16 +267,16 @@ public static unsafe class MetadataIntegration
         _staticStorageBase = null;
         _staticStorageUsed = 0;
 
-        // Create synthetic MethodTable for ArgIterator (value type, 8 bytes)
+        // Create synthetic MethodTable for ArgIterator (value type, 8 bytes actual size)
         // ArgIterator has one field: byte* _current (8 bytes)
-        // BaseSize for value types = field size (boxed size would add MT ptr)
+        // BaseSize = actual size + 8 (header) to be consistent with JIT's BaseSize - 8 formula
         _argIteratorMTBuffer = (byte*)HeapAllocator.AllocZeroed((ulong)MethodTableWithVtableSize);
         if (_argIteratorMTBuffer != null)
         {
             _argIteratorMT = (MethodTable*)_argIteratorMTBuffer;
             _argIteratorMT->_usComponentSize = 0;
             _argIteratorMT->_usFlags = 0x0020;  // IsValueType flag
-            _argIteratorMT->_uBaseSize = 8;  // 8 bytes for one pointer field
+            _argIteratorMT->_uBaseSize = 16;  // 8 (actual) + 8 (header)
             _argIteratorMT->_relatedType = null;
             _argIteratorMT->_usNumVtableSlots = 0;
             _argIteratorMT->_usNumInterfaces = 0;
@@ -6115,7 +6115,9 @@ public static unsafe class MetadataIntegration
                 _spanMT = (MethodTable*)HeapAllocator.AllocZeroed((nuint)sizeof(MethodTable));
                 if (_spanMT != null)
                 {
-                    _spanMT->_uBaseSize = 16;  // Span layout: pointer(8) + length(4) = 12, aligned to 16
+                    // Span layout: pointer(8) + length(4) = 12, aligned to 16 bytes actual size
+                    // Add 8 for object header to be consistent with JIT's BaseSize - 8 formula
+                    _spanMT->_uBaseSize = 24;  // 16 (actual) + 8 (header)
                     // MTFlags.IsValueType is 0x00200000, high 16 bits go in _usFlags
                     _spanMT->_usFlags = (ushort)(MTFlags.IsValueType >> 16);  // 0x0020
                     _spanMT->_usNumVtableSlots = 0;
@@ -6140,7 +6142,9 @@ public static unsafe class MetadataIntegration
                 _spanMT = (MethodTable*)HeapAllocator.AllocZeroed((nuint)sizeof(MethodTable));
                 if (_spanMT != null)
                 {
-                    _spanMT->_uBaseSize = 16;  // Span layout: pointer(8) + length(4) = 12, aligned to 16
+                    // Span layout: pointer(8) + length(4) = 12, aligned to 16 bytes actual size
+                    // Add 8 for object header to be consistent with JIT's BaseSize - 8 formula
+                    _spanMT->_uBaseSize = 24;  // 16 (actual) + 8 (header)
                     // MTFlags.IsValueType is 0x00200000, high 16 bits go in _usFlags
                     _spanMT->_usFlags = (ushort)(MTFlags.IsValueType >> 16);  // 0x0020
                     _spanMT->_usNumVtableSlots = 0;

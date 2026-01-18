@@ -5892,9 +5892,9 @@ public static unsafe class AssemblyLoader
         // Set flags for value type (bit 5, from MTFlags.IsValueType >> 16)
         mt->_usFlags = (ushort)(MTFlags.IsValueType >> 16);
 
-        // Span layout: pointer (8 bytes) + length (4 bytes) = 12 bytes
-        // Aligned to 16 bytes for stack operations
-        mt->_uBaseSize = 16;
+        // Span layout: pointer (8 bytes) + length (4 bytes) = 12 bytes, aligned to 16 bytes
+        // Add 8 for object header to be consistent with JIT's BaseSize - 8 formula
+        mt->_uBaseSize = 24;  // 16 (actual) + 8 (header)
 
         // ComponentSize for primitives; not used for spans
         mt->_usComponentSize = 0;
@@ -5910,7 +5910,7 @@ public static unsafe class AssemblyLoader
         DebugConsole.WriteHex(wellKnownToken);
         DebugConsole.Write(" MT=0x");
         DebugConsole.WriteHex((ulong)mt);
-        DebugConsole.Write(" size=16");
+        DebugConsole.Write(" baseSize=24 (16+8)");
         DebugConsole.WriteLine();
 
         return mt;

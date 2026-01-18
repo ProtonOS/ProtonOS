@@ -3793,9 +3793,11 @@ public static unsafe class StaticSpanTests
     public static int TestSpanFromInlineArray()
     {
         ReadOnlySpan<byte> span = new byte[] { 10, 20, 30, 40, 50 };
+
         int sum = 0;
         for (int i = 0; i < span.Length; i++)
             sum += span[i];
+
         return sum;  // Should be 150
     }
 
