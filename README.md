@@ -36,10 +36,12 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### Networking
 - **Network Stack** - Ethernet, ARP, IPv4, ICMP (ping), UDP, TCP
-- **DHCP Client** - Automatic network configuration (IP, subnet, gateway, DNS)
+- **Network Manager** - Interface naming (eth0, wifi0), configuration management
+- **DHCP Client** - Full lease lifecycle with T1/T2 renewal and rebinding
 - **DNS Resolution** - Hostname-to-IP resolution via UDP queries
 - **TCP Client** - Connection management, data transmission, graceful close
 - **HTTP/1.1** - Client library for HTTP requests over TCP
+- **Config Files** - INI-based network configuration from `/etc/network/interfaces`
 
 ### Debugging
 - **GDB Support** - Automatic symbol loading for AOT and JIT code
@@ -73,19 +75,21 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | EXT2 filesystem (read/write) | Complete |
 | VFS with mount support | Complete |
 | TCP/IP network stack | Complete |
-| DHCP client | Complete |
+| Network manager (interface naming) | Complete |
+| DHCP client (with lease renewal) | Complete |
 | DNS resolution | Complete |
 | HTTP/1.1 client | Complete |
+| Network config files | Complete |
 | GDB debugging support | Complete |
 | Userspace processes | Not Started |
 
 ### Test Results
 
-The kernel runs comprehensive test suites on boot: **717 tests passing**
+The kernel runs comprehensive test suites on boot: **730 tests passing**
 
-- **673** JIT/runtime tests (FullTest)
-- **36** network stack tests (including DHCP, DNS)
-- **8** application-level tests (HTTP, DNS, DHCP)
+- **681** JIT/runtime tests (FullTest)
+- **41** network stack tests (DHCP, DNS, TCP, HTTP, config parsing)
+- **8** application-level tests (HTTP client, DNS resolver, DHCP client)
 
 ### Supported C# Features
 
@@ -166,8 +170,11 @@ src/
 ├── bootloader/          # UEFI bootloader (loads kernel at fixed address)
 ├── ddk/                 # Driver Development Kit (JIT-loaded)
 │   ├── Kernel/          # Kernel API wrappers (Timer, Memory, Debug, etc.)
-│   ├── Network/         # Network stack (Ethernet, ARP, IP, TCP, UDP)
-│   └── VFS/             # Virtual filesystem abstraction
+│   ├── Network/         # Network stack and management
+│   │   ├── Stack/       # Protocol implementations (Ethernet, ARP, IP, TCP, UDP, DHCP, DNS)
+│   │   ├── NetworkManager.cs    # Interface registration and naming
+│   │   └── NetworkConfigParser.cs  # INI config file parser
+│   └── Storage/         # Virtual filesystem abstraction
 ├── drivers/             # Device drivers (JIT-compiled)
 │   └── shared/
 │       ├── virtio/      # VirtIO common, virtio-blk, virtio-net
