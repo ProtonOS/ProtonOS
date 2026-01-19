@@ -19,10 +19,15 @@ public static class NetworkManager
     private static bool _initialized;
 
     /// <summary>
-    /// Get all registered network interfaces.
+    /// Get all registered network interfaces (as interface for API compatibility).
     /// </summary>
     public static IReadOnlyList<NetworkInterface> Interfaces =>
         _interfaces ?? (IReadOnlyList<NetworkInterface>)new List<NetworkInterface>();
+
+    /// <summary>
+    /// Get the concrete list of network interfaces (internal, avoids interface dispatch).
+    /// </summary>
+    internal static List<NetworkInterface>? InterfacesList => _interfaces;
 
     /// <summary>
     /// Initialize the NetworkManager.

@@ -23,6 +23,9 @@ public static unsafe class KernelExportInit
         // Register Port I/O exports
         RegisterPortIOExports();
 
+        // Register CPU exports
+        RegisterCPUExports();
+
         // Register Memory exports
         RegisterMemoryExports();
 
@@ -82,6 +85,27 @@ public static unsafe class KernelExportInit
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ushort, uint, void>)&PortIOExports.OutDword);
     }
 
+    private static void RegisterCPUExports()
+    {
+        byte* n = stackalloc byte[32];
+
+        // Kernel_GetCpuCount
+        // "Kernel_GetCpuCount" = 4B 65 72 6E 65 6C 5F 47 65 74 43 70 75 43 6F 75 6E 74
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x47; n[8]=0x65; n[9]=0x74; // Get
+        n[10]=0x43; n[11]=0x70; n[12]=0x75; // Cpu
+        n[13]=0x43; n[14]=0x6F; n[15]=0x75; n[16]=0x6E; n[17]=0x74; n[18]=0; // Count
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int>)&CPUExports.GetCpuCount);
+
+        // Kernel_GetCpuInfo
+        // "Kernel_GetCpuInfo" = 4B 65 72 6E 65 6C 5F 47 65 74 43 70 75 49 6E 66 6F
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x47; n[8]=0x65; n[9]=0x74; // Get
+        n[10]=0x43; n[11]=0x70; n[12]=0x75; // Cpu
+        n[13]=0x49; n[14]=0x6E; n[15]=0x66; n[16]=0x6F; n[17]=0; // Info
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int, ProtonOS.Platform.CpuInfo*, bool>)&CPUExports.GetCpuInfo);
+    }
+
     private static void RegisterMemoryExports()
     {
         byte* n = stackalloc byte[32];
@@ -127,6 +151,14 @@ public static unsafe class KernelExportInit
         n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F;
         n[7]=0x55; n[8]=0x6E; n[9]=0x6D; n[10]=0x61; n[11]=0x70; n[12]=0x4D; n[13]=0x4D; n[14]=0x49; n[15]=0x4F; n[16]=0; // UnmapMMIO
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong, ulong, void>)&MemoryExports.UnmapMMIO);
+
+        // Kernel_GetMemoryStats
+        // "Kernel_GetMemoryStats" = 4B 65 72 6E 65 6C 5F 47 65 74 4D 65 6D 6F 72 79 53 74 61 74 73
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x47; n[8]=0x65; n[9]=0x74; // Get
+        n[10]=0x4D; n[11]=0x65; n[12]=0x6D; n[13]=0x6F; n[14]=0x72; n[15]=0x79; // Memory
+        n[16]=0x53; n[17]=0x74; n[18]=0x61; n[19]=0x74; n[20]=0x73; n[21]=0; // Stats
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<MemoryExports.MemoryStats*, bool>)&MemoryExports.GetMemoryStats);
     }
 
     private static void RegisterDebugExports()
@@ -425,6 +457,14 @@ public static unsafe class KernelExportInit
         n[10]=0x54; n[11]=0x68; n[12]=0x72; n[13]=0x65; n[14]=0x61; n[15]=0x64; // Thread
         n[16]=0x43; n[17]=0x6F; n[18]=0x75; n[19]=0x6E; n[20]=0x74; n[21]=0; // Count
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int>)&ThreadExports.GetThreadCount);
+
+        // Kernel_GetSchedulerStats
+        // "Kernel_GetSchedulerStats" = 4B 65 72 6E 65 6C 5F 47 65 74 53 63 68 65 64 75 6C 65 72 53 74 61 74 73
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x47; n[8]=0x65; n[9]=0x74; // Get
+        n[10]=0x53; n[11]=0x63; n[12]=0x68; n[13]=0x65; n[14]=0x64; n[15]=0x75; n[16]=0x6C; n[17]=0x65; n[18]=0x72; // Scheduler
+        n[19]=0x53; n[20]=0x74; n[21]=0x61; n[22]=0x74; n[23]=0x73; n[24]=0; // Stats
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<int*, int*, ulong*, void>)&ThreadExports.GetSchedulerStats);
     }
 
     private static void RegisterAssemblyLoaderExports()

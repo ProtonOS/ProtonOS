@@ -847,6 +847,16 @@ public unsafe class NetworkStack
     }
 
     /// <summary>
+    /// Get the maximum number of TCP connection slots.
+    /// </summary>
+    public int TcpConnectionSlots => MaxTcpConnections;
+
+    /// <summary>
+    /// Get the number of active TCP connections.
+    /// </summary>
+    public int TcpConnectionCount => _tcpConnectionCount;
+
+    /// <summary>
     /// Send data on a TCP connection.
     /// </summary>
     /// <param name="connIndex">Connection index from TcpConnect.</param>

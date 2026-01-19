@@ -4,6 +4,8 @@
 using System;
 using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Network.Stack;
+using ProtonOS.DDK.Storage;
+using ProtonOS.DDK.Storage.Proc;
 using ProtonOS.Net.Http;
 using ProtonOS.Drivers.Network.VirtioNet;
 
@@ -29,6 +31,9 @@ public static class TestRunner
 
         Debug.WriteLine("[AppTest] Starting application-level tests...");
         Debug.WriteLine();
+
+        // Proc filesystem tests
+        RunProcTests();
 
         // HTTP protocol tests
         RunHttpTests();
@@ -63,6 +68,459 @@ public static class TestRunner
         Debug.Write(testName);
         Debug.Write(" - ");
         Debug.WriteLine(reason);
+    }
+
+    // ===== Proc Filesystem Tests =====
+
+    private static void RunProcTests()
+    {
+        Debug.WriteLine("[AppTest] Running /proc filesystem tests...");
+
+        // Initialize proc filesystem first
+        TestProcInit();
+
+        // Test individual proc files
+        TestProcCpuinfo();
+        TestProcMeminfo();
+        TestProcStat();
+        TestProcNetDev();
+        TestProcNetArp();
+        TestProcNetTcp();
+
+        // Test directory enumeration
+        TestProcDirEnum();
+        TestProcNetDirEnum();
+    }
+
+    private static void TestProcInit()
+    {
+        // Initialize the proc filesystem
+        ProcInit.Initialize();
+
+        if (!ProcInit.IsInitialized)
+        {
+            Fail("ProcInit", "Initialization failed");
+            return;
+        }
+
+        if (ProcInit.FileSystem == null)
+        {
+            Fail("ProcInit", "FileSystem is null after init");
+            return;
+        }
+
+        // Check that /proc exists via VFS
+        if (!VFS.Exists("/proc"))
+        {
+            Fail("ProcInit", "/proc not found in VFS");
+            return;
+        }
+
+        Pass("ProcInit");
+    }
+
+    private static unsafe void TestProcCpuinfo()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/cpuinfo", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcCpuinfo", "Failed to open /proc/cpuinfo");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcCpuinfo", "No content read");
+            return;
+        }
+
+        // Verify content contains expected fields
+        bool foundProcessor = ContainsString(buffer, bytesRead, "processor");
+        bool foundApicid = ContainsString(buffer, bytesRead, "apicid");
+
+        if (!foundProcessor)
+        {
+            Fail("ProcCpuinfo", "Missing 'processor' field");
+            return;
+        }
+
+        if (!foundApicid)
+        {
+            Fail("ProcCpuinfo", "Missing 'apicid' field");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/cpuinfo: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcCpuinfo");
+    }
+
+    private static unsafe void TestProcMeminfo()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/meminfo", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcMeminfo", "Failed to open /proc/meminfo");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcMeminfo", "No content read");
+            return;
+        }
+
+        // Verify content contains expected fields
+        bool foundMemTotal = ContainsString(buffer, bytesRead, "MemTotal");
+        bool foundMemFree = ContainsString(buffer, bytesRead, "MemFree");
+
+        if (!foundMemTotal)
+        {
+            Fail("ProcMeminfo", "Missing 'MemTotal' field");
+            return;
+        }
+
+        if (!foundMemFree)
+        {
+            Fail("ProcMeminfo", "Missing 'MemFree' field");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/meminfo: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcMeminfo");
+    }
+
+    private static unsafe void TestProcStat()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/stat", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcStat", "Failed to open /proc/stat");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcStat", "No content read");
+            return;
+        }
+
+        // Verify content starts with "cpu"
+        if (buffer[0] != (byte)'c' || buffer[1] != (byte)'p' || buffer[2] != (byte)'u')
+        {
+            Fail("ProcStat", "Content doesn't start with 'cpu'");
+            return;
+        }
+
+        // Verify contains process count
+        bool foundProcesses = ContainsString(buffer, bytesRead, "processes");
+
+        if (!foundProcesses)
+        {
+            Fail("ProcStat", "Missing 'processes' field");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/stat: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcStat");
+    }
+
+    private static unsafe void TestProcNetDev()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/net/dev", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcNetDev", "Failed to open /proc/net/dev");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcNetDev", "No content read");
+            return;
+        }
+
+        // Verify header is present
+        bool foundInter = ContainsString(buffer, bytesRead, "Inter-");
+        bool foundReceive = ContainsString(buffer, bytesRead, "Receive");
+
+        if (!foundInter || !foundReceive)
+        {
+            Fail("ProcNetDev", "Missing header");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/net/dev: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcNetDev");
+    }
+
+    private static unsafe void TestProcNetArp()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/net/arp", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcNetArp", "Failed to open /proc/net/arp");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcNetArp", "No content read");
+            return;
+        }
+
+        // Verify header is present
+        bool foundIPAddr = ContainsString(buffer, bytesRead, "IP address");
+        bool foundHWType = ContainsString(buffer, bytesRead, "HW type");
+
+        if (!foundIPAddr || !foundHWType)
+        {
+            Fail("ProcNetArp", "Missing header");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/net/arp: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcNetArp");
+    }
+
+    private static unsafe void TestProcNetTcp()
+    {
+        IFileHandle? handle;
+        var result = VFS.OpenFile("/proc/net/tcp", ProtonOS.DDK.Storage.FileMode.Open, ProtonOS.DDK.Storage.FileAccess.Read, out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcNetTcp", "Failed to open /proc/net/tcp");
+            return;
+        }
+
+        // Read content
+        byte* buffer = stackalloc byte[2048];
+        int bytesRead = handle.Read(buffer, 2048);
+        handle.Dispose();
+
+        if (bytesRead <= 0)
+        {
+            Fail("ProcNetTcp", "No content read");
+            return;
+        }
+
+        // Verify header is present
+        bool foundLocal = ContainsString(buffer, bytesRead, "local_address");
+        bool foundRem = ContainsString(buffer, bytesRead, "rem_address");
+
+        if (!foundLocal || !foundRem)
+        {
+            Fail("ProcNetTcp", "Missing header");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/net/tcp: ");
+        Debug.WriteDecimal((uint)bytesRead);
+        Debug.WriteLine(" bytes");
+
+        Pass("ProcNetTcp");
+    }
+
+    private static void TestProcDirEnum()
+    {
+        IDirectoryHandle? handle;
+        var result = VFS.OpenDirectory("/proc", out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcDirEnum", "Failed to open /proc directory");
+            return;
+        }
+
+        // Count entries
+        int count = 0;
+        bool foundCpuinfo = false;
+        bool foundMeminfo = false;
+        bool foundStat = false;
+        bool foundNet = false;
+
+        ProtonOS.DDK.Storage.FileInfo? entry;
+        while ((entry = handle.ReadNext()) != null)
+        {
+            count++;
+            if (entry.Name == "cpuinfo") foundCpuinfo = true;
+            if (entry.Name == "meminfo") foundMeminfo = true;
+            if (entry.Name == "stat") foundStat = true;
+            if (entry.Name == "net") foundNet = true;
+        }
+
+        handle.Dispose();
+
+        if (count == 0)
+        {
+            Fail("ProcDirEnum", "No entries found");
+            return;
+        }
+
+        if (!foundCpuinfo)
+        {
+            Fail("ProcDirEnum", "Missing 'cpuinfo'");
+            return;
+        }
+
+        if (!foundMeminfo)
+        {
+            Fail("ProcDirEnum", "Missing 'meminfo'");
+            return;
+        }
+
+        if (!foundStat)
+        {
+            Fail("ProcDirEnum", "Missing 'stat'");
+            return;
+        }
+
+        if (!foundNet)
+        {
+            Fail("ProcDirEnum", "Missing 'net' directory");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc directory: ");
+        Debug.WriteDecimal((uint)count);
+        Debug.WriteLine(" entries");
+
+        Pass("ProcDirEnum");
+    }
+
+    private static void TestProcNetDirEnum()
+    {
+        IDirectoryHandle? handle;
+        var result = VFS.OpenDirectory("/proc/net", out handle);
+
+        if (result != FileResult.Success || handle == null)
+        {
+            Fail("ProcNetDirEnum", "Failed to open /proc/net directory");
+            return;
+        }
+
+        // Count entries
+        int count = 0;
+        bool foundDev = false;
+        bool foundArp = false;
+        bool foundTcp = false;
+
+        ProtonOS.DDK.Storage.FileInfo? entry;
+        while ((entry = handle.ReadNext()) != null)
+        {
+            count++;
+            if (entry.Name == "dev") foundDev = true;
+            if (entry.Name == "arp") foundArp = true;
+            if (entry.Name == "tcp") foundTcp = true;
+        }
+
+        handle.Dispose();
+
+        if (count == 0)
+        {
+            Fail("ProcNetDirEnum", "No entries found");
+            return;
+        }
+
+        if (!foundDev)
+        {
+            Fail("ProcNetDirEnum", "Missing 'dev'");
+            return;
+        }
+
+        if (!foundArp)
+        {
+            Fail("ProcNetDirEnum", "Missing 'arp'");
+            return;
+        }
+
+        if (!foundTcp)
+        {
+            Fail("ProcNetDirEnum", "Missing 'tcp'");
+            return;
+        }
+
+        Debug.Write("[AppTest] /proc/net directory: ");
+        Debug.WriteDecimal((uint)count);
+        Debug.WriteLine(" entries");
+
+        Pass("ProcNetDirEnum");
+    }
+
+    /// <summary>
+    /// Helper: Check if buffer contains a string.
+    /// </summary>
+    private static unsafe bool ContainsString(byte* buffer, int bufferLen, string search)
+    {
+        int searchLen = search.Length;
+        if (bufferLen < searchLen)
+            return false;
+
+        for (int i = 0; i <= bufferLen - searchLen; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < searchLen; j++)
+            {
+                if (buffer[i + j] != (byte)search[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+                return true;
+        }
+        return false;
     }
 
     // ===== HTTP Tests =====

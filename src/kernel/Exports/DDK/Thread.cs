@@ -150,4 +150,64 @@ public static unsafe class ThreadExports
     {
         return Scheduler.ThreadCount;
     }
+
+    /// <summary>
+    /// Get scheduler statistics.
+    /// </summary>
+    /// <param name="running">Output: number of running/ready threads</param>
+    /// <param name="blocked">Output: number of blocked threads</param>
+    /// <param name="contextSwitches">Output: total context switches across all CPUs</param>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_GetSchedulerStats")]
+    public static void GetSchedulerStats(int* running, int* blocked, ulong* contextSwitches)
+    {
+        int runningCount = 0;
+        int blockedCount = 0;
+        ulong ctxSwitches = 0;
+
+        // Get context switch count from all CPUs
+        if (PerCpu.IsInitialized)
+        {
+            for (int i = 0; i < PerCpu.CpuCount; i++)
+            {
+                var perCpu = PerCpu.GetCpu(i);
+                if (perCpu != null)
+                    ctxSwitches += perCpu->ContextSwitchCount;
+            }
+        }
+
+        // Count threads by state
+        if (Scheduler.IsInitialized)
+        {
+            Scheduler.GlobalLock.Acquire();
+            try
+            {
+                var thread = Scheduler.AllThreadsHead;
+                while (thread != null)
+                {
+                    switch (thread->State)
+                    {
+                        case ThreadState.Running:
+                        case ThreadState.Ready:
+                            runningCount++;
+                            break;
+                        case ThreadState.Blocked:
+                            blockedCount++;
+                            break;
+                    }
+                    thread = thread->NextAll;
+                }
+            }
+            finally
+            {
+                Scheduler.GlobalLock.Release();
+            }
+        }
+
+        if (running != null)
+            *running = runningCount;
+        if (blocked != null)
+            *blocked = blockedCount;
+        if (contextSwitches != null)
+            *contextSwitches = ctxSwitches;
+    }
 }

@@ -916,6 +916,20 @@ public unsafe struct MethodTable
                 if (implInterface != null && implInterface->IsVariantCompatibleWith(targetInterfaceMT))
                     return i;  // Variant-compatible
             }
+
+            // Fallback: check if any implemented interface inherits from the target interface
+            // This handles the case where we're looking for IEnumerator but have IEnumerator<T>
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                MethodTable* implInterface = map[i];
+                if (implInterface != null && implInterface->ImplementsInterface(targetInterfaceMT))
+                {
+                    DebugConsole.Write("[FindVarIface] AOT inherited: idx=");
+                    DebugConsole.WriteDecimal((uint)i);
+                    DebugConsole.WriteLine();
+                    return i;
+                }
+            }
         }
         else
         {
@@ -1008,10 +1022,63 @@ public unsafe struct MethodTable
                 DebugConsole.Write(" startSlot=");
                 DebugConsole.WriteDecimal((uint)bestStartSlot);
                 DebugConsole.WriteLine();
+                return bestCandidateIdx;
             }
-            return bestCandidateIdx;
+
+            // Fallback: check if any implemented interface inherits from the target interface
+            // This handles the case where we're looking for IEnumerator but have IEnumerator<T>
+            // which inherits from IEnumerator.
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                MethodTable* implInterface = map[i].InterfaceMT;
+                if (implInterface != null && implInterface->ImplementsInterface(targetInterfaceMT))
+                    return i;
+            }
+            return -1;
         }
         return -1;
+    }
+
+    /// <summary>
+    /// Check if this interface MethodTable implements another interface.
+    /// Used to handle interface inheritance (e.g., IEnumerator&lt;T&gt; implements IEnumerator).
+    /// </summary>
+    /// <param name="targetInterface">The interface to check for.</param>
+    /// <returns>True if this interface implements the target interface.</returns>
+    public bool ImplementsInterface(MethodTable* targetInterface)
+    {
+        if (targetInterface == null)
+            return false;
+
+        // Check our own interface map
+        if (_usNumInterfaces == 0)
+            return false;
+
+        if (HasDispatchMap)
+        {
+            // AOT type - simple MethodTable* array
+            MethodTable** map = GetAotInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                if (map[i] == targetInterface)
+                    return true;
+                if (map[i] != null && IsStructurallyEqual(map[i], targetInterface))
+                    return true;
+            }
+        }
+        else
+        {
+            // Kernel type - InterfaceMapEntry array
+            InterfaceMapEntry* map = GetInterfaceMapPtr();
+            for (int i = 0; i < _usNumInterfaces; i++)
+            {
+                if (map[i].InterfaceMT == targetInterface)
+                    return true;
+                if (map[i].InterfaceMT != null && IsStructurallyEqual(map[i].InterfaceMT, targetInterface))
+                    return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -1138,14 +1205,6 @@ public unsafe struct MethodTable
 
         // Neither has type args and slot counts matched - accept as structural match
         return true;
-    }
-
-    /// <summary>
-    /// Check if this type implements the given interface.
-    /// </summary>
-    public bool ImplementsInterface(MethodTable* interfaceMT)
-    {
-        return FindInterfaceIndex(interfaceMT) >= 0;
     }
 
     /// <summary>

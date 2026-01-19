@@ -174,7 +174,7 @@ public unsafe class FatFileSystem : IFileSystem
         return true;
     }
 
-    public FileResult Mount(IBlockDevice device, bool readOnly = false)
+    public FileResult Mount(IBlockDevice? device, bool readOnly = false)
     {
         if (_mounted)
             return FileResult.AlreadyExists;

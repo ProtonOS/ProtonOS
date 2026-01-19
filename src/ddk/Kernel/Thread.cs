@@ -72,6 +72,9 @@ public static unsafe class Thread
     [DllImport("*", EntryPoint = "Kernel_GetThreadCount")]
     private static extern int Kernel_GetThreadCount();
 
+    [DllImport("*", EntryPoint = "Kernel_GetSchedulerStats")]
+    private static extern void Kernel_GetSchedulerStats(int* running, int* blocked, ulong* contextSwitches);
+
     /// <summary>
     /// Create a new thread.
     /// </summary>
@@ -155,4 +158,20 @@ public static unsafe class Thread
     /// Get the total number of active threads.
     /// </summary>
     public static int GetThreadCount() => Kernel_GetThreadCount();
+
+    /// <summary>
+    /// Get scheduler statistics.
+    /// </summary>
+    /// <param name="running">Number of running/ready threads.</param>
+    /// <param name="blocked">Number of blocked threads.</param>
+    /// <param name="contextSwitches">Total context switches across all CPUs.</param>
+    public static void GetSchedulerStats(out int running, out int blocked, out ulong contextSwitches)
+    {
+        fixed (int* runPtr = &running)
+        fixed (int* blkPtr = &blocked)
+        fixed (ulong* ctxPtr = &contextSwitches)
+        {
+            Kernel_GetSchedulerStats(runPtr, blkPtr, ctxPtr);
+        }
+    }
 }

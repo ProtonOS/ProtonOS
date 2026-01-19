@@ -17,13 +17,13 @@ public class MountPoint
     /// <summary>Filesystem mounted at this point.</summary>
     public IFileSystem FileSystem { get; }
 
-    /// <summary>Block device containing the filesystem.</summary>
-    public IBlockDevice Device { get; }
+    /// <summary>Block device containing the filesystem (null for virtual filesystems like procfs).</summary>
+    public IBlockDevice? Device { get; }
 
     /// <summary>Is this mount read-only?</summary>
     public bool IsReadOnly { get; }
 
-    public MountPoint(string path, IFileSystem fileSystem, IBlockDevice device, bool readOnly)
+    public MountPoint(string path, IFileSystem fileSystem, IBlockDevice? device, bool readOnly)
     {
         Path = path;
         FileSystem = fileSystem;
@@ -62,9 +62,9 @@ public static class VFS
     /// </summary>
     /// <param name="path">Mount point path</param>
     /// <param name="fileSystem">Filesystem to mount</param>
-    /// <param name="device">Block device containing the filesystem</param>
+    /// <param name="device">Block device containing the filesystem (null for virtual filesystems)</param>
     /// <param name="readOnly">Mount as read-only</param>
-    public static FileResult Mount(string path, IFileSystem fileSystem, IBlockDevice device, bool readOnly = false)
+    public static FileResult Mount(string path, IFileSystem fileSystem, IBlockDevice? device, bool readOnly = false)
     {
         if (!_initialized)
             Initialize();

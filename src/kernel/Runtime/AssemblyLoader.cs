@@ -2280,14 +2280,18 @@ public static unsafe class AssemblyLoader
 
         // Count interfaces and interface method slots
         // Include both directly implemented interfaces AND inherited interfaces from base class
+        // Interfaces also need their base interfaces counted (e.g., IEnumerator<T> extends IEnumerator, IDisposable)
         ushort numInterfaces = 0;
         ushort interfaceMethodSlots = 0;
         ushort baseInterfaces = 0;
+
+        // Count interfaces for both classes AND interfaces
+        // Interfaces can inherit from other interfaces
+        numInterfaces = CountInterfacesForType(asm, rowId);
+
         if (!isInterface)
         {
-            numInterfaces = CountInterfacesForType(asm, rowId);
-
-            // Add inherited interfaces from base class
+            // Add inherited interfaces from base class (only for classes, not interfaces)
             if (baseMT != null)
             {
                 baseInterfaces = baseMT->_usNumInterfaces;

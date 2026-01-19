@@ -7,6 +7,46 @@ using System.Runtime.InteropServices;
 namespace ProtonOS.DDK.Kernel;
 
 /// <summary>
+/// Memory statistics structure.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MemoryStats
+{
+    /// <summary>Total physical memory in bytes.</summary>
+    public ulong TotalMemory;
+
+    /// <summary>Free physical memory in bytes.</summary>
+    public ulong FreeMemory;
+
+    /// <summary>Total page count.</summary>
+    public ulong TotalPages;
+
+    /// <summary>Free page count.</summary>
+    public ulong FreePages;
+
+    /// <summary>GC heap allocated bytes.</summary>
+    public ulong GCHeapAllocated;
+
+    /// <summary>GC heap object count.</summary>
+    public ulong GCHeapObjects;
+
+    /// <summary>GC heap free space.</summary>
+    public ulong GCHeapFreeSpace;
+
+    /// <summary>GC free list total bytes.</summary>
+    public ulong GCFreeListBytes;
+
+    /// <summary>GC free list count.</summary>
+    public ulong GCFreeListCount;
+
+    /// <summary>LOH allocated bytes.</summary>
+    public ulong LOHAllocated;
+
+    /// <summary>LOH object count.</summary>
+    public ulong LOHObjects;
+}
+
+/// <summary>
 /// DDK wrappers for kernel memory management APIs.
 /// </summary>
 public static unsafe class Memory
@@ -79,4 +119,7 @@ public static unsafe class Memory
         ulong physAddr = VirtToPhys((ulong)virtualAddress);
         FreePages(physAddr, pageCount);
     }
+
+    [DllImport("*", EntryPoint = "Kernel_GetMemoryStats")]
+    public static extern bool GetMemoryStats(MemoryStats* stats);
 }

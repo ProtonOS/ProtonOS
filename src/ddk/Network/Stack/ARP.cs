@@ -239,6 +239,42 @@ public unsafe class ArpCache
             return count;
         }
     }
+
+    /// <summary>
+    /// Total number of entries (including invalid ones) for enumeration.
+    /// </summary>
+    public int EntryCount => _count;
+
+    /// <summary>
+    /// Try to get an entry by index for enumeration.
+    /// </summary>
+    /// <param name="index">Entry index (0 to EntryCount-1).</param>
+    /// <param name="ip">Receives the IP address (host byte order).</param>
+    /// <param name="mac">Buffer to receive MAC address (6 bytes).</param>
+    /// <param name="isStatic">Receives whether the entry is static.</param>
+    /// <returns>True if the entry at this index is valid.</returns>
+    public bool TryGetEntry(int index, out uint ip, byte* mac, out bool isStatic)
+    {
+        ip = 0;
+        isStatic = false;
+
+        if (index < 0 || index >= _count)
+            return false;
+
+        if (!_entries[index].IsValid)
+            return false;
+
+        ip = _entries[index].IPAddress;
+        isStatic = _entries[index].IsStatic;
+
+        fixed (byte* srcMac = _entries[index].MacAddress)
+        {
+            for (int j = 0; j < 6; j++)
+                mac[j] = srcMac[j];
+        }
+
+        return true;
+    }
 }
 
 /// <summary>

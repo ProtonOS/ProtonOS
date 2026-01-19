@@ -273,10 +273,10 @@ public interface IFileSystem : IDriver
     /// <summary>
     /// Mount the filesystem on a block device.
     /// </summary>
-    /// <param name="device">Block device containing the filesystem</param>
+    /// <param name="device">Block device containing the filesystem (null for virtual filesystems)</param>
     /// <param name="readOnly">Mount as read-only</param>
     /// <returns>FileResult indicating success or failure</returns>
-    FileResult Mount(IBlockDevice device, bool readOnly = false);
+    FileResult Mount(IBlockDevice? device, bool readOnly = false);
 
     /// <summary>
     /// Unmount the filesystem.

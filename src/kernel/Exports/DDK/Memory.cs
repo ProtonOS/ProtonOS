@@ -104,4 +104,59 @@ public static unsafe class MemoryExports
     /// </summary>
     [UnmanagedCallersOnly(EntryPoint = "Kernel_GetPageSize")]
     public static ulong GetPageSize() => PageAllocator.PageSize;
+
+    /// <summary>
+    /// Memory statistics structure matching DDK MemoryStats.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MemoryStats
+    {
+        public ulong TotalMemory;
+        public ulong FreeMemory;
+        public ulong TotalPages;
+        public ulong FreePages;
+        public ulong GCHeapAllocated;
+        public ulong GCHeapObjects;
+        public ulong GCHeapFreeSpace;
+        public ulong GCFreeListBytes;
+        public ulong GCFreeListCount;
+        public ulong LOHAllocated;
+        public ulong LOHObjects;
+    }
+
+    /// <summary>
+    /// Get comprehensive memory statistics.
+    /// </summary>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_GetMemoryStats")]
+    public static bool GetMemoryStats(MemoryStats* stats)
+    {
+        if (stats == null)
+            return false;
+
+        // Physical memory stats
+        stats->TotalMemory = PageAllocator.TotalMemory;
+        stats->FreeMemory = PageAllocator.FreeMemory;
+        stats->TotalPages = PageAllocator.TotalPages;
+        stats->FreePages = PageAllocator.FreePages;
+
+        // GC heap stats (if initialized)
+        if (GCHeap.IsInitialized)
+        {
+            GCHeap.GetStats(out stats->GCHeapAllocated, out stats->GCHeapObjects, out stats->GCHeapFreeSpace);
+            GCHeap.GetFreeListStats(out stats->GCFreeListBytes, out stats->GCFreeListCount);
+            GCHeap.GetLOHStats(out stats->LOHAllocated, out stats->LOHObjects);
+        }
+        else
+        {
+            stats->GCHeapAllocated = 0;
+            stats->GCHeapObjects = 0;
+            stats->GCHeapFreeSpace = 0;
+            stats->GCFreeListBytes = 0;
+            stats->GCFreeListCount = 0;
+            stats->LOHAllocated = 0;
+            stats->LOHObjects = 0;
+        }
+
+        return true;
+    }
 }

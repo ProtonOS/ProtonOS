@@ -128,7 +128,7 @@ public unsafe class Ext2FileSystem : IFileSystem
         }
     }
 
-    public FileResult Mount(IBlockDevice device, bool readOnly = false)
+    public FileResult Mount(IBlockDevice? device, bool readOnly = false)
     {
         if (_mounted)
             return FileResult.AlreadyExists;
