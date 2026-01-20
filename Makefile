@@ -8,6 +8,7 @@ BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
 TEST_DIR := src/FullTest
+JITTEST_DIR := src/JITTest
 
 # Output files
 ifeq ($(ARCH),x64)
@@ -71,6 +72,7 @@ KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 
 # Test assembly output
 TEST_DLL := $(BUILD_DIR)/FullTest.dll
+JITTEST_DLL := $(BUILD_DIR)/JITTest.dll
 
 # korlib IL assembly (for JIT generic instantiation)
 KORLIB_DLL := $(BUILD_DIR)/korlib.dll
@@ -152,6 +154,14 @@ $(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/FullTest.csproj | $(BUILD_DIR)
 	dotnet build $(TEST_DIR)/FullTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
 
 test: $(TEST_DLL)
+
+# Build JITTest assembly (comprehensive IL opcode tests)
+JITTEST_SRC := $(call rwildcard,$(JITTEST_DIR),*.cs)
+$(JITTEST_DLL): $(JITTEST_SRC) $(JITTEST_DIR)/JITTest.csproj $(DDK_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build JITTest"
+	dotnet build $(JITTEST_DIR)/JITTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+jittest: $(JITTEST_DLL)
 
 # Build korlib IL assembly (for JIT generic instantiation)
 $(KORLIB_DLL): $(KORLIB_SRC) $(KORLIB_DIR)/korlib.csproj | $(BUILD_DIR)
@@ -245,7 +255,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(JITTEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -256,6 +266,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(KORLIB_DLL) $(TE
 	mcopy -i $(BUILD_DIR)/boot.img $(BOOTLOADER_EFI) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/BOOTX64.EFI ::/EFI/BOOT/$(KERNEL_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(JITTEST_DLL) ::/JITTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(KORLIB_DLL) ::/korlib.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll

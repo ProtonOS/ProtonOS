@@ -24,6 +24,7 @@ make image
 # Generate IL disassembly for all runtime assemblies
 echo "Generating IL disassembly..."
 dotnet ildasm build/x64/FullTest.dll -o build/x64/FullTest.il 2>/dev/null || true
+dotnet ildasm build/x64/JITTest.dll -o build/x64/JITTest.il 2>/dev/null || true
 dotnet ildasm build/x64/TestSupport.dll -o build/x64/TestSupport.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.DDK.dll -o build/x64/ProtonOS.DDK.il 2>/dev/null || true
 dotnet ildasm build/x64/ProtonOS.Drivers.Virtio.dll -o build/x64/ProtonOS.Drivers.Virtio.il 2>/dev/null || true
