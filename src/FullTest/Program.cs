@@ -644,6 +644,10 @@ public static class TestRunner
         RecordResult("InterfaceTests.TestDefaultMethodFixed", InterfaceTests.TestDefaultMethodFixed() == 100);
         RecordResult("InterfaceTests.TestDefaultMethodOverridden", InterfaceTests.TestDefaultMethodOverridden() == 30);
         RecordResult("InterfaceTests.TestDefaultMethodPartialOverride", InterfaceTests.TestDefaultMethodPartialOverride() == 100);
+
+        // IReadOnlyList<T> interface dispatch tests (JIT regression)
+        RecordResult("InterfaceTests.TestIReadOnlyListCount", InterfaceTests.TestIReadOnlyListCount() == 3);
+        RecordResult("InterfaceTests.TestIReadOnlyListIndexer", InterfaceTests.TestIReadOnlyListIndexer() == 60);
     }
 
     private static void RunStructWithRefTests()
@@ -6987,6 +6991,44 @@ public static class InterfaceTests
     {
         IWithDefault obj = new PartialOverrideImpl();
         return obj.GetFixed();  // Should return 100 (default, not overridden)
+    }
+
+    /// <summary>
+    /// Test IReadOnlyList&lt;T&gt; interface dispatch - Count property.
+    /// This tests that interface dispatch works correctly when a single method
+    /// implements multiple interface methods (List&lt;T&gt;.Count implements
+    /// ICollection&lt;T&gt;.Count, IReadOnlyCollection&lt;T&gt;.Count, ICollection.Count).
+    /// </summary>
+    public static int TestIReadOnlyListCount()
+    {
+        var list = new System.Collections.Generic.List<int>();
+        list.Add(10);
+        list.Add(20);
+        list.Add(30);
+
+        // Cast to IReadOnlyList<int> - this forces interface dispatch
+        System.Collections.Generic.IReadOnlyList<int> readOnlyList = list;
+
+        // Access Count through interface (interface dispatch)
+        return readOnlyList.Count;  // Should return 3
+    }
+
+    /// <summary>
+    /// Test IReadOnlyList&lt;T&gt; interface dispatch - indexer.
+    /// </summary>
+    public static int TestIReadOnlyListIndexer()
+    {
+        var list = new System.Collections.Generic.List<int>();
+        list.Add(10);
+        list.Add(20);
+        list.Add(30);
+
+        // Cast to IReadOnlyList<int> - this forces interface dispatch
+        System.Collections.Generic.IReadOnlyList<int> readOnlyList = list;
+
+        // Access indexer through interface (interface dispatch)
+        int sum = readOnlyList[0] + readOnlyList[1] + readOnlyList[2];
+        return sum;  // Should return 10 + 20 + 30 = 60
     }
 }
 

@@ -2847,6 +2847,64 @@ public static unsafe class AssemblyLoader
     }
 
     /// <summary>
+    /// Register a method at ALL matching implicit interface slots.
+    /// A single method like List.Count may implement multiple interface methods
+    /// (ICollection.Count, IReadOnlyCollection.Count, etc.) and needs to be registered at all of them.
+    /// Returns the number of interface slots registered.
+    /// </summary>
+    private static int RegisterAtAllImplicitInterfaceSlots(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt, uint methodToken)
+    {
+        // Get the method name
+        uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* methodName = MetadataReader.GetString(ref asm->Metadata, nameIdx);
+        if (methodName == null)
+            return 0;
+
+        // Check if the method is public (implicit implementations must be public)
+        ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+        if ((methodFlags & MethodDefFlags.MemberAccessMask) != MethodDefFlags.Public)
+            return 0;
+
+        // Get the implementation method's parameter count from its signature
+        uint implParamCount = 0;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRow);
+        byte* sigBlob = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sigBlob != null && sigLen > 0)
+        {
+            MethodSignature sig;
+            if (SignatureReader.ReadMethodSignature(sigBlob, sigLen, out sig))
+            {
+                implParamCount = sig.ParamCount;
+            }
+        }
+
+        // Search through ALL interfaces and register at each matching one
+        InterfaceMapEntry* map = mt->GetInterfaceMapPtr();
+        int numInterfaces = mt->_usNumInterfaces;
+        int registeredCount = 0;
+
+        for (int i = 0; i < numInterfaces; i++)
+        {
+            MethodTable* interfaceMT = map[i].InterfaceMT;
+            if (interfaceMT == null)
+                continue;
+
+            // Find the method index in this interface - must match both name AND param count
+            short methodIndex = FindMethodIndexInInterface(interfaceMT, methodName, asm, implParamCount);
+            if (methodIndex >= 0)
+            {
+                // Found a match - register at this interface slot
+                short interfaceSlot = (short)(map[i].StartSlot + methodIndex);
+                JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
+                    methodToken, asm->AssemblyId, mt, interfaceSlot);
+                registeredCount++;
+            }
+        }
+
+        return registeredCount;
+    }
+
+    /// <summary>
     /// Register new virtual methods (newslot) for lazy JIT compilation.
     /// These are methods introduced by this type that need their own vtable slots.
     /// </summary>
@@ -2907,21 +2965,18 @@ public static unsafe class AssemblyLoader
                 else
                 {
                     // Not an explicit implementation - check for implicit interface implementation
-                    short implicitSlot = FindImplicitInterfaceSlot(asm, typeDefRow, methodRow, mt);
-                    if (implicitSlot >= 0)
+                    // A single method may implement multiple interface methods (e.g., List.Count
+                    // implements ICollection.Count, IReadOnlyCollection.Count, etc.)
+                    int implicitCount = RegisterAtAllImplicitInterfaceSlots(asm, typeDefRow, methodRow, mt, methodToken);
+                    if (implicitCount == 0)
                     {
-                        // Implicit interface implementation - register at interface slot
-                        JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
-                            methodToken, asm->AssemblyId, mt, implicitSlot);
-                        // Don't increment currentSlot - this uses an interface slot
-                    }
-                    else
-                    {
-                        // Regular new virtual method - register at sequential slot
+                        // Not an interface implementation - register at sequential slot
                         JIT.CompiledMethodRegistry.RegisterUncompiledOverride(
                             methodToken, asm->AssemblyId, mt, currentSlot);
                         currentSlot++;
                     }
+                    // If implicitCount > 0, method was registered at interface slot(s)
+                    // Don't increment currentSlot - this uses interface slot(s)
                 }
             }
             else if (isVirtual && isNewSlot && !isStatic && isAbstract)
@@ -3917,14 +3972,6 @@ public static unsafe class AssemblyLoader
                         interfaceMethodCount = 1;
                     currentSlot += interfaceMethodCount;
                 }
-
-                DebugConsole.Write("[PopGenIfaceMap] ifaceIdx=");
-                DebugConsole.WriteDecimal((uint)mapIndex);
-                DebugConsole.Write(" MT=0x");
-                DebugConsole.WriteHex((ulong)interfaceMT);
-                DebugConsole.Write(" tag=");
-                DebugConsole.WriteDecimal(tag);
-                DebugConsole.WriteLine();
 
                 map[mapIndex].InterfaceMT = interfaceMT;
                 map[mapIndex].StartSlot = startSlot;

@@ -936,44 +936,6 @@ public unsafe struct MethodTable
             // Kernel type - InterfaceMapEntry array
             InterfaceMapEntry* map = GetInterfaceMapPtr();
 
-            // Debug: dump interface map for kernel types (DISABLED - too verbose)
-            // fixed (MethodTable* self = &this)
-            // {
-            //     DebugConsole.Write("[FindVarIface] Kernel type MT=0x");
-            //     DebugConsole.WriteHex((ulong)self);
-            //     DebugConsole.Write(" numIf=");
-            //     DebugConsole.WriteDecimal(_usNumInterfaces);
-            //     DebugConsole.Write(" target=0x");
-            //     DebugConsole.WriteHex((ulong)targetInterfaceMT);
-            //     if (targetInterfaceMT != null)
-            //     {
-            //         DebugConsole.Write(" targetSlots=");
-            //         DebugConsole.WriteDecimal(targetInterfaceMT->_usNumVtableSlots);
-            //         DebugConsole.Write(" targetHash=0x");
-            //         DebugConsole.WriteHex(targetInterfaceMT->_uHashCode);
-            //     }
-            //     DebugConsole.WriteLine();
-
-            //     for (int j = 0; j < _usNumInterfaces; j++)
-            //     {
-            //         MethodTable* iface = map[j].InterfaceMT;
-            //         DebugConsole.Write("  [");
-            //         DebugConsole.WriteDecimal(j);
-            //         DebugConsole.Write("] MT=0x");
-            //         DebugConsole.WriteHex((ulong)iface);
-            //         if (iface != null)
-            //         {
-            //             DebugConsole.Write(" slots=");
-            //             DebugConsole.WriteDecimal(iface->_usNumVtableSlots);
-            //             DebugConsole.Write(" hash=0x");
-            //             DebugConsole.WriteHex(iface->_uHashCode);
-            //             DebugConsole.Write(" startSlot=");
-            //             DebugConsole.WriteDecimal(map[j].StartSlot);
-            //         }
-            //         DebugConsole.WriteLine();
-            //     }
-            // }
-
             // Track best candidate - when there are multiple matches (e.g., IEnumerable, IReadOnlyCollection,
             // IReadOnlyList all with 1 slot), we want the most specific one (highest startSlot)
             int bestCandidateIdx = -1;
@@ -1390,8 +1352,50 @@ public unsafe struct MethodTable
         }
 
         // Kernel types use InterfaceMapEntry with StartSlot
+        // BUT: A single method can implement multiple interface methods (e.g., List<T>.Count
+        // implements ICollection<T>.Count, IReadOnlyCollection<T>.Count, ICollection.Count).
+        // The vtable layout assigns sequential slots to interfaces, but all implementations
+        // point to the same underlying method. We need to find the implementation slot.
         InterfaceMapEntry* map = GetInterfaceMapPtr();
-        return map[interfaceIndex].StartSlot + methodSlot;
+        int interfaceSlot = map[interfaceIndex].StartSlot + methodSlot;
+
+        // Look up the method registered at this interface slot
+        fixed (MethodTable* self = &this)
+        {
+            JIT.CompiledMethodInfo* ifaceEntry = JIT.CompiledMethodRegistry.LookupByVtableSlot(self, (short)interfaceSlot);
+
+            // If not found on this MethodTable (e.g., for generic instantiations like List<int>),
+            // try looking up on the generic definition's MethodTable (e.g., List<T>)
+            MethodTable* lookupMT = self;
+            if (ifaceEntry == null)
+            {
+                MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(self);
+                if (genDefMT != null && genDefMT != self)
+                {
+                    ifaceEntry = JIT.CompiledMethodRegistry.LookupByVtableSlot(genDefMT, (short)interfaceSlot);
+                    if (ifaceEntry != null)
+                        lookupMT = genDefMT;
+                }
+            }
+
+            if (ifaceEntry != null && ifaceEntry->Token != 0)
+            {
+                // Found a method registered at this interface slot
+                // Now find where this method's IMPLEMENTATION slot is
+                // The implementation is registered at the lowest slot (the class's own method slot)
+                JIT.CompiledMethodInfo* implEntry = JIT.CompiledMethodRegistry.LookupLowestSlotByToken(
+                    ifaceEntry->Token, ifaceEntry->AssemblyId, lookupMT);
+
+                if (implEntry != null && implEntry->VtableSlot >= 0 && implEntry->VtableSlot < interfaceSlot)
+                {
+                    // Found the implementation at a lower slot - use that instead
+                    return implEntry->VtableSlot;
+                }
+            }
+        }
+
+        // Fallback to the interface slot if we can't find a better implementation
+        return interfaceSlot;
     }
 
     /// <summary>

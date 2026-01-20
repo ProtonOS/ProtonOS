@@ -498,17 +498,21 @@ public static unsafe class CompiledMethodRegistry
         // Get type arg hash for generic instantiation support
         ulong typeArgHash = MetadataIntegration.GetTypeTypeArgHash();
 
-        // Check if already registered - update if so
-        CompiledMethodInfo* existing = Lookup(token, assemblyId, typeArgHash);
-        if (existing != null)
+        // Check if already registered at THIS SPECIFIC SLOT
+        // A method may implement multiple interface methods (e.g., List.Count implements
+        // ICollection.Count, IReadOnlyCollection.Count, etc.) and needs separate entries
+        // for each vtable slot so LookupByVtableSlot can find them.
+        CompiledMethodInfo* existingAtSlot = LookupByVtableSlot(methodTable, vtableSlot);
+        if (existingAtSlot != null && existingAtSlot->Token == token)
         {
-            // Update with vtable info
-            existing->MethodTable = methodTable;
-            existing->VtableSlot = vtableSlot;
-            existing->IsVirtual = true;
-            existing->TypeArgHash = typeArgHash;
+            // Already registered at this exact slot - just update
+            existingAtSlot->MethodTable = methodTable;
+            existingAtSlot->IsVirtual = true;
+            existingAtSlot->TypeArgHash = typeArgHash;
             return true;
         }
+        // Note: If existingAtSlot is non-null but has different token, we have a conflict.
+        // For now, allow creating a new entry (the LookupByVtableSlot will find one of them).
 
         // Find a block with free space
         int blockIndex = FindBlockWithFreeSlot();
@@ -1470,5 +1474,45 @@ public static unsafe class CompiledMethodRegistry
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Look up the entry with the lowest vtable slot for a given method token.
+    /// A method may be registered at multiple vtable slots (e.g., List.Count implements
+    /// multiple interfaces). This returns the entry with the lowest slot, which is
+    /// typically the implementation slot (where the actual code should be).
+    /// </summary>
+    public static CompiledMethodInfo* LookupLowestSlotByToken(uint token, uint assemblyId, void* methodTable)
+    {
+        if (!_initialized || token == 0)
+            return null;
+
+        CompiledMethodInfo* lowestEntry = null;
+        short lowestSlot = short.MaxValue;
+
+        // Scan all blocks for entries with matching token and assembly
+        for (int b = 0; b < _blockCount; b++)
+        {
+            MethodBlock* block = _blocks[b];
+            if (block == null || block->IsEmpty)
+                continue;
+
+            CompiledMethodInfo* entries = block->GetEntries();
+            for (int i = 0; i < MethodBlock.EntriesPerBlock; i++)
+            {
+                if (entries[i].IsUsed &&
+                    entries[i].Token == token &&
+                    entries[i].AssemblyId == assemblyId &&
+                    entries[i].MethodTable == methodTable &&
+                    entries[i].VtableSlot >= 0 &&
+                    entries[i].VtableSlot < lowestSlot)
+                {
+                    lowestSlot = entries[i].VtableSlot;
+                    lowestEntry = &entries[i];
+                }
+            }
+        }
+
+        return lowestEntry;
     }
 }
