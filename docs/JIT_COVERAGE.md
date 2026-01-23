@@ -5997,7 +5997,7 @@ All 219 IL opcodes now have comprehensive test scenarios defined, covering:
 
 ## Implementation Status (Updated 2026-01-22)
 
-### Current Test Count: 2,744 tests passing
+### Current Test Count: 2,983 tests passing
 
 All implemented tests are passing. The JIT correctly handles:
 
@@ -6068,6 +6068,7 @@ All implemented tests are passing. The JIT correctly handles:
 
 | Test File | Test Count | Category |
 |-----------|------------|----------|
+| **IL Opcode Tests** | | |
 | ArithmeticTests.cs | ~300 | add, sub, mul, div, rem, neg |
 | BitwiseTests.cs | ~150 | and, or, xor, not, shl, shr |
 | ComparisonTests.cs | ~200 | ceq, cgt, clt (signed/unsigned) |
@@ -6080,11 +6081,43 @@ All implemented tests are passing. The JIT correctly handles:
 | StackManipulationTests.cs | ~60 | dup, pop |
 | SwitchTests.cs | ~100 | switch with various case counts |
 | ArgumentLocalShortTests.cs | ~150 | ldarg.s, starg.s, ldloc.s, stloc.s |
-| ArrayTests.cs | ~80 | ldelem.*, stelem.*, ldelema, newarr |
+| ArrayOperationTests.cs | ~80 | ldelem.*, stelem.*, ldelema, newarr |
 | StubTests.cs | ~100 | Exception handling, typedref, ldtoken, tail calls |
+| **Feature Tests** | | |
+| ForeachTests.cs | ~15 | foreach loops on arrays |
+| BoxingTests.cs | ~20 | Boxing/unboxing value types |
+| GenericTests.cs | ~25 | Generic types and methods |
+| InterfaceTests.cs | ~20 | Interface dispatch |
+| NullableTests.cs | ~15 | Nullable<T> operations |
+| OverflowTests.cs | ~20 | Checked arithmetic |
+| StringTests.cs | ~25 | String operations |
+| DelegateTests.cs | ~15 | Delegate invocation |
+| MDArrayTests.cs | ~20 | Multi-dimensional arrays |
+| DisposableTests.cs | ~10 | using/IDisposable pattern |
+| StaticCtorTests.cs | ~10 | Static constructors |
+| RecursionTests.cs | ~10 | Recursive calls |
+| CalliTests.cs | ~10 | Function pointer calls |
+| ParamsTests.cs | ~10 | params keyword |
+| IteratorTests.cs | ~10 | Custom IEnumerable |
+| **Korlib Tests** | | |
+| ListTests.cs | ~25 | List<T> operations |
+| DictionaryTests.cs | ~25 | Dictionary<K,V> operations |
+| HashSetTests.cs | ~15 | HashSet<T> operations |
+| StringBuilderTests.cs | ~15 | StringBuilder operations |
+| InterlockedTests.cs | ~15 | Interlocked operations |
+| StringFormatTests.cs | ~20 | String formatting |
+| UtilityTests.cs | ~30 | BitConverter, TimeSpan, DateTime, Queue, Stack, etc. |
+| **Regression Tests** | | |
+| JitRegressionTests.cs | ~15 | Tests for fixed JIT bugs |
 
 ### Recent Fixes:
 
+- **2026-01-22**: Migrated all tests from FullTest to JITTest with organized structure:
+  - Tests/IL/ - IL opcode tests
+  - Tests/Features/ - JIT feature tests (boxing, generics, interfaces, delegates, etc.)
+  - Tests/Korlib/ - Runtime library API tests (List, Dictionary, HashSet, StringBuilder, etc.)
+  - Tests/Regression/ - JIT regression tests
+- **2026-01-22**: Fixed object equality comparison for boxed value types
 - **2026-01-22**: Implemented `rethrow` instruction - full support for `throw;` in catch handlers
   - Fixed `LeaveTargetOffset` calculation for handlers ending with throw/rethrow
   - Fixed stack layout in rethrow dispatch to correctly position return address
