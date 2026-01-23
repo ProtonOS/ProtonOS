@@ -7,7 +7,6 @@ ARCH ?= x64
 BUILD_DIR := build/$(ARCH)
 KERNEL_DIR := src/kernel
 KORLIB_DIR := src/korlib
-TEST_DIR := src/FullTest
 JITTEST_DIR := src/JITTest
 
 # Output files
@@ -71,7 +70,6 @@ NATIVE_OBJ := $(BUILD_DIR)/native.obj
 KERNEL_OBJ := $(BUILD_DIR)/kernel.obj
 
 # Test assembly output
-TEST_DLL := $(BUILD_DIR)/FullTest.dll
 JITTEST_DLL := $(BUILD_DIR)/JITTest.dll
 
 # korlib IL assembly (for JIT generic instantiation)
@@ -114,7 +112,7 @@ EXT2_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Ext2.dll
 TEST_DRIVER_DLL := $(BUILD_DIR)/ProtonOS.Drivers.Test.dll
 
 # Targets
-.PHONY: all clean native kernel bootloader test korlibdll testsupport ddk protonos-net apptest drivers image run deps install-deps check-deps
+.PHONY: all clean native kernel bootloader korlibdll testsupport ddk protonos-net apptest drivers image run deps install-deps check-deps
 
 all: $(BUILD_DIR)/$(EFI_NAME)
 
@@ -147,13 +145,6 @@ $(KERNEL_OBJ): $(KORLIB_SRC) $(KERNEL_SRC) | $(BUILD_DIR)
 	$(BFLAT) build $(BFLAT_FLAGS) -c -o $@ $(KORLIB_SRC) $(KERNEL_SRC)
 
 kernel: $(KERNEL_OBJ)
-
-# Build test assembly (standard .NET DLL for JIT testing)
-$(TEST_DLL): $(TEST_DIR)/Program.cs $(TEST_DIR)/FullTest.csproj | $(BUILD_DIR)
-	@echo "DOTNET build FullTest"
-	dotnet build $(TEST_DIR)/FullTest.csproj -c Release -o $(BUILD_DIR) --nologo -v q
-
-test: $(TEST_DLL)
 
 # Build JITTest assembly (comprehensive IL opcode tests)
 JITTEST_SRC := $(call rwildcard,$(JITTEST_DIR),*.cs)
@@ -255,7 +246,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(JITTEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(JITTEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -265,7 +256,6 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(TEST_DLL) $(JITTEST_DLL) $(K
 	mmd -i $(BUILD_DIR)/boot.img ::/lib
 	mcopy -i $(BUILD_DIR)/boot.img $(BOOTLOADER_EFI) ::/EFI/BOOT/$(EFI_NAME)
 	mcopy -i $(BUILD_DIR)/boot.img $(BUILD_DIR)/BOOTX64.EFI ::/EFI/BOOT/$(KERNEL_NAME)
-	mcopy -i $(BUILD_DIR)/boot.img $(TEST_DLL) ::/FullTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(JITTEST_DLL) ::/JITTest.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(KORLIB_DLL) ::/korlib.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll

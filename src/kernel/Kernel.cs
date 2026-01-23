@@ -50,6 +50,10 @@ public static unsafe class Kernel
     private static byte* _appTestBytes;
     private static ulong _appTestSize;
 
+    // JITTest assembly (comprehensive IL opcode testing)
+    private static byte* _jitTestBytes;
+    private static ulong _jitTestSize;
+
     // Assembly IDs from AssemblyLoader (assigned after registration)
     private static uint _testAssemblyId;
     private static uint _testSupportId;
@@ -63,6 +67,7 @@ public static unsafe class Kernel
     private static uint _korlibId;
     private static uint _protonOsNetId;
     private static uint _appTestId;
+    private static uint _jitTestId;
 
     // Cached MetadataRoot for the test assembly (for string resolution)
     // TODO: Migrate to use LoadedAssembly.Metadata instead
@@ -298,6 +303,12 @@ public static unsafe class Kernel
             _appTestId = AssemblyLoader.Load(_appTestBytes, _appTestSize);
         }
 
+        // Register JITTest assembly (depends on DDK)
+        if (_jitTestBytes != null)
+        {
+            _jitTestId = AssemblyLoader.Load(_jitTestBytes, _jitTestSize);
+        }
+
         // Initialize metadata integration layer (requires HeapAllocator)
         MetadataIntegration.Initialize();
 
@@ -326,6 +337,9 @@ public static unsafe class Kernel
 
         // Run the FullTest assembly to exercise JIT functionality
         RunFullTestAssembly();
+
+        // Run the JITTest assembly (comprehensive IL opcode testing)
+        RunJITTestAssembly();
 
         // Run the AppTest assembly (application-level tests after drivers loaded)
         RunAppTestAssembly();
@@ -375,6 +389,9 @@ public static unsafe class Kernel
 
         // Load AppTest.dll (application-level tests)
         _appTestBytes = BootInfoAccess.FindFile("AppTest.dll", out _appTestSize);
+
+        // Load JITTest.dll (comprehensive IL opcode testing)
+        _jitTestBytes = BootInfoAccess.FindFile("JITTest.dll", out _jitTestSize);
 
         if (_testAssemblyBytes == null)
         {
@@ -638,6 +655,74 @@ public static unsafe class Kernel
         else
         {
             DebugConsole.WriteLine("[FullTest] ERROR: JIT compilation failed");
+        }
+    }
+
+    /// <summary>
+    /// Run the JITTest assembly via JIT compilation.
+    /// Comprehensive IL opcode testing.
+    /// </summary>
+    private static void RunJITTestAssembly()
+    {
+        if (_jitTestId == AssemblyLoader.InvalidAssemblyId)
+        {
+            DebugConsole.WriteLine("[JITTest] No JITTest assembly loaded, skipping");
+            return;
+        }
+
+        DebugConsole.WriteLine();
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine("  Running JITTest Assembly");
+        DebugConsole.WriteLine("==============================");
+        DebugConsole.WriteLine();
+
+        // Find TestRunner type
+        uint testRunnerToken = AssemblyLoader.FindTypeDefByFullName(_jitTestId, "JITTest", "TestRunner");
+        if (testRunnerToken == 0)
+        {
+            DebugConsole.WriteLine("[JITTest] ERROR: Could not find JITTest.TestRunner type");
+            return;
+        }
+
+        // Find RunAllTests method
+        uint runAllTestsToken = AssemblyLoader.FindMethodDefByName(_jitTestId, testRunnerToken, "RunAllTests");
+        if (runAllTestsToken == 0)
+        {
+            DebugConsole.WriteLine("[JITTest] ERROR: Could not find RunAllTests method");
+            return;
+        }
+
+        // JIT compile the method
+        var jitResult = Runtime.JIT.Tier0JIT.CompileMethod(_jitTestId, runAllTestsToken);
+        if (jitResult.Success)
+        {
+            // Execute the compiled method
+            var testMethod = (delegate*<int>)jitResult.CodeAddress;
+            int result = testMethod();
+
+            // Decode result
+            int passCount = (result >> 16) & 0xFFFF;
+            int failCount = result & 0xFFFF;
+
+            DebugConsole.WriteLine();
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.WriteLine("  JITTest Results");
+            DebugConsole.WriteLine("==============================");
+            DebugConsole.WriteLine(string.Format("[JITTest] Passed: {0}", passCount));
+            DebugConsole.WriteLine(string.Format("[JITTest] Failed: {0}", failCount));
+
+            if (failCount == 0)
+            {
+                DebugConsole.WriteLine("[JITTest] ALL TESTS PASSED!");
+            }
+            else
+            {
+                DebugConsole.WriteLine("[JITTest] SOME TESTS FAILED");
+            }
+        }
+        else
+        {
+            DebugConsole.WriteLine("[JITTest] ERROR: JIT compilation failed");
         }
     }
 

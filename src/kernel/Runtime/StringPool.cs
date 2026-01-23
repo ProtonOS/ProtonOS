@@ -26,7 +26,7 @@ public static unsafe class StringPool
 {
     // Pool configuration
     private const int InitialCapacity = 256;      // Initial hash table size
-    private const int MaxTokenCacheSize = 1024;   // Max cached user string tokens
+    private const int MaxTokenCacheSize = 8192;   // Max cached user string tokens (8K to reduce collisions)
 
     // Hash table for string interning (content-based lookup)
     // Each bucket is a linked list of StringEntry pointers
@@ -127,8 +127,10 @@ public static unsafe class StringPool
         _lookups++;
 
         // Check token cache first (fast path)
-        // Include assembly ID in the cache index to avoid collisions between assemblies
-        int cacheIndex = (int)((token ^ (assemblyId << 16)) & _tokenCacheMask);
+        // Combine token and assembly ID using multiplication to spread bits evenly.
+        // The old formula (token ^ (assemblyId << 16)) didn't work because the mask
+        // only kept low 10 bits, ignoring the assembly ID entirely.
+        int cacheIndex = (int)((token + assemblyId * 257) & _tokenCacheMask);
         _lock.Acquire();
 
         if (_tokenCache[cacheIndex].Token == token &&

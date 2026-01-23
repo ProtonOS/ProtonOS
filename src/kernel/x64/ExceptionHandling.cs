@@ -2314,8 +2314,6 @@ public static unsafe class ExceptionHandling
 
                     // ========== Transfer to catch handler ==========
                     ulong handlerAddr = catchImageBase + catchFuncEntry->BeginAddress + clause.HandlerOffset;
-
-                    // SKIP ALL DEBUG OUTPUT - it might corrupt stack during exception handling
                     ulong targetRsp = catchSearchContext.Rbp - 0x100;
 
                     context->Rip = handlerAddr;
@@ -2329,12 +2327,11 @@ public static unsafe class ExceptionHandling
                     *(ulong*)(context->Rsp) = leaveTargetAddr;
 
                     // Set current exception info for rethrow support
-                    // DISABLED: These TLS calls may be causing the crash
-                    // SetCurrentException(exceptionObject);
-                    // SetCurrentExceptionRip(catchSearchContext.Rip);
-                    // SetCurrentExceptionRsp(catchSearchContext.Rsp);
-                    // SetCurrentExceptionRbp(catchSearchContext.Rbp);
-                    // SetCurrentHandlerClause(foundClauseIndex);
+                    SetCurrentException(exceptionObject);
+                    SetCurrentExceptionRip(catchSearchContext.Rip);
+                    SetCurrentExceptionRsp(catchSearchContext.Rsp);
+                    SetCurrentExceptionRbp(catchSearchContext.Rbp);
+                    SetCurrentHandlerClause(foundClauseIndex);
                     return true;
                 }
             }
@@ -2422,8 +2419,10 @@ public static unsafe class ExceptionHandling
 
                 NativeAotEHClause clause;
                 uint foundClauseIndex;
-                // For frame 0, use startClause; for subsequent frames, search from 0
-                uint searchFrom = (frame == 0) ? startClause : 0;
+                // For frame 0, start from startClause + 1 to skip the current handler;
+                // for subsequent frames, search from 0
+                uint searchFrom = (frame == 0) ? startClause + 1 : 0;
+
                 // Pass frame pointer and exception object for filter funclet evaluation
                 if (FindMatchingEHClause(ehInfo, imageBase, funcEntry->BeginAddress, offsetInFunc, 0,
                     out clause, out foundClauseIndex, searchFrom, walkContext.Rbp, (ulong)exceptionObject))
@@ -2431,20 +2430,21 @@ public static unsafe class ExceptionHandling
                     ulong handlerAddr = imageBase + funcEntry->BeginAddress + clause.HandlerOffset;
 
                     // Update the actual context for transfer
-                    // Use walkContext (unwound to parent frame) for frame info,
-                    // not actualContext (which is the funclet's frame)
-                    // The funclet prologue is: push rbp; mov rbp, rdx
-                    // So we need RSP-16 to leave room for push AND return address at RSP+8
+                    // Match the stack layout from normal dispatch:
+                    // - RSP points to return address
+                    // - Handler prologue: push rbp (writes to RSP-8), mov rbp, rdx
+                    // - Handler epilog: pop rbp (restores from RSP-8), ret (reads from RSP)
+                    // - Return address is preserved at [RSP] throughout
+                    ulong leaveTargetAddr = imageBase + funcEntry->BeginAddress + clause.LeaveTargetOffset;
+
                     actualContext->Rip = handlerAddr;
-                    actualContext->Rsp = walkContext.Rsp - 16;  // Leave room for push and return addr
+                    actualContext->Rsp = walkContext.Rsp - 8;  // Leave room for push rbp
                     actualContext->Rbp = walkContext.Rbp;  // Parent's frame pointer
                     actualContext->Rcx = (ulong)exceptionObject;
-                    actualContext->Rdx = walkContext.Rbp;  // Pass parent's frame pointer to funclet
+                    actualContext->Rdx = walkContext.Rbp;  // Pass parent's frame pointer to handler
 
-                    // Write return address at RSP+8 (where ret will find it after pop rbp)
-                    // The return address is the leave target - where execution continues after the handler
-                    ulong leaveTargetAddr = imageBase + funcEntry->BeginAddress + clause.LeaveTargetOffset;
-                    *(ulong*)(actualContext->Rsp + 8) = leaveTargetAddr;
+                    // Write return address at RSP (where ret will find it after pop rbp)
+                    *(ulong*)(actualContext->Rsp) = leaveTargetAddr;
 
                     // Update exception tracking for nested rethrow
                     SetCurrentException(exceptionObject);

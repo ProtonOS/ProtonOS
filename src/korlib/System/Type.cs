@@ -174,6 +174,44 @@ namespace System
             }
             return null;
         }
+
+        /// <summary>
+        /// Equality operator for Type. Compares by TypeHandle value.
+        /// </summary>
+        public static bool operator ==(Type? left, Type? right)
+        {
+            if ((object?)left == null && (object?)right == null)
+                return true;
+            if ((object?)left == null || (object?)right == null)
+                return false;
+            return left.TypeHandle.Value == right.TypeHandle.Value;
+        }
+
+        /// <summary>
+        /// Inequality operator for Type. Compares by TypeHandle value.
+        /// </summary>
+        public static bool operator !=(Type? left, Type? right)
+        {
+            return !(left == right);
+        }
+
+        /// <summary>
+        /// Determines whether this Type is equal to another object.
+        /// </summary>
+        public override bool Equals(object? obj)
+        {
+            if (obj is Type other)
+                return this == other;
+            return false;
+        }
+
+        /// <summary>
+        /// Gets a hash code for this Type.
+        /// </summary>
+        public override int GetHashCode()
+        {
+            return TypeHandle.Value.GetHashCode();
+        }
     }
 
     /// <summary>

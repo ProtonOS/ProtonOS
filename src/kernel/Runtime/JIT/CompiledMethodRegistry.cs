@@ -359,15 +359,25 @@ public static unsafe class CompiledMethodRegistry
         CompiledMethodInfo* existing = Lookup(token);
         if (existing != null)
         {
-            existing->NativeCode = code;
-            existing->ArgCount = argCount;
-            existing->ReturnKind = returnKind;
-            existing->HasThis = hasThis;
-            existing->IsCompiled = true;
-            existing->IsVirtual = isVirtual;
-            existing->VtableSlot = (short)vtableSlot;
-            existing->TypeArgHash = typeArgHash;
-            return true;
+            // If the existing entry has TypeArgHash=0 and VtableSlot >= 0, it's a "generic definition"
+            // entry that was registered without type args. Don't modify this entry - instead create
+            // a new instantiation-specific entry. This preserves the VtableSlot info for future lookups.
+            if (existing->TypeArgHash == 0 && existing->VtableSlot >= 0 && typeArgHash != 0)
+            {
+                // Don't update - fall through to create new entry
+            }
+            else
+            {
+                existing->NativeCode = code;
+                existing->ArgCount = argCount;
+                existing->ReturnKind = returnKind;
+                existing->HasThis = hasThis;
+                existing->IsCompiled = true;
+                existing->IsVirtual = isVirtual;
+                existing->VtableSlot = (short)vtableSlot;
+                existing->TypeArgHash = typeArgHash;
+                return true;
+            }
         }
 
         // Find a block with free space

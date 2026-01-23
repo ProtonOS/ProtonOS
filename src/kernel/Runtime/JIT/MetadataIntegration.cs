@@ -1254,6 +1254,34 @@ public static unsafe class MetadataIntegration
     }
 
     /// <summary>
+    /// Check if a MethodTable represents a signed primitive type (SByte, Int16, Int32, Int64).
+    /// Used by JIT to determine if sign extension is needed when loading values.
+    /// </summary>
+    public static bool IsSignedPrimitiveType(MethodTable* mt)
+    {
+        if (mt == null) return false;
+
+        // Compare against known signed primitive MethodTables
+        MethodTable* sbyteMT = LookupType(WellKnownTypes.SByte);
+        if (sbyteMT != null && mt == sbyteMT) return true;
+
+        MethodTable* int16MT = LookupType(WellKnownTypes.Int16);
+        if (int16MT != null && mt == int16MT) return true;
+
+        MethodTable* int32MT = LookupType(WellKnownTypes.Int32);
+        if (int32MT != null && mt == int32MT) return true;
+
+        MethodTable* int64MT = LookupType(WellKnownTypes.Int64);
+        if (int64MT != null && mt == int64MT) return true;
+
+        // IntPtr on x64 is also signed
+        MethodTable* intPtrMT = LookupType(WellKnownTypes.IntPtr);
+        if (intPtrMT != null && mt == intPtrMT) return true;
+
+        return false;
+    }
+
+    /// <summary>
     /// TypeResolver implementation for ILCompiler.
     /// Resolves type tokens (TypeDef, TypeRef, TypeSpec) to MethodTable pointers.
     /// Uses the current assembly context set via SetCurrentAssembly().
@@ -3361,19 +3389,17 @@ public static unsafe class MetadataIntegration
             result.RegistryEntry = info;
             TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
 
-            // If the registry says IsVirtual with a high vtable slot (>=3) and we have native code,
-            // prefer direct call over vtable dispatch. NativeAOT optimizes vtables and may not
-            // include interface implementation slots. Slots 0-2 are the standard Object virtuals
-            // (ToString, GetHashCode, Equals) which are always present.
+            // Devirtualization for high vtable slots (>=3) when native code is available.
+            // NativeAOT optimizes vtables and may not include all virtual slot entries.
+            // Slots 0-2 are standard Object virtuals (ToString, Equals, GetHashCode).
+            // For higher slots, prefer direct call to avoid vtable out-of-bounds issues
+            // with generic instantiations where vtable slots may not exist at runtime.
+            //
+            // KNOWN ISSUE: This breaks polymorphism for sealed class overrides called
+            // through base class references. To fix, the vtable needs to be properly
+            // populated for derived types during type loading.
             if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
             {
-                DebugConsole.Write("[ResolveMDef] Downgrade slot=");
-                DebugConsole.WriteDecimal((uint)result.VtableSlot);
-                DebugConsole.Write(" to direct call for tok=0x");
-                DebugConsole.WriteHex(methodToken);
-                DebugConsole.Write(" code=0x");
-                DebugConsole.WriteHex((ulong)result.NativeCode);
-                DebugConsole.WriteLine();
                 // Use direct call instead of vtable dispatch
                 result.IsVirtual = false;
                 result.VtableSlot = -1;
@@ -3511,17 +3537,9 @@ public static unsafe class MetadataIntegration
                             result.RegistryEntry = info;
                             TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
 
-                            // Apply same downgrade logic as for pre-compiled methods:
-                            // If high vtable slot (>=3) and we have native code, use direct call
+                            // Apply same devirtualization for high vtable slots (>= 3)
                             if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
                             {
-                                DebugConsole.Write("[ResolveMDef-JIT] Downgrade slot=");
-                                DebugConsole.WriteDecimal((uint)result.VtableSlot);
-                                DebugConsole.Write(" to direct call for tok=0x");
-                                DebugConsole.WriteHex(methodToken);
-                                DebugConsole.Write(" code=0x");
-                                DebugConsole.WriteHex((ulong)result.NativeCode);
-                                DebugConsole.WriteLine();
                                 result.IsVirtual = false;
                                 result.VtableSlot = -1;
                             }
@@ -7223,6 +7241,20 @@ public static unsafe class MetadataIntegration
     /// <returns>The MethodDef token, or 0 if not found.</returns>
     public static uint FindMethodByName(uint assemblyId, uint typeToken, byte* methodName)
     {
+        return FindMethodByNameWithParamCount(assemblyId, typeToken, methodName, -1);
+    }
+
+    /// <summary>
+    /// Find a method in a type by name and parameter count.
+    /// Used to find implementing methods for interface calls when there are overloads.
+    /// </summary>
+    /// <param name="assemblyId">The assembly ID containing the type.</param>
+    /// <param name="typeToken">The TypeDef token of the type to search.</param>
+    /// <param name="methodName">The name of the method to find.</param>
+    /// <param name="expectedParamCount">Expected parameter count, or -1 to match any.</param>
+    /// <returns>The MethodDef token, or 0 if not found.</returns>
+    public static uint FindMethodByNameWithParamCount(uint assemblyId, uint typeToken, byte* methodName, int expectedParamCount)
+    {
         if (methodName == null)
             return 0;
 
@@ -7262,6 +7294,16 @@ public static unsafe class MetadataIntegration
                 uint rva = MetadataReader.GetMethodDefRva(ref asm->Tables, ref asm->Sizes, methodRid);
                 if (rva != 0)
                 {
+                    // If param count matching is required, check it
+                    if (expectedParamCount >= 0)
+                    {
+                        uint methodToken = 0x06000000 | methodRid;
+                        int actualParamCount = GetMethodParamCount(assemblyId, methodToken);
+                        if (actualParamCount != expectedParamCount)
+                        {
+                            continue;  // Keep searching for correct overload
+                        }
+                    }
                     return 0x06000000 | methodRid;
                 }
             }
@@ -7282,6 +7324,54 @@ public static unsafe class MetadataIntegration
         uint methodRid = methodToken & 0x00FFFFFF;
         uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRid);
         return MetadataReader.GetString(ref asm->Metadata, nameIdx);
+    }
+
+    /// <summary>
+    /// Get the parameter count from a method's signature (excluding 'this').
+    /// Returns -1 on error.
+    /// </summary>
+    public static int GetMethodParamCount(uint assemblyId, uint methodToken)
+    {
+        var asm = AssemblyLoader.GetAssembly(assemblyId);
+        if (asm == null)
+            return -1;
+
+        uint methodRid = methodToken & 0x00FFFFFF;
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRid);
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out uint sigLen);
+        if (sig == null || sigLen < 2)
+            return -1;
+
+        // Parse signature: Header [GenParamCount] ParamCount ...
+        byte header = sig[0];
+        int pos = 1;
+
+        // If generic method (header & 0x10), skip GenParamCount
+        if ((header & 0x10) != 0)
+        {
+            // Read and skip compressed GenParamCount
+            byte b = sig[pos];
+            if ((b & 0x80) == 0)
+                pos += 1;
+            else if ((b & 0xC0) == 0x80)
+                pos += 2;
+            else
+                pos += 4;
+        }
+
+        // Read ParamCount (compressed uint)
+        if ((uint)pos >= sigLen)
+            return -1;
+
+        byte pb = sig[pos];
+        if ((pb & 0x80) == 0)
+            return pb;
+        else if ((pb & 0xC0) == 0x80 && (uint)(pos + 1) < sigLen)
+            return ((pb & 0x3F) << 8) | sig[pos + 1];
+        else if ((uint)(pos + 3) < sigLen)
+            return (int)(((pb & 0x1F) << 24) | (sig[pos + 1] << 16) | (sig[pos + 2] << 8) | sig[pos + 3]);
+
+        return -1;
     }
 
     /// <summary>

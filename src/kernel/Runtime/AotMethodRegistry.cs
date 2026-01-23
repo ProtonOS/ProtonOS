@@ -294,6 +294,9 @@ public static unsafe class AotMethodRegistry
         // Register Span helpers (for memory operations)
         RegisterSpanMethods();
 
+        // Register Unsafe methods (for block memory operations)
+        RegisterUnsafeMethods();
+
         // Register GC methods (for Dispose pattern support)
         RegisterGCMethods();
 
@@ -1613,6 +1616,37 @@ public static unsafe class AotMethodRegistry
             "System.Span`1", "GetPinnableReference",
             (nint)(delegate*<nint, nint>)&SpanHelpers.GetPointer,
             0, ReturnKind.IntPtr, true, false);
+    }
+
+    /// <summary>
+    /// Register Unsafe methods for block memory operations.
+    /// These are intrinsics that map to cpblk/initblk IL opcodes.
+    /// </summary>
+    private static unsafe void RegisterUnsafeMethods()
+    {
+        // Unsafe.InitBlock(void* startAddress, byte value, uint byteCount) - static method
+        Register(
+            "System.Runtime.CompilerServices.Unsafe", "InitBlock",
+            (nint)(delegate*<void*, byte, uint, void>)&UnsafeHelpers.InitBlock,
+            3, ReturnKind.Void, false, false);
+
+        // Unsafe.CopyBlock(void* destination, void* source, uint byteCount) - static method
+        Register(
+            "System.Runtime.CompilerServices.Unsafe", "CopyBlock",
+            (nint)(delegate*<void*, void*, uint, void>)&UnsafeHelpers.CopyBlock,
+            3, ReturnKind.Void, false, false);
+
+        // Unsafe.CopyBlockUnaligned(void* destination, void* source, uint byteCount) - static method
+        Register(
+            "System.Runtime.CompilerServices.Unsafe", "CopyBlockUnaligned",
+            (nint)(delegate*<void*, void*, uint, void>)&UnsafeHelpers.CopyBlock,  // Same impl
+            3, ReturnKind.Void, false, false);
+
+        // Unsafe.InitBlockUnaligned(void* startAddress, byte value, uint byteCount) - static method
+        Register(
+            "System.Runtime.CompilerServices.Unsafe", "InitBlockUnaligned",
+            (nint)(delegate*<void*, byte, uint, void>)&UnsafeHelpers.InitBlock,  // Same impl
+            3, ReturnKind.Void, false, false);
     }
 
     /// <summary>
@@ -5207,5 +5241,30 @@ public static class ThreadHelpers
     {
         // Use the internal factory method in Thread class
         return System.Threading.Thread.CreateForKernelThread((int)threadId);
+    }
+}
+
+/// <summary>
+/// Helper methods for System.Runtime.CompilerServices.Unsafe AOT registration.
+/// These implement the block memory operations (initblk/cpblk IL opcodes).
+/// </summary>
+public static unsafe class UnsafeHelpers
+{
+    /// <summary>
+    /// Initialize a block of memory to a specified value.
+    /// Implements Unsafe.InitBlock which maps to the initblk IL opcode.
+    /// </summary>
+    public static void InitBlock(void* startAddress, byte value, uint byteCount)
+    {
+        ProtonOS.X64.CPU.MemSet(startAddress, value, byteCount);
+    }
+
+    /// <summary>
+    /// Copy a block of memory from source to destination.
+    /// Implements Unsafe.CopyBlock which maps to the cpblk IL opcode.
+    /// </summary>
+    public static void CopyBlock(void* destination, void* source, uint byteCount)
+    {
+        ProtonOS.X64.CPU.MemCopy(destination, source, byteCount);
     }
 }

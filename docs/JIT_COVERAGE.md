@@ -4027,9 +4027,10 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 ### 16.8 throw (0x7A)
 - **Description**: Throw exception
 - **Stack**: ..., obj → ...
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 16
+- **Tests Implemented**: 17 (eh.BasicThrow, eh.BasicThrow2, eh.TryCatch, eh.Nested, eh.Propagation, etc.)
 
 #### Test Scenarios - Basic:
 1. **Throw Exception** - Base exception
@@ -4061,9 +4062,11 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 - **Description**: Box value type
 - **Stack**: ..., value → ..., obj
 - **Operand**: type token
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 18
+- **Tests Implemented**: 43 (box.Int, box.Long, box.Float, box.Double, box.Byte, box.Bool, box.Char, box.UInt.Max, box.Struct, etc.)
+- **Notes**: Fixed uint.MaxValue boxing 2026-01-22
 
 #### Test Scenarios - Primitives:
 1. **Box int32** - Basic boxing
@@ -4095,9 +4098,11 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 - **Description**: Unbox value type (returns value, not pointer)
 - **Stack**: ..., obj → ..., value
 - **Operand**: type token
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 16
+- **Tests Implemented**: 35 (unbox.Int32, unbox.Int64, unbox.Float, unbox.Double, unbox.UInt.Max, unbox.Struct, etc.)
+- **Notes**: Fixed uint.MaxValue unboxing 2026-01-22 - uses correct 32-bit comparison for int/uint types
 
 #### Test Scenarios - vs unbox:
 1. **Unbox.any int32** - Returns value directly
@@ -5010,10 +5015,11 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 ### 23.1 endfinally (0xDC)
 - **Description**: End finally/fault handler
 - **Stack**: ... → ...
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 14
-- **Notes**: Also known as endfault
+- **Tests Implemented**: 17 (eh.TryFinally, eh.TryCatchFinally, eh.Nested, eh.FinallyOnReturn, etc.)
+- **Notes**: Also known as endfault. Fully working in JIT.
 
 #### Test Scenarios - Normal Flow:
 1. **Finally after try (no exception)** - Normal completion
@@ -5041,9 +5047,10 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 - **Description**: Exit protected region
 - **Stack**: ... → ...
 - **Operand**: int32 offset
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 14
+- **Tests Implemented**: 17 (all eh.* tests use leave)
 
 #### Test Scenarios - Basic:
 1. **Leave try block** - Normal exit
@@ -5071,9 +5078,10 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 - **Description**: Exit protected region (short form)
 - **Stack**: ... → ...
 - **Operand**: int8 offset
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P0
 - **Tests Needed**: 8
+- **Tests Implemented**: Used throughout eh.* tests (compiler chooses short form when possible)
 
 #### Test Scenarios:
 1. **Short forward jump** - Within -128 to +127
@@ -5107,23 +5115,25 @@ The goal is comprehensive testing of all opcodes in all applicable scenarios.
 ### 23.5 rethrow (0xFE 0x1A)
 - **Description**: Rethrow current exception
 - **Stack**: ... → ...
-- **Status**: [ ]
+- **Status**: [x]
 - **Priority**: P1
 - **Tests Needed**: 12
+- **Tests Implemented**: 1 (eh.Rethrow - basic rethrow to outer catch)
+- **Notes**: Implemented 2026-01-22. RhpRethrow handler dispatches to outer catch, preserving exception info.
 
 #### Test Scenarios:
-1. **Rethrow in catch** - Same exception
-2. **Preserves stack trace** - Original throw location
-3. **Rethrow after partial handling** - Log and rethrow
-4. **Rethrow vs throw ex** - Stack trace difference
-5. **Rethrow in nested catch** - Inner handler
-6. **Rethrow different type** - Must be current exception
-7. **Only valid in catch** - Not in finally
-8. **Outer catch catches rethrow** - Handler chain
-9. **Rethrow in filter** - Complex scenarios
-10. **Rethrow modifies exception** - No modification
-11. **Exception.StackTrace after rethrow** - Preserved
-12. **Multiple rethrows** - Chained handlers
+1. **Rethrow in catch** - Same exception ✅ (eh.Rethrow)
+2. **Preserves stack trace** - Original throw location (stack trace not fully implemented)
+3. **Rethrow after partial handling** - Log and rethrow ✅ (eh.Rethrow)
+4. **Rethrow vs throw ex** - Stack trace difference (needs throw ex test)
+5. **Rethrow in nested catch** - Inner handler (needs more tests)
+6. **Rethrow different type** - Must be current exception (enforced by IL)
+7. **Only valid in catch** - Not in finally (enforced by IL verifier)
+8. **Outer catch catches rethrow** - Handler chain ✅ (eh.Rethrow)
+9. **Rethrow in filter** - Complex scenarios (filter not implemented)
+10. **Rethrow modifies exception** - No modification (enforced)
+11. **Exception.StackTrace after rethrow** - Preserved (needs stack trace impl)
+12. **Multiple rethrows** - Chained handlers (needs more tests)
 
 ---
 
@@ -5982,3 +5992,106 @@ All 219 IL opcodes now have comprehensive test scenarios defined, covering:
 2. ~~Calculate total tests needed~~ **~2,800+ tests defined**
 3. Prioritize implementation order - Start with P0 opcodes
 4. Implement tests systematically - Begin with Section 1
+
+---
+
+## Implementation Status (Updated 2026-01-22)
+
+### Current Test Count: 2,744 tests passing
+
+All implemented tests are passing. The JIT correctly handles:
+
+### Working Categories:
+| Category | Status | Notes |
+|----------|--------|-------|
+| Base Instructions (ldarg.0-3, ldloc.0-3, stloc.0-3, ldarg.s, starg.s, ldloc.s, stloc.s) | ✅ Working | All short-form argument/local operations |
+| Constants (ldc.i4, ldc.i8, ldc.r4, ldc.r8, ldnull, ldstr) | ✅ Working | All constant loading |
+| Stack Manipulation (dup, pop) | ✅ Working | |
+| Control Flow (br, brfalse, brtrue, beq, bne, bgt, bge, blt, ble, switch, ret) | ✅ Working | All branches and comparisons |
+| Indirect Load (ldind.i1-i8, ldind.u1-u4, ldind.r4, ldind.r8, ldind.i, ldind.ref) | ✅ Working | Pointer dereferencing |
+| Indirect Store (stind.i1-i8, stind.r4, stind.r8, stind.i, stind.ref) | ✅ Working | Pointer stores |
+| Arithmetic (add, sub, mul, div, rem, neg, add.ovf, sub.ovf, mul.ovf) | ✅ Working | Signed/unsigned, checked/unchecked |
+| Bitwise (and, or, xor, not, shl, shr, shr.un) | ✅ Working | |
+| Conversion (conv.i1-i8, conv.u1-u8, conv.r4, conv.r8, conv.i, conv.u, conv.ovf.*) | ✅ Working | All type conversions |
+| Method Calls (call, callvirt, calli) | ✅ Working | Static, virtual, indirect calls |
+| Object Model (newobj, newarr, ldlen, ldelem, stelem, box, unbox, castclass, isinst) | ✅ Working | Object creation, arrays, boxing |
+| Fields (ldfld, stfld, ldsfld, stsfld, ldflda, ldsflda) | ✅ Working | Instance and static fields |
+| Arrays (ldelem.*, stelem.*, ldelema) | ✅ Working | All element types |
+| Comparison (ceq, cgt, cgt.un, clt, clt.un) | ✅ Working | All comparison operations |
+| Function Pointers (ldftn, ldvirtftn) | ✅ Working | Via delegates (except nested class instance methods) |
+| Memory Allocation (localloc) | ✅ Working | stackalloc |
+| Prefixes (volatile) | ✅ Working | |
+| Object Initialization (initobj) | ✅ Working | default(T) |
+| Sizeof | ✅ Working | All primitive types and structs |
+| Exception Handling (throw, rethrow, leave, endfinally) | ✅ Working | try/catch/finally, nested handlers, rethrow |
+| TypedReference (mkrefany, refanyval, refanytype) | ✅ Working | __makeref, __refvalue, __reftype |
+| Token Loading (ldtoken) | ✅ Working | Type.GetTypeFromHandle, typeof() |
+| Block Operations (cpblk, initblk) | ✅ Working | Buffer.MemoryCopy patterns |
+| Tail Calls (tail.) | ✅ Working | Recursive tail call optimization |
+
+### Known Limitations (JIT-incompatible patterns):
+
+#### 1. Generic newobj (`new T()`)
+- **Issue**: Creating instances of generic type parameters requires runtime type information
+- **Pattern**: `void CreateInstance<T>() where T : new() { var x = new T(); }`
+- **Workaround**: Use `Activator.CreateInstance<T>()` when AOT is available, or pass factory delegates
+- **Reason**: JIT cannot resolve the MethodTable for `T` without generic instantiation context being passed through the call chain
+
+#### 2. Lambdas / Closures
+- **Issue**: Lambda expressions generate compiler-synthesized closure classes
+- **Pattern**: `list.Where(x => x > 5)` or `Func<int> f = () => localVar;`
+- **Workaround**: Use explicit delegate instances with static methods
+- **Reason**: Closure class types are generated at compile time and not easily resolvable in JIT
+
+#### 3. Nested Class Instance Method Delegates (ldvirtftn)
+- **Issue**: Taking a delegate to an instance method of a nested class
+- **Pattern**: `Func<int> f = nestedInstance.MethodName;`
+- **Workaround**: Use static methods or non-nested classes
+- **Reason**: Method token resolution for nested class instance methods through ldvirtftn not implemented
+
+#### 4. Certain BCL Methods Not in AOT
+- **Issue**: Some BCL methods require AOT-compiled implementations
+- **Examples**: `Type.op_Equality`, `IntPtr.Size` (property), `Buffer.MemoryCopy` (some overloads)
+- **Workaround**: Use korlib equivalents or write custom implementations
+- **Reason**: These rely on runtime intrinsics or AOT-compiled code paths
+
+#### 5. ldarg.s.LargeStruct / ldloc.s.LargeStruct
+- **Location**: `src/JITTest/Tests/ArgumentLocalShortTests.cs`
+- **Issue**: Large struct (>8 bytes) at argument/local index 4+ requires multi-slot handling
+- **Status**: Commented out pending JIT fix for stack-passed large structs
+
+#### 6. Argument/Local Long Form (indices > 255)
+- **Issue**: Hard to test in C# as compiler uses short form when possible
+- **Status**: Placeholder test, rarely needed in practice
+
+### Test Breakdown by File:
+
+| Test File | Test Count | Category |
+|-----------|------------|----------|
+| ArithmeticTests.cs | ~300 | add, sub, mul, div, rem, neg |
+| BitwiseTests.cs | ~150 | and, or, xor, not, shl, shr |
+| ComparisonTests.cs | ~200 | ceq, cgt, clt (signed/unsigned) |
+| ControlFlowTests.cs | ~200 | br, beq, bne, bgt, bge, blt, ble, switch |
+| ConversionTests.cs | ~200 | conv.* instructions |
+| FieldOperationTests.cs | ~100 | ldfld, stfld, ldsfld, stsfld |
+| IndirectMemoryTests.cs | ~130 | ldind.*, stind.* |
+| ObjectModelTests.cs | ~150 | newobj, box, unbox, castclass, isinst |
+| BaseInstructionTests.cs | ~150 | ldarg.0-3, ldloc.0-3, stloc.0-3 |
+| StackManipulationTests.cs | ~60 | dup, pop |
+| SwitchTests.cs | ~100 | switch with various case counts |
+| ArgumentLocalShortTests.cs | ~150 | ldarg.s, starg.s, ldloc.s, stloc.s |
+| ArrayTests.cs | ~80 | ldelem.*, stelem.*, ldelema, newarr |
+| StubTests.cs | ~100 | Exception handling, typedref, ldtoken, tail calls |
+
+### Recent Fixes:
+
+- **2026-01-22**: Implemented `rethrow` instruction - full support for `throw;` in catch handlers
+  - Fixed `LeaveTargetOffset` calculation for handlers ending with throw/rethrow
+  - Fixed stack layout in rethrow dispatch to correctly position return address
+- **2026-01-22**: Fixed `uint.MaxValue` boxing/unboxing - 32-bit comparison was incorrectly using 64-bit width
+- **2026-01-22**: Fixed string interning (`ldstr`) - StringPool cache index formula now correctly incorporates assembly ID
+- **2026-01-21**: Implemented exception handling for JIT code - try/catch/finally with funclets
+- **2026-01-20**: Fixed interface method overload resolution - `FindMethodByName` now matches on parameter count
+- **2026-01-20**: Fixed `isinst` for non-implemented interfaces
+- **2026-01-20**: Fixed explicit interface method dispatch
+- **2026-01-20**: Fixed generic type instantiation for interface dispatch

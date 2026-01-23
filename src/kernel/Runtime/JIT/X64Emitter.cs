@@ -314,39 +314,104 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
 
     public static void HomeArguments(ref CodeBuffer code, int argCount)
     {
+        // Home register arguments to shadow space (no float info - all integer)
+        HomeArgumentsWithFloats(ref code, argCount, null);
+    }
+
+    public static unsafe void HomeArgumentsWithFloats(ref CodeBuffer code, int argCount, byte* floatKinds)
+    {
         // Home register arguments to shadow space
-        // RCX -> [rbp+16], RDX -> [rbp+24], R8 -> [rbp+32], R9 -> [rbp+40]
+        // Integer args: RCX -> [rbp+16], RDX -> [rbp+24], R8 -> [rbp+32], R9 -> [rbp+40]
+        // Float args: XMM0 -> [rbp+16], XMM1 -> [rbp+24], XMM2 -> [rbp+32], XMM3 -> [rbp+40]
+        // floatKinds: 0=integer, 4=float32, 8=float64
+
         if (argCount > 0)
         {
-            // mov [rbp+16], rcx
-            code.EmitByte(0x48);
-            code.EmitByte(0x89);
-            code.EmitByte(0x4D);
-            code.EmitByte(0x10);
+            byte fk0 = (floatKinds != null) ? floatKinds[0] : (byte)0;
+            if (fk0 == 8)
+            {
+                // movq [rbp+16], xmm0
+                MovqMemRbpXmm(ref code, 0x10, RegXMM.XMM0);
+            }
+            else if (fk0 == 4)
+            {
+                // movd [rbp+16], xmm0 (store 32-bit float)
+                MovdMemRbpXmm(ref code, 0x10, RegXMM.XMM0);
+            }
+            else
+            {
+                // mov [rbp+16], rcx
+                code.EmitByte(0x48);
+                code.EmitByte(0x89);
+                code.EmitByte(0x4D);
+                code.EmitByte(0x10);
+            }
         }
         if (argCount > 1)
         {
-            // mov [rbp+24], rdx
-            code.EmitByte(0x48);
-            code.EmitByte(0x89);
-            code.EmitByte(0x55);
-            code.EmitByte(0x18);
+            byte fk1 = (floatKinds != null && argCount > 1) ? floatKinds[1] : (byte)0;
+            if (fk1 == 8)
+            {
+                // movq [rbp+24], xmm1
+                MovqMemRbpXmm(ref code, 0x18, RegXMM.XMM1);
+            }
+            else if (fk1 == 4)
+            {
+                // movd [rbp+24], xmm1
+                MovdMemRbpXmm(ref code, 0x18, RegXMM.XMM1);
+            }
+            else
+            {
+                // mov [rbp+24], rdx
+                code.EmitByte(0x48);
+                code.EmitByte(0x89);
+                code.EmitByte(0x55);
+                code.EmitByte(0x18);
+            }
         }
         if (argCount > 2)
         {
-            // mov [rbp+32], r8
-            code.EmitByte(0x4C);
-            code.EmitByte(0x89);
-            code.EmitByte(0x45);
-            code.EmitByte(0x20);
+            byte fk2 = (floatKinds != null && argCount > 2) ? floatKinds[2] : (byte)0;
+            if (fk2 == 8)
+            {
+                // movq [rbp+32], xmm2
+                MovqMemRbpXmm(ref code, 0x20, RegXMM.XMM2);
+            }
+            else if (fk2 == 4)
+            {
+                // movd [rbp+32], xmm2
+                MovdMemRbpXmm(ref code, 0x20, RegXMM.XMM2);
+            }
+            else
+            {
+                // mov [rbp+32], r8
+                code.EmitByte(0x4C);
+                code.EmitByte(0x89);
+                code.EmitByte(0x45);
+                code.EmitByte(0x20);
+            }
         }
         if (argCount > 3)
         {
-            // mov [rbp+40], r9
-            code.EmitByte(0x4C);
-            code.EmitByte(0x89);
-            code.EmitByte(0x4D);
-            code.EmitByte(0x28);
+            byte fk3 = (floatKinds != null && argCount > 3) ? floatKinds[3] : (byte)0;
+            if (fk3 == 8)
+            {
+                // movq [rbp+40], xmm3
+                MovqMemRbpXmm(ref code, 0x28, RegXMM.XMM3);
+            }
+            else if (fk3 == 4)
+            {
+                // movd [rbp+40], xmm3
+                MovdMemRbpXmm(ref code, 0x28, RegXMM.XMM3);
+            }
+            else
+            {
+                // mov [rbp+40], r9
+                code.EmitByte(0x4C);
+                code.EmitByte(0x89);
+                code.EmitByte(0x4D);
+                code.EmitByte(0x28);
+            }
         }
     }
 
@@ -1431,6 +1496,32 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
     }
 
     /// <summary>
+    /// Shift left 32-bit by register (CL). Result is zero-extended to 64 bits.
+    /// </summary>
+    public static void Shl32CL(ref CodeBuffer code, VReg value, VReg shiftAmount)
+    {
+        var v = Map(value);
+        var s = Map(shiftAmount);
+        if (s != Reg64.RCX)
+        {
+            // Move shift amount to CL
+            if ((byte)s >= 8)
+            {
+                code.EmitByte(0x44);  // REX.R for source register
+            }
+            code.EmitByte(0x89);
+            EmitModRMReg(ref code, s, Reg64.RCX);
+        }
+        // 32-bit SHL: no REX.W prefix (or only REX.B if register >= R8)
+        if ((byte)v >= 8)
+        {
+            code.EmitByte(0x41);  // REX.B
+        }
+        code.EmitByte(0xD3);  // SHL r/m32, CL
+        code.EmitByte(ModRM(0b11, 4, (byte)((byte)v & 7)));
+    }
+
+    /// <summary>
     /// Compare register with register (64-bit).
     /// </summary>
     public static void CmpRR(ref CodeBuffer code, VReg left, VReg right)
@@ -1815,6 +1906,46 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(0x0F);
         code.EmitByte(0x7E);
         EmitModRMReg(ref code, (Reg64)xmm, d);
+    }
+
+    /// <summary>
+    /// Store qword from XMM to memory: [rbp+disp8] = xmm (64 bits)
+    /// Used for homing double arguments in prologue.
+    /// </summary>
+    public static void MovqMemRbpXmm(ref CodeBuffer code, int disp8, RegXMM xmm)
+    {
+        // 66 0F D6 /r - MOVQ m64, xmm (with mod=01 for [rbp+disp8])
+        // REX.W is NOT needed for memory operand
+        code.EmitByte(0x66);
+        if ((byte)xmm >= 8)
+        {
+            code.EmitByte(REX | REX_R);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0xD6);
+        // ModR/M: mod=01 (disp8), reg=xmm, rm=101 (rbp)
+        code.EmitByte(ModRM(0b01, (byte)((byte)xmm & 7), 0b101));
+        code.EmitByte((byte)disp8);
+    }
+
+    /// <summary>
+    /// Store dword from XMM to memory: [rbp+disp8] = xmm (32 bits)
+    /// Used for homing float arguments in prologue.
+    /// Note: We actually use MOVD to store the full qword slot for ABI compliance.
+    /// </summary>
+    public static void MovdMemRbpXmm(ref CodeBuffer code, int disp8, RegXMM xmm)
+    {
+        // 66 0F 7E /r - MOVD m32, xmm (with mod=01 for [rbp+disp8])
+        code.EmitByte(0x66);
+        if ((byte)xmm >= 8)
+        {
+            code.EmitByte(REX | REX_R);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x7E);
+        // ModR/M: mod=01 (disp8), reg=xmm, rm=101 (rbp)
+        code.EmitByte(ModRM(0b01, (byte)((byte)xmm & 7), 0b101));
+        code.EmitByte((byte)disp8);
     }
 
     /// <summary>
@@ -2314,5 +2445,86 @@ public unsafe struct X64Emitter : ICodeEmitter<X64Emitter>
         code.EmitByte(0x0F);
         code.EmitByte(0x2A);
         EmitModRMReg(ref code, (Reg64)dst, s);
+    }
+
+    /// <summary>
+    /// MOVAPS - Move aligned packed single-precision (copy XMM register).
+    /// </summary>
+    public static void MovapsXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // 0F 28 /r - MOVAPS xmm1, xmm2
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x28);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// MOVAPD - Move aligned packed double-precision (copy XMM register).
+    /// </summary>
+    public static void MovapdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src)
+    {
+        // 66 0F 28 /r - MOVAPD xmm1, xmm2
+        code.EmitByte(0x66);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x28);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+    }
+
+    /// <summary>
+    /// ROUNDSS - Round scalar single-precision.
+    /// imm8: 0=round nearest, 1=floor, 2=ceil, 3=truncate toward zero
+    /// </summary>
+    public static void RoundssXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src, byte imm8)
+    {
+        // 66 0F 3A 0A /r imm8 - ROUNDSS xmm1, xmm2, imm8
+        code.EmitByte(0x66);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x3A);
+        code.EmitByte(0x0A);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+        code.EmitByte(imm8);
+    }
+
+    /// <summary>
+    /// ROUNDSD - Round scalar double-precision.
+    /// imm8: 0=round nearest, 1=floor, 2=ceil, 3=truncate toward zero
+    /// </summary>
+    public static void RoundsdXmmXmm(ref CodeBuffer code, RegXMM dst, RegXMM src, byte imm8)
+    {
+        // 66 0F 3A 0B /r imm8 - ROUNDSD xmm1, xmm2, imm8
+        code.EmitByte(0x66);
+        if ((byte)dst >= 8 || (byte)src >= 8)
+        {
+            byte rex = REX;
+            if ((byte)dst >= 8) rex |= REX_R;
+            if ((byte)src >= 8) rex |= REX_B;
+            code.EmitByte(rex);
+        }
+        code.EmitByte(0x0F);
+        code.EmitByte(0x3A);
+        code.EmitByte(0x0B);
+        code.EmitByte(ModRM(0b11, (byte)dst, (byte)src));
+        code.EmitByte(imm8);
     }
 }

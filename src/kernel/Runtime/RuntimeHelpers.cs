@@ -362,35 +362,7 @@ public static unsafe class RuntimeHelpers
     public static void* RhpNewFast(MethodTable* pMT)
     {
         if (pMT == null)
-        {
-            DebugConsole.WriteLine("[RhpNewFast] ERROR: null MethodTable!");
             return null;
-        }
-
-        // Debug: trace delegate allocations (they have 4+ vtable slots typically)
-        if (pMT->NumVtableSlots >= 4)
-        {
-            DebugConsole.Write("[RhpNewFast] Delegate? MT=0x");
-            DebugConsole.WriteHex((ulong)pMT);
-            DebugConsole.Write(" slots=");
-            DebugConsole.WriteDecimal(pMT->NumVtableSlots);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(pMT->BaseSize);
-            DebugConsole.WriteLine();
-        }
-
-        // Debug: Check if this is a value type being boxed and verify vtable
-        if (pMT->IsValueType && pMT->NumVtableSlots > 0)
-        {
-            DebugConsole.Write("[RhpNewFast] Boxing VT MT=0x");
-            DebugConsole.WriteHex((ulong)pMT);
-            DebugConsole.Write(" slots=");
-            DebugConsole.WriteDecimal(pMT->NumVtableSlots);
-            nint* vtable = pMT->GetVtablePtr();
-            DebugConsole.Write(" vt[0]=0x");
-            DebugConsole.WriteHex((ulong)vtable[0]);
-            DebugConsole.WriteLine();
-        }
 
         // Calculate allocation size.
         // For AOT types (primitives), BaseSize already includes 8-byte MT pointer overhead.
@@ -407,57 +379,10 @@ public static unsafe class RuntimeHelpers
         // .NET expects newly allocated objects to have all fields zeroed
         byte* result = (byte*)GCHeap.AllocZeroed(allocSize);
 
-        // Debug: verify zeroing worked for types with 3 vtable slots (like Queue<T>)
-        if (pMT->NumVtableSlots == 3 && !pMT->IsValueType && result != null)
-        {
-            // Check bytes at offsets 16-31 (after MT and _array pointers)
-            DebugConsole.Write("[RhpNewFast] Alloc MT=0x");
-            DebugConsole.WriteHex((ulong)pMT);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(allocSize);
-            DebugConsole.Write(" bytes@24: ");
-            DebugConsole.WriteHex(result[24]);
-            DebugConsole.Write(" ");
-            DebugConsole.WriteHex(result[25]);
-            DebugConsole.Write(" ");
-            DebugConsole.WriteHex(result[26]);
-            DebugConsole.Write(" ");
-            DebugConsole.WriteHex(result[27]);
-            DebugConsole.WriteLine();
-        }
         if (result == null)
-        {
-            DebugConsole.Write("[RhpNewFast] ALLOC FAILED! MT=0x");
-            DebugConsole.WriteHex((ulong)pMT);
-            DebugConsole.Write(" size=");
-            DebugConsole.WriteDecimal(allocSize);
-            DebugConsole.WriteLine();
             return null;
-        }
 
         *(MethodTable**)result = pMT;
-
-        // Debug: trace allocation success for 4+ slot types (potential issue)
-        if (pMT->NumVtableSlots >= 4)
-        {
-            DebugConsole.Write("[RhpNewFast] OK obj=0x");
-            DebugConsole.WriteHex((ulong)result);
-            DebugConsole.WriteLine();
-        }
-
-        // Debug: verify the MT pointer was stored correctly
-        if (pMT->IsValueType)
-        {
-            MethodTable* storedMT = *(MethodTable**)result;
-            DebugConsole.Write("[RhpNewFast] obj=0x");
-            DebugConsole.WriteHex((ulong)result);
-            DebugConsole.Write(" stored MT=0x");
-            DebugConsole.WriteHex((ulong)storedMT);
-            DebugConsole.Write(" vt[0]=0x");
-            nint* vt = storedMT->GetVtablePtr();
-            DebugConsole.WriteHex((ulong)vt[0]);
-            DebugConsole.WriteLine();
-        }
 
         return result;
     }

@@ -2852,7 +2852,7 @@ public static unsafe class AssemblyLoader
     /// (ICollection.Count, IReadOnlyCollection.Count, etc.) and needs to be registered at all of them.
     /// Returns the number of interface slots registered.
     /// </summary>
-    private static int RegisterAtAllImplicitInterfaceSlots(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt, uint methodToken)
+    private static int RegisterAtAllImplicitInterfaceSlots(LoadedAssembly* asm, uint typeDefRow, uint methodRow, MethodTable* mt, uint methodToken, ulong explicitInterfaceMask)
     {
         // Get the method name
         uint nameIdx = MetadataReader.GetMethodDefName(ref asm->Tables, ref asm->Sizes, methodRow);
@@ -2885,6 +2885,11 @@ public static unsafe class AssemblyLoader
 
         for (int i = 0; i < numInterfaces; i++)
         {
+            // Skip interfaces that have explicit implementations (from explicitInterfaceMask)
+            // This prevents implicit implementations from overwriting explicit ones
+            if (i < 64 && (explicitInterfaceMask & (1ul << i)) != 0)
+                continue;
+
             MethodTable* interfaceMT = map[i].InterfaceMT;
             if (interfaceMT == null)
                 continue;
@@ -2938,6 +2943,42 @@ public static unsafe class AssemblyLoader
                     currentSlot = endSlot;
             }
         }
+        // First pass: find which interfaces have explicit implementations
+        // Build a bitmask of interface indices with explicit implementations
+        // This prevents implicit implementations from overwriting explicit ones
+        ulong explicitInterfaceMask = 0;
+        for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
+        {
+            ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
+            bool isVirtual = (methodFlags & MethodDefFlags.Virtual) != 0;
+            bool isNewSlot = (methodFlags & MethodDefFlags.NewSlot) != 0;
+            bool isStatic = (methodFlags & MethodDefFlags.Static) != 0;
+            bool isAbstract = (methodFlags & MethodDefFlags.Abstract) != 0;
+
+            if (isVirtual && isNewSlot && !isStatic && !isAbstract)
+            {
+                short interfaceSlot = FindExplicitInterfaceSlot(asm, typeDefRow, methodRow, mt);
+                if (interfaceSlot >= 0)
+                {
+                    // Find which interface index this slot belongs to
+                    for (int i = 0; i < numInterfaces && i < 64; i++)
+                    {
+                        if (map[i].InterfaceMT != null)
+                        {
+                            int methodCount2 = map[i].InterfaceMT->_usNumVtableSlots;
+                            if (methodCount2 == 0) methodCount2 = 1;
+                            if (interfaceSlot >= map[i].StartSlot && interfaceSlot < map[i].StartSlot + methodCount2)
+                            {
+                                explicitInterfaceMask |= (1ul << i);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Second pass: register all methods
         for (uint methodRow = methodStart; methodRow < methodEnd; methodRow++)
         {
             ushort methodFlags = MetadataReader.GetMethodDefFlags(ref asm->Tables, ref asm->Sizes, methodRow);
@@ -2967,7 +3008,8 @@ public static unsafe class AssemblyLoader
                     // Not an explicit implementation - check for implicit interface implementation
                     // A single method may implement multiple interface methods (e.g., List.Count
                     // implements ICollection.Count, IReadOnlyCollection.Count, etc.)
-                    int implicitCount = RegisterAtAllImplicitInterfaceSlots(asm, typeDefRow, methodRow, mt, methodToken);
+                    // Pass explicitInterfaceMask to skip interfaces with explicit implementations
+                    int implicitCount = RegisterAtAllImplicitInterfaceSlots(asm, typeDefRow, methodRow, mt, methodToken, explicitInterfaceMask);
                     if (implicitCount == 0)
                     {
                         // Not an interface implementation - register at sequential slot
@@ -3318,13 +3360,42 @@ public static unsafe class AssemblyLoader
     private static uint FindTypeDefByName(LoadedAssembly* asm, byte* typeName, byte* typeNs)
     {
         uint count = asm->Tables.RowCounts[(int)MetadataTableId.TypeDef];
+        DebugConsole.Write("[FindType] Searching asm=");
+        DebugConsole.WriteDecimal(asm->AssemblyId);
+        DebugConsole.Write(" types=");
+        DebugConsole.WriteDecimal(count);
+        DebugConsole.Write(" for '");
+        for (int i = 0; typeNs != null && typeNs[i] != 0 && i < 20; i++)
+            DebugConsole.WriteChar((char)typeNs[i]);
+        DebugConsole.Write(".");
+        for (int i = 0; typeName != null && typeName[i] != 0 && i < 20; i++)
+            DebugConsole.WriteChar((char)typeName[i]);
+        DebugConsole.WriteLine("'");
         for (uint row = 1; row <= count; row++)
         {
             uint nameIdx = MetadataReader.GetTypeDefName(ref asm->Tables, ref asm->Sizes, row);
             uint nsIdx = MetadataReader.GetTypeDefNamespace(ref asm->Tables, ref asm->Sizes, row);
             byte* name = MetadataReader.GetString(ref asm->Metadata, nameIdx);
             byte* ns = MetadataReader.GetString(ref asm->Metadata, nsIdx);
-            if (NameEquals(name, typeName) && NameEquals(ns, typeNs))
+
+            // Debug for types matching the search type name
+            bool nameMatch = NameEquals(name, typeName);
+            if (nameMatch)
+            {
+                DebugConsole.Write("[FindType] Name MATCH row ");
+                DebugConsole.WriteDecimal(row);
+                DebugConsole.Write(" ns='");
+                for (int i = 0; ns != null && ns[i] != 0 && i < 20; i++)
+                    DebugConsole.WriteChar((char)ns[i]);
+                DebugConsole.Write("' looking='");
+                for (int i = 0; typeNs != null && typeNs[i] != 0 && i < 20; i++)
+                    DebugConsole.WriteChar((char)typeNs[i]);
+                DebugConsole.Write("' eq=");
+                DebugConsole.Write(NameEquals(ns, typeNs) ? "Y" : "N");
+                DebugConsole.WriteLine();
+            }
+
+            if (nameMatch && NameEquals(ns, typeNs))
                 return 0x02000000 | row;
         }
         return 0;
@@ -7102,13 +7173,11 @@ public static unsafe class AssemblyLoader
                             }
                         }
 
-                        // For certain well-known types (Span`1, ReadOnlySpan`1, Array), fall back to
-                        // korlib.dll metadata lookup since generic methods need JIT compilation
-                        if (typeDefToken == JIT.MetadataIntegration.WellKnownTypes.Span ||
-                            typeDefToken == JIT.MetadataIntegration.WellKnownTypes.ReadOnlySpan ||
-                            typeDefToken == JIT.MetadataIntegration.WellKnownTypes.Array)
+                        // For ALL well-known types, fall back to korlib.dll metadata lookup
+                        // when AOT lookup fails. This handles methods on primitive types like
+                        // Single.IsNaN, Double.IsInfinity, etc. that are implemented in IL, not native code.
                         {
-                            DebugConsole.WriteLine("[AsmLoader] Falling back to korlib metadata for generic method");
+                            DebugConsole.WriteLine("[AsmLoader] Falling back to korlib metadata for well-known type method");
                             // Get korlib.dll - it's the CoreLib assembly
                             targetAsm = GetCoreLib();
                             DebugConsole.Write("[AsmLoader] GetCoreLib() returned: ");
@@ -7724,6 +7793,18 @@ public static unsafe class AssemblyLoader
         // Get member name to check if it's "Invoke"
         uint nameIdx = MetadataReader.GetMemberRefName(ref sourceAsm->Tables, ref sourceAsm->Sizes, rowId);
         byte* memberName = MetadataReader.GetString(ref sourceAsm->Metadata, nameIdx);
+
+        // Debug: Show method name check for Invoke methods
+        if (memberName != null && IsInvokeName(memberName))
+        {
+            DebugConsole.Write("[IsDelegateInvoke] asm=");
+            DebugConsole.WriteDecimal(sourceAsmId);
+            DebugConsole.Write(" MemberRef 0x");
+            DebugConsole.WriteHex(memberRefToken);
+            DebugConsole.Write(" name=Invoke");
+            DebugConsole.WriteLine();
+        }
+
         if (memberName == null || !IsInvokeName(memberName))
             return false;  // Not "Invoke"
 
@@ -7739,13 +7820,35 @@ public static unsafe class AssemblyLoader
         {
             // MemberRef in another assembly via TypeRef
             if (!ResolveTypeRefToTypeDef(sourceAsm, classRef.RowId, out targetAsm, out typeDefToken))
+            {
+                DebugConsole.Write("[IsDelegateInvoke] TypeRef resolve FAILED row=");
+                DebugConsole.WriteDecimal(classRef.RowId);
+                DebugConsole.WriteLine();
                 return false;
+            }
+
+            DebugConsole.Write("[IsDelegateInvoke] TypeRef resolved: asm=");
+            DebugConsole.WriteDecimal(targetAsm->AssemblyId);
+            DebugConsole.Write(" token=0x");
+            DebugConsole.WriteHex(typeDefToken);
+            DebugConsole.WriteLine();
 
             delegateMT = targetAsm->Types.Lookup(typeDefToken);
             if (delegateMT == null)
             {
+                DebugConsole.WriteLine("[IsDelegateInvoke] Creating MT...");
                 delegateMT = CreateTypeDefMethodTable(targetAsm, typeDefToken);
             }
+            DebugConsole.Write("[IsDelegateInvoke] MT=0x");
+            DebugConsole.WriteHex((ulong)delegateMT);
+            if (delegateMT != null)
+            {
+                DebugConsole.Write(" IsDelegate=");
+                DebugConsole.Write(delegateMT->IsDelegate ? "Y" : "N");
+                DebugConsole.Write(" flags=0x");
+                DebugConsole.WriteHex(delegateMT->CombinedFlags);
+            }
+            DebugConsole.WriteLine();
         }
         else if (classRef.Table == MetadataTableId.TypeDef)
         {
@@ -7771,11 +7874,23 @@ public static unsafe class AssemblyLoader
         }
 
         if (delegateMT == null)
+        {
+            DebugConsole.Write("[IsDelegateInvoke] delegateMT null for ");
+            DebugConsole.WriteHex(memberRefToken);
+            DebugConsole.WriteLine();
             return false;
+        }
 
         // Check if it's a delegate type
         if (!delegateMT->IsDelegate)
+        {
+            DebugConsole.Write("[IsDelegateInvoke] MT 0x");
+            DebugConsole.WriteHex((ulong)delegateMT);
+            DebugConsole.Write(" not delegate, flags=0x");
+            DebugConsole.WriteHex(delegateMT->CombinedFlags);
+            DebugConsole.WriteLine();
             return false;
+        }
 
         return true;
     }
@@ -9444,6 +9559,10 @@ public static unsafe class AssemblyLoader
                             DebugConsole.Write(" for MT=0x");
                             DebugConsole.WriteHex((ulong)instMT);
                             DebugConsole.WriteLine();
+
+                            // Set vtable slot hint so PopulateVtableSlot uses the correct slot
+                            // instead of computing it (which can be wrong for interface implementations)
+                            JIT.Tier0JIT.SetVtableSlotHint(i);
 
                             // JIT compile the method
                             JIT.JitResult jitResult = JIT.Tier0JIT.CompileMethod(info->AssemblyId, info->Token);

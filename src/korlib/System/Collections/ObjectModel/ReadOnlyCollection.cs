@@ -65,10 +65,9 @@ namespace System.Collections.ObjectModel
         /// <summary>Copies the entire ReadOnlyCollection to a compatible one-dimensional Array.</summary>
         public void CopyTo(T[] array, int index)
         {
-            if (_concreteList != null)
-                _concreteList.CopyTo(array, index);
-            else
-                _list.CopyTo(array, index);
+            // Always use _list to go through interface dispatch
+            // This avoids issues with `as` casts on generic types in JIT
+            _list.CopyTo(array, index);
         }
 
         void ICollection.CopyTo(Array array, int index)

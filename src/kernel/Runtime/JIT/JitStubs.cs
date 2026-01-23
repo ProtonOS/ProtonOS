@@ -568,17 +568,23 @@ public static unsafe class JitStubs
                         continue;
                     }
 
+                    // Get the interface method's parameter count for overload resolution
+                    int interfaceParamCount = MetadataIntegration.GetMethodParamCount(interfaceAsmId, interfaceMethodToken);
+
                     DebugConsole.Write("[JitStubs] Looking for '");
                     byte* p = interfaceMethodName;
                     while (*p != 0) { DebugConsole.WriteChar((char)*p++); }
-                    DebugConsole.Write("' in type 0x");
+                    DebugConsole.Write("' params=");
+                    DebugConsole.WriteDecimal((uint)(interfaceParamCount < 0 ? 0 : interfaceParamCount));
+                    DebugConsole.Write(" in type 0x");
                     DebugConsole.WriteHex(classTypeToken);
                     DebugConsole.Write(" asm ");
                     DebugConsole.WriteDecimal(classAsmId);
                     DebugConsole.WriteLine();
 
-                    // Find the implementing method by name
-                    uint implMethodToken = MetadataIntegration.FindMethodByName(classAsmId, classTypeToken, interfaceMethodName);
+                    // Find the implementing method by name AND parameter count
+                    uint implMethodToken = MetadataIntegration.FindMethodByNameWithParamCount(
+                        classAsmId, classTypeToken, interfaceMethodName, interfaceParamCount);
 
                     if (implMethodToken == 0)
                     {
@@ -590,7 +596,8 @@ public static unsafe class JitStubs
                             Reflection.ReflectionRuntime.LookupTypeInfo(parentMT, out uint parentAsmId, out uint parentTypeToken);
                             if (parentAsmId != 0 && parentTypeToken != 0)
                             {
-                                implMethodToken = MetadataIntegration.FindMethodByName(parentAsmId, parentTypeToken, interfaceMethodName);
+                                implMethodToken = MetadataIntegration.FindMethodByNameWithParamCount(
+                                    parentAsmId, parentTypeToken, interfaceMethodName, interfaceParamCount);
                                 if (implMethodToken != 0)
                                 {
                                     classAsmId = parentAsmId;  // Update to use parent's assembly for compilation

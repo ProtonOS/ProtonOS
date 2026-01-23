@@ -42,6 +42,22 @@ public static unsafe class Tier0JIT
     private static int _compileNestingLevel = 0;
 
     /// <summary>
+    /// Vtable slot hint for PopulateVtableSlot. When >= 0, this value overrides
+    /// the computed vtable slot. Used by eager compilation loops that know the
+    /// expected slot. Reset to -1 after use.
+    /// </summary>
+    private static int _vtableSlotHint = -1;
+
+    /// <summary>
+    /// Set the vtable slot hint for the next compilation. This slot will be used
+    /// instead of computing the slot from metadata. Call with -1 to clear.
+    /// </summary>
+    public static void SetVtableSlotHint(int slot)
+    {
+        _vtableSlotHint = slot;
+    }
+
+    /// <summary>
     /// Compile a method given its assembly ID and method token.
     /// </summary>
     /// <param name="assemblyId">The assembly containing the method.</param>
@@ -191,6 +207,40 @@ public static unsafe class Tier0JIT
             return JitResult.Fail();
         }
 
+        // Debug: trace JITTest methods
+        if (assemblyId >= 13 && (methodToken == 0x06000052 || methodToken == 0x0600001B || methodToken == 0x06000054))
+        {
+            DebugConsole.Write("[JIT-DBG] Method 0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" asm=");
+            DebugConsole.WriteDecimal(assemblyId);
+            DebugConsole.Write(" IsTiny=");
+            DebugConsole.Write(body.IsTiny ? "Y" : "N");
+            DebugConsole.Write(" CodeSize=");
+            DebugConsole.WriteDecimal(body.CodeSize);
+            DebugConsole.Write(" IL@0x");
+            DebugConsole.WriteHex((ulong)body.ILCode);
+            DebugConsole.WriteLine();
+            // Dump first 10 and last 10 bytes
+            DebugConsole.Write("[JIT-DBG] First 10 bytes: ");
+            for (int i = 0; i < 10 && i < (int)body.CodeSize; i++)
+            {
+                DebugConsole.WriteHex((ulong)body.ILCode[i]);
+                DebugConsole.Write(" ");
+            }
+            DebugConsole.WriteLine();
+            if (body.CodeSize > 60)
+            {
+                DebugConsole.Write("[JIT-DBG] Bytes 60-69: ");
+                for (int i = 60; i < 70 && i < (int)body.CodeSize; i++)
+                {
+                    DebugConsole.WriteHex((ulong)body.ILCode[i]);
+                    DebugConsole.Write(" ");
+                }
+                DebugConsole.WriteLine();
+            }
+        }
+
         // Debug for TestDictKeys removed - token confusion was causing misleading output
 
         // Debug: dump raw header bytes for ReadAndProgramBar (asm 4, token 0x0600002E)
@@ -305,23 +355,6 @@ public static unsafe class Tier0JIT
         {
             localCount = ParseLocalVarSigCount(assembly, body.LocalVarSigToken);
         }
-
-        // DebugConsole.Write("[Tier0JIT] Compiling method 0x");
-        // DebugConsole.WriteHex(methodToken);
-        // DebugConsole.Write(" (asm ");
-        // DebugConsole.WriteDecimal(assemblyId);
-        // DebugConsole.Write("): IL=");
-        // DebugConsole.WriteDecimal((uint)body.CodeSize);
-        // DebugConsole.Write(" bytes, args=");
-        // DebugConsole.WriteDecimal((uint)jitArgCount);
-        // DebugConsole.Write(" (params=");
-        // DebugConsole.WriteDecimal((uint)paramCount);
-        // DebugConsole.Write(hasThis ? "+this" : "");
-        // DebugConsole.Write("), locals=");
-        // DebugConsole.WriteDecimal((uint)localCount);
-        // DebugConsole.Write(" localSigTok=0x");
-        // DebugConsole.WriteHex(body.LocalVarSigToken);
-        // DebugConsole.WriteLine();
 
         // if (assemblyId == 4 && methodToken == 0x0600002A)
         // {
@@ -530,17 +563,23 @@ public static unsafe class Tier0JIT
             const int MaxLocalTypesOnStack = 64;
             bool* localTypes = stackalloc bool[MaxLocalTypesOnStack];
             ushort* localSizes = stackalloc ushort[MaxLocalTypesOnStack];
+            byte* localFloatKinds = stackalloc byte[MaxLocalTypesOnStack];
+            byte* localSignedKinds = stackalloc byte[MaxLocalTypesOnStack];
             for (int i = 0; i < MaxLocalTypesOnStack; i++)
             {
                 localTypes[i] = false;
                 localSizes[i] = 0;
+                localFloatKinds[i] = 0;
+                localSignedKinds[i] = 0;
             }
 
-            int parsedCount = ParseLocalVarSigTypes(assembly, body.LocalVarSigToken, localTypes, localSizes, MaxLocalTypesOnStack);
+            int parsedCount = ParseLocalVarSigTypes(assembly, body.LocalVarSigToken, localTypes, localSizes, localFloatKinds, localSignedKinds, MaxLocalTypesOnStack);
             if (parsedCount > 0)
             {
                 compiler.SetLocalTypes(localTypes, parsedCount);
                 compiler.SetLocalTypeSizes(localSizes, parsedCount);
+                compiler.SetLocalFloatKinds(localFloatKinds, parsedCount);
+                compiler.SetLocalSignedKinds(localSignedKinds, parsedCount);
             }
             else
             {
@@ -593,6 +632,12 @@ public static unsafe class Tier0JIT
                 }
             }
         }
+
+        // Set return float kind for Windows x64 ABI (floats return in XMM0)
+        if (returnKind == ReturnKind.Float32)
+            compiler.SetReturnFloatKind(4);
+        else if (returnKind == ReturnKind.Float64)
+            compiler.SetReturnFloatKind(8);
 
         // Parse EH clauses if method has exception handlers
         ILExceptionClauses ilClauses = default;
@@ -883,7 +928,7 @@ public static unsafe class Tier0JIT
     /// <param name="typeSize">Output array - size of local's type (for value types)</param>
     /// <param name="maxLocals">Maximum number of locals to process</param>
     /// <returns>Number of locals parsed</returns>
-    private static int ParseLocalVarSigTypes(LoadedAssembly* assembly, uint token, bool* isValueType, ushort* typeSize, int maxLocals)
+    private static int ParseLocalVarSigTypes(LoadedAssembly* assembly, uint token, bool* isValueType, ushort* typeSize, byte* floatKinds, byte* signedKinds, int maxLocals)
     {
         // LocalVarSig token is a StandAloneSig token (0x11xxxxxx)
         uint tableId = (token >> 24) & 0xFF;
@@ -1044,6 +1089,25 @@ public static unsafe class Tier0JIT
                         case 0x0D: typeSize[i] = 8; break;  // R8
                         default: typeSize[i] = 8; break;
                     }
+                }
+                // Track float type: 0x0C = R4 (float), 0x0D = R8 (double)
+                if (floatKinds != null)
+                {
+                    if (elemType == 0x0C)
+                        floatKinds[i] = 4;
+                    else if (elemType == 0x0D)
+                        floatKinds[i] = 8;
+                    else
+                        floatKinds[i] = 0;
+                }
+                // Track signed types: 0x04 = I1 (sbyte), 0x06 = I2 (short)
+                // signedKinds: 0 = unknown, 1 = signed (sbyte/short), 2 = unsigned (byte/ushort/bool/char)
+                if (signedKinds != null)
+                {
+                    if (elemType == 0x04 || elemType == 0x06)
+                        signedKinds[i] = 1;  // Signed: I1 (sbyte), I2 (short)
+                    else if (elemType == 0x02 || elemType == 0x03 || elemType == 0x05 || elemType == 0x07)
+                        signedKinds[i] = 2;  // Unsigned: Boolean, Char, U1 (byte), U2 (ushort)
                 }
             }
             else if (elemType == 0x16) // ELEMENT_TYPE_TYPEDBYREF
@@ -2333,9 +2397,48 @@ public static unsafe class Tier0JIT
                 DebugConsole.Write(" code=0x");
                 DebugConsole.WriteHex((ulong)nativeCode);
                 DebugConsole.WriteLine();
+                _vtableSlotHint = -1;  // Clear hint after use
                 return;
             }
         }
+
+        // Check if we have a vtable slot hint from eager compilation
+        // This overrides the computed slot when we know the expected slot
+        if (_vtableSlotHint >= 0 && _vtableSlotHint < mt->_usNumVtableSlots)
+        {
+            int hintSlot = _vtableSlotHint;
+            _vtableSlotHint = -1;  // Clear hint
+
+            // Check if we're compiling this for a specific generic instantiation
+            int typeArgCntHint = MetadataIntegration.GetTypeTypeArgCount();
+            bool compilingForInstHint = (typeArgCntHint > 0);
+            MethodTable* genDefMTHint = AssemblyLoader.GetGenericDefinitionMT(mt);
+            bool mtIsGenDefHint = (genDefMTHint == null) && compilingForInstHint;
+
+            // Only store on MT if this is NOT a generic definition
+            bool skipDelegateSlotHint = mt->IsDelegate && (hintSlot == 3 || hintSlot == 4);
+            if (!mtIsGenDefHint && !skipDelegateSlotHint)
+            {
+                nint* vtablePtr = mt->GetVtablePtr();
+                vtablePtr[hintSlot] = nativeCode;
+            }
+
+            // Propagate to existing instantiations
+            AssemblyLoader.PropagateVtableSlotToInstantiations(assemblyId, typeRow, hintSlot, nativeCode);
+
+            DebugConsole.Write("[PopulateVT] token=0x");
+            DebugConsole.WriteHex(methodToken);
+            DebugConsole.Write(" MT=0x");
+            DebugConsole.WriteHex((ulong)mt);
+            DebugConsole.Write(" slot=");
+            DebugConsole.WriteDecimal((uint)hintSlot);
+            DebugConsole.Write(mtIsGenDefHint ? " (hint-gen-def-skip)" : " (hint)");
+            DebugConsole.Write(" code=0x");
+            DebugConsole.WriteHex((ulong)nativeCode);
+            DebugConsole.WriteLine();
+            return;
+        }
+        _vtableSlotHint = -1;  // Clear hint even if not used
 
         // Compute the vtable slot for this method
         // For overrides (ReuseSlot), we need to find which base slot is being overridden

@@ -63,7 +63,7 @@ public static class TestRunner
         RunCategory("Field Operations", FieldOperationTests.RunAll);
 
         // Section 18: Store Object (ldobj, stobj, cpobj)
-        // Included in ObjectModelTests
+        RunCategory("Store Object", StoreObjectTests.RunAll);
 
         // Section 19: Array Operations
         RunCategory("Array Operations", ArrayOperationTests.RunAll);
@@ -72,7 +72,7 @@ public static class TestRunner
         RunCategory("TypedReference", TypedReferenceTests.RunAll);
 
         // Section 21: Float Check (ckfinite)
-        // Included in ConversionTests (float special values)
+        RunCategory("Float Check", FloatCheckTests.RunAll);
 
         // Section 22: Token Loading
         RunCategory("Token Loading", TokenLoadingTests.RunAll);
@@ -107,6 +107,96 @@ public static class TestRunner
         // Section 32: Arglist
         RunCategory("Arglist", ArglistTests.RunAll);
 
+        // Section 33: Additional Float Tests
+        RunCategory("Additional Float", AdditionalFloatTests.RunAll);
+
+        // Section 34: Additional Struct Tests
+        RunCategory("Additional Struct", AdditionalStructTests.RunAll);
+
+        Debug.WriteLine("");
+        Debug.WriteLine("===========================================");
+        Debug.WriteLine("FEATURE TESTS - High-level JIT Features");
+        Debug.WriteLine("===========================================");
+
+        // Feature: Foreach loops on arrays
+        RunCategory("Foreach", ForeachTests.RunAll);
+
+        // Feature: Boxing and unboxing
+        RunCategory("Boxing", BoxingTests.RunAll);
+
+        // Feature: Generic types and methods
+        RunCategory("Generics", GenericTests.RunAll);
+
+        // Feature: Interface dispatch
+        RunCategory("Interfaces", InterfaceTests.RunAll);
+
+        // Feature: Nullable<T>
+        RunCategory("Nullable", NullableTests.RunAll);
+
+        // Feature: Checked arithmetic (overflow)
+        RunCategory("Overflow", OverflowTests.RunAll);
+
+        // Feature: String operations
+        RunCategory("Strings", StringTests.RunAll);
+
+        // Feature: Delegates
+        RunCategory("Delegates", DelegateTests.RunAll);
+
+        // Feature: Multi-dimensional arrays
+        RunCategory("MDArrays", MDArrayTests.RunAll);
+
+        // Feature: Disposable/using pattern
+        RunCategory("Disposable", DisposableTests.RunAll);
+
+        // Feature: Static constructors
+        RunCategory("StaticCtor", StaticCtorTests.RunAll);
+
+        // Feature: Recursion
+        RunCategory("Recursion", RecursionTests.RunAll);
+
+        // Feature: Function pointer calls (calli)
+        RunCategory("Calli", CalliTests.RunAll);
+
+        // Feature: Params keyword
+        RunCategory("Params", ParamsTests.RunAll);
+
+        // Feature: Custom iterators
+        RunCategory("Iterators", IteratorTests.RunAll);
+
+        Debug.WriteLine("");
+        Debug.WriteLine("===========================================");
+        Debug.WriteLine("KORLIB TESTS - Runtime Library APIs");
+        Debug.WriteLine("===========================================");
+
+        // Korlib: List<T>
+        RunCategory("List", ListTests.RunAll);
+
+        // Korlib: Dictionary<K,V>
+        RunCategory("Dictionary", DictionaryTests.RunAll);
+
+        // Korlib: HashSet<T>
+        RunCategory("HashSet", HashSetTests.RunAll);
+
+        // Korlib: StringBuilder
+        RunCategory("StringBuilder", StringBuilderTests.RunAll);
+
+        // Korlib: Interlocked
+        RunCategory("Interlocked", InterlockedTests.RunAll);
+
+        // Korlib: String formatting
+        RunCategory("StringFormat", StringFormatTests.RunAll);
+
+        // Korlib: Utilities (BitConverter, TimeSpan, DateTime, etc.)
+        RunCategory("Utilities", UtilityTests.RunAll);
+
+        Debug.WriteLine("");
+        Debug.WriteLine("===========================================");
+        Debug.WriteLine("REGRESSION TESTS - JIT Bug Fixes");
+        Debug.WriteLine("===========================================");
+
+        // Regression: Known JIT issues that were fixed
+        RunCategory("JitRegression", JitRegressionTests.RunAll);
+
         Debug.WriteLine("");
         Debug.WriteLine("===========================================");
         return TestTracker.GetEncodedResult();
@@ -125,8 +215,10 @@ public static class TestRunner
         }
         catch (Exception ex)
         {
-            Debug.Write("[ERROR] Category failed with exception: ");
-            Debug.WriteLine(ex.GetType().Name);
+            Debug.Write("[CATEGORY ERROR] ");
+            Debug.Write(categoryName);
+            Debug.Write(": ");
+            Debug.WriteLine(ex.Message);
         }
     }
 }
