@@ -85,11 +85,10 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 
 ### Test Results
 
-The kernel runs comprehensive test suites on boot: **730 tests passing**
+The kernel runs comprehensive test suites on boot: **3,000 tests passing**
 
-- **681** JIT/runtime tests (FullTest)
-- **41** network stack tests (DHCP, DNS, TCP, HTTP, config parsing)
-- **8** application-level tests (HTTP client, DNS resolver, DHCP client)
+- **2,983** JIT/runtime tests (JITTest) - IL opcodes, features, korlib APIs, regression tests
+- **17** application-level tests (HTTP, DNS, DHCP, filesystem, /proc)
 
 ### Supported C# Features
 
@@ -184,7 +183,11 @@ src/
 │   └── ProtonOS.Net/    # HTTP client library
 ├── AppTest/             # Application-level tests (HTTP, etc.)
 ├── TestSupport/         # Cross-assembly test helpers
-└── FullTest/            # JIT test assembly (runs on boot)
+└── JITTest/             # Comprehensive JIT test suite (2,983 tests)
+    ├── Tests/IL/        # IL opcode tests
+    ├── Tests/Features/  # JIT feature tests (generics, delegates, etc.)
+    ├── Tests/Korlib/    # Runtime library tests
+    └── Tests/Regression/# JIT regression tests
 
 tools/
 ├── runtime/             # ProtonOS/runtime submodule (NativeAOT ILCompiler)
