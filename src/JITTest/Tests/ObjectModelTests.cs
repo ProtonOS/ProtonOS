@@ -123,11 +123,11 @@ public static class ObjectModelTests
         TestTracker.Record("callvirt.BaseRet0", baseObj.VirtualMethod() == 0);
         TestTracker.Record("callvirt.PolyRet42", ((BaseClass)obj).VirtualMethod() == 42);
 
-        // KNOWN ISSUE: Sealed class virtual dispatch through base reference fails.
-        // callvirt devirtualizes slots >= 3 when native code is available, which breaks
-        // polymorphism. The fix requires proper vtable propagation during type loading
-        // to ensure derived type vtables contain override method pointers.
-        // See: JIT devirtualization in MetadataIntegration.cs
+        // KNOWN LIMITATION: Sealed class virtual dispatch through base reference
+        // doesn't work due to devirtualization. When NativeAOT optimizes vtables,
+        // the JIT devirtualizes virtual calls with slot >= 3 to avoid vtable
+        // out-of-bounds issues. This breaks polymorphism for sealed class overrides.
+        // TODO: Implement smarter devirtualization that only applies to AOT types.
         // var sealedObj = new SealedDerivedClass();
         // TestTracker.Record("callvirt.Sealed", sealedObj.VirtualMethod() == 77);
         // TestTracker.Record("callvirt.SealedThroughBase", ((BaseClass)sealedObj).VirtualMethod() == 77);

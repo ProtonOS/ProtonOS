@@ -3395,9 +3395,10 @@ public static unsafe class MetadataIntegration
             // For higher slots, prefer direct call to avoid vtable out-of-bounds issues
             // with generic instantiations where vtable slots may not exist at runtime.
             //
-            // KNOWN ISSUE: This breaks polymorphism for sealed class overrides called
-            // through base class references. To fix, the vtable needs to be properly
-            // populated for derived types during type loading.
+            // KNOWN LIMITATION: This prevents polymorphism for sealed class overrides
+            // called through base class references. JIT-only types with proper vtable
+            // setup would work correctly with vtable dispatch, but distinguishing them
+            // from AOT types with optimized vtables is complex.
             if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
             {
                 // Use direct call instead of vtable dispatch
