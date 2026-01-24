@@ -4,6 +4,7 @@
 using System;
 using ProtonOS.DDK.Kernel;
 using ProtonOS.DDK.Network.Stack;
+using ProtonOS.DDK.Network.Sockets;
 using ProtonOS.DDK.Storage;
 using ProtonOS.DDK.Storage.Proc;
 using ProtonOS.Net.Http;
@@ -34,6 +35,9 @@ public static class TestRunner
 
         // Proc filesystem tests
         RunProcTests();
+
+        // TCP Socket tests
+        RunSocketTests();
 
         // HTTP protocol tests
         RunHttpTests();
@@ -495,6 +499,182 @@ public static class TestRunner
         Debug.WriteLine(" entries");
 
         Pass("ProcNetDirEnum");
+    }
+
+    // ===== TCP Socket Tests =====
+
+    private static void RunSocketTests()
+    {
+        Debug.WriteLine("[AppTest] Running TCP socket tests...");
+
+        TestTcpListenerCreation();
+        TestTcpListenerStartStop();
+        TestTcpListenerNoPending();
+        TestTcpSocketCreation();
+        TestTcpSocketNotConnected();
+        TestMultipleListeners();
+        TestDuplicatePortRejection();
+    }
+
+    private static unsafe void TestTcpListenerCreation()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var listener = new TcpListener(stack, 0, 8080);
+
+        if (listener != null && listener.Port == 8080)
+            Pass("TcpListenerCreate");
+        else
+            Fail("TcpListenerCreate", "listener null or wrong port");
+    }
+
+    private static unsafe void TestTcpListenerStartStop()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var listener = new TcpListener(stack, 0, 8081);
+
+        bool beforeStart = !listener.IsListening;
+        bool startResult = listener.Start();
+        bool afterStart = listener.IsListening;
+
+        listener.Stop();
+        bool afterStop = !listener.IsListening;
+
+        if (beforeStart && startResult && afterStart && afterStop)
+            Pass("TcpListenerStartStop");
+        else
+            Fail("TcpListenerStartStop", "state transitions failed");
+    }
+
+    private static unsafe void TestTcpListenerNoPending()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var listener = new TcpListener(stack, 0, 8082);
+        listener.Start();
+
+        bool noPending = !listener.Pending();
+        var socket = listener.AcceptSocket();
+        bool noSocket = socket == null;
+
+        listener.Stop();
+
+        if (noPending && noSocket)
+            Pass("TcpListenerNoPending");
+        else
+            Fail("TcpListenerNoPending", "unexpected pending state");
+    }
+
+    private static unsafe void TestTcpSocketCreation()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var socket = new TcpSocket(stack);
+
+        if (socket != null)
+            Pass("TcpSocketCreate");
+        else
+            Fail("TcpSocketCreate", "socket is null");
+    }
+
+    private static unsafe void TestTcpSocketNotConnected()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var socket = new TcpSocket(stack);
+
+        bool notConnected = !socket.Connected;
+        bool noAvailable = socket.Available == 0;
+        bool stateClosed = socket.State == TcpState.Closed;
+
+        if (notConnected && noAvailable && stateClosed)
+            Pass("TcpSocketNotConnected");
+        else
+            Fail("TcpSocketNotConnected", "unexpected socket state");
+    }
+
+    private static unsafe void TestMultipleListeners()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var listener1 = new TcpListener(stack, 0, 8083);
+        var listener2 = new TcpListener(stack, 0, 8084);
+        var listener3 = new TcpListener(stack, 0, 8085);
+
+        bool start1 = listener1.Start();
+        bool start2 = listener2.Start();
+        bool start3 = listener3.Start();
+
+        bool allStarted = start1 && start2 && start3;
+        bool countCorrect = stack.TcpListenerCount == 3;
+
+        listener1.Stop();
+        listener2.Stop();
+        listener3.Stop();
+
+        bool countAfterStop = stack.TcpListenerCount == 0;
+
+        if (allStarted && countCorrect && countAfterStop)
+            Pass("TcpMultipleListeners");
+        else
+            Fail("TcpMultipleListeners", "listener count mismatch");
+    }
+
+    private static unsafe void TestDuplicatePortRejection()
+    {
+        byte* macAddr = stackalloc byte[6];
+        macAddr[0] = 0x52; macAddr[1] = 0x54; macAddr[2] = 0x00;
+        macAddr[3] = 0x12; macAddr[4] = 0x34; macAddr[5] = 0x56;
+
+        var stack = new NetworkStack(macAddr);
+        stack.Configure(0xC0A80164, 0xFFFFFF00, 0xC0A80101);
+
+        var listener1 = new TcpListener(stack, 0, 8086);
+        var listener2 = new TcpListener(stack, 0, 8086); // Same port
+
+        bool start1 = listener1.Start();
+        bool start2 = listener2.Start(); // Should fail
+
+        bool firstSucceeded = start1;
+        bool secondFailed = !start2;
+
+        listener1.Stop();
+
+        if (firstSucceeded && secondFailed)
+            Pass("TcpDuplicatePortRejection");
+        else
+            Fail("TcpDuplicatePortRejection", "duplicate port accepted");
     }
 
     /// <summary>

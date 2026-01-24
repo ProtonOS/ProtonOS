@@ -3,6 +3,7 @@
 
 using System;
 using ProtonOS.DDK.Kernel;
+using ProtonOS.DDK.Network.Sockets;
 
 namespace ProtonOS.DDK.Network.Stack;
 
@@ -97,6 +98,11 @@ public unsafe class NetworkStack
     private int _tcpConnectionCount;
     private ushort _nextEphemeralPort;
 
+    // TCP listeners
+    private const int MaxTcpListeners = 16;
+    private TcpListener?[] _tcpListeners;
+    private int _tcpListenerCount;
+
     // UDP receive queue (simple ring buffer)
     private const int MaxUdpQueueSize = 16;
     private const int MaxUdpDatagramSize = 1500;
@@ -138,6 +144,10 @@ public unsafe class NetworkStack
         _tcpConnections = new TcpConnection[MaxTcpConnections];
         _tcpConnectionCount = 0;
         _nextEphemeralPort = 49152; // Start of ephemeral port range
+
+        // Initialize TCP listeners
+        _tcpListeners = new TcpListener?[MaxTcpListeners];
+        _tcpListenerCount = 0;
     }
 
     /// <summary>
@@ -687,7 +697,19 @@ public unsafe class NetworkStack
 
         if (conn == null)
         {
-            // No connection found - could send RST for unsolicited packets
+            // Check if this is a SYN to a listening port
+            if (packet.IsSyn && !packet.IsAck)
+            {
+                var listener = FindListener(packet.DestPort);
+                if (listener != null)
+                {
+                    listener.HandleIncomingSyn(srcIP, packet.SourcePort, packet.DestPort,
+                                                packet.SeqNum, packet.Window, data, length);
+                    return;
+                }
+            }
+
+            // No connection or listener found
             Debug.WriteLine("[NetStack] No TCP connection found for packet");
             return;
         }
@@ -855,6 +877,100 @@ public unsafe class NetworkStack
     /// Get the number of active TCP connections.
     /// </summary>
     public int TcpConnectionCount => _tcpConnectionCount;
+
+    // ===========================================
+    // TCP Listener Methods
+    // ===========================================
+
+    /// <summary>
+    /// Register a TCP listener for incoming connections.
+    /// </summary>
+    /// <param name="listener">The listener to register.</param>
+    /// <returns>True if registered successfully.</returns>
+    public bool RegisterListener(TcpListener listener)
+    {
+        if (_tcpListenerCount >= MaxTcpListeners)
+            return false;
+
+        // Check for duplicate port
+        for (int i = 0; i < MaxTcpListeners; i++)
+        {
+            if (_tcpListeners[i] != null && _tcpListeners[i]!.Port == listener.Port)
+            {
+                Debug.WriteLine("[NetStack] Port already in use by another listener");
+                return false;
+            }
+        }
+
+        // Find empty slot
+        for (int i = 0; i < MaxTcpListeners; i++)
+        {
+            if (_tcpListeners[i] == null)
+            {
+                _tcpListeners[i] = listener;
+                _tcpListenerCount++;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Unregister a TCP listener.
+    /// </summary>
+    /// <param name="listener">The listener to unregister.</param>
+    public void UnregisterListener(TcpListener listener)
+    {
+        for (int i = 0; i < MaxTcpListeners; i++)
+        {
+            if (_tcpListeners[i] == listener)
+            {
+                _tcpListeners[i] = null;
+                _tcpListenerCount--;
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Find a listener for the given local port.
+    /// </summary>
+    private TcpListener? FindListener(ushort localPort)
+    {
+        for (int i = 0; i < MaxTcpListeners; i++)
+        {
+            if (_tcpListeners[i] != null && _tcpListeners[i]!.Port == localPort)
+                return _tcpListeners[i];
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Add a connection created by a listener (for tracking server-side connections).
+    /// </summary>
+    /// <param name="conn">The connection to add.</param>
+    /// <returns>True if added successfully.</returns>
+    public bool AddListenerConnection(TcpConnection conn)
+    {
+        return AddConnection(conn) >= 0;
+    }
+
+    /// <summary>
+    /// Queue a pending TX frame length for transmission.
+    /// Used by listeners to send SYN-ACK responses.
+    /// </summary>
+    /// <param name="frameLen">The frame length to queue.</param>
+    public void QueuePendingTx(int frameLen)
+    {
+        _pendingTxLen = frameLen;
+        _tcpSent++;
+    }
+
+    /// <summary>
+    /// Get the number of active TCP listeners.
+    /// </summary>
+    public int TcpListenerCount => _tcpListenerCount;
 
     /// <summary>
     /// Send data on a TCP connection.

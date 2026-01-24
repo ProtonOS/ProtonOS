@@ -3,6 +3,7 @@
 
 using System;
 using ProtonOS.DDK.Kernel;
+using ProtonOS.DDK.Network.Sockets;
 
 namespace ProtonOS.DDK.Network.Stack;
 
@@ -61,6 +62,18 @@ public unsafe class TcpConnection
     // Connection flags
     private bool _finSent;
     private bool _finReceived;
+
+    // Listener reference for server-side connections
+    private TcpListener? _listener;
+
+    /// <summary>
+    /// Get or set the listener that created this connection (for server-side connections).
+    /// </summary>
+    internal TcpListener? Listener
+    {
+        get => _listener;
+        set => _listener = value;
+    }
 
     /// <summary>
     /// Get the local endpoint.
@@ -183,6 +196,25 @@ public unsafe class TcpConnection
         // Build SYN packet
         int len = TCP.BuildSyn(buffer, _local.Port, _remote.Port, _sendNext,
                                _recvWindow, _local.IP, _remote.IP);
+
+        // SYN consumes one sequence number
+        _sendNext++;
+
+        return len;
+    }
+
+    /// <summary>
+    /// Build a SYN-ACK response (for server-side connections in SYN_RECEIVED state).
+    /// Returns the packet length.
+    /// </summary>
+    public int BuildSynAck(byte* buffer)
+    {
+        if (_state != TcpState.SynReceived)
+            return 0;
+
+        int len = TCP.BuildSynAck(buffer, _local.Port, _remote.Port,
+                                   _sendNext, _recvNext, _recvWindow,
+                                   _local.IP, _remote.IP);
 
         // SYN consumes one sequence number
         _sendNext++;
@@ -336,6 +368,12 @@ public unsafe class TcpConnection
                 _sendUnack = packet->AckNum;
                 _state = TcpState.Established;
                 Debug.WriteLine("[TCP] Connection established (server)");
+
+                // Notify listener that connection is established
+                if (_listener != null)
+                {
+                    _listener.ConnectionEstablished(this);
+                }
             }
         }
 
