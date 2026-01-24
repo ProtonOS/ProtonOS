@@ -194,6 +194,7 @@ public static unsafe class JitStubs
         //                     [NumVtableSlots (2)] [NumInterfaces (2)] [HashCode (4)] [VTable...]
         // MethodTable.HeaderSize = 24 bytes
         nint* vtable = (nint*)(methodTable + ProtonOS.Runtime.MethodTable.HeaderSize);
+
         nint currentSlotCode = vtable[vtableSlot];
 
         // Check if vtable slot is within bounds
@@ -233,6 +234,25 @@ public static unsafe class JitStubs
                     return sealedMethod;
                 }
                 // Invalid sealed slot address - fall through to other fallbacks
+            }
+
+            // Registry fallback for JIT types - check compiled method registry
+            // This handles sealed class overrides that need polymorphism through base references
+            CompiledMethodInfo* regInfo = CompiledMethodRegistry.LookupByVtableSlot((void*)methodTable, vtableSlot);
+            if (regInfo == null)
+            {
+                // Try generic definition MT if this is an instantiated generic type
+                MethodTable* genDefMT = AssemblyLoader.GetGenericDefinitionMT(mt);
+                if (genDefMT != null)
+                    regInfo = CompiledMethodRegistry.LookupByVtableSlot(genDefMT, vtableSlot);
+            }
+
+            if (regInfo != null && regInfo->NativeCode != null)
+            {
+                DebugConsole.Write("[VTbounds] Registry fallback: 0x");
+                DebugConsole.WriteHex((ulong)regInfo->NativeCode);
+                DebugConsole.WriteLine();
+                return (nint)regInfo->NativeCode;
             }
 
             // Look up the method by name from AOT registry for common Object virtuals
@@ -289,23 +309,34 @@ public static unsafe class JitStubs
                 return aotMethod;
             }
 
-            // No AOT fallback available - report error
-            DebugConsole.Write("[VTbounds] FATAL: No AOT fallback for slot ");
+            // No fallback available - report warning and return 0
+            // This allows the caller to handle the missing method gracefully
+            DebugConsole.Write("[VTbounds] WARNING: No fallback for slot ");
             DebugConsole.WriteDecimal((uint)vtableSlot);
             DebugConsole.Write(" MT=0x");
             DebugConsole.WriteHex((ulong)methodTable);
             DebugConsole.WriteLine();
-            DebugConsole.WriteLine("!!! SYSTEM HALTED - vtable slot out of bounds");
-            CPU.HaltForever();
-            return 0;  // Never reached
+            return 0;
         }
 
-        // If slot already has code, we're done (fast path)
-        // Note: AOT methods will already have their addresses in the vtable
-        // Primitive types have their ToString/Equals/GetHashCode slots pre-filled
-        // during initialization in RegisterPrimitiveViaArrayAllocation.
+        // Check if slot has code - but even if it does, we need to verify there's no
+        // uncompiled override for this specific MT. Derived types may inherit base class
+        // vtable entries but have LazyJIT-registered overrides that need compiling.
         if (currentSlotCode != 0)
-            return currentSlotCode;
+        {
+            // Check if there's a registered override for this exact (MT, slot) that isn't compiled yet
+            CompiledMethodInfo* overrideInfo = CompiledMethodRegistry.LookupByVtableSlot((void*)methodTable, vtableSlot);
+            if (overrideInfo != null && !overrideInfo->IsCompiled)
+            {
+                // There's a registered override that hasn't been compiled yet
+                // Fall through to compile it
+            }
+            else
+            {
+                // No override or override already compiled - use existing code
+                return currentSlotCode;
+            }
+        }
 
         // Slow path: Need to find and compile the method for this slot
         // Look up the method in the registry by MethodTable and vtable slot

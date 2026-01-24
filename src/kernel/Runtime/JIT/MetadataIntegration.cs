@@ -3389,21 +3389,26 @@ public static unsafe class MetadataIntegration
             result.RegistryEntry = info;
             TraceMemberRef(methodToken, targetAsmId, info->ReturnKind, info->ArgCount);
 
-            // Devirtualization for high vtable slots (>=3) when native code is available.
+            // Conditional devirtualization for high vtable slots (>=3) when native code is available.
             // NativeAOT optimizes vtables and may not include all virtual slot entries.
             // Slots 0-2 are standard Object virtuals (ToString, Equals, GetHashCode).
-            // For higher slots, prefer direct call to avoid vtable out-of-bounds issues
+            // For higher slots on AOT types, prefer direct call to avoid vtable out-of-bounds issues
             // with generic instantiations where vtable slots may not exist at runtime.
             //
-            // KNOWN LIMITATION: This prevents polymorphism for sealed class overrides
-            // called through base class references. JIT-only types with proper vtable
-            // setup would work correctly with vtable dispatch, but distinguishing them
-            // from AOT types with optimized vtables is complex.
+            // JIT types have full vtables and need dispatch for polymorphism (e.g., sealed class
+            // overrides called through base class references work correctly with vtable dispatch).
             if (result.IsVirtual && result.NativeCode != null && result.VtableSlot >= 3)
             {
-                // Use direct call instead of vtable dispatch
-                result.IsVirtual = false;
-                result.VtableSlot = -1;
+                // Only devirtualize for AOT types with potentially optimized vtables
+                MethodTable* targetMT = (MethodTable*)result.MethodTable;
+                bool isAotTarget = (targetMT != null && targetMT->IsAotType);
+
+                if (isAotTarget)
+                {
+                    // Use direct call instead of vtable dispatch
+                    result.IsVirtual = false;
+                    result.VtableSlot = -1;
+                }
             }
 
             success = true;

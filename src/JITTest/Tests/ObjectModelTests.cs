@@ -123,14 +123,12 @@ public static class ObjectModelTests
         TestTracker.Record("callvirt.BaseRet0", baseObj.VirtualMethod() == 0);
         TestTracker.Record("callvirt.PolyRet42", ((BaseClass)obj).VirtualMethod() == 42);
 
-        // KNOWN LIMITATION: Sealed class virtual dispatch through base reference
-        // doesn't work due to devirtualization. When NativeAOT optimizes vtables,
-        // the JIT devirtualizes virtual calls with slot >= 3 to avoid vtable
-        // out-of-bounds issues. This breaks polymorphism for sealed class overrides.
-        // TODO: Implement smarter devirtualization that only applies to AOT types.
-        // var sealedObj = new SealedDerivedClass();
-        // TestTracker.Record("callvirt.Sealed", sealedObj.VirtualMethod() == 77);
-        // TestTracker.Record("callvirt.SealedThroughBase", ((BaseClass)sealedObj).VirtualMethod() == 77);
+        // Sealed class virtual dispatch - tests polymorphism through base reference
+        // This works because the JIT only devirtualizes for AOT types with optimized vtables,
+        // not for JIT types which have full vtables supporting proper virtual dispatch.
+        var sealedObj = new SealedDerivedClass();
+        TestTracker.Record("callvirt.Sealed", sealedObj.VirtualMethod() == 77);
+        TestTracker.Record("callvirt.SealedThroughBase", ((BaseClass)sealedObj).VirtualMethod() == 77);
 
         // Deep inheritance chain
         var deepObj = new DeepDerivedClass();

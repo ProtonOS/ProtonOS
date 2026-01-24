@@ -6065,11 +6065,10 @@ All implemented tests are passing. The JIT correctly handles:
 - **Status**: Placeholder test, rarely needed in practice
 
 #### 7. Sealed Class Virtual Dispatch Through Base Reference
-- **Issue**: Virtual calls on sealed class instances through base class references
+- **Issue**: ~~Virtual calls on sealed class instances through base class references~~ **FIXED**
 - **Pattern**: `BaseClass b = new SealedDerivedClass(); b.VirtualMethod();`
-- **Workaround**: Call through the actual type reference instead of base reference
-- **Reason**: NativeAOT optimizes vtables for performance, and the JIT devirtualizes virtual calls with slots >= 3 to avoid vtable out-of-bounds issues. This breaks polymorphism for sealed class overrides.
-- **Status**: Commented out tests in ObjectModelTests.cs
+- **Solution**: Conditional devirtualization now only applies to AOT types (detected via address-based check). JIT types have full vtables and use proper virtual dispatch, enabling polymorphism for sealed class overrides.
+- **Status**: Tests enabled - `callvirt.Sealed` and `callvirt.SealedThroughBase` now pass
 
 #### 8. Break Instruction
 - **Issue**: The `break` IL opcode requires debugger infrastructure

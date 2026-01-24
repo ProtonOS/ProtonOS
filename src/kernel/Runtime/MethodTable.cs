@@ -402,6 +402,21 @@ public unsafe struct MethodTable
     /// <summary>Whether this type has a dispatch map for interface resolution.</summary>
     public bool HasDispatchMap => (CombinedFlags & MTFlags.HasDispatchMap) != 0;
 
+    /// <summary>
+    /// Check if this MethodTable is from AOT-compiled code.
+    /// AOT types are at high addresses (kernel image). JIT types are heap-allocated.
+    /// </summary>
+    public bool IsAotType
+    {
+        get
+        {
+            fixed (MethodTable* self = &this)
+            {
+                return (ulong)self >= 0x08000000UL;  // AOT image base
+            }
+        }
+    }
+
     /// <summary>Get the component size for arrays/strings.</summary>
     public ushort ComponentSize => _usComponentSize;
 
