@@ -82,6 +82,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("uname");
         builder.EmitUnameTest();
 
+        // Test 16: nanosleep
+        builder.EmitTestHeader("nanosleep");
+        builder.EmitNanosleepTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -953,6 +957,115 @@ public static unsafe class UserModeTests
                 // add rsp, 400 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
                 Emit32(400);
+            }
+        }
+
+        public void EmitNanosleepTest()
+        {
+            // Test: nanosleep for 1ms, verify it returns 0
+            // Also verify time elapsed by checking clock_gettime before and after
+            // SYS_NANOSLEEP = 35, SYS_CLOCK_GETTIME = 228
+            // struct timespec { long tv_sec; long tv_nsec; } = 16 bytes
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 64 (allocate stack: req@0, rem@16, before@32, after@48)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 64;
+
+                // Get time before sleep: clock_gettime(CLOCK_MONOTONIC, rsp+32)
+                // mov eax, 228
+                code[_offset++] = 0xB8; Emit32(228);
+                // mov edi, 1 (CLOCK_MONOTONIC)
+                code[_offset++] = 0xBF; Emit32(1);
+                // lea rsi, [rsp+32]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x74;
+                code[_offset++] = 0x24; code[_offset++] = 32;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Set up req timespec: 0 seconds, 1000000 nanoseconds (1ms)
+                // mov qword [rsp], 0 (tv_sec)
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x04;
+                code[_offset++] = 0x24; Emit32(0);
+                // mov dword [rsp+8], 1000000 (tv_nsec = 1ms)
+                code[_offset++] = 0xC7; code[_offset++] = 0x44; code[_offset++] = 0x24;
+                code[_offset++] = 8; Emit32(1000000);
+                // mov dword [rsp+12], 0 (high 32 bits of tv_nsec)
+                code[_offset++] = 0xC7; code[_offset++] = 0x44; code[_offset++] = 0x24;
+                code[_offset++] = 12; Emit32(0);
+
+                // nanosleep(rsp, rsp+16) - SYS_NANOSLEEP = 35
+                // mov eax, 35
+                code[_offset++] = 0xB8; Emit32(35);
+                // mov rdi, rsp (req)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // lea rsi, [rsp+16] (rem)
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x74;
+                code[_offset++] = 0x24; code[_offset++] = 16;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Get time after sleep: clock_gettime(CLOCK_MONOTONIC, rsp+48)
+                // mov eax, 228
+                code[_offset++] = 0xB8; Emit32(228);
+                // mov edi, 1
+                code[_offset++] = 0xBF; Emit32(1);
+                // lea rsi, [rsp+48]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x74;
+                code[_offset++] = 0x24; code[_offset++] = 48;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Compute elapsed nanoseconds (simplified: just check after.tv_nsec >= before.tv_nsec
+                // or after.tv_sec > before.tv_sec - this handles the common case)
+                // mov rax, [rsp+48] (after.tv_sec)
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 48;
+                // cmp rax, [rsp+32] (before.tv_sec)
+                code[_offset++] = 0x48; code[_offset++] = 0x3B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 32;
+                // jg pass (if after_sec > before_sec, definitely slept)
+                code[_offset++] = 0x7F;
+                int passJump1 = _offset++;
+
+                // If seconds equal, check nanoseconds increased by at least some amount
+                // mov rax, [rsp+56] (after.tv_nsec)
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 56;
+                // sub rax, [rsp+40] (before.tv_nsec)
+                code[_offset++] = 0x48; code[_offset++] = 0x2B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 40;
+                // cmp rax, 500000 (at least 0.5ms elapsed - allow some tolerance)
+                code[_offset++] = 0x48; code[_offset++] = 0x3D; Emit32(500000);
+                // jl fail
+                code[_offset++] = 0x7C;
+                int failJump2 = _offset++;
+
+                // pass:
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                EmitPrintString("  [PASS] nanosleep works\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] nanosleep failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 64 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 64;
             }
         }
 

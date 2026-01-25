@@ -181,6 +181,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_CLOCK_GETTIME] = SysClockGettime;
         _handlers[SyscallNumbers.SYS_CLOCK_GETRES] = SysClockGetres;
         _handlers[SyscallNumbers.SYS_GETTIMEOFDAY] = SysGettimeofday;
+        _handlers[SyscallNumbers.SYS_NANOSLEEP] = SysNanosleep;
     }
 
     // ==================== Process Control ====================
@@ -1301,6 +1302,43 @@ public static unsafe class SyscallDispatch
 
         tv[0] = (long)(nanoseconds / 1_000_000_000);          // tv_sec
         tv[1] = (long)((nanoseconds % 1_000_000_000) / 1000); // tv_usec
+
+        return 0;
+    }
+
+    private static long SysNanosleep(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                      Process.Process* proc, Thread* thread)
+    {
+        Timespec* req = (Timespec*)arg0;
+        Timespec* rem = (Timespec*)arg1;  // Can be NULL
+
+        if (req == null)
+            return -Errno.EFAULT;
+
+        // Validate timespec
+        if (req->tv_nsec < 0 || req->tv_nsec >= 1_000_000_000)
+            return -Errno.EINVAL;
+
+        if (req->tv_sec < 0)
+            return -Errno.EINVAL;
+
+        if (!X64.HPET.IsInitialized)
+            return -Errno.ENODEV;
+
+        // Calculate total nanoseconds to sleep
+        ulong totalNs = (ulong)req->tv_sec * 1_000_000_000 + (ulong)req->tv_nsec;
+
+        // Use HPET busy-wait for sleep
+        // TODO: Use scheduler sleep instead of busy-wait for better efficiency
+        X64.HPET.BusyWaitNs(totalNs);
+
+        // Since we don't have signals yet, sleep always completes fully
+        // Set remaining time to zero if rem is provided
+        if (rem != null)
+        {
+            rem->tv_sec = 0;
+            rem->tv_nsec = 0;
+        }
 
         return 0;
     }
