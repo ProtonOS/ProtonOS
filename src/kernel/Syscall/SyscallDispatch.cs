@@ -497,6 +497,201 @@ public static unsafe class SyscallDispatch
         return VFS.Close(vfsHandle);
     }
 
+    // ==================== Pipe Operations ====================
+
+    // Pipe operations tables (read and write ends have different ops)
+    private static FileOps _pipeReadOps;
+    private static FileOps _pipeWriteOps;
+    private static bool _pipeOpsInitialized;
+
+    private static void InitPipeOps()
+    {
+        if (_pipeOpsInitialized)
+            return;
+
+        // Read end operations
+        _pipeReadOps.Read = &PipeRead;
+        _pipeReadOps.Write = null;  // Can't write to read end
+        _pipeReadOps.Seek = &PipeSeek;
+        _pipeReadOps.Close = &PipeReadClose;
+
+        // Write end operations
+        _pipeWriteOps.Read = null;  // Can't read from write end
+        _pipeWriteOps.Write = &PipeWrite;
+        _pipeWriteOps.Seek = &PipeSeek;
+        _pipeWriteOps.Close = &PipeWriteClose;
+
+        _pipeOpsInitialized = true;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int PipeRead(FileDescriptor* fd, byte* buf, int count)
+    {
+        if (buf == null || count < 0)
+            return -Errno.EINVAL;
+
+        if (count == 0)
+            return 0;
+
+        Pipe* pipe = (Pipe*)fd->Data;
+        if (pipe == null)
+            return -Errno.EBADF;
+
+        pipe->Lock.Acquire();
+
+        // Check for empty pipe
+        if (pipe->Count == 0)
+        {
+            // If no writers left, return EOF
+            if (pipe->Writers == 0)
+            {
+                pipe->Lock.Release();
+                return 0;  // EOF
+            }
+
+            // Non-blocking mode: return EAGAIN
+            if ((fd->Flags & FileFlags.NonBlock) != 0)
+            {
+                pipe->Lock.Release();
+                return -Errno.EAGAIN;
+            }
+
+            // Blocking would require scheduler support - for now return 0 (EOF behavior)
+            // TODO: Implement proper blocking with wait queues
+            pipe->Lock.Release();
+            return 0;
+        }
+
+        // Read up to count bytes from ring buffer
+        int toRead = count < pipe->Count ? count : pipe->Count;
+        int bytesRead = 0;
+
+        byte* buffer = pipe->Buffer;
+        while (bytesRead < toRead)
+        {
+            buf[bytesRead] = buffer[pipe->ReadPos];
+            pipe->ReadPos = (pipe->ReadPos + 1) % Pipe.BufferSize;
+            bytesRead++;
+        }
+
+        pipe->Count -= bytesRead;
+        pipe->Lock.Release();
+
+        return bytesRead;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int PipeWrite(FileDescriptor* fd, byte* buf, int count)
+    {
+        if (buf == null || count < 0)
+            return -Errno.EINVAL;
+
+        if (count == 0)
+            return 0;
+
+        Pipe* pipe = (Pipe*)fd->Data;
+        if (pipe == null)
+            return -Errno.EBADF;
+
+        pipe->Lock.Acquire();
+
+        // Check for broken pipe (no readers)
+        if (pipe->Readers == 0)
+        {
+            pipe->Lock.Release();
+            return -Errno.EPIPE;
+        }
+
+        // Check for full pipe
+        int available = Pipe.BufferSize - pipe->Count;
+        if (available == 0)
+        {
+            // Non-blocking mode: return EAGAIN
+            if ((fd->Flags & FileFlags.NonBlock) != 0)
+            {
+                pipe->Lock.Release();
+                return -Errno.EAGAIN;
+            }
+
+            // Blocking would require scheduler support - for now partial write
+            // TODO: Implement proper blocking with wait queues
+            pipe->Lock.Release();
+            return 0;
+        }
+
+        // Write up to available space
+        int toWrite = count < available ? count : available;
+        int bytesWritten = 0;
+
+        byte* buffer = pipe->Buffer;
+        while (bytesWritten < toWrite)
+        {
+            buffer[pipe->WritePos] = buf[bytesWritten];
+            pipe->WritePos = (pipe->WritePos + 1) % Pipe.BufferSize;
+            bytesWritten++;
+        }
+
+        pipe->Count += bytesWritten;
+        pipe->Lock.Release();
+
+        return bytesWritten;
+    }
+
+    [UnmanagedCallersOnly]
+    private static long PipeSeek(FileDescriptor* fd, long offset, int whence)
+    {
+        // Pipes don't support seeking
+        return -Errno.ESPIPE;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int PipeReadClose(FileDescriptor* fd)
+    {
+        Pipe* pipe = (Pipe*)fd->Data;
+        if (pipe == null)
+            return 0;
+
+        pipe->Lock.Acquire();
+        pipe->Readers--;
+
+        // If no more references, free the pipe
+        if (pipe->Readers == 0 && pipe->Writers == 0)
+        {
+            pipe->Lock.Release();
+            HeapAllocator.Free(pipe);
+        }
+        else
+        {
+            pipe->Lock.Release();
+        }
+
+        return 0;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int PipeWriteClose(FileDescriptor* fd)
+    {
+        Pipe* pipe = (Pipe*)fd->Data;
+        if (pipe == null)
+            return 0;
+
+        pipe->Lock.Acquire();
+        pipe->Writers--;
+
+        // If no more references, free the pipe
+        if (pipe->Readers == 0 && pipe->Writers == 0)
+        {
+            pipe->Lock.Release();
+            HeapAllocator.Free(pipe);
+        }
+        else
+        {
+            pipe->Lock.Release();
+        }
+
+        return 0;
+    }
+
     private static long SysOpen(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
                                  Process.Process* proc, Thread* thread)
     {
@@ -764,8 +959,64 @@ public static unsafe class SyscallDispatch
     {
         int* pipefd = (int*)arg0;
 
-        // TODO: Implement pipe creation
-        return -Errno.ENOSYS;
+        if (pipefd == null)
+            return -Errno.EFAULT;
+
+        // Initialize pipe operations if needed
+        InitPipeOps();
+
+        // Allocate the pipe structure
+        Pipe* pipe = (Pipe*)HeapAllocator.AllocZeroed((ulong)sizeof(Pipe));
+        if (pipe == null)
+            return -Errno.ENOMEM;
+
+        // Initialize pipe
+        pipe->ReadPos = 0;
+        pipe->WritePos = 0;
+        pipe->Count = 0;
+        pipe->Readers = 1;
+        pipe->Writers = 1;
+        pipe->Lock = new SpinLock();
+
+        // Allocate two file descriptors
+        int readFd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, 0);
+        if (readFd < 0)
+        {
+            HeapAllocator.Free(pipe);
+            return readFd;
+        }
+
+        int writeFd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, readFd + 1);
+        if (writeFd < 0)
+        {
+            proc->FdTable[readFd] = default;
+            HeapAllocator.Free(pipe);
+            return writeFd;
+        }
+
+        // Set up read end (pipefd[0])
+        var readEntry = &proc->FdTable[readFd];
+        readEntry->Type = FileType.Pipe;
+        readEntry->Flags = FileFlags.ReadOnly;
+        readEntry->RefCount = 1;
+        readEntry->Offset = 0;
+        readEntry->Data = pipe;
+        readEntry->Ops = (FileOps*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _pipeReadOps);
+
+        // Set up write end (pipefd[1])
+        var writeEntry = &proc->FdTable[writeFd];
+        writeEntry->Type = FileType.Pipe;
+        writeEntry->Flags = FileFlags.WriteOnly;
+        writeEntry->RefCount = 1;
+        writeEntry->Offset = 0;
+        writeEntry->Data = pipe;
+        writeEntry->Ops = (FileOps*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _pipeWriteOps);
+
+        // Return fd numbers to caller
+        pipefd[0] = readFd;
+        pipefd[1] = writeFd;
+
+        return 0;
     }
 
     private static long SysDup(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,

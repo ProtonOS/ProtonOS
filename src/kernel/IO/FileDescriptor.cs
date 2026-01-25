@@ -542,3 +542,50 @@ public static unsafe class FdTable
         }
     }
 }
+
+/// <summary>
+/// Pipe buffer structure - shared between read and write ends
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct Pipe
+{
+    /// <summary>
+    /// Pipe buffer size (4KB)
+    /// </summary>
+    public const int BufferSize = 4096;
+
+    /// <summary>
+    /// Ring buffer for pipe data
+    /// </summary>
+    public fixed byte Buffer[BufferSize];
+
+    /// <summary>
+    /// Read position in ring buffer
+    /// </summary>
+    public int ReadPos;
+
+    /// <summary>
+    /// Write position in ring buffer
+    /// </summary>
+    public int WritePos;
+
+    /// <summary>
+    /// Number of bytes currently in buffer
+    /// </summary>
+    public int Count;
+
+    /// <summary>
+    /// Number of open read file descriptors
+    /// </summary>
+    public int Readers;
+
+    /// <summary>
+    /// Number of open write file descriptors
+    /// </summary>
+    public int Writers;
+
+    /// <summary>
+    /// Lock for synchronization
+    /// </summary>
+    public SpinLock Lock;
+}

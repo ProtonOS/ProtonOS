@@ -70,6 +70,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("fstat");
         builder.EmitFstatTest();
 
+        // Test 13: pipe
+        builder.EmitTestHeader("pipe");
+        builder.EmitPipeTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -677,6 +681,124 @@ public static unsafe class UserModeTests
                 // add rsp, 160 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
                 Emit32(160);
+            }
+        }
+
+        public void EmitPipeTest()
+        {
+            // Test: pipe(fds), write to write end, read from read end, verify
+            // SYS_PIPE = 22, SYS_WRITE = 1, SYS_READ = 0, SYS_CLOSE = 3
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 32 (allocate stack for pipefd[2] and buffer)
+                // pipefd at rsp+0 (8 bytes), buffer at rsp+16
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 32;
+
+                // pipe(rsp) - SYS_PIPE = 22
+                // mov eax, 22
+                code[_offset++] = 0xB8; Emit32(22);
+                // mov rdi, rsp
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Store test byte 'P' at rsp+16
+                // mov byte [rsp+16], 'P' (0x50)
+                code[_offset++] = 0xC6; code[_offset++] = 0x44; code[_offset++] = 0x24;
+                code[_offset++] = 16; code[_offset++] = 0x50;
+
+                // write(pipefd[1], rsp+16, 1)
+                // mov eax, 1 (SYS_WRITE)
+                code[_offset++] = 0xB8; Emit32(1);
+                // mov edi, [rsp+4] (pipefd[1] - write end)
+                code[_offset++] = 0x8B; code[_offset++] = 0x7C; code[_offset++] = 0x24;
+                code[_offset++] = 4;
+                // lea rsi, [rsp+16]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x74;
+                code[_offset++] = 0x24; code[_offset++] = 16;
+                // mov edx, 1
+                code[_offset++] = 0xBA; Emit32(1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check write returned 1
+                // cmp eax, 1
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 1;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // Clear the buffer location for read
+                // mov byte [rsp+16], 0
+                code[_offset++] = 0xC6; code[_offset++] = 0x44; code[_offset++] = 0x24;
+                code[_offset++] = 16; code[_offset++] = 0;
+
+                // read(pipefd[0], rsp+16, 1)
+                // mov eax, 0 (SYS_READ)
+                code[_offset++] = 0xB8; Emit32(0);
+                // mov edi, [rsp] (pipefd[0] - read end)
+                code[_offset++] = 0x8B; code[_offset++] = 0x3C; code[_offset++] = 0x24;
+                // lea rsi, [rsp+16]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x74;
+                code[_offset++] = 0x24; code[_offset++] = 16;
+                // mov edx, 1
+                code[_offset++] = 0xBA; Emit32(1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check read returned 1
+                // cmp eax, 1
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 1;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump3 = _offset++;
+
+                // Check we read 'P' back
+                // cmp byte [rsp+16], 'P'
+                code[_offset++] = 0x80; code[_offset++] = 0x7C; code[_offset++] = 0x24;
+                code[_offset++] = 16; code[_offset++] = 0x50;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump4 = _offset++;
+
+                // Close both ends
+                // close(pipefd[0])
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x8B; code[_offset++] = 0x3C; code[_offset++] = 0x24;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+                // close(pipefd[1])
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x8B; code[_offset++] = 0x7C; code[_offset++] = 0x24;
+                code[_offset++] = 4;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // PASS
+                EmitPrintString("  [PASS] pipe read/write works\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                code[failJump3] = (byte)(_offset - failJump3 - 1);
+                code[failJump4] = (byte)(_offset - failJump4 - 1);
+                EmitPrintString("  [FAIL] pipe test failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 32 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 32;
             }
         }
 
