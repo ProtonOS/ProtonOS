@@ -123,6 +123,7 @@ public static class SyscallNumbers
     public const int SYS_PRCTL = 157;
     public const int SYS_ARCH_PRCTL = 158;
     public const int SYS_EXIT_GROUP = 231;
+    public const int SYS_GETRANDOM = 318;
 
     // ==================== Maximum syscall number ====================
     public const int SYS_MAX = 512;

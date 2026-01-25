@@ -182,6 +182,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_CLOCK_GETRES] = SysClockGetres;
         _handlers[SyscallNumbers.SYS_GETTIMEOFDAY] = SysGettimeofday;
         _handlers[SyscallNumbers.SYS_NANOSLEEP] = SysNanosleep;
+        _handlers[SyscallNumbers.SYS_GETRANDOM] = SysGetrandom;
     }
 
     // ==================== Process Control ====================
@@ -1341,6 +1342,79 @@ public static unsafe class SyscallDispatch
         }
 
         return 0;
+    }
+
+    // Simple PRNG state for getrandom (xorshift64)
+    private static ulong _prngState;
+    private static bool _prngInitialized;
+
+    private static ulong NextRandom()
+    {
+        // Initialize PRNG state from TSC if needed
+        if (!_prngInitialized)
+        {
+            _prngState = CPU.ReadTsc();
+            if (_prngState == 0)
+                _prngState = 0x853c49e6748fea9bUL;  // Fallback seed
+            _prngInitialized = true;
+        }
+
+        // xorshift64 algorithm
+        ulong x = _prngState;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        _prngState = x;
+        return x;
+    }
+
+    private static long SysGetrandom(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                      Process.Process* proc, Thread* thread)
+    {
+        byte* buf = (byte*)arg0;
+        ulong buflen = (ulong)arg1;
+        uint flags = (uint)arg2;
+
+        // GRND_NONBLOCK = 1, GRND_RANDOM = 2
+        const uint GRND_NONBLOCK = 1;
+        const uint GRND_RANDOM = 2;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        if (buflen == 0)
+            return 0;
+
+        // Limit to reasonable size per call
+        if (buflen > 256)
+            buflen = 256;
+
+        // Mix in current time for additional entropy
+        if (X64.HPET.IsInitialized)
+        {
+            ulong hpet = X64.HPET.ReadCounter();
+            _prngState ^= hpet;
+        }
+
+        // Fill buffer with random bytes
+        ulong remaining = buflen;
+        ulong offset = 0;
+
+        while (remaining > 0)
+        {
+            ulong rand = NextRandom();
+
+            // Copy up to 8 bytes from this random value
+            int toCopy = remaining >= 8 ? 8 : (int)remaining;
+            for (int i = 0; i < toCopy; i++)
+            {
+                buf[offset++] = (byte)(rand & 0xFF);
+                rand >>= 8;
+            }
+            remaining -= (ulong)toCopy;
+        }
+
+        return (long)buflen;
     }
 
     // ==================== Memory Management ====================

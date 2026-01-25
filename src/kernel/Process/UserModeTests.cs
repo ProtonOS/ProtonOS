@@ -86,6 +86,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("nanosleep");
         builder.EmitNanosleepTest();
 
+        // Test 17: getrandom
+        builder.EmitTestHeader("getrandom");
+        builder.EmitGetrandomTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -1066,6 +1070,76 @@ public static unsafe class UserModeTests
                 // add rsp, 64 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
                 code[_offset++] = 64;
+            }
+        }
+
+        public void EmitGetrandomTest()
+        {
+            // Test: getrandom(buf, 16, 0) should return 16 and fill buffer with non-zero data
+            // SYS_GETRANDOM = 318
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 32 (allocate 16 bytes for buffer, 16-byte aligned)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 32;
+
+                // Zero the buffer first
+                // mov qword [rsp], 0
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x04;
+                code[_offset++] = 0x24; Emit32(0);
+                // mov qword [rsp+8], 0
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 8; Emit32(0);
+
+                // getrandom(rsp, 16, 0) - SYS_GETRANDOM = 318
+                // mov eax, 318
+                code[_offset++] = 0xB8; Emit32(318);
+                // mov rdi, rsp (buf)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov esi, 16 (buflen)
+                code[_offset++] = 0xBE; Emit32(16);
+                // xor edx, edx (flags = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xD2;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 16
+                // cmp eax, 16
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 16;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Check that buffer is not all zeros (at least one qword should be non-zero)
+                // mov rax, [rsp]
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x04;
+                code[_offset++] = 0x24;
+                // or rax, [rsp+8]
+                code[_offset++] = 0x48; code[_offset++] = 0x0B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 8;
+                // test rax, rax
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz fail (if both qwords are zero, something's wrong)
+                code[_offset++] = 0x74;
+                int failJump2 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] getrandom returns random bytes\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] getrandom failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 32 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 32;
             }
         }
 
