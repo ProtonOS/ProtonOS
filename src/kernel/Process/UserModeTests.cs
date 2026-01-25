@@ -90,6 +90,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("getrandom");
         builder.EmitGetrandomTest();
 
+        // Test 18: sysinfo
+        builder.EmitTestHeader("sysinfo");
+        builder.EmitSysinfoTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -1140,6 +1144,75 @@ public static unsafe class UserModeTests
                 // add rsp, 32 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
                 code[_offset++] = 32;
+            }
+        }
+
+        public void EmitSysinfoTest()
+        {
+            // Test: sysinfo(&info) should return 0 with valid data
+            // SYS_SYSINFO = 99
+            // struct sysinfo is ~112 bytes, allocate 128 for alignment
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 128 (allocate stack for sysinfo struct)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xEC;
+                Emit32(128);
+
+                // sysinfo(rsp) - SYS_SYSINFO = 99
+                // mov eax, 99
+                code[_offset++] = 0xB8; Emit32(99);
+                // mov rdi, rsp
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Check totalram > 0 (offset 24 in struct: 8+8+8+8 = 32? Let's check)
+                // uptime=8, loads0-2=24, totalram at offset 32
+                // mov rax, [rsp+32] (totalram)
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 32;
+                // test rax, rax
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz fail
+                code[_offset++] = 0x74;
+                int failJump2 = _offset++;
+
+                // Check procs >= 1 (offset 80: uptime=8, loads=24, totalram=8, freeram=8,
+                // sharedram=8, bufferram=8, totalswap=8, freeswap=8 = 80, then procs is u16)
+                // movzx eax, word [rsp+80]
+                code[_offset++] = 0x0F; code[_offset++] = 0xB7; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 80;
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz fail
+                code[_offset++] = 0x74;
+                int failJump3 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] sysinfo returns valid data\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                code[failJump3] = (byte)(_offset - failJump3 - 1);
+                EmitPrintString("  [FAIL] sysinfo failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 128 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
+                Emit32(128);
             }
         }
 

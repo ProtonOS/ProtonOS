@@ -159,6 +159,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_SETUID] = SysSetuid;
         _handlers[SyscallNumbers.SYS_SETGID] = SysSetgid;
         _handlers[SyscallNumbers.SYS_UNAME] = SysUname;
+        _handlers[SyscallNumbers.SYS_SYSINFO] = SysSysinfo;
     }
 
     /// <summary>
@@ -1196,6 +1197,74 @@ public static unsafe class SyscallDispatch
             i++;
         }
         dest[i] = 0;  // Null terminate
+    }
+
+    private static long SysSysinfo(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                    Process.Process* proc, Thread* thread)
+    {
+        Sysinfo* info = (Sysinfo*)arg0;
+
+        if (info == null)
+            return -Errno.EFAULT;
+
+        // Clear the structure
+        byte* p = (byte*)info;
+        for (int i = 0; i < sizeof(Sysinfo); i++)
+            p[i] = 0;
+
+        // Uptime in seconds
+        if (X64.HPET.IsInitialized)
+        {
+            ulong nanoseconds = X64.HPET.TicksToNanoseconds(X64.HPET.ReadCounter());
+            info->uptime = (long)(nanoseconds / 1_000_000_000);
+        }
+
+        // Memory information
+        if (PageAllocator.IsInitialized)
+        {
+            info->totalram = PageAllocator.TotalMemory;
+            info->freeram = PageAllocator.FreeMemory;
+        }
+
+        // Load averages (not implemented, set to 0)
+        info->loads0 = 0;
+        info->loads1 = 0;
+        info->loads2 = 0;
+
+        // Shared/buffer memory (not tracked separately)
+        info->sharedram = 0;
+        info->bufferram = 0;
+
+        // Swap (not implemented)
+        info->totalswap = 0;
+        info->freeswap = 0;
+
+        // Process count
+        info->procs = (ushort)ProcessTable.ProcessCount;
+
+        // High memory (not used on x86-64)
+        info->totalhigh = 0;
+        info->freehigh = 0;
+
+        // Memory unit (1 byte)
+        info->mem_unit = 1;
+
+        // Debug output for visibility
+        DebugConsole.WriteLine("[sysinfo] System Information:");
+        DebugConsole.Write("  Uptime: ");
+        DebugConsole.WriteDecimal((int)info->uptime);
+        DebugConsole.WriteLine(" seconds");
+        DebugConsole.Write("  Total RAM: ");
+        DebugConsole.WriteDecimal((int)(info->totalram / (1024 * 1024)));
+        DebugConsole.WriteLine(" MB");
+        DebugConsole.Write("  Free RAM: ");
+        DebugConsole.WriteDecimal((int)(info->freeram / (1024 * 1024)));
+        DebugConsole.WriteLine(" MB");
+        DebugConsole.Write("  Processes: ");
+        DebugConsole.WriteDecimal(info->procs);
+        DebugConsole.WriteLine("");
+
+        return 0;
     }
 
     // ==================== Time ====================

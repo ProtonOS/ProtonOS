@@ -431,6 +431,29 @@ public unsafe struct Utsname
 }
 
 /// <summary>
+/// System information structure for sysinfo syscall (Linux compatible)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct Sysinfo
+{
+    public long uptime;             // Seconds since boot
+    public ulong loads0;            // 1 minute load average
+    public ulong loads1;            // 5 minute load average
+    public ulong loads2;            // 15 minute load average
+    public ulong totalram;          // Total usable main memory size
+    public ulong freeram;           // Available memory size
+    public ulong sharedram;         // Amount of shared memory
+    public ulong bufferram;         // Memory used by buffers
+    public ulong totalswap;         // Total swap space size
+    public ulong freeswap;          // Swap space still available
+    public ushort procs;            // Number of current processes
+    public ushort pad;              // Padding
+    public ulong totalhigh;         // Total high memory size
+    public ulong freehigh;          // Available high memory size
+    public uint mem_unit;           // Memory unit size in bytes
+}
+
+/// <summary>
 /// File descriptor table operations
 /// </summary>
 public static unsafe class FdTable

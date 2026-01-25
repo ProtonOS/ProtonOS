@@ -33,8 +33,9 @@ public static unsafe class PageAllocator
     private static ulong _bitmapPages;     // Pages used by bitmap
 
     // Memory statistics
-    private static ulong _totalPages;      // Total pages we're tracking
+    private static ulong _totalPages;      // Total pages we're tracking (bitmap size)
     private static ulong _freePages;       // Currently free pages
+    private static ulong _usableMemoryPages; // Actual usable RAM pages (not address space)
     private static ulong _topAddress;      // Highest address we track
     private static bool _initialized;
 
@@ -63,9 +64,9 @@ public static unsafe class PageAllocator
     public static ulong FreePages => _freePages;
 
     /// <summary>
-    /// Total memory being tracked in bytes
+    /// Total usable memory in bytes (actual RAM, not address space)
     /// </summary>
-    public static ulong TotalMemory => _totalPages * PageSize;
+    public static ulong TotalMemory => _usableMemoryPages * PageSize;
 
     /// <summary>
     /// Free memory in bytes
@@ -287,6 +288,10 @@ public static unsafe class PageAllocator
                 MarkRangeFree(startPage, pageCount);
             }
         }
+
+        // Save total usable memory (before reserving kernel/bitmap/etc.)
+        // This is the actual physical RAM, not the address space size
+        _usableMemoryPages = _freePages;
 
         // Reserve critical regions and track how much
         ulong totalReserved = 0;
