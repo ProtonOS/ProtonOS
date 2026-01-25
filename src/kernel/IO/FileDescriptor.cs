@@ -389,6 +389,31 @@ public static class StatMode
 }
 
 /// <summary>
+/// Timespec structure for clock_gettime (Linux x86-64 compatible, 16 bytes)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct Timespec
+{
+    public long tv_sec;     // Seconds
+    public long tv_nsec;    // Nanoseconds (0-999999999)
+}
+
+/// <summary>
+/// Clock IDs for clock_gettime/clock_settime
+/// </summary>
+public static class ClockId
+{
+    public const int CLOCK_REALTIME = 0;            // Wall clock time
+    public const int CLOCK_MONOTONIC = 1;           // Time since boot (not affected by NTP)
+    public const int CLOCK_PROCESS_CPUTIME_ID = 2;  // Per-process CPU time
+    public const int CLOCK_THREAD_CPUTIME_ID = 3;   // Per-thread CPU time
+    public const int CLOCK_MONOTONIC_RAW = 4;       // Raw monotonic time
+    public const int CLOCK_REALTIME_COARSE = 5;     // Coarse realtime (faster, less precise)
+    public const int CLOCK_MONOTONIC_COARSE = 6;    // Coarse monotonic (faster, less precise)
+    public const int CLOCK_BOOTTIME = 7;            // Like MONOTONIC but includes suspend time
+}
+
+/// <summary>
 /// File descriptor table operations
 /// </summary>
 public static unsafe class FdTable

@@ -74,6 +74,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("pipe");
         builder.EmitPipeTest();
 
+        // Test 14: clock_gettime
+        builder.EmitTestHeader("clock_gettime");
+        builder.EmitClockGettimeTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -792,6 +796,86 @@ public static unsafe class UserModeTests
                 code[failJump3] = (byte)(_offset - failJump3 - 1);
                 code[failJump4] = (byte)(_offset - failJump4 - 1);
                 EmitPrintString("  [FAIL] pipe test failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 32 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 32;
+            }
+        }
+
+        public void EmitClockGettimeTest()
+        {
+            // Test: clock_gettime(CLOCK_MONOTONIC, &ts) should return 0 and fill timespec
+            // SYS_CLOCK_GETTIME = 228, CLOCK_MONOTONIC = 1
+            // struct timespec { long tv_sec; long tv_nsec; } = 16 bytes
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 32 (allocate stack for timespec, 16-byte aligned)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 32;
+
+                // Zero the timespec
+                // mov qword [rsp], 0
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x04;
+                code[_offset++] = 0x24; Emit32(0);
+                // mov qword [rsp+8], 0
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 8; Emit32(0);
+
+                // clock_gettime(CLOCK_MONOTONIC, rsp) - SYS_CLOCK_GETTIME = 228
+                // mov eax, 228
+                code[_offset++] = 0xB8; Emit32(228);
+                // mov edi, 1 (CLOCK_MONOTONIC)
+                code[_offset++] = 0xBF; Emit32(1);
+                // mov rsi, rsp (ts = stack buffer)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE6;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Check tv_sec or tv_nsec is non-zero (time has passed since boot)
+                // mov rax, [rsp] (tv_sec)
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x04;
+                code[_offset++] = 0x24;
+                // or rax, [rsp+8] (tv_nsec)
+                code[_offset++] = 0x48; code[_offset++] = 0x0B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 8;
+                // test rax, rax
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz fail (if both are zero, something's wrong)
+                code[_offset++] = 0x74;
+                int failJump2 = _offset++;
+
+                // Check tv_nsec is valid (< 1000000000)
+                // mov rax, [rsp+8]
+                code[_offset++] = 0x48; code[_offset++] = 0x8B; code[_offset++] = 0x44;
+                code[_offset++] = 0x24; code[_offset++] = 8;
+                // cmp rax, 1000000000
+                code[_offset++] = 0x48; code[_offset++] = 0x3D; Emit32(1000000000);
+                // jge fail
+                code[_offset++] = 0x7D;
+                int failJump3 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] clock_gettime returns valid time\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                code[failJump3] = (byte)(_offset - failJump3 - 1);
+                EmitPrintString("  [FAIL] clock_gettime failed\n");
 
                 // end:
                 code[endJump] = (byte)(_offset - endJump - 1);

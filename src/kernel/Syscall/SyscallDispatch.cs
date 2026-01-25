@@ -71,6 +71,7 @@ public static unsafe class SyscallDispatch
         RegisterFileSyscalls();
         RegisterIdentitySyscalls();
         RegisterMemorySyscalls();
+        RegisterTimeSyscalls();
 
         _initialized = true;
         DebugConsole.WriteLine("[SyscallDispatch] Initialized");
@@ -169,6 +170,16 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_MPROTECT] = SysMprotect;
         _handlers[SyscallNumbers.SYS_MUNMAP] = SysMunmap;
         _handlers[SyscallNumbers.SYS_MSYNC] = SysMsync;
+    }
+
+    /// <summary>
+    /// Register time-related syscalls
+    /// </summary>
+    private static void RegisterTimeSyscalls()
+    {
+        _handlers[SyscallNumbers.SYS_CLOCK_GETTIME] = SysClockGettime;
+        _handlers[SyscallNumbers.SYS_CLOCK_GETRES] = SysClockGetres;
+        _handlers[SyscallNumbers.SYS_GETTIMEOFDAY] = SysGettimeofday;
     }
 
     // ==================== Process Control ====================
@@ -1147,6 +1158,115 @@ public static unsafe class SyscallDispatch
         }
 
         return -Errno.EPERM;
+    }
+
+    // ==================== Time ====================
+
+    private static long SysClockGettime(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                         Process.Process* proc, Thread* thread)
+    {
+        int clockId = (int)arg0;
+        Timespec* ts = (Timespec*)arg1;
+
+        if (ts == null)
+            return -Errno.EFAULT;
+
+        ulong nanoseconds;
+
+        switch (clockId)
+        {
+            case ClockId.CLOCK_MONOTONIC:
+            case ClockId.CLOCK_MONOTONIC_RAW:
+            case ClockId.CLOCK_MONOTONIC_COARSE:
+            case ClockId.CLOCK_BOOTTIME:
+                // Return time since boot using HPET
+                if (!X64.HPET.IsInitialized)
+                    return -Errno.ENODEV;
+                nanoseconds = X64.HPET.TicksToNanoseconds(X64.HPET.ReadCounter());
+                break;
+
+            case ClockId.CLOCK_REALTIME:
+            case ClockId.CLOCK_REALTIME_COARSE:
+                // For now, return monotonic time (no RTC support yet)
+                // TODO: Add RTC support for wall-clock time
+                if (!X64.HPET.IsInitialized)
+                    return -Errno.ENODEV;
+                nanoseconds = X64.HPET.TicksToNanoseconds(X64.HPET.ReadCounter());
+                break;
+
+            case ClockId.CLOCK_PROCESS_CPUTIME_ID:
+            case ClockId.CLOCK_THREAD_CPUTIME_ID:
+                // Not yet implemented
+                return -Errno.EINVAL;
+
+            default:
+                return -Errno.EINVAL;
+        }
+
+        ts->tv_sec = (long)(nanoseconds / 1_000_000_000);
+        ts->tv_nsec = (long)(nanoseconds % 1_000_000_000);
+
+        return 0;
+    }
+
+    private static long SysClockGetres(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                        Process.Process* proc, Thread* thread)
+    {
+        int clockId = (int)arg0;
+        Timespec* ts = (Timespec*)arg1;
+
+        // Validate clock ID
+        switch (clockId)
+        {
+            case ClockId.CLOCK_MONOTONIC:
+            case ClockId.CLOCK_MONOTONIC_RAW:
+            case ClockId.CLOCK_BOOTTIME:
+            case ClockId.CLOCK_REALTIME:
+                break;
+            case ClockId.CLOCK_MONOTONIC_COARSE:
+            case ClockId.CLOCK_REALTIME_COARSE:
+                // Coarse clocks have lower resolution
+                if (ts != null)
+                {
+                    ts->tv_sec = 0;
+                    ts->tv_nsec = 1_000_000;  // 1ms resolution
+                }
+                return 0;
+            default:
+                return -Errno.EINVAL;
+        }
+
+        // ts can be null (just checking if clock is valid)
+        if (ts != null)
+        {
+            // HPET typically provides nanosecond-level resolution
+            ts->tv_sec = 0;
+            ts->tv_nsec = 1;  // 1 nanosecond
+        }
+
+        return 0;
+    }
+
+    private static long SysGettimeofday(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                         Process.Process* proc, Thread* thread)
+    {
+        // struct timeval { time_t tv_sec; suseconds_t tv_usec; }
+        // On x86-64, both are 64-bit (8 bytes each)
+        long* tv = (long*)arg0;
+        // arg1 is timezone pointer (deprecated, usually NULL)
+
+        if (tv == null)
+            return -Errno.EFAULT;
+
+        if (!X64.HPET.IsInitialized)
+            return -Errno.ENODEV;
+
+        ulong nanoseconds = X64.HPET.TicksToNanoseconds(X64.HPET.ReadCounter());
+
+        tv[0] = (long)(nanoseconds / 1_000_000_000);          // tv_sec
+        tv[1] = (long)((nanoseconds % 1_000_000_000) / 1000); // tv_usec
+
+        return 0;
     }
 
     // ==================== Memory Management ====================
