@@ -92,6 +92,10 @@ PROTONOS_NET_DLL := $(BUILD_DIR)/ProtonOS.Net.dll
 APPTEST_DIR := src/AppTest
 APPTEST_DLL := $(BUILD_DIR)/AppTest.dll
 
+# Hello test application (for execve testing)
+HELLOAPP_DIR := src/HelloApp
+HELLOAPP_DLL := $(BUILD_DIR)/HelloApp.dll
+
 # Driver directories
 DRIVERS_DIR := src/drivers
 VIRTIO_DIR := $(DRIVERS_DIR)/shared/virtio
@@ -193,6 +197,14 @@ $(APPTEST_DLL): $(APPTEST_SRC) $(APPTEST_DIR)/AppTest.csproj $(DDK_DLL) $(PROTON
 
 apptest: $(APPTEST_DLL)
 
+# Build HelloApp (simple test app for execve)
+HELLOAPP_SRC := $(call rwildcard,$(HELLOAPP_DIR),*.cs)
+$(HELLOAPP_DLL): $(HELLOAPP_SRC) $(HELLOAPP_DIR)/HelloApp.csproj $(DDK_DLL) | $(BUILD_DIR)
+	@echo "DOTNET build HelloApp"
+	dotnet build $(HELLOAPP_DIR)/HelloApp.csproj -c Release -o $(BUILD_DIR) --nologo -v q
+
+helloapp: $(HELLOAPP_DLL)
+
 # Build Virtio common library
 VIRTIO_SRC := $(call rwildcard,$(VIRTIO_DIR),*.cs)
 $(VIRTIO_DLL): $(VIRTIO_SRC) $(VIRTIO_DIR)/Virtio.csproj $(DDK_DLL) | $(BUILD_DIR)
@@ -246,7 +258,7 @@ $(BUILD_DIR)/$(EFI_NAME): $(NATIVE_OBJ) $(KERNEL_OBJ)
 	@python3 tools/gen_elf_syms.py $(BUILD_DIR)/BOOTX64.pdb $(BUILD_DIR)/kernel_syms.elf
 
 # Create boot image
-image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(JITTEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
+image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(JITTEST_DLL) $(KORLIB_DLL) $(TESTSUPPORT_DLL) $(DDK_DLL) $(PROTONOS_NET_DLL) $(APPTEST_DLL) $(HELLOAPP_DLL) $(VIRTIO_DLL) $(VIRTIO_BLK_DLL) $(VIRTIO_NET_DLL) $(FAT_DLL) $(AHCI_DLL) $(EXT2_DLL) $(TEST_DRIVER_DLL)
 	@echo "Creating boot image..."
 	dd if=/dev/zero of=$(BUILD_DIR)/boot.img bs=1M count=64 status=none
 	mformat -i $(BUILD_DIR)/boot.img -F -v PROTONOS ::
@@ -261,6 +273,7 @@ image: $(BUILD_DIR)/$(EFI_NAME) $(BOOTLOADER_EFI) $(JITTEST_DLL) $(KORLIB_DLL) $
 	mcopy -i $(BUILD_DIR)/boot.img $(TESTSUPPORT_DLL) ::/TestSupport.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(DDK_DLL) ::/ProtonOS.DDK.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(APPTEST_DLL) ::/AppTest.dll
+	mcopy -i $(BUILD_DIR)/boot.img $(HELLOAPP_DLL) ::/HelloApp.dll
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_BLK_DLL) ::/drivers/
 	mcopy -i $(BUILD_DIR)/boot.img $(VIRTIO_NET_DLL) ::/drivers/

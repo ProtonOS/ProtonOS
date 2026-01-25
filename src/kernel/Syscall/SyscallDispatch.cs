@@ -117,6 +117,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_GETPPID] = SysGetppid;
         _handlers[SyscallNumbers.SYS_FORK] = SysFork;
         _handlers[SyscallNumbers.SYS_VFORK] = SysVfork;
+        _handlers[SyscallNumbers.SYS_EXECVE] = SysExecve;
         _handlers[SyscallNumbers.SYS_WAIT4] = SysWait4;
         _handlers[SyscallNumbers.SYS_KILL] = SysKill;
         _handlers[SyscallNumbers.SYS_GETPGID] = SysGetpgid;
@@ -229,6 +230,25 @@ public static unsafe class SyscallDispatch
         // vfork is similar to fork but shares address space until exec
         // For now, implement as regular fork
         return ProcessSyscalls.Fork(proc, thread);
+    }
+
+    private static long SysExecve(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        byte** argv = (byte**)arg1;
+        byte** envp = (byte**)arg2;
+
+        DebugConsole.Write("[Syscall] execve(");
+        if (path != null)
+        {
+            for (int i = 0; path[i] != 0 && i < 64; i++)
+                DebugConsole.WriteChar((char)path[i]);
+        }
+        DebugConsole.WriteLine(")");
+
+        // Execute the .NET assembly
+        return Process.NetExecutable.Exec(proc, path, argv, envp);
     }
 
     private static long SysWait4(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,

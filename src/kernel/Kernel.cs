@@ -197,9 +197,6 @@ public static unsafe class Kernel
         // Run Ring 3 test to verify user mode works (HALTS CPU after)
         // Syscall.Ring3Test.Run();
 
-        // Start init process (PID 1) with comprehensive syscall tests
-        Process.UserModeTests.RunSyscallTests();
-
         // Second-stage arch init (timers, enable interrupts)
         CurrentArch.InitStage2();
 
@@ -360,6 +357,13 @@ public static unsafe class Kernel
 
         // Run the AppTest assembly (application-level tests after drivers loaded)
         RunAppTestAssembly();
+
+        // Run syscall tests in Ring 3 first, then test execve
+        // (execve replaces process, so it must be last)
+        Process.UserModeTests.RunSyscallTests();
+
+        // Note: The above runs syscall tests then exits. HelloApp execve test
+        // can be run by calling: Process.NetExecutable.TestExecHelloApp();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
