@@ -66,6 +66,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("dup/dup2");
         builder.EmitDupTest();
 
+        // Test 12: fstat
+        builder.EmitTestHeader("fstat");
+        builder.EmitFstatTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -613,6 +617,66 @@ public static unsafe class UserModeTests
 
                 // end:
                 code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitFstatTest()
+        {
+            // fstat(1, &buf) on stdout should succeed and return S_IFCHR in st_mode
+            // struct stat is 144 bytes, st_mode is at offset 24
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 160 (allocate stack space for stat buffer, 16-byte aligned)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xEC;
+                Emit32(160);
+
+                // fstat(1, rsp) - SYS_FSTAT = 5
+                // mov eax, 5
+                code[_offset++] = 0xB8; Emit32(5);
+                // mov edi, 1 (fd = stdout)
+                code[_offset++] = 0xBF; Emit32(1);
+                // mov rsi, rsp (buf = stack buffer)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE6;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Check st_mode has S_IFCHR (0x2000) set
+                // st_mode is at offset 24 (after st_dev=8, st_ino=8, st_nlink=8)
+                // mov eax, [rsp+24]
+                code[_offset++] = 0x8B; code[_offset++] = 0x44; code[_offset++] = 0x24;
+                code[_offset++] = 24;
+                // and eax, 0xF000 (mask for S_IFMT)
+                code[_offset++] = 0x25; Emit32(0xF000);
+                // cmp eax, 0x2000 (S_IFCHR)
+                code[_offset++] = 0x3D; Emit32(0x2000);
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] fstat on stdout returns S_IFCHR\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] fstat failed or wrong mode\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 160 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
+                Emit32(160);
             }
         }
 

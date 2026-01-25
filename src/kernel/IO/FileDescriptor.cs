@@ -316,6 +316,79 @@ public static class StdFd
 }
 
 /// <summary>
+/// File stat structure (Linux x86-64 compatible, 144 bytes)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct Stat
+{
+    public ulong st_dev;        // Device ID containing file
+    public ulong st_ino;        // Inode number
+    public ulong st_nlink;      // Number of hard links
+    public uint st_mode;        // File type and permissions
+    public uint st_uid;         // User ID of owner
+    public uint st_gid;         // Group ID of owner
+    public uint __pad0;         // Padding
+    public ulong st_rdev;       // Device ID (if special file)
+    public long st_size;        // Total size in bytes
+    public long st_blksize;     // Block size for filesystem I/O
+    public long st_blocks;      // Number of 512B blocks allocated
+    public long st_atime;       // Time of last access (seconds)
+    public long st_atime_nsec;  // Nanoseconds
+    public long st_mtime;       // Time of last modification (seconds)
+    public long st_mtime_nsec;  // Nanoseconds
+    public long st_ctime;       // Time of last status change (seconds)
+    public long st_ctime_nsec;  // Nanoseconds
+    public long __unused0;      // Reserved
+    public long __unused1;      // Reserved
+    public long __unused2;      // Reserved
+}
+
+/// <summary>
+/// File mode bits (st_mode)
+/// </summary>
+public static class StatMode
+{
+    // File type (mutually exclusive, in upper bits)
+    public const uint S_IFMT   = 0xF000;   // Mask for file type
+    public const uint S_IFSOCK = 0xC000;   // Socket
+    public const uint S_IFLNK  = 0xA000;   // Symbolic link
+    public const uint S_IFREG  = 0x8000;   // Regular file
+    public const uint S_IFBLK  = 0x6000;   // Block device
+    public const uint S_IFDIR  = 0x4000;   // Directory
+    public const uint S_IFCHR  = 0x2000;   // Character device
+    public const uint S_IFIFO  = 0x1000;   // FIFO (named pipe)
+
+    // Permission bits
+    public const uint S_ISUID  = 0x0800;   // Set user ID on execution
+    public const uint S_ISGID  = 0x0400;   // Set group ID on execution
+    public const uint S_ISVTX  = 0x0200;   // Sticky bit
+
+    public const uint S_IRWXU  = 0x01C0;   // Owner: read, write, execute
+    public const uint S_IRUSR  = 0x0100;   // Owner: read
+    public const uint S_IWUSR  = 0x0080;   // Owner: write
+    public const uint S_IXUSR  = 0x0040;   // Owner: execute
+
+    public const uint S_IRWXG  = 0x0038;   // Group: read, write, execute
+    public const uint S_IRGRP  = 0x0020;   // Group: read
+    public const uint S_IWGRP  = 0x0010;   // Group: write
+    public const uint S_IXGRP  = 0x0008;   // Group: execute
+
+    public const uint S_IRWXO  = 0x0007;   // Others: read, write, execute
+    public const uint S_IROTH  = 0x0004;   // Others: read
+    public const uint S_IWOTH  = 0x0002;   // Others: write
+    public const uint S_IXOTH  = 0x0001;   // Others: execute
+
+    // Convenience macros as methods
+    public static bool S_ISREG(uint m) => (m & S_IFMT) == S_IFREG;
+    public static bool S_ISDIR(uint m) => (m & S_IFMT) == S_IFDIR;
+    public static bool S_ISCHR(uint m) => (m & S_IFMT) == S_IFCHR;
+    public static bool S_ISBLK(uint m) => (m & S_IFMT) == S_IFBLK;
+    public static bool S_ISFIFO(uint m) => (m & S_IFMT) == S_IFIFO;
+    public static bool S_ISLNK(uint m) => (m & S_IFMT) == S_IFLNK;
+    public static bool S_ISSOCK(uint m) => (m & S_IFMT) == S_IFSOCK;
+}
+
+/// <summary>
 /// File descriptor table operations
 /// </summary>
 public static unsafe class FdTable

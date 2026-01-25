@@ -135,6 +135,9 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_WRITE] = SysWrite;
         _handlers[SyscallNumbers.SYS_OPEN] = SysOpen;
         _handlers[SyscallNumbers.SYS_CLOSE] = SysClose;
+        _handlers[SyscallNumbers.SYS_STAT] = SysStat;
+        _handlers[SyscallNumbers.SYS_FSTAT] = SysFstat;
+        _handlers[SyscallNumbers.SYS_LSTAT] = SysLstat;
         _handlers[SyscallNumbers.SYS_LSEEK] = SysLseek;
         _handlers[SyscallNumbers.SYS_PIPE] = SysPipe;
         _handlers[SyscallNumbers.SYS_DUP] = SysDup;
@@ -545,6 +548,195 @@ public static unsafe class SyscallDispatch
             return -Errno.EBADF;
 
         return FdTable.Close(fdEntry);
+    }
+
+    /// <summary>
+    /// stat(path, buf) - Get file status by path
+    /// </summary>
+    private static long SysStat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                 Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        Stat* buf = (Stat*)arg1;
+
+        if (path == null || buf == null)
+            return -Errno.EFAULT;
+
+        // Try to open the file to get its information
+        int vfsHandle = VFS.Open(path, 0, 0);  // O_RDONLY
+        if (vfsHandle < 0)
+            return vfsHandle;  // Return the error (ENOENT, etc.)
+
+        // Fill in stat structure with what we know
+        FillStatFromVfs(buf, vfsHandle, FileType.Regular, proc);
+
+        // Close the file
+        VFS.Close(vfsHandle);
+
+        return 0;
+    }
+
+    /// <summary>
+    /// fstat(fd, buf) - Get file status by file descriptor
+    /// </summary>
+    private static long SysFstat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        Stat* buf = (Stat*)arg1;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        // Fill stat structure based on file descriptor type
+        FillStatFromFd(buf, fdEntry, proc);
+
+        return 0;
+    }
+
+    /// <summary>
+    /// lstat(path, buf) - Get file status (don't follow symlinks)
+    /// Currently same as stat since we don't have symlinks yet
+    /// </summary>
+    private static long SysLstat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        // For now, just call stat - we don't have symlinks yet
+        return SysStat(arg0, arg1, arg2, arg3, arg4, arg5, proc, thread);
+    }
+
+    /// <summary>
+    /// Fill a stat structure from a VFS file handle
+    /// </summary>
+    private static void FillStatFromVfs(Stat* buf, int vfsHandle, FileType type, Process.Process* proc)
+    {
+        // Clear the structure
+        *buf = default;
+
+        // Get file size by seeking to end
+        long savedPos = VFS.Seek(vfsHandle, 0, (int)SeekOrigin.Current);
+        long size = VFS.Seek(vfsHandle, 0, (int)SeekOrigin.End);
+        VFS.Seek(vfsHandle, savedPos, (int)SeekOrigin.Set);
+
+        // Device ID (use 1 for root device)
+        buf->st_dev = 1;
+
+        // Inode number (use the VFS handle as a fake inode for now)
+        buf->st_ino = (ulong)vfsHandle + 1;
+
+        // Number of hard links (always 1 for now)
+        buf->st_nlink = 1;
+
+        // File mode: type + permissions
+        buf->st_mode = StatMode.S_IFREG | 0x1B6;  // Regular file + rw-rw-rw- (0666)
+
+        // Owner (from process)
+        buf->st_uid = proc->Uid;
+        buf->st_gid = proc->Gid;
+
+        // Device ID for special files (0 for regular files)
+        buf->st_rdev = 0;
+
+        // File size
+        buf->st_size = size >= 0 ? size : 0;
+
+        // Block size (use 4K, typical page size)
+        buf->st_blksize = 4096;
+
+        // Blocks (size / 512, rounded up)
+        buf->st_blocks = (buf->st_size + 511) / 512;
+
+        // Timestamps (use current time placeholder - all zeros for now)
+        // TODO: Get actual timestamps from filesystem
+        buf->st_atime = 0;
+        buf->st_atime_nsec = 0;
+        buf->st_mtime = 0;
+        buf->st_mtime_nsec = 0;
+        buf->st_ctime = 0;
+        buf->st_ctime_nsec = 0;
+    }
+
+    /// <summary>
+    /// Fill a stat structure from a file descriptor
+    /// </summary>
+    private static void FillStatFromFd(Stat* buf, FileDescriptor* fd, Process.Process* proc)
+    {
+        // Clear the structure
+        *buf = default;
+
+        // Device ID
+        buf->st_dev = 1;
+
+        // Inode (use pointer address as fake inode)
+        buf->st_ino = (ulong)fd->Data + 1;
+
+        // Number of hard links
+        buf->st_nlink = 1;
+
+        // File mode based on file type
+        switch (fd->Type)
+        {
+            case FileType.Regular:
+                buf->st_mode = StatMode.S_IFREG | 0x1B6;  // rw-rw-rw-
+                break;
+            case FileType.Directory:
+                buf->st_mode = StatMode.S_IFDIR | 0x1ED;  // rwxr-xr-x
+                break;
+            case FileType.Pipe:
+                buf->st_mode = StatMode.S_IFIFO | 0x1B6;  // rw-rw-rw-
+                break;
+            case FileType.Socket:
+                buf->st_mode = StatMode.S_IFSOCK | 0x1B6;
+                break;
+            case FileType.Device:
+            case FileType.Terminal:
+                buf->st_mode = StatMode.S_IFCHR | 0x1B6;  // Character device
+                break;
+            default:
+                buf->st_mode = StatMode.S_IFREG | 0x1B6;
+                break;
+        }
+
+        // Owner
+        buf->st_uid = proc->Uid;
+        buf->st_gid = proc->Gid;
+
+        // Device ID for special files
+        if (fd->Type == FileType.Device || fd->Type == FileType.Terminal)
+            buf->st_rdev = 1;
+        else
+            buf->st_rdev = 0;
+
+        // For regular files, try to get size via seek
+        if (fd->Type == FileType.Regular && fd->Ops != null && fd->Ops->Seek != null)
+        {
+            long savedPos = fd->Offset;
+            long size = fd->Ops->Seek(fd, 0, (int)SeekOrigin.End);
+            fd->Ops->Seek(fd, savedPos, (int)SeekOrigin.Set);
+            buf->st_size = size >= 0 ? size : 0;
+        }
+        else
+        {
+            buf->st_size = 0;
+        }
+
+        // Block size
+        buf->st_blksize = 4096;
+
+        // Blocks
+        buf->st_blocks = (buf->st_size + 511) / 512;
+
+        // Timestamps (placeholder)
+        buf->st_atime = 0;
+        buf->st_mtime = 0;
+        buf->st_ctime = 0;
     }
 
     private static long SysLseek(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
