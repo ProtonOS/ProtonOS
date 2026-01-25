@@ -54,6 +54,41 @@ public static unsafe class DebugConsole
     }
 
     /// <summary>
+    /// Check if data is available to read
+    /// </summary>
+    public static bool IsDataAvailable()
+    {
+        // LSR bit 0 = Data Ready
+        return (inb(COM1_LSR) & 0x01) != 0;
+    }
+
+    /// <summary>
+    /// Read a single byte (blocking)
+    /// </summary>
+    public static byte ReadByte()
+    {
+        // Wait for data available
+        while (!IsDataAvailable()) { }
+        return inb(COM1_DATA);
+    }
+
+    /// <summary>
+    /// Try to read a single byte (non-blocking)
+    /// </summary>
+    /// <param name="value">The byte read, if available</param>
+    /// <returns>True if a byte was read, false if no data available</returns>
+    public static bool TryReadByte(out byte value)
+    {
+        if (IsDataAvailable())
+        {
+            value = inb(COM1_DATA);
+            return true;
+        }
+        value = 0;
+        return false;
+    }
+
+    /// <summary>
     /// Write a single byte
     /// </summary>
     public static void WriteByte(byte b)

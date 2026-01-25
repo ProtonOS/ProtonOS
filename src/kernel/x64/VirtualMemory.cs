@@ -548,6 +548,87 @@ public unsafe struct VirtualMemory : ProtonOS.Arch.IVirtualMemory<VirtualMemory>
         return true;
     }
 
+    /// <summary>
+    /// Set or clear the User bit on a page and all parent page table entries.
+    /// This is required for user-mode access because the User bit must be set
+    /// on all levels of the page table hierarchy.
+    /// </summary>
+    /// <param name="virtAddr">Virtual address of the page</param>
+    /// <param name="userAccessible">True to allow user access, false to deny</param>
+    /// <returns>True if successful, false if page is not mapped</returns>
+    public static bool SetUserAccessible(ulong virtAddr, bool userAccessible)
+    {
+        if (_pml4PhysAddr == 0)
+            return false;
+
+        // Get table indices
+        int pml4Index = (int)((virtAddr >> 39) & IndexMask);
+        int pdptIndex = (int)((virtAddr >> 30) & IndexMask);
+        int pdIndex = (int)((virtAddr >> 21) & IndexMask);
+        int ptIndex = (int)((virtAddr >> 12) & IndexMask);
+
+        // Walk and modify PML4
+        ulong* pml4 = (ulong*)_pml4PhysAddr;
+        ulong pml4Entry = pml4[pml4Index];
+        if ((pml4Entry & PageFlags.Present) == 0)
+            return false;
+
+        if (userAccessible)
+            pml4[pml4Index] = pml4Entry | PageFlags.User;
+        else
+            pml4[pml4Index] = pml4Entry & ~PageFlags.User;
+
+        // Walk and modify PDPT
+        ulong* pdpt = (ulong*)(pml4Entry & PageFlags.AddressMask);
+        ulong pdptEntry = pdpt[pdptIndex];
+        if ((pdptEntry & PageFlags.Present) == 0)
+            return false;
+
+        if (userAccessible)
+            pdpt[pdptIndex] = pdptEntry | PageFlags.User;
+        else
+            pdpt[pdptIndex] = pdptEntry & ~PageFlags.User;
+
+        // Check for 1GB huge page
+        if ((pdptEntry & PageFlags.HugePage) != 0)
+        {
+            InvalidatePage(virtAddr);
+            return true;
+        }
+
+        // Walk and modify PD
+        ulong* pd = (ulong*)(pdptEntry & PageFlags.AddressMask);
+        ulong pdEntry = pd[pdIndex];
+        if ((pdEntry & PageFlags.Present) == 0)
+            return false;
+
+        if (userAccessible)
+            pd[pdIndex] = pdEntry | PageFlags.User;
+        else
+            pd[pdIndex] = pdEntry & ~PageFlags.User;
+
+        // Check for 2MB large page
+        if ((pdEntry & PageFlags.HugePage) != 0)
+        {
+            InvalidatePage(virtAddr);
+            return true;
+        }
+
+        // Walk and modify PT - 4KB page
+        ulong* pt = (ulong*)(pdEntry & PageFlags.AddressMask);
+        ulong ptEntry = pt[ptIndex];
+        if ((ptEntry & PageFlags.Present) == 0)
+            return false;
+
+        if (userAccessible)
+            pt[ptIndex] = ptEntry | PageFlags.User;
+        else
+            pt[ptIndex] = ptEntry & ~PageFlags.User;
+
+        InvalidatePage(virtAddr);
+        return true;
+    }
+
     // ==================== Virtual Address Space Management ====================
 
     // Virtual allocation tracking

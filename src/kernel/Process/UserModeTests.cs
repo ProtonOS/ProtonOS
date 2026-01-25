@@ -1,0 +1,718 @@
+// ProtonOS kernel - User Mode Syscall Tests
+// Generates machine code that tests all implemented syscalls in Ring 3.
+
+using System;
+using ProtonOS.Platform;
+using ProtonOS.Memory;
+
+namespace ProtonOS.Process;
+
+/// <summary>
+/// Generates user-mode test programs that comprehensively test syscalls
+/// </summary>
+public static unsafe class UserModeTests
+{
+    /// <summary>
+    /// Run comprehensive syscall tests in Ring 3
+    /// </summary>
+    public static bool RunSyscallTests()
+    {
+        DebugConsole.WriteLine("[UserModeTests] Running syscall tests in Ring 3...");
+
+        // Build test code dynamically
+        var builder = new TestCodeBuilder();
+
+        // Test 1: write syscall (if this works, we can see output)
+        builder.EmitTestHeader("write");
+        builder.EmitWriteTest();
+
+        // Test 2: mmap anonymous memory
+        builder.EmitTestHeader("mmap");
+        builder.EmitMmapTest();
+
+        // Test 3: mprotect
+        builder.EmitTestHeader("mprotect");
+        builder.EmitMprotectTest();
+
+        // Test 4: munmap
+        builder.EmitTestHeader("munmap");
+        builder.EmitMunmapTest();
+
+        // Test 5: brk
+        builder.EmitTestHeader("brk");
+        builder.EmitBrkTest();
+
+        // Test 6: lseek (basic test)
+        builder.EmitTestHeader("lseek");
+        builder.EmitLseekTest();
+
+        // Test 7: getpid
+        builder.EmitTestHeader("getpid");
+        builder.EmitGetpidTest();
+
+        // Test 8: getuid/geteuid
+        builder.EmitTestHeader("getuid");
+        builder.EmitGetuidTest();
+
+        // Test 9: getgid/getegid
+        builder.EmitTestHeader("getgid");
+        builder.EmitGetgidTest();
+
+        // Test 10: close (with invalid fd)
+        builder.EmitTestHeader("close");
+        builder.EmitCloseTest();
+
+        // Test 11: dup/dup2
+        builder.EmitTestHeader("dup/dup2");
+        builder.EmitDupTest();
+
+        // Summary and exit
+        builder.EmitTestSummary();
+
+        byte* code = builder.GetCode();
+        int size = builder.GetSize();
+
+        DebugConsole.Write("[UserModeTests] Generated ");
+        DebugConsole.WriteDecimal(size);
+        DebugConsole.WriteLine(" bytes of test code");
+
+        return InitProcess.CreateAndRun(code, (ulong)size);
+    }
+
+    /// <summary>
+    /// Helper class for building test machine code
+    /// </summary>
+    private unsafe struct TestCodeBuilder
+    {
+        private fixed byte _code[16384];
+        private int _offset;
+        private int _testCount;
+        private int _failCount;
+
+        public byte* GetCode()
+        {
+            fixed (byte* p = _code)
+                return p;
+        }
+
+        public int GetSize() => _offset;
+
+        public void EmitTestHeader(string testName)
+        {
+            _testCount++;
+            // Print "Test N: {testName}...\n"
+            EmitPrintString("Test ");
+            if (_testCount >= 10)
+                EmitPrintChar((byte)('0' + _testCount / 10));
+            EmitPrintChar((byte)('0' + _testCount % 10));
+            EmitPrintString(": ");
+            EmitPrintString(testName);
+            EmitPrintString("...\n");
+        }
+
+        public void EmitWriteTest()
+        {
+            // Write test already succeeded if we see output!
+            EmitPrintString("  [PASS] write syscall works\n");
+        }
+
+        public void EmitMmapTest()
+        {
+            // mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+            fixed (byte* code = _code)
+            {
+                // mov eax, 9 (SYS_MMAP)
+                code[_offset++] = 0xB8; Emit32(9);
+                // xor edi, edi (addr = NULL)
+                code[_offset++] = 0x31; code[_offset++] = 0xFF;
+                // mov esi, 4096
+                code[_offset++] = 0xBE; Emit32(4096);
+                // mov edx, 3 (PROT_READ | PROT_WRITE)
+                code[_offset++] = 0xBA; Emit32(3);
+                // mov r10d, 0x22 (MAP_PRIVATE | MAP_ANONYMOUS)
+                code[_offset++] = 0x41; code[_offset++] = 0xBA; Emit32(0x22);
+                // mov r8d, -1
+                code[_offset++] = 0x41; code[_offset++] = 0xB8; Emit32(0xFFFFFFFF);
+                // xor r9d, r9d
+                code[_offset++] = 0x45; code[_offset++] = 0x31; code[_offset++] = 0xC9;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Save in r12
+                // mov r12, rax
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC4;
+
+                // Test: rax should be positive (valid address)
+                // test rax, rax
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // js fail
+                code[_offset++] = 0x78;
+                int failJump1 = _offset++;
+
+                // Write to mapped memory
+                // mov dword [r12], 0xDEADBEEF
+                code[_offset++] = 0x41; code[_offset++] = 0xC7; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                Emit32(0xDEADBEEF);
+
+                // Read back and verify
+                // mov eax, [r12]
+                code[_offset++] = 0x41; code[_offset++] = 0x8B; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                // cmp eax, 0xDEADBEEF
+                code[_offset++] = 0x3D; Emit32(0xDEADBEEF);
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] mmap succeeded\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] mmap failed\n");
+                // Clear r12
+                code[_offset++] = 0x45; code[_offset++] = 0x31; code[_offset++] = 0xE4;
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitMprotectTest()
+        {
+            fixed (byte* code = _code)
+            {
+                // Check if we have valid mmap address in r12
+                // test r12, r12
+                code[_offset++] = 0x4D; code[_offset++] = 0x85; code[_offset++] = 0xE4;
+                // jz skip (no valid address)
+                code[_offset++] = 0x74;
+                int skipJump = _offset++;
+
+                // mprotect(r12, 4096, PROT_READ) - make read-only
+                // mov eax, 10
+                code[_offset++] = 0xB8; Emit32(10);
+                // mov rdi, r12
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov esi, 4096
+                code[_offset++] = 0xBE; Emit32(4096);
+                // mov edx, 1 (PROT_READ)
+                code[_offset++] = 0xBA; Emit32(1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return (0 = success)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // Restore write permission
+                // mov eax, 10
+                code[_offset++] = 0xB8; Emit32(10);
+                // mov rdi, r12
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov esi, 4096
+                code[_offset++] = 0xBE; Emit32(4096);
+                // mov edx, 3 (PROT_READ|PROT_WRITE)
+                code[_offset++] = 0xBA; Emit32(3);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // PASS
+                EmitPrintString("  [PASS] mprotect succeeded\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // skip:
+                code[skipJump] = (byte)(_offset - skipJump - 1);
+                EmitPrintString("  [SKIP] mprotect (no mmap)\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump2 = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] mprotect failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+                code[endJump2] = (byte)(_offset - endJump2 - 1);
+            }
+        }
+
+        public void EmitMunmapTest()
+        {
+            fixed (byte* code = _code)
+            {
+                // Check if we have valid mmap address in r12
+                // test r12, r12
+                code[_offset++] = 0x4D; code[_offset++] = 0x85; code[_offset++] = 0xE4;
+                // jz skip
+                code[_offset++] = 0x74;
+                int skipJump = _offset++;
+
+                // munmap(r12, 4096)
+                // mov eax, 11
+                code[_offset++] = 0xB8; Emit32(11);
+                // mov rdi, r12
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov esi, 4096
+                code[_offset++] = 0xBE; Emit32(4096);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return (0 = success)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] munmap succeeded\n");
+                // Clear r12
+                code[_offset++] = 0x45; code[_offset++] = 0x31; code[_offset++] = 0xE4;
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // skip:
+                code[skipJump] = (byte)(_offset - skipJump - 1);
+                EmitPrintString("  [SKIP] munmap (no mmap)\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump2 = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] munmap failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+                code[endJump2] = (byte)(_offset - endJump2 - 1);
+            }
+        }
+
+        public void EmitBrkTest()
+        {
+            fixed (byte* code = _code)
+            {
+                // Get current brk
+                // mov eax, 12
+                code[_offset++] = 0xB8; Emit32(12);
+                // xor edi, edi
+                code[_offset++] = 0x31; code[_offset++] = 0xFF;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Save in r13
+                // mov r13, rax
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC5;
+
+                // Extend brk by 4096
+                // lea rdi, [rax + 4096]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0xB8;
+                Emit32(4096);
+                // mov eax, 12
+                code[_offset++] = 0xB8; Emit32(12);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if new brk == r13 + 4096
+                // lea rcx, [r13 + 4096]
+                code[_offset++] = 0x49; code[_offset++] = 0x8D; code[_offset++] = 0x8D;
+                Emit32(4096);
+                // cmp rax, rcx
+                code[_offset++] = 0x48; code[_offset++] = 0x39; code[_offset++] = 0xC8;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] brk succeeded\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] brk failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitLseekTest()
+        {
+            // lseek on stdin should return ESPIPE (illegal seek)
+            fixed (byte* code = _code)
+            {
+                // lseek(0, 0, SEEK_SET)
+                // mov eax, 8
+                code[_offset++] = 0xB8; Emit32(8);
+                // xor edi, edi (fd = 0 = stdin)
+                code[_offset++] = 0x31; code[_offset++] = 0xFF;
+                // xor esi, esi (offset = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xF6;
+                // xor edx, edx (SEEK_SET = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xD2;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Should return -ESPIPE (-29)
+                // cmp rax, -29
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xF8;
+                code[_offset++] = (byte)(-29 & 0xFF);  // -29 as signed byte
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] lseek returns ESPIPE for pipes\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] lseek unexpected result\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitGetpidTest()
+        {
+            // getpid() should return 1 (init process)
+            fixed (byte* code = _code)
+            {
+                // mov eax, 39 (SYS_GETPID)
+                code[_offset++] = 0xB8; Emit32(39);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if pid == 1
+                // cmp eax, 1
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0x01;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] getpid returns 1\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] getpid did not return 1\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitGetuidTest()
+        {
+            // getuid() should return 0 (root)
+            // geteuid() should also return 0
+            fixed (byte* code = _code)
+            {
+                // mov eax, 102 (SYS_GETUID)
+                code[_offset++] = 0xB8; Emit32(102);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if uid == 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Test geteuid too
+                // mov eax, 107 (SYS_GETEUID)
+                code[_offset++] = 0xB8; Emit32(107);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if euid == 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] getuid/geteuid return 0\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] uid/euid not 0\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitGetgidTest()
+        {
+            // getgid() should return 0 (root group)
+            fixed (byte* code = _code)
+            {
+                // mov eax, 104 (SYS_GETGID)
+                code[_offset++] = 0xB8; Emit32(104);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if gid == 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Test getegid too
+                // mov eax, 108 (SYS_GETEGID)
+                code[_offset++] = 0xB8; Emit32(108);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if egid == 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] getgid/getegid return 0\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] gid/egid not 0\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitCloseTest()
+        {
+            // close(-1) should return -EBADF (-9)
+            fixed (byte* code = _code)
+            {
+                // mov eax, 3 (SYS_CLOSE)
+                code[_offset++] = 0xB8; Emit32(3);
+                // mov edi, -1
+                code[_offset++] = 0xBF; Emit32(-1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Should return -EBADF (-9)
+                // cmp rax, -9
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xF8;
+                code[_offset++] = (byte)(-9 & 0xFF);
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] close(-1) returns EBADF\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] close unexpected result\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitDupTest()
+        {
+            // dup(1) should return new fd >= 3
+            // dup2(newfd, 10) should return 10
+            fixed (byte* code = _code)
+            {
+                // mov eax, 32 (SYS_DUP)
+                code[_offset++] = 0xB8; Emit32(32);
+                // mov edi, 1 (stdout)
+                code[_offset++] = 0xBF; Emit32(1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Save result in r12
+                // mov r12, rax
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC4;
+
+                // Check if fd >= 3 (first free fd)
+                // cmp eax, 3
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0x03;
+                // jl fail
+                code[_offset++] = 0x7C;
+                int failJump1 = _offset++;
+
+                // Test dup2: dup2(r12, 10)
+                // mov eax, 33 (SYS_DUP2)
+                code[_offset++] = 0xB8; Emit32(33);
+                // mov rdi, r12
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov esi, 10
+                code[_offset++] = 0xBE; Emit32(10);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Should return 10
+                // cmp eax, 10
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0x0A;
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // Close the fds we created
+                // close(r12)
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+                // close(10)
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0xBF; Emit32(10);
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // PASS
+                EmitPrintString("  [PASS] dup/dup2 work correctly\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                EmitPrintString("  [FAIL] dup/dup2 failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitTestSummary()
+        {
+            EmitPrintString("\n=== Syscall tests complete ===\n");
+
+            fixed (byte* code = _code)
+            {
+                // exit(0)
+                // mov eax, 60
+                code[_offset++] = 0xB8; Emit32(60);
+                // xor edi, edi
+                code[_offset++] = 0x31; code[_offset++] = 0xFF;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+                // ud2 (shouldn't reach here)
+                code[_offset++] = 0x0F; code[_offset++] = 0x0B;
+            }
+        }
+
+        private void EmitPrintString(string s)
+        {
+            // For each string, emit inline:
+            // jmp over_string
+            // string_data:
+            // .ascii "string"
+            // over_string:
+            // write(1, string_addr, len)
+
+            fixed (byte* code = _code)
+            {
+                // jmp over string data
+                code[_offset++] = 0xEB;
+                int jmpOffset = _offset++;
+
+                // String data
+                int stringStart = _offset;
+                for (int i = 0; i < s.Length; i++)
+                    code[_offset++] = (byte)s[i];
+                int stringLen = _offset - stringStart;
+
+                // Patch jump
+                code[jmpOffset] = (byte)(_offset - jmpOffset - 1);
+
+                // write(1, string_addr, len)
+                // mov eax, 1 (SYS_WRITE)
+                code[_offset++] = 0xB8; Emit32(1);
+                // mov edi, 1 (stdout)
+                code[_offset++] = 0xBF; Emit32(1);
+                // lea rsi, [rip - X] where X points back to string
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x35;
+                // Displacement: string_start - (current_offset + 4)
+                int displacement = stringStart - (_offset + 4);
+                Emit32(displacement);
+                // mov edx, len
+                code[_offset++] = 0xBA; Emit32(stringLen);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+            }
+        }
+
+        private void EmitPrintChar(byte c)
+        {
+            fixed (byte* code = _code)
+            {
+                // Push char onto stack and write from there
+                // push c
+                code[_offset++] = 0x6A; code[_offset++] = c;
+                // write(1, rsp, 1)
+                // mov eax, 1
+                code[_offset++] = 0xB8; Emit32(1);
+                // mov edi, 1
+                code[_offset++] = 0xBF; Emit32(1);
+                // mov rsi, rsp
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE6;
+                // mov edx, 1
+                code[_offset++] = 0xBA; Emit32(1);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+                // pop (clean stack)
+                // add rsp, 8
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4; code[_offset++] = 0x08;
+            }
+        }
+
+        private void Emit32(int value)
+        {
+            fixed (byte* code = _code)
+            {
+                code[_offset++] = (byte)(value & 0xFF);
+                code[_offset++] = (byte)((value >> 8) & 0xFF);
+                code[_offset++] = (byte)((value >> 16) & 0xFF);
+                code[_offset++] = (byte)((value >> 24) & 0xFF);
+            }
+        }
+
+        private void Emit32(uint value)
+        {
+            Emit32((int)value);
+        }
+    }
+}

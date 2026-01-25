@@ -183,6 +183,23 @@ public static unsafe class Kernel
         TLS.Init();
         PAL.Memory.Init();
 
+        // Initialize syscall infrastructure
+        Syscall.SyscallDispatch.Init();
+        Syscall.SyscallHandler.Init();
+
+        // Initialize process subsystem
+        Memory.CopyOnWrite.Init();
+        Process.ProcessTable.Init();
+
+        // Initialize VFS
+        IO.VFS.Init();
+
+        // Run Ring 3 test to verify user mode works (HALTS CPU after)
+        // Syscall.Ring3Test.Run();
+
+        // Start init process (PID 1) with comprehensive syscall tests
+        Process.UserModeTests.RunSyscallTests();
+
         // Second-stage arch init (timers, enable interrupts)
         CurrentArch.InitStage2();
 

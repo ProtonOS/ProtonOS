@@ -128,6 +128,33 @@ public unsafe struct Thread
 
     // Cleanup tracking
     public Thread* NextCleanup;        // Next thread in cleanup queue
+
+    // ==================== User-mode process support ====================
+
+    /// <summary>
+    /// Owning process (null for kernel threads)
+    /// </summary>
+    public Process.Process* Process;
+
+    /// <summary>
+    /// Whether this thread runs in Ring 3 user mode
+    /// </summary>
+    public bool IsUserMode;
+
+    /// <summary>
+    /// User-mode stack pointer (saved on syscall entry)
+    /// </summary>
+    public ulong UserRsp;
+
+    /// <summary>
+    /// User-mode instruction pointer (saved on syscall entry)
+    /// </summary>
+    public ulong UserRip;
+
+    /// <summary>
+    /// Kernel stack top (used for syscall entry, TSS.RSP0)
+    /// </summary>
+    public ulong KernelStackTop;
 }
 
 /// <summary>

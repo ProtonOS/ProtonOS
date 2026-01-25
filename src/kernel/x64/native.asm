@@ -1816,3 +1816,629 @@ RhpInitialDynamicInterfaceDispatch:
 
     ; Tail-call to the resolved method
     jmp r11
+
+;; ==================== SYSCALL/SYSRET Entry Point ====================
+;; Fast system call entry for user-mode applications.
+;;
+;; On SYSCALL entry (x86-64 Linux convention):
+;;   RAX = syscall number
+;;   RDI = arg0
+;;   RSI = arg1
+;;   RDX = arg2
+;;   R10 = arg3 (NOT RCX - RCX is clobbered by SYSCALL)
+;;   R8  = arg4
+;;   R9  = arg5
+;;
+;;   RCX = user RIP (saved by SYSCALL instruction)
+;;   R11 = user RFLAGS (saved by SYSCALL instruction)
+;;   RSP = user RSP (NOT changed by SYSCALL - must save manually!)
+;;
+;; Return value in RAX. SYSRET restores RIP from RCX, RFLAGS from R11.
+
+section .data
+align 16
+
+;; Per-CPU syscall state (simple single-CPU version for now)
+;; Later this should be accessed via GS segment for SMP support
+global syscall_kernel_stack
+syscall_kernel_stack:   dq 0    ; Kernel stack pointer for syscalls
+syscall_user_stack:     dq 0    ; Saved user stack pointer
+
+section .text
+
+extern SyscallDispatch  ; C# syscall dispatcher
+
+;; SYSCALL entry point - called by user-mode SYSCALL instruction
+;; This function's address is written to IA32_LSTAR MSR
+global syscall_entry
+syscall_entry:
+    ; SYSCALL has been executed:
+    ; - RCX = user RIP (return address)
+    ; - R11 = user RFLAGS
+    ; - RSP = user RSP (unchanged!)
+    ; - CS/SS loaded from STAR MSR (kernel segments)
+    ; - IF cleared based on FMASK (interrupts disabled)
+
+    ; Save user stack pointer to per-CPU area
+    ; IMPORTANT: We can't use any memory operations that might page fault
+    ; until we're on the kernel stack!
+    mov [rel syscall_user_stack], rsp
+
+    ; Switch to kernel stack
+    mov rsp, [rel syscall_kernel_stack]
+
+    ; If kernel stack is not set up yet, we have a problem
+    test rsp, rsp
+    jz .no_kernel_stack
+
+    ; Now we're on kernel stack - safe to push
+    ; Build a syscall frame on the stack:
+    ;   User RIP (from RCX)
+    ;   User RFLAGS (from R11)
+    ;   User RSP
+    ;   Syscall number (RAX)
+    ;   All argument registers
+
+    ; Save user context for SYSRET
+    push rcx            ; User RIP
+    push r11            ; User RFLAGS
+
+    ; Save user RSP
+    push qword [rel syscall_user_stack]
+
+    ; Save syscall number
+    push rax
+
+    ; Save all argument registers (will be passed to C# dispatcher)
+    push rdi            ; arg0
+    push rsi            ; arg1
+    push rdx            ; arg2
+    push r10            ; arg3 (Linux uses R10 instead of RCX)
+    push r8             ; arg4
+    push r9             ; arg5
+
+    ; Save callee-saved registers (C# function may use them)
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    ; Save segment registers (in case kernel code needs them)
+    mov ax, ds
+    push rax
+    mov ax, es
+    push rax
+
+    ; Ensure kernel data segment is loaded
+    mov ax, 0x10        ; GdtSelectors.KernelData
+    mov ds, ax
+    mov es, ax
+
+    ; Re-enable interrupts now that we're safely on kernel stack
+    ; (FMASK cleared IF on syscall entry)
+    sti
+
+    ; Call C# syscall dispatcher
+    ; Windows x64 ABI: args in RCX, RDX, R8, R9, then stack
+    ; long SyscallDispatch(long number, long arg0, long arg1, long arg2,
+    ;                      long arg3, long arg4, long arg5)
+    ;
+    ; Retrieve saved values from our stack frame:
+    ;   [rsp+16] = es
+    ;   [rsp+24] = ds
+    ;   [rsp+32] = r15
+    ;   [rsp+40] = r14
+    ;   [rsp+48] = r13
+    ;   [rsp+56] = r12
+    ;   [rsp+64] = rbp
+    ;   [rsp+72] = rbx
+    ;   [rsp+80] = r9 (arg5)
+    ;   [rsp+88] = r8 (arg4)
+    ;   [rsp+96] = r10 (arg3)
+    ;   [rsp+104] = rdx (arg2)
+    ;   [rsp+112] = rsi (arg1)
+    ;   [rsp+120] = rdi (arg0)
+    ;   [rsp+128] = rax (syscall number)
+    ;   [rsp+136] = user RSP
+    ;   [rsp+144] = user RFLAGS
+    ;   [rsp+152] = user RIP
+
+    ; Set up arguments for C# dispatcher (Windows x64 ABI)
+    mov rcx, [rsp + 128]    ; syscall number -> rcx
+    mov rdx, [rsp + 120]    ; arg0 -> rdx
+    mov r8,  [rsp + 112]    ; arg1 -> r8
+    mov r9,  [rsp + 104]    ; arg2 -> r9
+
+    ; Remaining args go on stack (after shadow space)
+    sub rsp, 56             ; 32 shadow + 24 for 3 stack args (aligned to 16)
+    mov rax, [rsp + 56 + 96]    ; arg3 (was r10)
+    mov [rsp + 32], rax
+    mov rax, [rsp + 56 + 88]    ; arg4 (was r8)
+    mov [rsp + 40], rax
+    mov rax, [rsp + 56 + 80]    ; arg5 (was r9)
+    mov [rsp + 48], rax
+
+    call SyscallDispatch
+
+    add rsp, 56             ; Remove shadow space and stack args
+
+    ; RAX now contains syscall return value
+    ; Save it temporarily
+    mov [rsp + 128], rax    ; Store return value where syscall number was
+
+    ; Disable interrupts before returning to user mode
+    cli
+
+    ; Restore segment registers
+    pop rax
+    mov es, ax
+    pop rax
+    mov ds, ax
+
+    ; Restore callee-saved registers
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+
+    ; Skip saved args (r9, r8, r10, rdx, rsi, rdi)
+    add rsp, 48
+
+    ; Get return value
+    pop rax                 ; syscall return value
+
+    ; Get user RSP
+    pop rsp                 ; Restore user stack pointer
+
+    ; Skip user RFLAGS on stack (we'll use R11)
+    ; Actually we need to load these for SYSRET
+    ; Stack now has: user RFLAGS, user RIP
+    ; But RSP was just restored to user stack, so we need kernel stack access
+
+    ; Oops - we already restored RSP. Let's restructure this.
+    ; Actually, let's use a different approach - save RCX and R11 values
+    ; to registers before restoring RSP
+
+    ; Backup - let me rewrite this section more carefully
+    jmp .syscall_return_fixup
+
+.no_kernel_stack:
+    ; Kernel stack not initialized - return error
+    ; Can't really do much here without a stack
+    mov rax, -1             ; Return -ENOSYS or similar
+    ; Try to return to user - hope RSP is still valid
+    mov rcx, [rel syscall_user_stack]  ; This is wrong, but we're in trouble anyway
+    mov r11, 0x202          ; Enable interrupts
+    o64 sysret              ; REX.W prefix for 64-bit return
+
+.syscall_return_fixup:
+    ; We need to be more careful about the return sequence
+    ; At this point:
+    ;   RAX = return value (already set)
+    ;   Stack (kernel): [user RFLAGS] [user RIP]
+    ;   RSP was prematurely restored - need to fix
+
+    ; Let's reload from the position we know
+    ; Actually, let's go back and fix the logic above.
+    ; For now, do a simpler approach:
+
+    ; The problem is we need RCX=user RIP, R11=user RFLAGS, RSP=user RSP
+    ; but we already popped RSP. Let's use the saved copy.
+
+    mov rsp, [rel syscall_kernel_stack]
+    ; Recalculate position - we pushed 160 bytes total
+    ; Now we're back at kernel stack top, need to find our frame
+    ; This is getting messy. Let me rewrite with a cleaner structure.
+
+; Actually, let me rewrite the entire return sequence properly
+; Starting fresh with a cleaner approach
+
+global syscall_entry_v2
+syscall_entry_v2:
+    ; Same entry as before
+    mov [rel syscall_user_stack], rsp
+    mov rsp, [rel syscall_kernel_stack]
+    test rsp, rsp
+    jz .no_kernel_stack_v2
+
+    ; Build frame - save everything we need for return
+    ; Use a fixed layout that's easy to restore
+    push rcx            ; [rsp+160] User RIP
+    push r11            ; [rsp+152] User RFLAGS
+    push qword [rel syscall_user_stack]  ; [rsp+144] User RSP
+
+    ; Save syscall number and args
+    push rax            ; [rsp+136] syscall number
+    push rdi            ; [rsp+128] arg0
+    push rsi            ; [rsp+120] arg1
+    push rdx            ; [rsp+112] arg2
+    push r10            ; [rsp+104] arg3
+    push r8             ; [rsp+96]  arg4
+    push r9             ; [rsp+88]  arg5
+
+    ; Save callee-saved
+    push rbx            ; [rsp+80]
+    push rbp            ; [rsp+72]
+    push r12            ; [rsp+64]
+    push r13            ; [rsp+56]
+    push r14            ; [rsp+48]
+    push r15            ; [rsp+40]
+
+    ; Save segments
+    sub rsp, 32         ; [rsp+0..31] = shadow space + alignment
+    mov ax, ds
+    mov [rsp+0], ax
+    mov ax, es
+    mov [rsp+2], ax
+
+    ; Load kernel segments
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+    ; Enable interrupts
+    sti
+
+    ; Call dispatcher - set up Windows x64 ABI args
+    mov rcx, [rsp + 32 + 136]   ; syscall number
+    mov rdx, [rsp + 32 + 128]   ; arg0
+    mov r8,  [rsp + 32 + 120]   ; arg1
+    mov r9,  [rsp + 32 + 112]   ; arg2
+
+    ; Stack args at [rsp+32], [rsp+40], [rsp+48]
+    mov rax, [rsp + 32 + 104]   ; arg3
+    mov [rsp + 32], rax
+    mov rax, [rsp + 32 + 96]    ; arg4
+    mov [rsp + 40], rax
+    mov rax, [rsp + 32 + 88]    ; arg5
+    mov [rsp + 48], rax
+
+    ; Extra shadow space already in our 32 bytes
+    call SyscallDispatch
+
+    ; Return value in RAX - save it
+    mov r10, rax
+
+    ; Disable interrupts
+    cli
+
+    ; Restore segments
+    mov ax, [rsp+0]
+    mov ds, ax
+    mov ax, [rsp+2]
+    mov es, ax
+
+    add rsp, 32         ; Remove shadow/segment space
+
+    ; Restore callee-saved
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+
+    ; Skip args (6 * 8 = 48 bytes)
+    add rsp, 48
+
+    ; Skip syscall number
+    add rsp, 8
+
+    ; Now stack has: [User RSP] [User RFLAGS] [User RIP]
+    ; Load these into appropriate registers for SYSRET
+    pop rsp             ; User RSP - but wait, this breaks our stack access!
+
+    ; Hmm, this is still problematic. Let's use a different approach.
+    ; Save the values to registers BEFORE restoring RSP.
+
+.no_kernel_stack_v2:
+    mov rax, -38        ; -ENOSYS
+    o64 sysret          ; REX.W prefix for 64-bit return
+
+; Third attempt - cleaner structure
+global syscall_entry_final
+syscall_entry_final:
+    ; Save user RSP to memory (we'll retrieve it later)
+    mov [rel syscall_user_stack], rsp
+
+    ; Switch to kernel stack
+    mov rsp, [rel syscall_kernel_stack]
+    test rsp, rsp
+    jz .emergency_return
+
+    ; Push everything we need, in an order that makes restore easy
+    ; We'll restore RCX (user RIP) and R11 (user RFLAGS) last from stack
+    push qword [rel syscall_user_stack]  ; Save user RSP
+    push r11                              ; Save user RFLAGS
+    push rcx                              ; Save user RIP
+
+    ; Save syscall args (we need these for the call)
+    push rax            ; syscall number
+    push rdi            ; arg0
+    push rsi            ; arg1
+    push rdx            ; arg2
+    push r10            ; arg3
+    push r8             ; arg4
+    push r9             ; arg5
+
+    ; Save callee-saved registers
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    ; Load kernel data segment
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+    ; Enable interrupts
+    sti
+
+    ; Prepare call to C# dispatcher
+    ; Stack layout at this point (offsets from RSP):
+    ;   [rsp+0]   r15
+    ;   [rsp+8]   r14
+    ;   [rsp+16]  r13
+    ;   [rsp+24]  r12
+    ;   [rsp+32]  rbp
+    ;   [rsp+40]  rbx
+    ;   [rsp+48]  r9 (arg5)
+    ;   [rsp+56]  r8 (arg4)
+    ;   [rsp+64]  r10 (arg3)
+    ;   [rsp+72]  rdx (arg2)
+    ;   [rsp+80]  rsi (arg1)
+    ;   [rsp+88]  rdi (arg0)
+    ;   [rsp+96]  rax (syscall#)
+    ;   [rsp+104] user RIP
+    ;   [rsp+112] user RFLAGS
+    ;   [rsp+120] user RSP
+
+    ; Windows x64 ABI call
+    sub rsp, 56         ; Shadow space (32) + 3 stack args (24), 16-byte aligned
+
+    mov rcx, [rsp + 56 + 96]    ; syscall number
+    mov rdx, [rsp + 56 + 88]    ; arg0
+    mov r8,  [rsp + 56 + 80]    ; arg1
+    mov r9,  [rsp + 56 + 72]    ; arg2
+    mov rax, [rsp + 56 + 64]    ; arg3
+    mov [rsp + 32], rax
+    mov rax, [rsp + 56 + 56]    ; arg4
+    mov [rsp + 40], rax
+    mov rax, [rsp + 56 + 48]    ; arg5
+    mov [rsp + 48], rax
+
+    call SyscallDispatch
+
+    add rsp, 56
+
+    ; RAX = return value, keep it
+
+    ; Disable interrupts before return
+    cli
+
+    ; Restore callee-saved registers
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+
+    ; Skip the saved arguments
+    add rsp, 56         ; 7 values * 8 bytes (r9,r8,r10,rdx,rsi,rdi,syscall#)
+
+    ; Now stack has: [user RIP] [user RFLAGS] [user RSP]
+    ; We need: RCX = user RIP, R11 = user RFLAGS, RSP = user RSP, RAX = return
+
+    pop rcx             ; User RIP -> RCX for SYSRET
+    pop r11             ; User RFLAGS -> R11 for SYSRET
+    pop rsp             ; User RSP
+
+    ; RAX already has return value
+    ; Use SYSRET to return to user mode (64-bit)
+    ; SYSRET with REX.W (o64) will:
+    ;   - Load RIP from RCX
+    ;   - Load RFLAGS from R11 (lower 32 bits)
+    ;   - Load CS from STAR[63:48] + 16 = 0x10 + 16 = 0x20 (UserCode), with RPL=3
+    ;   - Load SS from STAR[63:48] + 8 = 0x10 + 8 = 0x18 (UserData), with RPL=3
+
+    o64 sysret              ; REX.W prefix for 64-bit return to long mode
+
+.emergency_return:
+    ; Kernel stack not set up - can't do much
+    mov rax, -38        ; -ENOSYS
+    ; Restore user RSP and try to return
+    mov rsp, [rel syscall_user_stack]
+    ; Fake RCX and R11 - this is bad but better than crashing
+    ; Actually we can't - RCX and R11 were clobbered. Halt.
+    cli
+    hlt
+
+; Get syscall entry point address (for writing to IA32_LSTAR)
+global get_syscall_entry
+get_syscall_entry:
+    lea rax, [rel syscall_entry_final]
+    ret
+
+; Set the kernel stack for syscalls (called during init)
+global set_syscall_kernel_stack
+set_syscall_kernel_stack:
+    mov [rel syscall_kernel_stack], rcx
+    ret
+
+; Get current syscall kernel stack (for debugging)
+global get_syscall_kernel_stack
+get_syscall_kernel_stack:
+    mov rax, [rel syscall_kernel_stack]
+    ret
+
+;; ==================== Ring 3 Test Infrastructure ====================
+;; Functions to test user-mode execution and syscall handling.
+
+section .data
+align 16
+
+;; Result storage for Ring 3 test
+global ring3_test_result
+ring3_test_result:      dq 0    ; Result from user-mode syscall
+
+;; Magic values to verify execution path
+RING3_TEST_MAGIC equ 0xDEADBEEF12345678
+
+section .text
+
+;; User-mode test code - this will be copied to a user-accessible page
+;; and executed in Ring 3. It makes a syscall and returns.
+;;
+;; The code must be position-independent since it will be copied.
+;; We use syscall number 39 (getpid) which is simple and safe.
+;;
+;; Entry: No arguments expected
+;; Exit: Makes exit syscall with magic value as exit code
+
+global user_mode_test_code_start
+global user_mode_test_code_end
+
+user_mode_test_code_start:
+    ; We're now running in Ring 3!
+    ; Make a getpid syscall to verify syscall mechanism works
+    mov rax, 39             ; syscall number: getpid
+    syscall                 ; RAX = pid (should be 0 for kernel process)
+
+    ; Save the result in RBX (we'll pass it to exit)
+    mov rbx, rax
+
+    ; Make another syscall: write "U" to stdout to show we're in user mode
+    ; ssize_t write(int fd, const void *buf, size_t count)
+    ; Actually, we need a buffer - let's skip this for simplicity
+
+    ; Exit with the PID as exit code (or a magic value)
+    ; void exit(int status)
+    mov rax, 60             ; syscall number: exit
+    mov rdi, 42             ; exit code: 42 (magic number to verify)
+    syscall                 ; This should not return
+
+    ; If we get here, something went wrong
+    ud2                     ; Trigger invalid opcode exception
+user_mode_test_code_end:
+
+;; Alternative simpler test - just exit immediately
+global user_mode_simple_test_start
+global user_mode_simple_test_end
+
+user_mode_simple_test_start:
+    ; Simplest possible test: just call exit(0x42)
+    mov rax, 60             ; syscall: exit
+    mov rdi, 0x42           ; exit code
+    syscall
+    ud2                     ; Should never reach here
+user_mode_simple_test_end:
+
+;; Get the size of user mode test code
+global get_user_mode_test_size
+get_user_mode_test_size:
+    mov rax, user_mode_test_code_end - user_mode_test_code_start
+    ret
+
+;; Get the address of user mode test code (for copying)
+global get_user_mode_test_addr
+get_user_mode_test_addr:
+    lea rax, [rel user_mode_test_code_start]
+    ret
+
+;; Get simple test size
+global get_user_mode_simple_test_size
+get_user_mode_simple_test_size:
+    mov rax, user_mode_simple_test_end - user_mode_simple_test_start
+    ret
+
+;; Get simple test address
+global get_user_mode_simple_test_addr
+get_user_mode_simple_test_addr:
+    lea rax, [rel user_mode_simple_test_start]
+    ret
+
+;; Jump to Ring 3 (user mode) using iretq
+;; void jump_to_ring3(ulong userRip, ulong userRsp)
+;; Windows x64 ABI: userRip in rcx, userRsp in rdx
+;;
+;; This function does NOT return - it transitions to Ring 3.
+;; The user code should make a syscall (like exit) to return to kernel.
+;;
+;; For iretq we need to push (in order, bottom to top of stack):
+;;   SS     (user data selector with RPL=3)
+;;   RSP    (user stack pointer)
+;;   RFLAGS (with IF=1 to enable interrupts)
+;;   CS     (user code selector with RPL=3)
+;;   RIP    (user instruction pointer)
+;; Then execute iretq
+
+global jump_to_ring3
+jump_to_ring3:
+    ; Disable interrupts during transition
+    cli
+
+    ; Save arguments
+    mov rax, rcx            ; userRip
+    mov rbx, rdx            ; userRsp
+
+    ; Set up the iretq frame on current stack
+    ; We're in Ring 0, so we can push directly
+
+    ; SS: User data segment with RPL=3
+    ; GDT selector 0x18 (UserData) | RPL 3 = 0x18 | 0x03 = 0x1B
+    push qword 0x1B         ; SS
+
+    ; RSP: User stack pointer
+    push rbx                ; RSP
+
+    ; RFLAGS: Enable interrupts (IF=1, bit 9), reserved bit 1 must be set
+    ; 0x202 = IF | reserved
+    push qword 0x202        ; RFLAGS
+
+    ; CS: User code segment with RPL=3
+    ; GDT selector 0x20 (UserCode) | RPL 3 = 0x20 | 0x03 = 0x23
+    push qword 0x23         ; CS
+
+    ; RIP: User instruction pointer
+    push rax                ; RIP
+
+    ; Clear all general purpose registers (security: don't leak kernel data)
+    xor rax, rax
+    xor rbx, rbx
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rsi, rsi
+    xor rdi, rdi
+    xor rbp, rbp
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor r11, r11
+    xor r12, r12
+    xor r13, r13
+    xor r14, r14
+    xor r15, r15
+
+    ; Transition to Ring 3!
+    iretq
+
+    ; Should never reach here
+    ud2
+
+;; Test helper: Jump to Ring 3 and expect the code to syscall back
+;; This version saves kernel state first so we can recover
+;; void test_ring3_roundtrip(ulong userRip, ulong userRsp)
+global test_ring3_roundtrip
+test_ring3_roundtrip:
+    ; The user code should call exit() syscall, which will terminate
+    ; the "process" and return control. For testing, we'll just
+    ; jump to Ring 3 - the syscall handler will handle the rest.
+    jmp jump_to_ring3
