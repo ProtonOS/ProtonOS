@@ -158,6 +158,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_GETEGID] = SysGetegid;
         _handlers[SyscallNumbers.SYS_SETUID] = SysSetuid;
         _handlers[SyscallNumbers.SYS_SETGID] = SysSetgid;
+        _handlers[SyscallNumbers.SYS_UNAME] = SysUname;
     }
 
     /// <summary>
@@ -1158,6 +1159,41 @@ public static unsafe class SyscallDispatch
         }
 
         return -Errno.EPERM;
+    }
+
+    private static long SysUname(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        Utsname* buf = (Utsname*)arg0;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        // Clear the structure first
+        byte* p = (byte*)buf;
+        for (int i = 0; i < sizeof(Utsname); i++)
+            p[i] = 0;
+
+        // Fill in system information
+        CopyString(buf->sysname, "ProtonOS", Utsname.FieldLength);
+        CopyString(buf->nodename, "proton", Utsname.FieldLength);
+        CopyString(buf->release, "0.1.0", Utsname.FieldLength);
+        CopyString(buf->version, "#1 SMP", Utsname.FieldLength);
+        CopyString(buf->machine, "x86_64", Utsname.FieldLength);
+        CopyString(buf->domainname, "(none)", Utsname.FieldLength);
+
+        return 0;
+    }
+
+    private static void CopyString(byte* dest, string src, int maxLen)
+    {
+        int i = 0;
+        while (i < src.Length && i < maxLen - 1)
+        {
+            dest[i] = (byte)src[i];
+            i++;
+        }
+        dest[i] = 0;  // Null terminate
     }
 
     // ==================== Time ====================

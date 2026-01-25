@@ -78,6 +78,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("clock_gettime");
         builder.EmitClockGettimeTest();
 
+        // Test 15: uname
+        builder.EmitTestHeader("uname");
+        builder.EmitUnameTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -883,6 +887,72 @@ public static unsafe class UserModeTests
                 // add rsp, 32 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
                 code[_offset++] = 32;
+            }
+        }
+
+        public void EmitUnameTest()
+        {
+            // Test: uname(&buf) should return 0 and fill sysname with "ProtonOS"
+            // SYS_UNAME = 63
+            // struct utsname is 6 * 65 = 390 bytes, but we'll allocate 400 (16-byte aligned)
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 400 (allocate stack for utsname)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xEC;
+                Emit32(400);
+
+                // uname(rsp) - SYS_UNAME = 63
+                // mov eax, 63
+                code[_offset++] = 0xB8; Emit32(63);
+                // mov rdi, rsp (buf = stack buffer)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value is 0
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jnz fail
+                code[_offset++] = 0x75;
+                int failJump1 = _offset++;
+
+                // Check sysname starts with 'P' (for "ProtonOS")
+                // sysname is at offset 0
+                // cmp byte [rsp], 'P'
+                code[_offset++] = 0x80; code[_offset++] = 0x3C; code[_offset++] = 0x24;
+                code[_offset++] = (byte)'P';
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump2 = _offset++;
+
+                // Check machine starts with 'x' (for "x86_64")
+                // machine is at offset 65 * 4 = 260
+                // cmp byte [rsp+260], 'x'
+                code[_offset++] = 0x80; code[_offset++] = 0xBC; code[_offset++] = 0x24;
+                Emit32(260);
+                code[_offset++] = (byte)'x';
+                // jne fail
+                code[_offset++] = 0x75;
+                int failJump3 = _offset++;
+
+                // PASS
+                EmitPrintString("  [PASS] uname returns ProtonOS/x86_64\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                code[failJump2] = (byte)(_offset - failJump2 - 1);
+                code[failJump3] = (byte)(_offset - failJump3 - 1);
+                EmitPrintString("  [FAIL] uname failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 400 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
+                Emit32(400);
             }
         }
 

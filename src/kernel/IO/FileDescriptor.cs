@@ -414,6 +414,23 @@ public static class ClockId
 }
 
 /// <summary>
+/// System name structure for uname syscall (Linux x86-64 compatible)
+/// Each field is 65 bytes (64 chars + null terminator)
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct Utsname
+{
+    public const int FieldLength = 65;
+
+    public fixed byte sysname[65];      // Operating system name (e.g., "Linux")
+    public fixed byte nodename[65];     // Network node hostname
+    public fixed byte release[65];      // Operating system release (e.g., "6.1.0")
+    public fixed byte version[65];      // Operating system version
+    public fixed byte machine[65];      // Hardware identifier (e.g., "x86_64")
+    public fixed byte domainname[65];   // NIS or YP domain name (Linux extension)
+}
+
+/// <summary>
 /// File descriptor table operations
 /// </summary>
 public static unsafe class FdTable
