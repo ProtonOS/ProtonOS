@@ -22,6 +22,16 @@ public static unsafe class NetExecutable
     private const ulong UserCodeBase = 0x10000000;
     private const ulong UserCodeSize = 0x1000000; // 16MB for code
 
+    // Data region for user-mode data (args, strings, etc.)
+    private const ulong UserDataBase = 0x11000000;
+    private const ulong UserDataSize = 0x100000; // 1MB for data
+
+    // Element types from ECMA-335
+    private const byte ELEMENT_TYPE_VOID = 0x01;
+    private const byte ELEMENT_TYPE_I4 = 0x08;
+    private const byte ELEMENT_TYPE_STRING = 0x0E;
+    private const byte ELEMENT_TYPE_SZARRAY = 0x1D;
+
     // Assembly helper to jump to user mode
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void jump_to_ring3(ulong userRip, ulong userRsp);
@@ -111,6 +121,9 @@ public static unsafe class NetExecutable
         DebugConsole.WriteHex(entryPointToken);
         DebugConsole.WriteLine();
 
+        // Analyze Main signature to see if it takes string[] args
+        var mainSigInfo = GetMainSignatureInfo(asm, entryPointToken);
+
         // JIT compile the entry point
         var jitResult = Tier0JIT.CompileMethod(assemblyId, entryPointToken);
         if (!jitResult.Success || jitResult.CodeAddress == null)
@@ -127,14 +140,16 @@ public static unsafe class NetExecutable
 
         // Set up user address space
         // We need to create a startup stub that:
-        // 1. Calls Main()
-        // 2. Calls exit(return_value)
+        // 1. If Main takes args: load args into RCX
+        // 2. Calls Main()
+        // 3. Calls exit(return_value)
         //
         // Layout:
-        //   UserCodeBase + 0:    startup stub (16 bytes)
-        //   UserCodeBase + 16:   JIT'd Main() code
+        //   UserCodeBase + 0:    startup stub (32 bytes with args, 16 bytes without)
+        //   UserCodeBase + StubSize: JIT'd Main() code
 
-        const int StubSize = 16;
+        // Stub size depends on whether we need to pass args
+        int StubSize = mainSigInfo.TakesStringArrayArg ? 32 : 16;
         ulong totalCodeSize = (ulong)StubSize + (ulong)jitResult.CodeSize;
         ulong codePages = (totalCodeSize + 4095) / 4096;
 
@@ -168,36 +183,118 @@ public static unsafe class NetExecutable
                 page[j] = 0;
         }
 
+        // Map all code pages into user space first (before creating data region)
+        ulong userCodeAddr = UserCodeBase;
+        for (ulong i = 0; i < codePages; i++)
+        {
+            // Map into user space with execute permission (no NoExecute flag)
+            AddressSpace.MapUserPage(proc->PageTableRoot, userCodeAddr + i * 4096, physPages[i],
+                PageFlags.Present | PageFlags.User);
+        }
+
+        // Initialize user data region for managed objects (strings, arrays)
+        UserDataAllocator dataAlloc;
+        if (!InitUserDataRegion(proc, out dataAlloc))
+        {
+            DebugConsole.WriteLine("[NetExec] Failed to init user data region");
+            return -Errno.ENOMEM;
+        }
+
+        // Set up user stack (and create args array if needed)
+        ulong argsArrayAddr;
+        ulong userRsp = SetupUserStack(proc, argv, envp, mainSigInfo.TakesStringArrayArg,
+                                        ref dataAlloc, out argsArrayAddr);
+        if (userRsp == 0)
+        {
+            DebugConsole.WriteLine("[NetExec] Failed to set up stack");
+            return -Errno.ENOMEM;
+        }
+
         // Write startup stub to first page
-        // Stub: call Main; mov edi,eax; mov eax,60; syscall; ud2
         byte* stubPage = (byte*)VirtualMemory.PhysToVirt(physPages[0]);
 
-        // call rel32 (E8 xx xx xx xx) - call Main at offset 16
-        // Displacement is from end of instruction (offset 5) to target (offset 16) = 11
-        stubPage[0] = 0xE8;
-        stubPage[1] = 0x0B; // 11 = StubSize - 5
-        stubPage[2] = 0x00;
-        stubPage[3] = 0x00;
-        stubPage[4] = 0x00;
+        if (mainSigInfo.TakesStringArrayArg)
+        {
+            // Stub with args (32 bytes):
+            // movabs rcx, <args_addr>  ; 48 B9 <imm64>  - load args array into first param
+            // call rel32               ; E8 <rel32>     - call Main
+            // mov edi, eax             ; 89 C7          - move return value to exit arg
+            // mov eax, 60              ; B8 3C 00 00 00 - SYS_EXIT
+            // syscall                  ; 0F 05
+            // ud2                      ; 0F 0B
 
-        // mov edi, eax (89 C7) - move return value to first arg of exit
-        stubPage[5] = 0x89;
-        stubPage[6] = 0xC7;
+            int pos = 0;
 
-        // mov eax, 60 (B8 3C 00 00 00) - SYS_EXIT
-        stubPage[7] = 0xB8;
-        stubPage[8] = 0x3C;
-        stubPage[9] = 0x00;
-        stubPage[10] = 0x00;
-        stubPage[11] = 0x00;
+            // movabs rcx, imm64 (48 B9 + 8-byte immediate)
+            stubPage[pos++] = 0x48;
+            stubPage[pos++] = 0xB9;
+            *(ulong*)(stubPage + pos) = argsArrayAddr;
+            pos += 8;
 
-        // syscall (0F 05)
-        stubPage[12] = 0x0F;
-        stubPage[13] = 0x05;
+            // call rel32 (E8 xx xx xx xx)
+            // Displacement from end of call instruction to Main
+            // call is at position 10-14, ends at 15, Main is at StubSize (32)
+            // displacement = 32 - 15 = 17
+            stubPage[pos++] = 0xE8;
+            int callDisp = StubSize - (pos + 4);  // displacement = target - (current + 4)
+            *(int*)(stubPage + pos) = callDisp;
+            pos += 4;
 
-        // ud2 (0F 0B) - trap if syscall returns (shouldn't happen)
-        stubPage[14] = 0x0F;
-        stubPage[15] = 0x0B;
+            // mov edi, eax (89 C7)
+            stubPage[pos++] = 0x89;
+            stubPage[pos++] = 0xC7;
+
+            // mov eax, 60 (B8 3C 00 00 00)
+            stubPage[pos++] = 0xB8;
+            stubPage[pos++] = 0x3C;
+            stubPage[pos++] = 0x00;
+            stubPage[pos++] = 0x00;
+            stubPage[pos++] = 0x00;
+
+            // syscall (0F 05)
+            stubPage[pos++] = 0x0F;
+            stubPage[pos++] = 0x05;
+
+            // ud2 (0F 0B)
+            stubPage[pos++] = 0x0F;
+            stubPage[pos++] = 0x0B;
+        }
+        else
+        {
+            // Stub without args (16 bytes):
+            // call rel32               ; E8 <rel32>     - call Main
+            // mov edi, eax             ; 89 C7          - move return value to exit arg
+            // mov eax, 60              ; B8 3C 00 00 00 - SYS_EXIT
+            // syscall                  ; 0F 05
+            // ud2                      ; 0F 0B
+
+            // call rel32 (E8 xx xx xx xx) - call Main at offset 16
+            // Displacement is from end of instruction (offset 5) to target (offset 16) = 11
+            stubPage[0] = 0xE8;
+            stubPage[1] = 0x0B; // 11 = StubSize - 5
+            stubPage[2] = 0x00;
+            stubPage[3] = 0x00;
+            stubPage[4] = 0x00;
+
+            // mov edi, eax (89 C7)
+            stubPage[5] = 0x89;
+            stubPage[6] = 0xC7;
+
+            // mov eax, 60 (B8 3C 00 00 00) - SYS_EXIT
+            stubPage[7] = 0xB8;
+            stubPage[8] = 0x3C;
+            stubPage[9] = 0x00;
+            stubPage[10] = 0x00;
+            stubPage[11] = 0x00;
+
+            // syscall (0F 05)
+            stubPage[12] = 0x0F;
+            stubPage[13] = 0x05;
+
+            // ud2 (0F 0B)
+            stubPage[14] = 0x0F;
+            stubPage[15] = 0x0B;
+        }
 
         // Copy JIT'd Main code after stub
         byte* src = (byte*)jitResult.CodeAddress;
@@ -208,23 +305,6 @@ public static unsafe class NetExecutable
             int pageOffset = destOffset % 4096;
             byte* dstPage = (byte*)VirtualMemory.PhysToVirt(physPages[pageIndex]);
             dstPage[pageOffset] = src[offset];
-        }
-
-        // Map all code pages into user space
-        ulong userCodeAddr = UserCodeBase;
-        for (ulong i = 0; i < codePages; i++)
-        {
-            // Map into user space with execute permission (no NoExecute flag)
-            AddressSpace.MapUserPage(proc->PageTableRoot, userCodeAddr + i * 4096, physPages[i],
-                PageFlags.Present | PageFlags.User);
-        }
-
-        // Set up user stack
-        ulong userRsp = SetupUserStack(proc, argv, envp);
-        if (userRsp == 0)
-        {
-            DebugConsole.WriteLine("[NetExec] Failed to set up stack");
-            return -Errno.ENOMEM;
         }
 
         // Update process name from filename
@@ -258,6 +338,90 @@ public static unsafe class NetExecutable
 
         // Should never return
         return -Errno.ENOEXEC;
+    }
+
+    /// <summary>
+    /// Information about the Main method signature
+    /// </summary>
+    private struct MainSignatureInfo
+    {
+        public bool TakesStringArrayArg;  // Main(string[] args)
+        public bool ReturnsInt;           // int Main() vs void Main()
+    }
+
+    /// <summary>
+    /// Analyze the entry point's signature to determine if it takes string[] args
+    /// </summary>
+    private static MainSignatureInfo GetMainSignatureInfo(LoadedAssembly* asm, uint entryPointToken)
+    {
+        var info = new MainSignatureInfo { TakesStringArrayArg = false, ReturnsInt = true };
+
+        if (asm == null)
+            return info;
+
+        // Get method RID from token
+        uint methodRid = entryPointToken & 0x00FFFFFF;
+        if (methodRid == 0)
+            return info;
+
+        // Get signature blob index
+        uint sigIdx = MetadataReader.GetMethodDefSignature(ref asm->Tables, ref asm->Sizes, methodRid);
+        if (sigIdx == 0)
+            return info;
+
+        // Get the signature blob
+        uint sigLen;
+        byte* sig = MetadataReader.GetBlob(ref asm->Metadata, sigIdx, out sigLen);
+        if (sig == null || sigLen < 3)
+            return info;
+
+        int pos = 0;
+
+        // Read calling convention (byte 0)
+        // 0x00 = default (static), 0x20 = hasthis (instance)
+        byte callingConv = sig[pos++];
+
+        // Read parameter count (compressed uint, usually 1 byte for small counts)
+        uint paramCount = 0;
+        if (sig[pos] < 0x80)
+        {
+            paramCount = sig[pos++];
+        }
+        else if (sig[pos] < 0xC0)
+        {
+            paramCount = (uint)(((sig[pos] & 0x3F) << 8) | sig[pos + 1]);
+            pos += 2;
+        }
+        else
+        {
+            // 4-byte encoding (unlikely for Main)
+            paramCount = (uint)(((sig[pos] & 0x1F) << 24) | (sig[pos + 1] << 16) | (sig[pos + 2] << 8) | sig[pos + 3]);
+            pos += 4;
+        }
+
+        // Read return type
+        byte retType = sig[pos++];
+        info.ReturnsInt = (retType == ELEMENT_TYPE_I4);
+
+        // Check if Main takes string[] args (1 parameter that is SZARRAY of STRING)
+        if (paramCount == 1 && pos + 1 < sigLen)
+        {
+            // Parameter type should be ELEMENT_TYPE_SZARRAY followed by ELEMENT_TYPE_STRING
+            if (sig[pos] == ELEMENT_TYPE_SZARRAY && sig[pos + 1] == ELEMENT_TYPE_STRING)
+            {
+                info.TakesStringArrayArg = true;
+            }
+        }
+
+        DebugConsole.Write("[NetExec] Main signature: params=");
+        DebugConsole.WriteDecimal(paramCount);
+        DebugConsole.Write(", returnsInt=");
+        DebugConsole.WriteDecimal(info.ReturnsInt ? 1u : 0u);
+        DebugConsole.Write(", takesArgs=");
+        DebugConsole.WriteDecimal(info.TakesStringArrayArg ? 1u : 0u);
+        DebugConsole.WriteLine();
+
+        return info;
     }
 
     /// <summary>
@@ -364,6 +528,10 @@ public static unsafe class NetExecutable
         {
             return BootInfoAccess.FindFile("HelloApp.dll", out size);
         }
+        if (StringEquals(filename, filenameLen, "ArgsApp.dll"))
+        {
+            return BootInfoAccess.FindFile("ArgsApp.dll", out size);
+        }
 
         // For other files, try using GetLoadedFiles
         uint count;
@@ -462,10 +630,181 @@ public static unsafe class NetExecutable
     }
 
     /// <summary>
+    /// State for user-space data allocation
+    /// </summary>
+    private struct UserDataAllocator
+    {
+        public ulong PageTableRoot;
+        public ulong VirtualBase;
+        public ulong PhysicalBase;
+        public ulong CurrentOffset;
+        public ulong TotalSize;
+    }
+
+    /// <summary>
+    /// Initialize user-space data region for allocating managed objects
+    /// </summary>
+    private static bool InitUserDataRegion(Process* proc, out UserDataAllocator allocator)
+    {
+        allocator = default;
+
+        // Allocate a single page for user data (strings, arrays, etc.)
+        ulong physPage = PageAllocator.AllocatePage();
+        if (physPage == 0)
+            return false;
+
+        // Zero the page
+        byte* page = (byte*)VirtualMemory.PhysToVirt(physPage);
+        for (int i = 0; i < 4096; i++)
+            page[i] = 0;
+
+        // Map into user space
+        AddressSpace.MapUserPage(proc->PageTableRoot, UserDataBase, physPage,
+            PageFlags.Present | PageFlags.User | PageFlags.Writable | PageFlags.NoExecute);
+
+        allocator.PageTableRoot = proc->PageTableRoot;
+        allocator.VirtualBase = UserDataBase;
+        allocator.PhysicalBase = physPage;
+        allocator.CurrentOffset = 0;
+        allocator.TotalSize = 4096;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Allocate space in user data region and return both virtual and physical addresses
+    /// </summary>
+    private static ulong AllocUserData(ref UserDataAllocator alloc, ulong size, out byte* physAddr)
+    {
+        physAddr = null;
+
+        // Align to 8 bytes
+        size = (size + 7) & ~7UL;
+
+        if (alloc.CurrentOffset + size > alloc.TotalSize)
+            return 0; // Out of space
+
+        ulong virtAddr = alloc.VirtualBase + alloc.CurrentOffset;
+        physAddr = (byte*)VirtualMemory.PhysToVirt(alloc.PhysicalBase) + alloc.CurrentOffset;
+        alloc.CurrentOffset += size;
+
+        return virtAddr;
+    }
+
+    /// <summary>
+    /// Create a managed String object in user space from a null-terminated byte array (UTF-8)
+    /// Returns the user-space virtual address of the String object
+    /// </summary>
+    private static ulong CreateUserString(ref UserDataAllocator alloc, byte* utf8Str, int utf8Len)
+    {
+        if (utf8Str == null)
+            return 0;
+
+        // For simplicity, assume ASCII (1:1 mapping to UTF-16)
+        // String layout: [MethodTable* (8)] [int _length (4)] [char _firstChar... (2*len)] [null (2)]
+        int charCount = utf8Len;
+        ulong size = (ulong)(8 + 4 + (charCount + 1) * 2);
+
+        byte* physAddr;
+        ulong virtAddr = AllocUserData(ref alloc, size, out physAddr);
+        if (virtAddr == 0)
+            return 0;
+
+        // Get String MethodTable
+        void* stringMT = MetadataReader.GetStringMethodTable();
+        if (stringMT == null)
+        {
+            DebugConsole.WriteLine("[NetExec] String MethodTable not initialized!");
+            return 0;
+        }
+
+        // Write String object
+        *(void**)physAddr = stringMT;              // MethodTable*
+        *(int*)(physAddr + 8) = charCount;         // _length
+        ushort* chars = (ushort*)(physAddr + 12);  // _firstChar
+        for (int i = 0; i < charCount; i++)
+        {
+            chars[i] = utf8Str[i];  // ASCII to UTF-16
+        }
+        chars[charCount] = 0;  // null terminator
+
+        return virtAddr;
+    }
+
+    /// <summary>
+    /// Create a managed string[] array in user space from argv
+    /// Returns the user-space virtual address of the array
+    /// </summary>
+    private static ulong CreateUserStringArray(ref UserDataAllocator alloc, byte** argv, int argc)
+    {
+        // First, create all the String objects and store their virtual addresses
+        ulong* stringAddrs = stackalloc ulong[argc];
+        for (int i = 0; i < argc; i++)
+        {
+            if (argv[i] == null)
+            {
+                stringAddrs[i] = 0;
+                continue;
+            }
+
+            // Get string length
+            int len = 0;
+            while (argv[i][len] != 0 && len < 4096)
+                len++;
+
+            stringAddrs[i] = CreateUserString(ref alloc, argv[i], len);
+        }
+
+        // Now create the string[] array
+        // Array layout: [MethodTable* (8)] [int _length (4)] [padding (4)] [elements (8*argc)]
+        ulong arraySize = (ulong)(16 + argc * 8);
+
+        byte* physAddr;
+        ulong virtAddr = AllocUserData(ref alloc, arraySize, out physAddr);
+        if (virtAddr == 0)
+            return 0;
+
+        // Get string[] MethodTable
+        MethodTable* stringMT = (MethodTable*)MetadataReader.GetStringMethodTable();
+        if (stringMT == null)
+            return 0;
+
+        MethodTable* arrayMT = AssemblyLoader.GetOrCreateArrayMethodTable(stringMT);
+        if (arrayMT == null)
+        {
+            DebugConsole.WriteLine("[NetExec] Failed to get string[] MethodTable");
+            return 0;
+        }
+
+        // Write array header
+        *(MethodTable**)physAddr = arrayMT;        // MethodTable*
+        *(int*)(physAddr + 8) = argc;              // Length
+        // [12-15] is padding
+
+        // Write element pointers
+        ulong* elements = (ulong*)(physAddr + 16);
+        for (int i = 0; i < argc; i++)
+        {
+            elements[i] = stringAddrs[i];
+        }
+
+        DebugConsole.Write("[NetExec] Created string[] at 0x");
+        DebugConsole.WriteHex(virtAddr);
+        DebugConsole.Write(" with ");
+        DebugConsole.WriteDecimal((uint)argc);
+        DebugConsole.WriteLine(" elements");
+
+        return virtAddr;
+    }
+
+    /// <summary>
     /// Set up user stack with argc, argv, envp
     /// </summary>
-    private static ulong SetupUserStack(Process* proc, byte** argv, byte** envp)
+    private static ulong SetupUserStack(Process* proc, byte** argv, byte** envp,
+                                         bool needsArgs, ref UserDataAllocator dataAlloc, out ulong argsArrayAddr)
     {
+        argsArrayAddr = 0;
+
         // Allocate stack pages (8MB stack)
         const ulong stackSize = 8 * 1024 * 1024;
         const ulong stackPages = stackSize / 4096;
@@ -487,10 +826,7 @@ public static unsafe class NetExecutable
                 PageFlags.Present | PageFlags.User | PageFlags.Writable | PageFlags.NoExecute);
         }
 
-        // Set up initial stack pointer
-        ulong rsp = stackTop - 8; // Leave room for alignment
-
-        // Count argc and copy strings to stack
+        // Count argc
         int argc = 0;
         if (argv != null)
         {
@@ -505,24 +841,22 @@ public static unsafe class NetExecutable
                 envc++;
         }
 
-        // For simplicity, set up minimal stack:
-        // RSP -> argc (8 bytes)
-        //        argv[0] pointer
-        //        argv[1] pointer
-        //        ...
-        //        NULL
-        //        envp[0] pointer
-        //        ...
-        //        NULL
-        //        string data...
+        // If Main needs args, create the managed string[] array
+        if (needsArgs && argc > 0)
+        {
+            argsArrayAddr = CreateUserStringArray(ref dataAlloc, argv, argc);
+            DebugConsole.Write("[NetExec] Args array at 0x");
+            DebugConsole.WriteHex(argsArrayAddr);
+            DebugConsole.WriteLine();
+        }
+        else if (needsArgs)
+        {
+            // Main takes args but none provided - create empty array
+            argsArrayAddr = CreateUserStringArray(ref dataAlloc, null, 0);
+        }
 
-        // For now, just set up a simple stack with argc=0
-        // More complex argv/envp handling can be added later
-        // We need to write to the stack through the physical mapping
-        // but the stack is mapped into user space, not kernel space yet
-        // So we write via physical address
-
-        // Align to 16 bytes
+        // Set up initial stack pointer - align to 16 bytes
+        ulong rsp = stackTop - 8;
         rsp &= ~0xFUL;
 
         proc->StackTop = stackTop;
@@ -626,6 +960,107 @@ public static unsafe class NetExecutable
 
         // Call Exec - this should not return on success
         long result = Exec(proc, path, null, null);
+
+        // If we get here, exec failed
+        DebugConsole.Write("[NetExec] Exec failed with error ");
+        DebugConsole.WriteDecimal((int)(-result));
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Test execve with arguments by exec'ing ArgsApp.dll
+    /// ArgsApp.Main(string[] args) returns args.Length
+    /// </summary>
+    public static void TestExecArgsApp()
+    {
+        DebugConsole.WriteLine("[NetExec] Testing execve with ArgsApp.dll (with args)...");
+
+        // Create a new process
+        var proc = ProcessTable.Allocate();
+        if (proc == null)
+        {
+            DebugConsole.WriteLine("[NetExec] Failed to allocate process");
+            return;
+        }
+
+        DebugConsole.Write("[NetExec] Created process PID ");
+        DebugConsole.WriteDecimal(proc->Pid);
+        DebugConsole.WriteLine();
+
+        // Set up process attributes
+        proc->ParentPid = 0;
+        proc->Uid = 0;
+        proc->Gid = 0;
+        proc->Euid = 0;
+        proc->Egid = 0;
+        proc->State = ProcessState.Running;
+
+        // Initialize file descriptor table
+        proc->FdTableSize = 64;
+        proc->FdTable = (FileDescriptor*)HeapAllocator.Alloc((ulong)(proc->FdTableSize * sizeof(FileDescriptor)));
+        if (proc->FdTable != null)
+        {
+            for (int i = 0; i < proc->FdTableSize; i++)
+                proc->FdTable[i] = default;
+
+            proc->FdTable[0].Type = FileType.Terminal;
+            proc->FdTable[0].Flags = FileFlags.ReadOnly;
+            proc->FdTable[0].RefCount = 1;
+
+            proc->FdTable[1].Type = FileType.Terminal;
+            proc->FdTable[1].Flags = FileFlags.WriteOnly;
+            proc->FdTable[1].RefCount = 1;
+
+            proc->FdTable[2].Type = FileType.Terminal;
+            proc->FdTable[2].Flags = FileFlags.WriteOnly;
+            proc->FdTable[2].RefCount = 1;
+        }
+
+        // Associate current thread with process
+        var currentThread = Scheduler.CurrentThread;
+        if (currentThread != null)
+        {
+            currentThread->Process = proc;
+        }
+
+        // Build path string
+        byte* path = stackalloc byte[16];
+        path[0] = (byte)'A';
+        path[1] = (byte)'r';
+        path[2] = (byte)'g';
+        path[3] = (byte)'s';
+        path[4] = (byte)'A';
+        path[5] = (byte)'p';
+        path[6] = (byte)'p';
+        path[7] = (byte)'.';
+        path[8] = (byte)'d';
+        path[9] = (byte)'l';
+        path[10] = (byte)'l';
+        path[11] = 0;
+
+        // Build argument array with 3 arguments
+        // argv[0] = "ArgsApp", argv[1] = "hello", argv[2] = "world"
+        byte* arg0 = stackalloc byte[8];
+        arg0[0] = (byte)'A'; arg0[1] = (byte)'r'; arg0[2] = (byte)'g'; arg0[3] = (byte)'s';
+        arg0[4] = (byte)'A'; arg0[5] = (byte)'p'; arg0[6] = (byte)'p'; arg0[7] = 0;
+
+        byte* arg1 = stackalloc byte[6];
+        arg1[0] = (byte)'h'; arg1[1] = (byte)'e'; arg1[2] = (byte)'l';
+        arg1[3] = (byte)'l'; arg1[4] = (byte)'o'; arg1[5] = 0;
+
+        byte* arg2 = stackalloc byte[6];
+        arg2[0] = (byte)'w'; arg2[1] = (byte)'o'; arg2[2] = (byte)'r';
+        arg2[3] = (byte)'l'; arg2[4] = (byte)'d'; arg2[5] = 0;
+
+        byte** argv = stackalloc byte*[4];
+        argv[0] = arg0;
+        argv[1] = arg1;
+        argv[2] = arg2;
+        argv[3] = null;  // NULL terminator
+
+        // Call Exec with arguments
+        // Should return 3 (args.Length) as exit code
+        long result = Exec(proc, path, argv, null);
 
         // If we get here, exec failed
         DebugConsole.Write("[NetExec] Exec failed with error ");

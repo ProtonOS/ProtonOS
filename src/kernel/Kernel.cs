@@ -358,12 +358,16 @@ public static unsafe class Kernel
         // Run the AppTest assembly (application-level tests after drivers loaded)
         RunAppTestAssembly();
 
-        // Run syscall tests in Ring 3 first, then test execve
-        // (execve replaces process, so it must be last)
+        // Run syscall tests in Ring 3 (comprehensive syscall validation)
         Process.UserModeTests.RunSyscallTests();
 
-        // Note: The above runs syscall tests then exits. HelloApp execve test
-        // can be run by calling: Process.NetExecutable.TestExecHelloApp();
+        // Note: execve tests are available via:
+        // - Process.NetExecutable.TestExecHelloApp() - Main() returns 42
+        // - Process.NetExecutable.TestExecArgsApp()  - Main(string[] args) returns args.Length
+
+        // Note: If execve succeeds, we never get here
+        // The syscall tests can be run instead by uncommenting:
+        // Process.UserModeTests.RunSyscallTests();
 
         // Enable preemptive scheduling
         Scheduler.EnableScheduling();
