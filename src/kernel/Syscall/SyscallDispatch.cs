@@ -145,6 +145,9 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_DUP2] = SysDup2;
         _handlers[SyscallNumbers.SYS_GETCWD] = SysGetcwd;
         _handlers[SyscallNumbers.SYS_CHDIR] = SysChdir;
+        _handlers[SyscallNumbers.SYS_MKDIR] = SysMkdir;
+        _handlers[SyscallNumbers.SYS_RMDIR] = SysRmdir;
+        _handlers[SyscallNumbers.SYS_UNLINK] = SysUnlink;
     }
 
     /// <summary>
@@ -1088,6 +1091,40 @@ public static unsafe class SyscallDispatch
         proc->Cwd[len] = 0;
 
         return 0;
+    }
+
+    private static long SysMkdir(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        int mode = (int)arg1;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        return VFS.Mkdir(path, mode);
+    }
+
+    private static long SysRmdir(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        return VFS.Rmdir(path);
+    }
+
+    private static long SysUnlink(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        return VFS.Unlink(path);
     }
 
     // ==================== User/Group Identity ====================

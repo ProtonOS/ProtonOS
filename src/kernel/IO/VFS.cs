@@ -46,6 +46,24 @@ public unsafe struct FilesystemOps
     /// Check if path exists: bool Exists(void* fsContext, byte* path)
     /// </summary>
     public delegate* unmanaged<void*, byte*, bool> Exists;
+
+    /// <summary>
+    /// Create directory: int Mkdir(void* fsContext, byte* path, int mode)
+    /// Returns 0 on success, negative errno on error
+    /// </summary>
+    public delegate* unmanaged<void*, byte*, int, int> Mkdir;
+
+    /// <summary>
+    /// Remove directory: int Rmdir(void* fsContext, byte* path)
+    /// Returns 0 on success, negative errno on error
+    /// </summary>
+    public delegate* unmanaged<void*, byte*, int> Rmdir;
+
+    /// <summary>
+    /// Remove file: int Unlink(void* fsContext, byte* path)
+    /// Returns 0 on success, negative errno on error
+    /// </summary>
+    public delegate* unmanaged<void*, byte*, int> Unlink;
 }
 
 /// <summary>
@@ -323,6 +341,139 @@ public static unsafe class VFS
         vfs->InUse = false;
 
         return result;
+    }
+
+    /// <summary>
+    /// Create a directory
+    /// </summary>
+    /// <param name="path">Directory path</param>
+    /// <param name="mode">Creation mode</param>
+    /// <returns>0 on success, negative errno on error</returns>
+    public static int Mkdir(byte* path, int mode)
+    {
+        if (!_initialized || path == null)
+            return -Errno.EINVAL;
+
+        // Get path length
+        int pathLen = 0;
+        while (path[pathLen] != 0 && pathLen < 4095)
+            pathLen++;
+
+        if (pathLen == 0)
+            return -Errno.EINVAL;
+
+        // Find the filesystem for this path
+        MountPoint* mount = null;
+        int mountPrefixLen = 0;
+
+        for (int i = 0; i < MaxMounts; i++)
+        {
+            if (!_mounts[i].InUse)
+                continue;
+
+            if (PathStartsWith(path, pathLen, _mounts[i].Path, _mounts[i].PathLength))
+            {
+                if (_mounts[i].PathLength > mountPrefixLen)
+                {
+                    mount = &_mounts[i];
+                    mountPrefixLen = _mounts[i].PathLength;
+                }
+            }
+        }
+
+        if (mount == null || mount->Ops.Mkdir == null)
+            return -Errno.ENOSYS;
+
+        byte* relativePath = GetRelativePath(path, pathLen, mountPrefixLen);
+        return mount->Ops.Mkdir(mount->FsContext, relativePath, mode);
+    }
+
+    /// <summary>
+    /// Remove a directory
+    /// </summary>
+    /// <param name="path">Directory path</param>
+    /// <returns>0 on success, negative errno on error</returns>
+    public static int Rmdir(byte* path)
+    {
+        if (!_initialized || path == null)
+            return -Errno.EINVAL;
+
+        // Get path length
+        int pathLen = 0;
+        while (path[pathLen] != 0 && pathLen < 4095)
+            pathLen++;
+
+        if (pathLen == 0)
+            return -Errno.EINVAL;
+
+        // Find the filesystem for this path
+        MountPoint* mount = null;
+        int mountPrefixLen = 0;
+
+        for (int i = 0; i < MaxMounts; i++)
+        {
+            if (!_mounts[i].InUse)
+                continue;
+
+            if (PathStartsWith(path, pathLen, _mounts[i].Path, _mounts[i].PathLength))
+            {
+                if (_mounts[i].PathLength > mountPrefixLen)
+                {
+                    mount = &_mounts[i];
+                    mountPrefixLen = _mounts[i].PathLength;
+                }
+            }
+        }
+
+        if (mount == null || mount->Ops.Rmdir == null)
+            return -Errno.ENOSYS;
+
+        byte* relativePath = GetRelativePath(path, pathLen, mountPrefixLen);
+        return mount->Ops.Rmdir(mount->FsContext, relativePath);
+    }
+
+    /// <summary>
+    /// Remove a file (unlink)
+    /// </summary>
+    /// <param name="path">File path</param>
+    /// <returns>0 on success, negative errno on error</returns>
+    public static int Unlink(byte* path)
+    {
+        if (!_initialized || path == null)
+            return -Errno.EINVAL;
+
+        // Get path length
+        int pathLen = 0;
+        while (path[pathLen] != 0 && pathLen < 4095)
+            pathLen++;
+
+        if (pathLen == 0)
+            return -Errno.EINVAL;
+
+        // Find the filesystem for this path
+        MountPoint* mount = null;
+        int mountPrefixLen = 0;
+
+        for (int i = 0; i < MaxMounts; i++)
+        {
+            if (!_mounts[i].InUse)
+                continue;
+
+            if (PathStartsWith(path, pathLen, _mounts[i].Path, _mounts[i].PathLength))
+            {
+                if (_mounts[i].PathLength > mountPrefixLen)
+                {
+                    mount = &_mounts[i];
+                    mountPrefixLen = _mounts[i].PathLength;
+                }
+            }
+        }
+
+        if (mount == null || mount->Ops.Unlink == null)
+            return -Errno.ENOSYS;
+
+        byte* relativePath = GetRelativePath(path, pathLen, mountPrefixLen);
+        return mount->Ops.Unlink(mount->FsContext, relativePath);
     }
 
     // Helper methods

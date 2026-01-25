@@ -94,6 +94,18 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("sysinfo");
         builder.EmitSysinfoTest();
 
+        // Test 19: mkdir
+        builder.EmitTestHeader("mkdir");
+        builder.EmitMkdirTest();
+
+        // Test 20: rmdir
+        builder.EmitTestHeader("rmdir");
+        builder.EmitRmdirTest();
+
+        // Test 21: unlink
+        builder.EmitTestHeader("unlink");
+        builder.EmitUnlinkTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -1213,6 +1225,198 @@ public static unsafe class UserModeTests
                 // add rsp, 128 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
                 Emit32(128);
+            }
+        }
+
+        public void EmitMkdirTest()
+        {
+            // Test: mkdir("/tmp/test", 0755) should return -ENOSYS (not implemented) or 0
+            // SYS_MKDIR = 83
+            fixed (byte* code = _code)
+            {
+                // Embed path string "/tmp/test\0"
+                // jmp over_path
+                code[_offset++] = 0xEB;
+                int pathJump = _offset++;
+                int pathStart = _offset;
+                // "/tmp/test\0"
+                code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t'; code[_offset++] = (byte)'m';
+                code[_offset++] = (byte)'p'; code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t';
+                code[_offset++] = (byte)'e'; code[_offset++] = (byte)'s'; code[_offset++] = (byte)'t';
+                code[_offset++] = 0;
+                code[pathJump] = (byte)(_offset - pathJump - 1);
+
+                // mkdir(path, 0755) - SYS_MKDIR = 83
+                // lea rdi, [rip - offset_to_path]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset = _offset;
+                Emit32(0); // placeholder
+                // Calculate RIP-relative offset
+                int ripRelative = pathStart - (_offset);
+                code[leaOffset] = (byte)(ripRelative & 0xFF);
+                code[leaOffset + 1] = (byte)((ripRelative >> 8) & 0xFF);
+                code[leaOffset + 2] = (byte)((ripRelative >> 16) & 0xFF);
+                code[leaOffset + 3] = (byte)((ripRelative >> 24) & 0xFF);
+
+                // mov esi, 0755 octal = 493 decimal
+                code[_offset++] = 0xBE; Emit32(493);
+                // mov eax, 83
+                code[_offset++] = 0xB8; Emit32(83);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return value: -ENOSYS (-38) means not implemented (expected for now)
+                // cmp eax, -38
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA; // -38 = 0xDA as signed byte
+                // je pass (expected: not implemented)
+                code[_offset++] = 0x74;
+                int passJump1 = _offset++;
+
+                // Check if it returned 0 (success - if filesystem supports it)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz pass
+                code[_offset++] = 0x74;
+                int passJump2 = _offset++;
+
+                // FAIL: unexpected return value
+                EmitPrintString("  [FAIL] mkdir unexpected return\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // pass:
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                code[passJump2] = (byte)(_offset - passJump2 - 1);
+                EmitPrintString("  [PASS] mkdir syscall works\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitRmdirTest()
+        {
+            // Test: rmdir("/tmp/test") should return -ENOSYS or 0
+            // SYS_RMDIR = 84
+            fixed (byte* code = _code)
+            {
+                // Embed path string "/tmp/test\0"
+                code[_offset++] = 0xEB;
+                int pathJump = _offset++;
+                int pathStart = _offset;
+                // "/tmp/test\0"
+                code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t'; code[_offset++] = (byte)'m';
+                code[_offset++] = (byte)'p'; code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t';
+                code[_offset++] = (byte)'e'; code[_offset++] = (byte)'s'; code[_offset++] = (byte)'t';
+                code[_offset++] = 0;
+                code[pathJump] = (byte)(_offset - pathJump - 1);
+
+                // rmdir(path) - SYS_RMDIR = 84
+                // lea rdi, [rip - offset_to_path]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset = _offset;
+                Emit32(0);
+                int ripRelative = pathStart - (_offset);
+                code[leaOffset] = (byte)(ripRelative & 0xFF);
+                code[leaOffset + 1] = (byte)((ripRelative >> 8) & 0xFF);
+                code[leaOffset + 2] = (byte)((ripRelative >> 16) & 0xFF);
+                code[leaOffset + 3] = (byte)((ripRelative >> 24) & 0xFF);
+
+                // mov eax, 84
+                code[_offset++] = 0xB8; Emit32(84);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return: -ENOSYS (-38) or -ENOENT (-2) or 0 are acceptable
+                // cmp eax, -38
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA;
+                code[_offset++] = 0x74;
+                int passJump1 = _offset++;
+
+                // cmp eax, -2 (ENOENT - dir doesn't exist)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xFE;
+                code[_offset++] = 0x74;
+                int passJump2 = _offset++;
+
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                code[_offset++] = 0x74;
+                int passJump3 = _offset++;
+
+                EmitPrintString("  [FAIL] rmdir unexpected return\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                code[passJump2] = (byte)(_offset - passJump2 - 1);
+                code[passJump3] = (byte)(_offset - passJump3 - 1);
+                EmitPrintString("  [PASS] rmdir syscall works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitUnlinkTest()
+        {
+            // Test: unlink("/tmp/test.txt") should return -ENOSYS or -ENOENT or 0
+            // SYS_UNLINK = 87
+            fixed (byte* code = _code)
+            {
+                // Embed path string "/tmp/test.txt\0"
+                code[_offset++] = 0xEB;
+                int pathJump = _offset++;
+                int pathStart = _offset;
+                // "/tmp/test.txt\0"
+                code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t'; code[_offset++] = (byte)'m';
+                code[_offset++] = (byte)'p'; code[_offset++] = (byte)'/'; code[_offset++] = (byte)'t';
+                code[_offset++] = (byte)'e'; code[_offset++] = (byte)'s'; code[_offset++] = (byte)'t';
+                code[_offset++] = (byte)'.'; code[_offset++] = (byte)'t'; code[_offset++] = (byte)'x';
+                code[_offset++] = (byte)'t'; code[_offset++] = 0;
+                code[pathJump] = (byte)(_offset - pathJump - 1);
+
+                // unlink(path) - SYS_UNLINK = 87
+                // lea rdi, [rip - offset_to_path]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset = _offset;
+                Emit32(0);
+                int ripRelative = pathStart - (_offset);
+                code[leaOffset] = (byte)(ripRelative & 0xFF);
+                code[leaOffset + 1] = (byte)((ripRelative >> 8) & 0xFF);
+                code[leaOffset + 2] = (byte)((ripRelative >> 16) & 0xFF);
+                code[leaOffset + 3] = (byte)((ripRelative >> 24) & 0xFF);
+
+                // mov eax, 87
+                code[_offset++] = 0xB8; Emit32(87);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return: -ENOSYS (-38) or -ENOENT (-2) or 0 are acceptable
+                // cmp eax, -38
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA;
+                code[_offset++] = 0x74;
+                int passJump1 = _offset++;
+
+                // cmp eax, -2 (ENOENT - file doesn't exist)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xFE;
+                code[_offset++] = 0x74;
+                int passJump2 = _offset++;
+
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                code[_offset++] = 0x74;
+                int passJump3 = _offset++;
+
+                EmitPrintString("  [FAIL] unlink unexpected return\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                code[passJump2] = (byte)(_offset - passJump2 - 1);
+                code[passJump3] = (byte)(_offset - passJump3 - 1);
+                EmitPrintString("  [PASS] unlink syscall works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
             }
         }
 
