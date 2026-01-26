@@ -66,6 +66,9 @@ public static class DDKInit
             // Initialize VFS
             VFS.Initialize();
 
+            // Initialize syscall bridge for filesystem operations
+            SyscallBridge.Initialize();
+
             // Initialize input manager
             InputManager.Initialize();
 

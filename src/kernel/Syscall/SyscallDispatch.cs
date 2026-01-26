@@ -54,6 +54,35 @@ public static unsafe class SyscallDispatch
         _ring3TestExitHandler = null;
     }
 
+    // Directory operation callbacks (set by DDK when filesystem drivers initialize)
+    private static delegate* unmanaged<byte*, int, int> _mkdirHandler;
+    private static delegate* unmanaged<byte*, int> _rmdirHandler;
+    private static delegate* unmanaged<byte*, int> _unlinkHandler;
+
+    /// <summary>
+    /// Register mkdir handler from DDK
+    /// </summary>
+    public static void RegisterMkdirHandler(delegate* unmanaged<byte*, int, int> handler)
+    {
+        _mkdirHandler = handler;
+    }
+
+    /// <summary>
+    /// Register rmdir handler from DDK
+    /// </summary>
+    public static void RegisterRmdirHandler(delegate* unmanaged<byte*, int> handler)
+    {
+        _rmdirHandler = handler;
+    }
+
+    /// <summary>
+    /// Register unlink handler from DDK
+    /// </summary>
+    public static void RegisterUnlinkHandler(delegate* unmanaged<byte*, int> handler)
+    {
+        _unlinkHandler = handler;
+    }
+
     /// <summary>
     /// Initialize the syscall dispatch table
     /// </summary>
@@ -1102,7 +1131,11 @@ public static unsafe class SyscallDispatch
         if (path == null)
             return -Errno.EFAULT;
 
-        return VFS.Mkdir(path, mode);
+        // Call registered DDK handler if available
+        if (_mkdirHandler != null)
+            return _mkdirHandler(path, mode);
+
+        return -Errno.ENOSYS;
     }
 
     private static long SysRmdir(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -1113,7 +1146,11 @@ public static unsafe class SyscallDispatch
         if (path == null)
             return -Errno.EFAULT;
 
-        return VFS.Rmdir(path);
+        // Call registered DDK handler if available
+        if (_rmdirHandler != null)
+            return _rmdirHandler(path);
+
+        return -Errno.ENOSYS;
     }
 
     private static long SysUnlink(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -1124,7 +1161,11 @@ public static unsafe class SyscallDispatch
         if (path == null)
             return -Errno.EFAULT;
 
-        return VFS.Unlink(path);
+        // Call registered DDK handler if available
+        if (_unlinkHandler != null)
+            return _unlinkHandler(path);
+
+        return -Errno.ENOSYS;
     }
 
     // ==================== User/Group Identity ====================
