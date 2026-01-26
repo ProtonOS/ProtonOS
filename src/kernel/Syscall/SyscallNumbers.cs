@@ -27,9 +27,15 @@ public static class SyscallNumbers
     public const int SYS_IOCTL = 16;
     public const int SYS_ACCESS = 21;
     public const int SYS_PIPE = 22;
+    public const int SYS_PREAD64 = 17;
+    public const int SYS_PWRITE64 = 18;
+    public const int SYS_READV = 19;
+    public const int SYS_WRITEV = 20;
     public const int SYS_DUP = 32;
     public const int SYS_DUP2 = 33;
     public const int SYS_FCNTL = 72;
+    public const int SYS_TRUNCATE = 76;
+    public const int SYS_FTRUNCATE = 77;
 
     // ==================== Directory Operations ====================
     public const int SYS_GETDENTS = 78;
@@ -126,6 +132,7 @@ public static class SyscallNumbers
     public const int SYS_ARCH_PRCTL = 158;
     public const int SYS_EXIT_GROUP = 231;
     public const int SYS_GETRANDOM = 318;
+    public const int SYS_DUP3 = 292;
 
     // ==================== Maximum syscall number ====================
     public const int SYS_MAX = 512;

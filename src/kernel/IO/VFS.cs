@@ -64,6 +64,12 @@ public unsafe struct FilesystemOps
     /// Returns 0 on success, negative errno on error
     /// </summary>
     public delegate* unmanaged<void*, byte*, int> Unlink;
+
+    /// <summary>
+    /// Truncate file by handle: int FTruncate(void* fileHandle, long length)
+    /// Returns 0 on success, negative errno on error
+    /// </summary>
+    public delegate* unmanaged<void*, long, int> FTruncate;
 }
 
 /// <summary>
@@ -430,6 +436,27 @@ public static unsafe class VFS
 
         byte* relativePath = GetRelativePath(path, pathLen, mountPrefixLen);
         return mount->Ops.Rmdir(mount->FsContext, relativePath);
+    }
+
+    /// <summary>
+    /// Truncate an open file
+    /// </summary>
+    /// <param name="vfsHandle">VFS file handle</param>
+    /// <param name="length">New length</param>
+    /// <returns>0 on success, negative errno on error</returns>
+    public static int Truncate(int vfsHandle, long length)
+    {
+        if (!_initialized || vfsHandle < 0 || vfsHandle >= MaxOpenFiles)
+            return -Errno.EBADF;
+
+        var vfs = &_openFiles[vfsHandle];
+        if (!vfs->InUse || vfs->Ops == null)
+            return -Errno.EBADF;
+
+        if (vfs->Ops->FTruncate == null)
+            return -Errno.ENOSYS;
+
+        return vfs->Ops->FTruncate(vfs->DriverHandle, length);
     }
 
     /// <summary>

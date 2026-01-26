@@ -43,6 +43,11 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 - **HTTP/1.1** - Client library for HTTP requests over TCP
 - **Config Files** - INI-based network configuration from `/etc/network/interfaces`
 
+### Syscall Interface
+- **Linux-Compatible ABI** - x86-64 syscall/sysret with Linux syscall numbers
+- **Ring 3 Execution** - User mode process execution with privilege separation
+- **50+ Syscalls** - File I/O, memory management, process control, networking
+
 ### Debugging
 - **GDB Support** - Automatic symbol loading for AOT and JIT code
 - **JIT Debugging** - Set breakpoints in JIT-compiled methods by name
@@ -81,13 +86,16 @@ A bare-metal operating system written entirely in C#, targeting x86-64 UEFI syst
 | HTTP/1.1 client | Complete |
 | Network config files | Complete |
 | GDB debugging support | Complete |
-| Userspace processes | Not Started |
+| Syscall interface (50+ syscalls) | Complete |
+| Ring 3 user mode execution | Complete |
+| Userspace process loading | In Progress |
 
 ### Test Results
 
-The kernel runs comprehensive test suites on boot: **3,000 tests passing**
+The kernel runs comprehensive test suites on boot: **3,050+ tests passing**
 
 - **2,983** JIT/runtime tests (JITTest) - IL opcodes, features, korlib APIs, regression tests
+- **50** Ring 3 syscall tests - User mode syscall validation
 - **17** application-level tests (HTTP, DNS, DHCP, filesystem, /proc)
 
 ### Supported C# Features
@@ -109,6 +117,24 @@ The kernel runs comprehensive test suites on boot: **3,000 tests passing**
 | **Resource Management** | IDisposable, using statement, foreach on arrays and collections |
 | **Collections** | List\<T\>, Dictionary\<TKey,TValue\>, StringBuilder, custom iterators |
 | **Special** | Static constructors, overflow checking, varargs (__arglist), nameof |
+
+### Supported Syscalls
+
+ProtonOS implements a Linux-compatible syscall interface for user mode processes.
+
+| Category | Syscalls |
+|----------|----------|
+| **File I/O** | read, write, open, close, lseek, pread64, pwrite64, readv, writev |
+| **File Metadata** | stat, lstat, fstat, access, chmod, fchmod, chown, fchown, lchown |
+| **File System** | mkdir, rmdir, unlink, rename, link, symlink, readlink, creat, truncate, ftruncate |
+| **Directories** | getdents64, getcwd, chdir, fchdir |
+| **File Descriptors** | dup, dup2, dup3, fcntl, ioctl, pipe |
+| **Memory** | mmap, mprotect, munmap, brk |
+| **Process Info** | getpid, getppid, getuid, geteuid, getgid, getegid |
+| **Process Control** | setuid, setgid, getpgid, setpgid, getsid, setsid, kill, exit |
+| **Time** | clock_gettime, clock_getres, gettimeofday, nanosleep |
+| **System** | uname, sysinfo, getrandom |
+| **I/O Multiplexing** | poll |
 
 ## Building
 

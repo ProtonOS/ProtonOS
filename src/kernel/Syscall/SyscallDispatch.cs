@@ -61,6 +61,12 @@ public static unsafe class SyscallDispatch
     private static delegate* unmanaged<byte*, byte*, int, long*, int> _getdentsHandler;
     private static delegate* unmanaged<byte*, int, int> _accessHandler;
     private static delegate* unmanaged<byte*, byte*, int> _renameHandler;
+    private static delegate* unmanaged<byte*, int, int> _chmodHandler;
+    private static delegate* unmanaged<byte*, uint, uint, int> _chownHandler;
+    private static delegate* unmanaged<byte*, byte*, int> _linkHandler;
+    private static delegate* unmanaged<byte*, byte*, int> _symlinkHandler;
+    private static delegate* unmanaged<byte*, byte*, int, int> _readlinkHandler;
+    private static delegate* unmanaged<byte*, long, int> _truncateHandler;
 
     /// <summary>
     /// Register mkdir handler from DDK
@@ -108,6 +114,54 @@ public static unsafe class SyscallDispatch
     public static void RegisterRenameHandler(delegate* unmanaged<byte*, byte*, int> handler)
     {
         _renameHandler = handler;
+    }
+
+    /// <summary>
+    /// Register chmod handler from DDK
+    /// </summary>
+    public static void RegisterChmodHandler(delegate* unmanaged<byte*, int, int> handler)
+    {
+        _chmodHandler = handler;
+    }
+
+    /// <summary>
+    /// Register chown handler from DDK
+    /// </summary>
+    public static void RegisterChownHandler(delegate* unmanaged<byte*, uint, uint, int> handler)
+    {
+        _chownHandler = handler;
+    }
+
+    /// <summary>
+    /// Register link handler from DDK
+    /// </summary>
+    public static void RegisterLinkHandler(delegate* unmanaged<byte*, byte*, int> handler)
+    {
+        _linkHandler = handler;
+    }
+
+    /// <summary>
+    /// Register symlink handler from DDK
+    /// </summary>
+    public static void RegisterSymlinkHandler(delegate* unmanaged<byte*, byte*, int> handler)
+    {
+        _symlinkHandler = handler;
+    }
+
+    /// <summary>
+    /// Register readlink handler from DDK
+    /// </summary>
+    public static void RegisterReadlinkHandler(delegate* unmanaged<byte*, byte*, int, int> handler)
+    {
+        _readlinkHandler = handler;
+    }
+
+    /// <summary>
+    /// Register truncate handler from DDK
+    /// </summary>
+    public static void RegisterTruncateHandler(delegate* unmanaged<byte*, long, int> handler)
+    {
+        _truncateHandler = handler;
     }
 
     /// <summary>
@@ -210,6 +264,24 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_POLL] = SysPoll;
         _handlers[SyscallNumbers.SYS_ACCESS] = SysAccess;
         _handlers[SyscallNumbers.SYS_RENAME] = SysRename;
+        _handlers[SyscallNumbers.SYS_IOCTL] = SysIoctl;
+        _handlers[SyscallNumbers.SYS_PREAD64] = SysPread64;
+        _handlers[SyscallNumbers.SYS_PWRITE64] = SysPwrite64;
+        _handlers[SyscallNumbers.SYS_READV] = SysReadv;
+        _handlers[SyscallNumbers.SYS_WRITEV] = SysWritev;
+        _handlers[SyscallNumbers.SYS_TRUNCATE] = SysTruncate;
+        _handlers[SyscallNumbers.SYS_FTRUNCATE] = SysFtruncate;
+        _handlers[SyscallNumbers.SYS_FCHDIR] = SysFchdir;
+        _handlers[SyscallNumbers.SYS_CREAT] = SysCreat;
+        _handlers[SyscallNumbers.SYS_LINK] = SysLink;
+        _handlers[SyscallNumbers.SYS_SYMLINK] = SysSymlink;
+        _handlers[SyscallNumbers.SYS_READLINK] = SysReadlink;
+        _handlers[SyscallNumbers.SYS_CHMOD] = SysChmod;
+        _handlers[SyscallNumbers.SYS_FCHMOD] = SysFchmod;
+        _handlers[SyscallNumbers.SYS_CHOWN] = SysChown;
+        _handlers[SyscallNumbers.SYS_FCHOWN] = SysFchown;
+        _handlers[SyscallNumbers.SYS_LCHOWN] = SysLchown;
+        _handlers[SyscallNumbers.SYS_DUP3] = SysDup3;
     }
 
     /// <summary>
@@ -1575,6 +1647,508 @@ public static unsafe class SyscallDispatch
             return _renameHandler(oldpath, newpath);
 
         return -Errno.ENOSYS;
+    }
+
+    private static long SysIoctl(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        uint cmd = (uint)arg1;
+        void* argp = (void*)arg2;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        // Call the file-specific ioctl if available
+        if (fdEntry->Ops != null && fdEntry->Ops->Ioctl != null)
+            return fdEntry->Ops->Ioctl(fdEntry, cmd, argp);
+
+        // For TTY, handle basic TCGETS/TCSETS (terminal attributes)
+        if (fdEntry->Type == FileType.Terminal || fd == StdFd.Stdin || fd == StdFd.Stdout || fd == StdFd.Stderr)
+        {
+            const uint TCGETS = 0x5401;
+            const uint TCSETS = 0x5402;
+            const uint TIOCGWINSZ = 0x5413;
+
+            switch (cmd)
+            {
+                case TCGETS:
+                case TCSETS:
+                    // Pretend success for terminal attribute operations
+                    return 0;
+
+                case TIOCGWINSZ:
+                    // Return default window size (80x24)
+                    if (argp != null)
+                    {
+                        ushort* ws = (ushort*)argp;
+                        ws[0] = 24;  // rows
+                        ws[1] = 80;  // cols
+                        ws[2] = 0;   // xpixel
+                        ws[3] = 0;   // ypixel
+                    }
+                    return 0;
+            }
+        }
+
+        return -Errno.ENOTTY;
+    }
+
+    private static long SysPread64(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                    Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        byte* buf = (byte*)arg1;
+        int count = (int)arg2;
+        long offset = arg3;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        if (fdEntry->Type == FileType.Pipe)
+            return -Errno.ESPIPE;
+
+        if (fdEntry->Ops == null || fdEntry->Ops->Read == null || fdEntry->Ops->Seek == null)
+            return -Errno.ENOTSUP;
+
+        // Save current position, seek to offset, read, restore position
+        long savedPos = fdEntry->Ops->Seek(fdEntry, 0, (int)SeekOrigin.Current);
+        if (savedPos < 0)
+            return savedPos;
+
+        long seekResult = fdEntry->Ops->Seek(fdEntry, offset, (int)SeekOrigin.Set);
+        if (seekResult < 0)
+            return seekResult;
+
+        int result = fdEntry->Ops->Read(fdEntry, buf, count);
+
+        // Restore position
+        fdEntry->Ops->Seek(fdEntry, savedPos, (int)SeekOrigin.Set);
+
+        return result;
+    }
+
+    private static long SysPwrite64(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                     Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        byte* buf = (byte*)arg1;
+        int count = (int)arg2;
+        long offset = arg3;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        if (fdEntry->Type == FileType.Pipe)
+            return -Errno.ESPIPE;
+
+        if (fdEntry->Ops == null || fdEntry->Ops->Write == null || fdEntry->Ops->Seek == null)
+            return -Errno.ENOTSUP;
+
+        // Save current position, seek to offset, write, restore position
+        long savedPos = fdEntry->Ops->Seek(fdEntry, 0, (int)SeekOrigin.Current);
+        if (savedPos < 0)
+            return savedPos;
+
+        long seekResult = fdEntry->Ops->Seek(fdEntry, offset, (int)SeekOrigin.Set);
+        if (seekResult < 0)
+            return seekResult;
+
+        int result = fdEntry->Ops->Write(fdEntry, buf, count);
+
+        // Restore position
+        fdEntry->Ops->Seek(fdEntry, savedPos, (int)SeekOrigin.Set);
+
+        return result;
+    }
+
+    // iovec structure for readv/writev
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct IoVec
+    {
+        public byte* iov_base;
+        public ulong iov_len;
+    }
+
+    private static long SysReadv(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        IoVec* iov = (IoVec*)arg1;
+        int iovcnt = (int)arg2;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (iov == null || iovcnt <= 0)
+            return -Errno.EINVAL;
+
+        if (iovcnt > 1024)  // IOV_MAX
+            return -Errno.EINVAL;
+
+        if (fdEntry->Ops == null || fdEntry->Ops->Read == null)
+            return -Errno.ENOTSUP;
+
+        long totalRead = 0;
+        for (int i = 0; i < iovcnt; i++)
+        {
+            if (iov[i].iov_base == null && iov[i].iov_len > 0)
+                return -Errno.EFAULT;
+
+            if (iov[i].iov_len == 0)
+                continue;
+
+            int result = fdEntry->Ops->Read(fdEntry, iov[i].iov_base, (int)iov[i].iov_len);
+            if (result < 0)
+            {
+                if (totalRead > 0)
+                    return totalRead;  // Return what we've read so far
+                return result;
+            }
+
+            totalRead += result;
+
+            // Short read - don't continue to next iovec
+            if ((ulong)result < iov[i].iov_len)
+                break;
+        }
+
+        return totalRead;
+    }
+
+    private static long SysWritev(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        IoVec* iov = (IoVec*)arg1;
+        int iovcnt = (int)arg2;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (iov == null || iovcnt <= 0)
+            return -Errno.EINVAL;
+
+        if (iovcnt > 1024)  // IOV_MAX
+            return -Errno.EINVAL;
+
+        // For stdout/stderr, write directly to debug console
+        if (fd == StdFd.Stdout || fd == StdFd.Stderr)
+        {
+            long totalWritten = 0;
+            for (int i = 0; i < iovcnt; i++)
+            {
+                if (iov[i].iov_base == null && iov[i].iov_len > 0)
+                    return -Errno.EFAULT;
+
+                for (ulong j = 0; j < iov[i].iov_len; j++)
+                {
+                    DebugConsole.WriteChar((char)iov[i].iov_base[j]);
+                }
+                totalWritten += (long)iov[i].iov_len;
+            }
+            return totalWritten;
+        }
+
+        if (fdEntry->Ops == null || fdEntry->Ops->Write == null)
+            return -Errno.ENOTSUP;
+
+        long totalWrite = 0;
+        for (int i = 0; i < iovcnt; i++)
+        {
+            if (iov[i].iov_base == null && iov[i].iov_len > 0)
+                return -Errno.EFAULT;
+
+            if (iov[i].iov_len == 0)
+                continue;
+
+            int result = fdEntry->Ops->Write(fdEntry, iov[i].iov_base, (int)iov[i].iov_len);
+            if (result < 0)
+            {
+                if (totalWrite > 0)
+                    return totalWrite;
+                return result;
+            }
+
+            totalWrite += result;
+
+            // Short write - don't continue to next iovec
+            if ((ulong)result < iov[i].iov_len)
+                break;
+        }
+
+        return totalWrite;
+    }
+
+    private static long SysTruncate(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                     Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        long length = arg1;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        if (length < 0)
+            return -Errno.EINVAL;
+
+        // Call registered DDK handler if available
+        if (_truncateHandler != null)
+            return _truncateHandler(path, length);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysFtruncate(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                      Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        long length = arg1;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (length < 0)
+            return -Errno.EINVAL;
+
+        // Can't truncate pipes
+        if (fdEntry->Type == FileType.Pipe)
+            return -Errno.EINVAL;
+
+        // VFS truncate if we have a file handle
+        if (fdEntry->Type == FileType.Regular && fdEntry->Data != null)
+        {
+            int vfsHandle = (int)(long)fdEntry->Data;
+            return VFS.Truncate(vfsHandle, length);
+        }
+
+        return -Errno.EINVAL;
+    }
+
+    private static long SysFchdir(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (fdEntry->Type != FileType.Directory)
+            return -Errno.ENOTDIR;
+
+        // Get the directory handle with path
+        DirectoryHandle* dirHandle = (DirectoryHandle*)fdEntry->Data;
+        if (dirHandle == null)
+            return -Errno.EBADF;
+
+        // Copy path from directory handle to process cwd
+        int len = 0;
+        while (len < 255 && dirHandle->Path[len] != 0)
+        {
+            proc->Cwd[len] = dirHandle->Path[len];
+            len++;
+        }
+        proc->Cwd[len] = 0;
+
+        return 0;
+    }
+
+    private static long SysCreat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        // creat(path, mode) is equivalent to open(path, O_CREAT|O_WRONLY|O_TRUNC, mode)
+        int flags = (int)(FileFlags.Create | FileFlags.WriteOnly | FileFlags.Truncate);
+        return SysOpen(arg0, flags, arg1, arg3, arg4, arg5, proc, thread);
+    }
+
+    private static long SysLink(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                 Process.Process* proc, Thread* thread)
+    {
+        byte* oldpath = (byte*)arg0;
+        byte* newpath = (byte*)arg1;
+
+        if (oldpath == null || newpath == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_linkHandler != null)
+            return _linkHandler(oldpath, newpath);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysSymlink(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                    Process.Process* proc, Thread* thread)
+    {
+        byte* target = (byte*)arg0;
+        byte* linkpath = (byte*)arg1;
+
+        if (target == null || linkpath == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_symlinkHandler != null)
+            return _symlinkHandler(target, linkpath);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysReadlink(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                     Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        byte* buf = (byte*)arg1;
+        int bufsiz = (int)arg2;
+
+        if (path == null || buf == null)
+            return -Errno.EFAULT;
+
+        if (bufsiz <= 0)
+            return -Errno.EINVAL;
+
+        // Call registered DDK handler if available
+        if (_readlinkHandler != null)
+            return _readlinkHandler(path, buf, bufsiz);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysChmod(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        int mode = (int)arg1;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_chmodHandler != null)
+            return _chmodHandler(path, mode);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysFchmod(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        int mode = (int)arg1;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        // For VFS files, we need to implement fchmod in VFS
+        // For now, return success as permissions are not enforced
+        return 0;
+    }
+
+    private static long SysChown(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        uint owner = (uint)arg1;
+        uint group = (uint)arg2;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_chownHandler != null)
+            return _chownHandler(path, owner, group);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysFchown(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        uint owner = (uint)arg1;
+        uint group = (uint)arg2;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        // For VFS files, we need to implement fchown in VFS
+        // For now, return success as ownership is not enforced
+        return 0;
+    }
+
+    private static long SysLchown(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        // lchown is like chown but doesn't follow symlinks
+        // Since we don't have symlinks yet, treat it the same as chown
+        return SysChown(arg0, arg1, arg2, arg3, arg4, arg5, proc, thread);
+    }
+
+    private static long SysDup3(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                 Process.Process* proc, Thread* thread)
+    {
+        int oldfd = (int)arg0;
+        int newfd = (int)arg1;
+        int flags = (int)arg2;
+
+        // dup3 doesn't allow oldfd == newfd (unlike dup2)
+        if (oldfd == newfd)
+            return -Errno.EINVAL;
+
+        // Perform the dup2 operation
+        long result = FdTable.Dup2(proc->FdTable, proc->FdTableSize, oldfd, newfd);
+        if (result < 0)
+            return result;
+
+        // O_CLOEXEC is the only flag supported
+        const int O_CLOEXEC = 0x80000;
+        if ((flags & O_CLOEXEC) != 0)
+        {
+            proc->FdTable[newfd].Flags |= FileFlags.CloseOnExec;
+        }
+
+        return result;
     }
 
     // ==================== User/Group Identity ====================
