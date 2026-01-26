@@ -29,6 +29,7 @@ public static class SyscallNumbers
     public const int SYS_PIPE = 22;
     public const int SYS_DUP = 32;
     public const int SYS_DUP2 = 33;
+    public const int SYS_FCNTL = 72;
 
     // ==================== Directory Operations ====================
     public const int SYS_GETDENTS = 78;

@@ -505,6 +505,32 @@ public static class AccessMode
 }
 
 /// <summary>
+/// fcntl command constants
+/// </summary>
+public static class FcntlCmd
+{
+    public const int F_DUPFD = 0;           // Duplicate file descriptor
+    public const int F_GETFD = 1;           // Get file descriptor flags
+    public const int F_SETFD = 2;           // Set file descriptor flags
+    public const int F_GETFL = 3;           // Get file status flags
+    public const int F_SETFL = 4;           // Set file status flags
+    public const int F_GETLK = 5;           // Get record locking info
+    public const int F_SETLK = 6;           // Set record locking info (non-blocking)
+    public const int F_SETLKW = 7;          // Set record locking info (blocking)
+    public const int F_SETOWN = 8;          // Set owner (for SIGIO)
+    public const int F_GETOWN = 9;          // Get owner
+    public const int F_DUPFD_CLOEXEC = 1030; // Dup with close-on-exec set
+}
+
+/// <summary>
+/// File descriptor flags for fcntl F_GETFD/F_SETFD
+/// </summary>
+public static class FdFlags
+{
+    public const int FD_CLOEXEC = 1;        // Close on exec
+}
+
+/// <summary>
 /// Directory handle for getdents - stores path for directory enumeration
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]

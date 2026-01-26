@@ -122,6 +122,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("getdents64");
         builder.EmitGetdents64Test();
 
+        // Test 26: fcntl
+        builder.EmitTestHeader("fcntl");
+        builder.EmitFcntlTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -1681,9 +1685,10 @@ public static unsafe class UserModeTests
                 code[_offset++] = 0x0F; code[_offset++] = 0x05;
 
                 EmitPrintString("  [PASS] getdents64 returned entries\n");
-                // jmp end
-                code[_offset++] = 0xEB;
-                int endJump = _offset++;
+                // jmp near end (rel32 to handle long distance)
+                code[_offset++] = 0xE9;  // JMP rel32
+                int endJump = _offset;
+                Emit32(0);  // Placeholder, patched later
 
                 // checkEnosys:
                 code[checkEnosys] = (byte)(_offset - checkEnosys - 1);
@@ -1703,9 +1708,10 @@ public static unsafe class UserModeTests
                 // fail:
                 code[failJump1] = (byte)(_offset - failJump1 - 1);
                 EmitPrintString("  [FAIL] getdents64 failed\n");
-                // jmp end2
-                code[_offset++] = 0xEB;
-                int endJump2 = _offset++;
+                // jmp near end2 (rel32)
+                code[_offset++] = 0xE9;  // JMP rel32
+                int endJump2 = _offset;
+                Emit32(0);  // Placeholder
 
                 // pass_enosys:
                 code[passEnosys] = (byte)(_offset - passEnosys - 1);
@@ -1715,13 +1721,63 @@ public static unsafe class UserModeTests
                 code[_offset++] = 0x0F; code[_offset++] = 0x05;
                 EmitPrintString("  [PASS] getdents64 (ENOSYS expected)\n");
 
-                // end:
-                code[endJump] = (byte)(_offset - endJump - 1);
-                code[endJump2] = (byte)(_offset - endJump2 - 1);
+                // end: - patch near jump displacements (32-bit)
+                int disp1 = _offset - (endJump + 4);  // rel32 is relative to end of instruction
+                code[endJump] = (byte)(disp1 & 0xFF);
+                code[endJump + 1] = (byte)((disp1 >> 8) & 0xFF);
+                code[endJump + 2] = (byte)((disp1 >> 16) & 0xFF);
+                code[endJump + 3] = (byte)((disp1 >> 24) & 0xFF);
+
+                int disp2 = _offset - (endJump2 + 4);
+                code[endJump2] = (byte)(disp2 & 0xFF);
+                code[endJump2 + 1] = (byte)((disp2 >> 8) & 0xFF);
+                code[endJump2 + 2] = (byte)((disp2 >> 16) & 0xFF);
+                code[endJump2 + 3] = (byte)((disp2 >> 24) & 0xFF);
 
                 // add rsp, 512 (restore stack)
                 code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
                 Emit32(512);
+            }
+        }
+
+        public void EmitFcntlTest()
+        {
+            // Very simple test: just call fcntl(1, F_GETFD) and check it returns >= 0
+            // SYS_FCNTL = 72, F_GETFD = 1
+            fixed (byte* code = _code)
+            {
+                // fcntl(1, F_GETFD, 0) - get FD flags for stdout
+                // mov edi, 1 (fd = stdout)
+                code[_offset++] = 0xBF; Emit32(1);
+                // mov esi, 1 (cmd = F_GETFD)
+                code[_offset++] = 0xBE; Emit32(1);
+                // xor edx, edx (arg = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xD2;
+                // mov eax, 72 (SYS_FCNTL)
+                code[_offset++] = 0xB8; Emit32(72);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check for error (should return >= 0)
+                // Result is in eax. If negative, it's an error.
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // js fail (jump if sign flag set = negative)
+                code[_offset++] = 0x78;
+                int failJump = _offset++;
+
+                // Success - print pass message
+                EmitPrintString("  [PASS] fcntl works\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // fail:
+                code[failJump] = (byte)(_offset - failJump - 1);
+                EmitPrintString("  [FAIL] fcntl failed\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
             }
         }
 

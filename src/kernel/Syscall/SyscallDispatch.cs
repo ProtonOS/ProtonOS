@@ -199,6 +199,7 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_PIPE] = SysPipe;
         _handlers[SyscallNumbers.SYS_DUP] = SysDup;
         _handlers[SyscallNumbers.SYS_DUP2] = SysDup2;
+        _handlers[SyscallNumbers.SYS_FCNTL] = SysFcntl;
         _handlers[SyscallNumbers.SYS_GETCWD] = SysGetcwd;
         _handlers[SyscallNumbers.SYS_CHDIR] = SysChdir;
         _handlers[SyscallNumbers.SYS_MKDIR] = SysMkdir;
@@ -1204,6 +1205,113 @@ public static unsafe class SyscallDispatch
         int oldfd = (int)arg0;
         int newfd = (int)arg1;
         return FdTable.Dup2(proc->FdTable, proc->FdTableSize, oldfd, newfd);
+    }
+
+    private static long SysFcntl(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                 Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        int cmd = (int)arg1;
+        long arg = arg2;
+
+        // Validate fd
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        FileDescriptor* fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        switch (cmd)
+        {
+            case FcntlCmd.F_DUPFD:
+            {
+                // Duplicate fd to lowest available >= arg
+                int minFd = (int)arg;
+                if (minFd < 0 || minFd >= proc->FdTableSize)
+                    return -Errno.EINVAL;
+
+                int newFd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, minFd);
+                if (newFd < 0)
+                    return newFd;
+
+                proc->FdTable[newFd] = *fdEntry;
+                proc->FdTable[newFd].RefCount++;
+                // Clear CLOEXEC on the new fd (F_DUPFD behavior)
+                proc->FdTable[newFd].Flags &= ~FileFlags.CloseOnExec;
+
+                if (fdEntry->Ops != null && fdEntry->Ops->Dup != null)
+                    fdEntry->Ops->Dup(fdEntry);
+
+                return newFd;
+            }
+
+            case FcntlCmd.F_DUPFD_CLOEXEC:
+            {
+                // Duplicate fd to lowest available >= arg, with CLOEXEC set
+                int minFd = (int)arg;
+                if (minFd < 0 || minFd >= proc->FdTableSize)
+                    return -Errno.EINVAL;
+
+                int newFd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, minFd);
+                if (newFd < 0)
+                    return newFd;
+
+                proc->FdTable[newFd] = *fdEntry;
+                proc->FdTable[newFd].RefCount++;
+                // Set CLOEXEC on the new fd
+                proc->FdTable[newFd].Flags |= FileFlags.CloseOnExec;
+
+                if (fdEntry->Ops != null && fdEntry->Ops->Dup != null)
+                    fdEntry->Ops->Dup(fdEntry);
+
+                return newFd;
+            }
+
+            case FcntlCmd.F_GETFD:
+                // Return FD_CLOEXEC if close-on-exec is set
+                return (fdEntry->Flags & FileFlags.CloseOnExec) != 0 ? FdFlags.FD_CLOEXEC : 0;
+
+            case FcntlCmd.F_SETFD:
+                // Set or clear close-on-exec flag
+                if ((arg & FdFlags.FD_CLOEXEC) != 0)
+                    fdEntry->Flags |= FileFlags.CloseOnExec;
+                else
+                    fdEntry->Flags &= ~FileFlags.CloseOnExec;
+                return 0;
+
+            case FcntlCmd.F_GETFL:
+                // Return file status flags (access mode + O_APPEND, O_NONBLOCK, etc.)
+                return (long)(fdEntry->Flags & (FileFlags.AccessMask | FileFlags.Append |
+                                                FileFlags.NonBlock | FileFlags.Sync |
+                                                FileFlags.Async | FileFlags.Direct));
+
+            case FcntlCmd.F_SETFL:
+            {
+                // Only certain flags can be changed: O_APPEND, O_NONBLOCK, O_ASYNC, O_DIRECT
+                FileFlags changeable = FileFlags.Append | FileFlags.NonBlock |
+                                       FileFlags.Async | FileFlags.Direct;
+                FileFlags newFlags = (FileFlags)arg & changeable;
+
+                // Clear changeable flags and set new ones
+                fdEntry->Flags = (fdEntry->Flags & ~changeable) | newFlags;
+                return 0;
+            }
+
+            case FcntlCmd.F_GETLK:
+            case FcntlCmd.F_SETLK:
+            case FcntlCmd.F_SETLKW:
+                // File locking not implemented yet
+                return -Errno.ENOSYS;
+
+            case FcntlCmd.F_GETOWN:
+            case FcntlCmd.F_SETOWN:
+                // Signal ownership not implemented yet
+                return -Errno.ENOSYS;
+
+            default:
+                return -Errno.EINVAL;
+        }
     }
 
     private static long SysGetcwd(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
