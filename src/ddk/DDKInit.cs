@@ -166,9 +166,10 @@ public static class DDKInit
     /// </summary>
     public static bool Initialize()
     {
-        // Simple JIT-compatible initialization for now
-        // The JIT has limitations with try/catch and complex control flow
-        // We use a simplified path that calls kernel exports directly
+        // Test: Call VFS and SyscallBridge initialization
+        // to diagnose JIT compilation errors
+        VFS.Initialize();
+        SyscallBridge.Initialize();
 
         _state = DDKState.CoreInitialized;
         return true;

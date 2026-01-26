@@ -47,6 +47,9 @@ public static unsafe class KernelExportInit
         // Register Timer exports
         RegisterTimerExports();
 
+        // Register Syscall Handler exports (for DDK filesystem operations)
+        RegisterSyscallHandlerExports();
+
         KernelExportRegistry.DebugPrint();
     }
 
@@ -564,5 +567,43 @@ public static unsafe class KernelExportInit
         n[10]=0x55; n[11]=0x70; n[12]=0x74; n[13]=0x69; n[14]=0x6D; n[15]=0x65; // Uptime
         n[16]=0x53; n[17]=0x65; n[18]=0x63; n[19]=0; // Sec
         KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<ulong>)&TimerExports.GetUptimeSeconds);
+    }
+
+    private static void RegisterSyscallHandlerExports()
+    {
+        byte* n = stackalloc byte[48];
+
+        // Kernel_RegisterMkdirHandler
+        // "Kernel_RegisterMkdirHandler" = 4B 65 72 6E 65 6C 5F 52 65 67 69 73 74 65 72 4D 6B 64 69 72 48 61 6E 64 6C 65 72
+        n[0]=0x4B; n[1]=0x65; n[2]=0x72; n[3]=0x6E; n[4]=0x65; n[5]=0x6C; n[6]=0x5F; // Kernel_
+        n[7]=0x52; n[8]=0x65; n[9]=0x67; n[10]=0x69; n[11]=0x73; n[12]=0x74; n[13]=0x65; n[14]=0x72; // Register
+        n[15]=0x4D; n[16]=0x6B; n[17]=0x64; n[18]=0x69; n[19]=0x72; // Mkdir
+        n[20]=0x48; n[21]=0x61; n[22]=0x6E; n[23]=0x64; n[24]=0x6C; n[25]=0x65; n[26]=0x72; n[27]=0; // Handler
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, int, int>, void>)&SyscallHandlers.RegisterMkdirHandler);
+
+        // Kernel_RegisterRmdirHandler
+        n[15]=0x52; n[16]=0x6D; n[17]=0x64; n[18]=0x69; n[19]=0x72; // Rmdir
+        n[20]=0x48; n[21]=0x61; n[22]=0x6E; n[23]=0x64; n[24]=0x6C; n[25]=0x65; n[26]=0x72; n[27]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, int>, void>)&SyscallHandlers.RegisterRmdirHandler);
+
+        // Kernel_RegisterUnlinkHandler
+        n[15]=0x55; n[16]=0x6E; n[17]=0x6C; n[18]=0x69; n[19]=0x6E; n[20]=0x6B; // Unlink
+        n[21]=0x48; n[22]=0x61; n[23]=0x6E; n[24]=0x64; n[25]=0x6C; n[26]=0x65; n[27]=0x72; n[28]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, int>, void>)&SyscallHandlers.RegisterUnlinkHandler);
+
+        // Kernel_RegisterGetdentsHandler
+        n[15]=0x47; n[16]=0x65; n[17]=0x74; n[18]=0x64; n[19]=0x65; n[20]=0x6E; n[21]=0x74; n[22]=0x73; // Getdents
+        n[23]=0x48; n[24]=0x61; n[25]=0x6E; n[26]=0x64; n[27]=0x6C; n[28]=0x65; n[29]=0x72; n[30]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, byte*, int, long*, int>, void>)&SyscallHandlers.RegisterGetdentsHandler);
+
+        // Kernel_RegisterAccessHandler
+        n[15]=0x41; n[16]=0x63; n[17]=0x63; n[18]=0x65; n[19]=0x73; n[20]=0x73; // Access
+        n[21]=0x48; n[22]=0x61; n[23]=0x6E; n[24]=0x64; n[25]=0x6C; n[26]=0x65; n[27]=0x72; n[28]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, int, int>, void>)&SyscallHandlers.RegisterAccessHandler);
+
+        // Kernel_RegisterRenameHandler
+        n[15]=0x52; n[16]=0x65; n[17]=0x6E; n[18]=0x61; n[19]=0x6D; n[20]=0x65; // Rename
+        n[21]=0x48; n[22]=0x61; n[23]=0x6E; n[24]=0x64; n[25]=0x6C; n[26]=0x65; n[27]=0x72; n[28]=0;
+        KernelExportRegistry.Register(n, (void*)(delegate* unmanaged<delegate* unmanaged<byte*, byte*, int>, void>)&SyscallHandlers.RegisterRenameHandler);
     }
 }

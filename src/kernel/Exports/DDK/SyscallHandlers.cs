@@ -40,4 +40,34 @@ public static unsafe class SyscallHandlers
     {
         SyscallDispatch.RegisterUnlinkHandler(handler);
     }
+
+    /// <summary>
+    /// Register a getdents handler.
+    /// </summary>
+    /// <param name="handler">Function pointer: int handler(byte* path, byte* buf, int count, long* offset)</param>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_RegisterGetdentsHandler")]
+    public static void RegisterGetdentsHandler(delegate* unmanaged<byte*, byte*, int, long*, int> handler)
+    {
+        SyscallDispatch.RegisterGetdentsHandler(handler);
+    }
+
+    /// <summary>
+    /// Register an access handler.
+    /// </summary>
+    /// <param name="handler">Function pointer: int handler(byte* path, int mode)</param>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_RegisterAccessHandler")]
+    public static void RegisterAccessHandler(delegate* unmanaged<byte*, int, int> handler)
+    {
+        SyscallDispatch.RegisterAccessHandler(handler);
+    }
+
+    /// <summary>
+    /// Register a rename handler.
+    /// </summary>
+    /// <param name="handler">Function pointer: int handler(byte* oldpath, byte* newpath)</param>
+    [UnmanagedCallersOnly(EntryPoint = "Kernel_RegisterRenameHandler")]
+    public static void RegisterRenameHandler(delegate* unmanaged<byte*, byte*, int> handler)
+    {
+        SyscallDispatch.RegisterRenameHandler(handler);
+    }
 }

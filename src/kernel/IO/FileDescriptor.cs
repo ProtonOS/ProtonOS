@@ -168,16 +168,16 @@ public unsafe struct FileOps
 public enum PollEvents : short
 {
     None = 0,
-    In = 0x0001,        // POLLIN - Data available to read
-    Pri = 0x0002,       // POLLPRI - Priority data available
-    Out = 0x0004,       // POLLOUT - Writing possible
-    Err = 0x0008,       // POLLERR - Error condition
-    Hup = 0x0010,       // POLLHUP - Hang up
-    Nval = 0x0020,      // POLLNVAL - Invalid FD
-    RdNorm = 0x0040,    // POLLRDNORM - Normal data available
-    RdBand = 0x0080,    // POLLRDBAND - Priority band data available
-    WrNorm = 0x0100,    // POLLWRNORM - Writing normal data possible
-    WrBand = 0x0200,    // POLLWRBAND - Writing priority data possible
+    POLLIN = 0x0001,      // Data available to read
+    POLLPRI = 0x0002,     // Urgent data available
+    POLLOUT = 0x0004,     // Writing now will not block
+    POLLERR = 0x0008,     // Error condition (output only)
+    POLLHUP = 0x0010,     // Hang up (output only)
+    POLLNVAL = 0x0020,    // Invalid request (output only)
+    POLLRDNORM = 0x0040,  // Normal data available
+    POLLRDBAND = 0x0080,  // Priority band data available
+    POLLWRNORM = 0x0100,  // Writing normal data will not block
+    POLLWRBAND = 0x0200,  // Writing priority data will not block
 }
 
 /// <summary>
@@ -451,6 +451,74 @@ public struct Sysinfo
     public ulong totalhigh;         // Total high memory size
     public ulong freehigh;          // Available high memory size
     public uint mem_unit;           // Memory unit size in bytes
+}
+
+/// <summary>
+/// Directory entry type for getdents
+/// </summary>
+public static class DirEntryType
+{
+    public const byte DT_UNKNOWN = 0;
+    public const byte DT_FIFO = 1;
+    public const byte DT_CHR = 2;
+    public const byte DT_DIR = 4;
+    public const byte DT_BLK = 6;
+    public const byte DT_REG = 8;
+    public const byte DT_LNK = 10;
+    public const byte DT_SOCK = 12;
+}
+
+/// <summary>
+/// Linux dirent64 structure for getdents64 syscall
+/// Variable-length structure: d_name is null-terminated and padded to 8-byte boundary
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct LinuxDirent64
+{
+    public ulong d_ino;      // Inode number
+    public long d_off;       // Offset to next dirent
+    public ushort d_reclen;  // Length of this dirent
+    public byte d_type;      // File type
+    // d_name follows (variable length, null-terminated)
+}
+
+/// <summary>
+/// Poll file descriptor structure
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct PollFd
+{
+    public int fd;              // File descriptor
+    public PollEvents events;   // Events to poll for
+    public PollEvents revents;  // Events that occurred
+}
+
+/// <summary>
+/// Access mode flags for access() syscall
+/// </summary>
+public static class AccessMode
+{
+    public const int F_OK = 0;  // Test for existence
+    public const int X_OK = 1;  // Test for execute permission
+    public const int W_OK = 2;  // Test for write permission
+    public const int R_OK = 4;  // Test for read permission
+}
+
+/// <summary>
+/// Directory handle for getdents - stores path for directory enumeration
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct DirectoryHandle
+{
+    /// <summary>
+    /// Full path to the directory (null-terminated)
+    /// </summary>
+    public fixed byte Path[256];
+
+    /// <summary>
+    /// Current position in directory enumeration
+    /// </summary>
+    public long Position;
 }
 
 /// <summary>

@@ -336,11 +336,11 @@ public static unsafe class Kernel
         // Register well-known AOT types (System.String, etc.)
         MetadataIntegration.RegisterWellKnownTypes();
 
+        // Initialize kernel exports for PInvoke resolution (must be before DDK)
+        Runtime.KernelExportInit.Initialize();
+
         // Initialize DDK (Driver Development Kit)
         RunDDKInit();
-
-        // Initialize kernel exports for PInvoke resolution
-        Runtime.KernelExportInit.Initialize();
 
         // Initialize PCI subsystem and enumerate devices
         Platform.PCI.Initialize();

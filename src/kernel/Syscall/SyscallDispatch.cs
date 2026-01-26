@@ -54,10 +54,13 @@ public static unsafe class SyscallDispatch
         _ring3TestExitHandler = null;
     }
 
-    // Directory operation callbacks (set by DDK when filesystem drivers initialize)
+    // Directory/file operation callbacks (set by DDK when filesystem drivers initialize)
     private static delegate* unmanaged<byte*, int, int> _mkdirHandler;
     private static delegate* unmanaged<byte*, int> _rmdirHandler;
     private static delegate* unmanaged<byte*, int> _unlinkHandler;
+    private static delegate* unmanaged<byte*, byte*, int, long*, int> _getdentsHandler;
+    private static delegate* unmanaged<byte*, int, int> _accessHandler;
+    private static delegate* unmanaged<byte*, byte*, int> _renameHandler;
 
     /// <summary>
     /// Register mkdir handler from DDK
@@ -81,6 +84,30 @@ public static unsafe class SyscallDispatch
     public static void RegisterUnlinkHandler(delegate* unmanaged<byte*, int> handler)
     {
         _unlinkHandler = handler;
+    }
+
+    /// <summary>
+    /// Register getdents handler from DDK
+    /// </summary>
+    public static void RegisterGetdentsHandler(delegate* unmanaged<byte*, byte*, int, long*, int> handler)
+    {
+        _getdentsHandler = handler;
+    }
+
+    /// <summary>
+    /// Register access handler from DDK
+    /// </summary>
+    public static void RegisterAccessHandler(delegate* unmanaged<byte*, int, int> handler)
+    {
+        _accessHandler = handler;
+    }
+
+    /// <summary>
+    /// Register rename handler from DDK
+    /// </summary>
+    public static void RegisterRenameHandler(delegate* unmanaged<byte*, byte*, int> handler)
+    {
+        _renameHandler = handler;
     }
 
     /// <summary>
@@ -177,6 +204,11 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_MKDIR] = SysMkdir;
         _handlers[SyscallNumbers.SYS_RMDIR] = SysRmdir;
         _handlers[SyscallNumbers.SYS_UNLINK] = SysUnlink;
+        _handlers[SyscallNumbers.SYS_GETDENTS] = SysGetdents;
+        _handlers[SyscallNumbers.SYS_GETDENTS64] = SysGetdents;  // Same handler, compatible format
+        _handlers[SyscallNumbers.SYS_POLL] = SysPoll;
+        _handlers[SyscallNumbers.SYS_ACCESS] = SysAccess;
+        _handlers[SyscallNumbers.SYS_RENAME] = SysRename;
     }
 
     /// <summary>
@@ -544,6 +576,52 @@ public static unsafe class SyscallDispatch
         return VFS.Close(vfsHandle);
     }
 
+    // ==================== Directory Operations ====================
+
+    // Directory operations table
+    private static FileOps _dirOps;
+    private static bool _dirOpsInitialized;
+
+    private static void InitDirOps()
+    {
+        if (_dirOpsInitialized)
+            return;
+
+        _dirOps.Read = null;   // Can't read directories directly
+        _dirOps.Write = null;  // Can't write directories directly
+        _dirOps.Seek = &DirSeek;
+        _dirOps.Close = &DirClose;
+        _dirOpsInitialized = true;
+    }
+
+    [UnmanagedCallersOnly]
+    private static long DirSeek(FileDescriptor* fd, long offset, int whence)
+    {
+        // Only support SEEK_SET to position 0 (rewind)
+        if (whence == 0 && offset == 0)
+        {
+            DirectoryHandle* dirHandle = (DirectoryHandle*)fd->Data;
+            if (dirHandle != null)
+            {
+                dirHandle->Position = 0;
+                return 0;
+            }
+        }
+        return -Errno.EINVAL;
+    }
+
+    [UnmanagedCallersOnly]
+    private static int DirClose(FileDescriptor* fd)
+    {
+        DirectoryHandle* dirHandle = (DirectoryHandle*)fd->Data;
+        if (dirHandle != null)
+        {
+            HeapAllocator.Free(dirHandle);
+            fd->Data = null;
+        }
+        return 0;
+    }
+
     // ==================== Pipe Operations ====================
 
     // Pipe operations tables (read and write ends have different ops)
@@ -749,7 +827,54 @@ public static unsafe class SyscallDispatch
         if (path == null)
             return -Errno.EFAULT;
 
-        // Initialize VFS file operations if needed
+        // Check if opening a directory
+        bool isDirectory = (flags & (int)FileFlags.IsDirectory) != 0;
+
+        if (isDirectory)
+        {
+            // Opening a directory - allocate DirectoryHandle and store path
+            InitDirOps();
+
+            // Get path length
+            int pathLen = 0;
+            while (path[pathLen] != 0 && pathLen < 255)
+                pathLen++;
+
+            if (pathLen == 0)
+                return -Errno.EINVAL;
+
+            // Allocate directory handle
+            DirectoryHandle* dirHandle = (DirectoryHandle*)HeapAllocator.AllocZeroed((ulong)sizeof(DirectoryHandle));
+            if (dirHandle == null)
+                return -Errno.ENOMEM;
+
+            // Copy path
+            for (int i = 0; i < pathLen; i++)
+                dirHandle->Path[i] = path[i];
+            dirHandle->Path[pathLen] = 0;
+            dirHandle->Position = 0;
+
+            // Allocate file descriptor
+            int fd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, 0);
+            if (fd < 0)
+            {
+                HeapAllocator.Free(dirHandle);
+                return fd;
+            }
+
+            // Set up file descriptor for directory
+            var fdEntry = &proc->FdTable[fd];
+            fdEntry->Type = FileType.Directory;
+            fdEntry->Flags = (FileFlags)flags;
+            fdEntry->RefCount = 1;
+            fdEntry->Offset = 0;
+            fdEntry->Data = dirHandle;
+            fdEntry->Ops = (FileOps*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _dirOps);
+
+            return fd;
+        }
+
+        // Regular file - use VFS
         InitVfsFileOps();
 
         // Open through VFS
@@ -758,23 +883,23 @@ public static unsafe class SyscallDispatch
             return vfsHandle;  // Return error code
 
         // Allocate file descriptor
-        int fd = FdTable.Allocate(proc->FdTable, proc->FdTableSize, 0);
-        if (fd < 0)
+        int fd2 = FdTable.Allocate(proc->FdTable, proc->FdTableSize, 0);
+        if (fd2 < 0)
         {
             VFS.Close(vfsHandle);
-            return fd;
+            return fd2;
         }
 
         // Set up file descriptor
-        var fdEntry = &proc->FdTable[fd];
-        fdEntry->Type = FileType.Regular;
-        fdEntry->Flags = (FileFlags)flags;
-        fdEntry->RefCount = 1;
-        fdEntry->Offset = 0;
-        fdEntry->Data = (void*)(long)vfsHandle;  // Store VFS handle
-        fdEntry->Ops = (FileOps*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _vfsFileOps);
+        var fdEntry2 = &proc->FdTable[fd2];
+        fdEntry2->Type = FileType.Regular;
+        fdEntry2->Flags = (FileFlags)flags;
+        fdEntry2->RefCount = 1;
+        fdEntry2->Offset = 0;
+        fdEntry2->Data = (void*)(long)vfsHandle;  // Store VFS handle
+        fdEntry2->Ops = (FileOps*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _vfsFileOps);
 
-        return fd;
+        return fd2;
     }
 
     private static long SysClose(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -1164,6 +1289,182 @@ public static unsafe class SyscallDispatch
         // Call registered DDK handler if available
         if (_unlinkHandler != null)
             return _unlinkHandler(path);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysGetdents(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                     Process.Process* proc, Thread* thread)
+    {
+        int fd = (int)arg0;
+        byte* buf = (byte*)arg1;
+        int count = (int)arg2;
+
+        if (buf == null)
+            return -Errno.EFAULT;
+
+        if (fd < 0 || fd >= proc->FdTableSize)
+            return -Errno.EBADF;
+
+        var fdEntry = &proc->FdTable[fd];
+        if (fdEntry->Type == FileType.None)
+            return -Errno.EBADF;
+
+        if (fdEntry->Type != FileType.Directory)
+            return -Errno.ENOTDIR;
+
+        // Get the directory handle with path
+        DirectoryHandle* dirHandle = (DirectoryHandle*)fdEntry->Data;
+        if (dirHandle == null)
+            return -Errno.EBADF;
+
+        // Check if handler is registered
+        if (_getdentsHandler == null)
+            return -Errno.ENOSYS;
+
+        // Call the DDK getdents handler with the directory path
+        // Note: dirHandle->Path is a fixed buffer, so we can get its address directly
+        byte* pathPtr = &dirHandle->Path[0];
+        long offset = dirHandle->Position;
+        int result = _getdentsHandler(pathPtr, buf, count, &offset);
+        if (result >= 0)
+            dirHandle->Position = offset;
+        return result;
+    }
+
+    private static long SysPoll(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                 Process.Process* proc, Thread* thread)
+    {
+        PollFd* fds = (PollFd*)arg0;
+        int nfds = (int)arg1;
+        int timeout = (int)arg2;
+
+        if (nfds < 0)
+            return -Errno.EINVAL;
+
+        if (nfds > 0 && fds == null)
+            return -Errno.EFAULT;
+
+        // Simple implementation: check each fd and set revents
+        int ready = 0;
+        for (int i = 0; i < nfds; i++)
+        {
+            fds[i].revents = PollEvents.None;
+            int fd = fds[i].fd;
+
+            if (fd < 0)
+                continue;
+
+            if (fd >= proc->FdTableSize)
+            {
+                fds[i].revents = PollEvents.POLLNVAL;
+                ready++;
+                continue;
+            }
+
+            var fdEntry = &proc->FdTable[fd];
+            if (fdEntry->Type == FileType.None)
+            {
+                fds[i].revents = PollEvents.POLLNVAL;
+                ready++;
+                continue;
+            }
+
+            // For regular files and pipes, assume always ready for requested operations
+            if ((fds[i].events & PollEvents.POLLIN) != 0)
+            {
+                // Check if data is available
+                if (fdEntry->Type == FileType.Pipe)
+                {
+                    // For pipes, check if there's data
+                    Pipe* pipeData = (Pipe*)fdEntry->Data;
+                    if (pipeData != null && pipeData->Count > 0)
+                    {
+                        fds[i].revents |= PollEvents.POLLIN;
+                        ready++;
+                    }
+                    else if (pipeData != null && pipeData->Writers == 0)
+                    {
+                        // Pipe has no writers - EOF
+                        fds[i].revents |= PollEvents.POLLHUP;
+                        ready++;
+                    }
+                }
+                else
+                {
+                    // Regular files are always readable
+                    fds[i].revents |= PollEvents.POLLIN;
+                    ready++;
+                }
+            }
+
+            if ((fds[i].events & PollEvents.POLLOUT) != 0)
+            {
+                // Check if we can write
+                if (fdEntry->Type == FileType.Pipe)
+                {
+                    Pipe* pipeData = (Pipe*)fdEntry->Data;
+                    if (pipeData != null && pipeData->Readers > 0)
+                    {
+                        fds[i].revents |= PollEvents.POLLOUT;
+                        if ((fds[i].revents & PollEvents.POLLIN) == 0)
+                            ready++;
+                    }
+                    else if (pipeData != null && pipeData->Readers == 0)
+                    {
+                        // No readers - would get SIGPIPE
+                        fds[i].revents |= PollEvents.POLLERR;
+                        if ((fds[i].revents & PollEvents.POLLIN) == 0)
+                            ready++;
+                    }
+                }
+                else
+                {
+                    // Regular files are always writable (if open for write)
+                    if ((fdEntry->Flags & FileFlags.WriteOnly) != 0 ||
+                        (fdEntry->Flags & FileFlags.ReadWrite) != 0)
+                    {
+                        fds[i].revents |= PollEvents.POLLOUT;
+                        if ((fds[i].revents & PollEvents.POLLIN) == 0)
+                            ready++;
+                    }
+                }
+            }
+        }
+
+        // TODO: If timeout > 0 and ready == 0, we should block
+        // For now, just return immediately
+        return ready;
+    }
+
+    private static long SysAccess(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        byte* path = (byte*)arg0;
+        int mode = (int)arg1;
+
+        if (path == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_accessHandler != null)
+            return _accessHandler(path, mode);
+
+        return -Errno.ENOSYS;
+    }
+
+    private static long SysRename(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        byte* oldpath = (byte*)arg0;
+        byte* newpath = (byte*)arg1;
+
+        if (oldpath == null || newpath == null)
+            return -Errno.EFAULT;
+
+        // Call registered DDK handler if available
+        if (_renameHandler != null)
+            return _renameHandler(oldpath, newpath);
 
         return -Errno.ENOSYS;
     }

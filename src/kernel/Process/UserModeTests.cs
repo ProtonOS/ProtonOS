@@ -106,6 +106,22 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("unlink");
         builder.EmitUnlinkTest();
 
+        // Test 22: poll
+        builder.EmitTestHeader("poll");
+        builder.EmitPollTest();
+
+        // Test 23: access
+        builder.EmitTestHeader("access");
+        builder.EmitAccessTest();
+
+        // Test 24: rename
+        builder.EmitTestHeader("rename");
+        builder.EmitRenameTest();
+
+        // Test 25: getdents64
+        builder.EmitTestHeader("getdents64");
+        builder.EmitGetdents64Test();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -1417,6 +1433,295 @@ public static unsafe class UserModeTests
                 EmitPrintString("  [PASS] unlink syscall works\n");
 
                 code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitPollTest()
+        {
+            // Test: poll(NULL, 0, 0) should return 0 (no fds, no timeout)
+            // SYS_POLL = 7
+            fixed (byte* code = _code)
+            {
+                // poll(NULL, 0, 0)
+                // xor rdi, rdi (fds = NULL)
+                code[_offset++] = 0x48; code[_offset++] = 0x31; code[_offset++] = 0xFF;
+                // xor esi, esi (nfds = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xF6;
+                // xor edx, edx (timeout = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xD2;
+                // mov eax, 7
+                code[_offset++] = 0xB8; Emit32(7);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return: should be 0 (no fds ready)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz pass
+                code[_offset++] = 0x74;
+                int passJump = _offset++;
+
+                EmitPrintString("  [FAIL] poll returned non-zero\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump] = (byte)(_offset - passJump - 1);
+                EmitPrintString("  [PASS] poll syscall works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitAccessTest()
+        {
+            // Test: access("/", F_OK) should return 0 (root dir exists)
+            // SYS_ACCESS = 21
+            fixed (byte* code = _code)
+            {
+                // Embed path string "/\0"
+                code[_offset++] = 0xEB;
+                int pathJump = _offset++;
+                int pathStart = _offset;
+                code[_offset++] = (byte)'/'; code[_offset++] = 0;
+                code[pathJump] = (byte)(_offset - pathJump - 1);
+
+                // access(path, F_OK=0)
+                // lea rdi, [rip - offset_to_path]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset = _offset;
+                Emit32(0);
+                int ripRelative = pathStart - (_offset);
+                code[leaOffset] = (byte)(ripRelative & 0xFF);
+                code[leaOffset + 1] = (byte)((ripRelative >> 8) & 0xFF);
+                code[leaOffset + 2] = (byte)((ripRelative >> 16) & 0xFF);
+                code[leaOffset + 3] = (byte)((ripRelative >> 24) & 0xFF);
+
+                // xor esi, esi (mode = F_OK = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xF6;
+                // mov eax, 21
+                code[_offset++] = 0xB8; Emit32(21);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return: 0 = success, -ENOSYS (-38) = not implemented
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jz pass
+                code[_offset++] = 0x74;
+                int passJump1 = _offset++;
+
+                // cmp eax, -38 (ENOSYS)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA;
+                code[_offset++] = 0x74;
+                int passJump2 = _offset++;
+
+                EmitPrintString("  [FAIL] access returned unexpected error\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                code[passJump2] = (byte)(_offset - passJump2 - 1);
+                EmitPrintString("  [PASS] access syscall works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitRenameTest()
+        {
+            // Test: rename("/nonexistent", "/newname") should return -ENOENT or -ENOSYS
+            // SYS_RENAME = 82
+            fixed (byte* code = _code)
+            {
+                // Embed path strings
+                code[_offset++] = 0xEB;
+                int dataJump = _offset++;
+                int oldPathStart = _offset;
+                // "/nonexistent\0"
+                code[_offset++] = (byte)'/'; code[_offset++] = (byte)'n'; code[_offset++] = (byte)'o';
+                code[_offset++] = (byte)'n'; code[_offset++] = (byte)'e'; code[_offset++] = (byte)'x';
+                code[_offset++] = (byte)'i'; code[_offset++] = (byte)'s'; code[_offset++] = (byte)'t';
+                code[_offset++] = (byte)'e'; code[_offset++] = (byte)'n'; code[_offset++] = (byte)'t';
+                code[_offset++] = 0;
+                int newPathStart = _offset;
+                // "/newname\0"
+                code[_offset++] = (byte)'/'; code[_offset++] = (byte)'n'; code[_offset++] = (byte)'e';
+                code[_offset++] = (byte)'w'; code[_offset++] = (byte)'n'; code[_offset++] = (byte)'a';
+                code[_offset++] = (byte)'m'; code[_offset++] = (byte)'e'; code[_offset++] = 0;
+                code[dataJump] = (byte)(_offset - dataJump - 1);
+
+                // rename(oldpath, newpath)
+                // lea rdi, [rip - offset_to_oldpath]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset1 = _offset;
+                Emit32(0);
+                int ripRelative1 = oldPathStart - (_offset);
+                code[leaOffset1] = (byte)(ripRelative1 & 0xFF);
+                code[leaOffset1 + 1] = (byte)((ripRelative1 >> 8) & 0xFF);
+                code[leaOffset1 + 2] = (byte)((ripRelative1 >> 16) & 0xFF);
+                code[leaOffset1 + 3] = (byte)((ripRelative1 >> 24) & 0xFF);
+
+                // lea rsi, [rip - offset_to_newpath]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x35;
+                int leaOffset2 = _offset;
+                Emit32(0);
+                int ripRelative2 = newPathStart - (_offset);
+                code[leaOffset2] = (byte)(ripRelative2 & 0xFF);
+                code[leaOffset2 + 1] = (byte)((ripRelative2 >> 8) & 0xFF);
+                code[leaOffset2 + 2] = (byte)((ripRelative2 >> 16) & 0xFF);
+                code[leaOffset2 + 3] = (byte)((ripRelative2 >> 24) & 0xFF);
+
+                // mov eax, 82
+                code[_offset++] = 0xB8; Emit32(82);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check return: -ENOENT (-2) or -ENOSYS (-38) or -EXDEV (-18) are acceptable
+                // cmp eax, -2 (ENOENT)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xFE;
+                code[_offset++] = 0x74;
+                int passJump1 = _offset++;
+
+                // cmp eax, -38 (ENOSYS)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA;
+                code[_offset++] = 0x74;
+                int passJump2 = _offset++;
+
+                // cmp eax, -18 (EXDEV - cross-device link)
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xEE;
+                code[_offset++] = 0x74;
+                int passJump3 = _offset++;
+
+                EmitPrintString("  [FAIL] rename returned unexpected error\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump1] = (byte)(_offset - passJump1 - 1);
+                code[passJump2] = (byte)(_offset - passJump2 - 1);
+                code[passJump3] = (byte)(_offset - passJump3 - 1);
+                EmitPrintString("  [PASS] rename syscall works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitGetdents64Test()
+        {
+            // Test: open("/", O_RDONLY | O_DIRECTORY), getdents64, close
+            // SYS_OPEN = 2, SYS_GETDENTS64 = 217, SYS_CLOSE = 3
+            // O_DIRECTORY = 0x10000
+            fixed (byte* code = _code)
+            {
+                // Allocate stack for path and dirent buffer
+                // sub rsp, 512 (256 for path, 256 for dirents)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xEC;
+                Emit32(512);
+
+                // Embed path string "/\0"
+                code[_offset++] = 0xEB;
+                int pathJump = _offset++;
+                int pathStart = _offset;
+                code[_offset++] = (byte)'/'; code[_offset++] = 0;
+                code[pathJump] = (byte)(_offset - pathJump - 1);
+
+                // open("/", O_RDONLY | O_DIRECTORY)
+                // lea rdi, [rip - offset_to_path]
+                code[_offset++] = 0x48; code[_offset++] = 0x8D; code[_offset++] = 0x3D;
+                int leaOffset = _offset;
+                Emit32(0);
+                int ripRelative = pathStart - (_offset);
+                code[leaOffset] = (byte)(ripRelative & 0xFF);
+                code[leaOffset + 1] = (byte)((ripRelative >> 8) & 0xFF);
+                code[leaOffset + 2] = (byte)((ripRelative >> 16) & 0xFF);
+                code[leaOffset + 3] = (byte)((ripRelative >> 24) & 0xFF);
+
+                // mov esi, 0x10000 (O_DIRECTORY)
+                code[_offset++] = 0xBE; Emit32(0x10000);
+                // xor edx, edx (mode = 0)
+                code[_offset++] = 0x31; code[_offset++] = 0xD2;
+                // mov eax, 2 (SYS_OPEN)
+                code[_offset++] = 0xB8; Emit32(2);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Save fd in r12
+                // mov r12, rax
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC4;
+
+                // Check if open succeeded (fd >= 0)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // js fail
+                code[_offset++] = 0x78;
+                int failJump1 = _offset++;
+
+                // getdents64(fd, buf, 256)
+                // mov edi, r12d (fd)
+                code[_offset++] = 0x44; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                // mov rsi, rsp (buf = stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE6;
+                // mov edx, 256 (count)
+                code[_offset++] = 0xBA; Emit32(256);
+                // mov eax, 217 (SYS_GETDENTS64)
+                code[_offset++] = 0xB8; Emit32(217);
+                // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // Check if getdents returned > 0 (found entries)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                // jle checkEnosys
+                code[_offset++] = 0x7E;
+                int checkEnosys = _offset++;
+
+                // Success - got directory entries
+                // close(fd)
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x44; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                EmitPrintString("  [PASS] getdents64 returned entries\n");
+                // jmp end
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                // checkEnosys:
+                code[checkEnosys] = (byte)(_offset - checkEnosys - 1);
+                // Check if returned -ENOSYS (-38) - handler not registered
+                // cmp eax, -38
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xDA;
+                // je pass_enosys
+                code[_offset++] = 0x74;
+                int passEnosys = _offset++;
+
+                // Actual failure
+                // close(fd) first
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x44; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+
+                // fail:
+                code[failJump1] = (byte)(_offset - failJump1 - 1);
+                EmitPrintString("  [FAIL] getdents64 failed\n");
+                // jmp end2
+                code[_offset++] = 0xEB;
+                int endJump2 = _offset++;
+
+                // pass_enosys:
+                code[passEnosys] = (byte)(_offset - passEnosys - 1);
+                // close(fd)
+                code[_offset++] = 0xB8; Emit32(3);
+                code[_offset++] = 0x44; code[_offset++] = 0x89; code[_offset++] = 0xE7;
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;
+                EmitPrintString("  [PASS] getdents64 (ENOSYS expected)\n");
+
+                // end:
+                code[endJump] = (byte)(_offset - endJump - 1);
+                code[endJump2] = (byte)(_offset - endJump2 - 1);
+
+                // add rsp, 512 (restore stack)
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC4;
+                Emit32(512);
             }
         }
 

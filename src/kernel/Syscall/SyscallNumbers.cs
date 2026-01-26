@@ -32,6 +32,7 @@ public static class SyscallNumbers
 
     // ==================== Directory Operations ====================
     public const int SYS_GETDENTS = 78;
+    public const int SYS_GETDENTS64 = 217;
     public const int SYS_GETCWD = 79;
     public const int SYS_CHDIR = 80;
     public const int SYS_FCHDIR = 81;
