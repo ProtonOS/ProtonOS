@@ -813,8 +813,16 @@ public static unsafe class Scheduler
                 if (oldThread->ExtendedState != null)
                     CPU.SaveExtendedState(oldThread->ExtendedState);
 
+                // Save old thread's FS base if it's a user-mode thread
+                if (oldThread->IsUserMode)
+                    oldThread->UserFsBase = CPU.GetFsBase();
+
                 if (next->ExtendedState != null)
                     CPU.RestoreExtendedState(next->ExtendedState);
+
+                // Restore new thread's FS base if it's a user-mode thread
+                if (next->IsUserMode && next->UserFsBase != 0)
+                    CPU.SetFsBase(next->UserFsBase);
 
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
@@ -822,6 +830,11 @@ public static unsafe class Scheduler
             {
                 if (next->ExtendedState != null)
                     CPU.RestoreExtendedState(next->ExtendedState);
+
+                // Restore new thread's FS base if it's a user-mode thread
+                if (next->IsUserMode && next->UserFsBase != 0)
+                    CPU.SetFsBase(next->UserFsBase);
+
                 CPU.LoadContext(&next->Context);
             }
         }
@@ -948,8 +961,16 @@ public static unsafe class Scheduler
                 if (oldThread->ExtendedState != null)
                     CPU.SaveExtendedState(oldThread->ExtendedState);
 
+                // Save old thread's FS base if it's a user-mode thread
+                if (oldThread->IsUserMode)
+                    oldThread->UserFsBase = CPU.GetFsBase();
+
                 if (next->ExtendedState != null)
                     CPU.RestoreExtendedState(next->ExtendedState);
+
+                // Restore new thread's FS base if it's a user-mode thread
+                if (next->IsUserMode && next->UserFsBase != 0)
+                    CPU.SetFsBase(next->UserFsBase);
 
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
@@ -957,6 +978,11 @@ public static unsafe class Scheduler
             {
                 if (next->ExtendedState != null)
                     CPU.RestoreExtendedState(next->ExtendedState);
+
+                // Restore new thread's FS base if it's a user-mode thread
+                if (next->IsUserMode && next->UserFsBase != 0)
+                    CPU.SetFsBase(next->UserFsBase);
+
                 CPU.LoadContext(&next->Context);
             }
         }
@@ -1296,5 +1322,65 @@ public static unsafe class Scheduler
 
         _globalLock.Release();
         return previousCount;
+    }
+
+    /// <summary>
+    /// Allocate a new thread ID.
+    /// Thread-safe: acquires and releases the global lock.
+    /// </summary>
+    /// <returns>New unique thread ID</returns>
+    public static uint AllocateThreadId()
+    {
+        _globalLock.Acquire();
+        uint id = _nextThreadId++;
+        _globalLock.Release();
+        return id;
+    }
+
+    /// <summary>
+    /// Register a thread created by clone() with the scheduler.
+    /// The thread must already have its Id, Context, and other fields set up.
+    /// This adds it to the all-threads list and ready queue.
+    /// </summary>
+    /// <param name="thread">Thread to register</param>
+    public static void RegisterClonedThread(Thread* thread)
+    {
+        if (thread == null || !_initialized)
+            return;
+
+        _globalLock.Acquire();
+
+        _threadCount++;
+
+        // Add to all-threads list
+        thread->NextAll = _allThreadsHead;
+        _allThreadsHead = thread;
+
+        // Add to ready queue if not suspended
+        if (thread->State == ThreadState.Ready)
+        {
+            AddToReadyQueue(thread);
+        }
+
+        _globalLock.Release();
+
+        DebugConsole.Write("[Sched] Cloned thread 0x");
+        DebugConsole.WriteHex(thread->Id);
+        DebugConsole.WriteLine();
+    }
+
+    /// <summary>
+    /// Add a thread to the ready queue (public interface for futex wake, etc.)
+    /// Caller must ensure thread state is Ready before calling.
+    /// </summary>
+    /// <param name="thread">Thread to add to ready queue</param>
+    public static void AddToReadyQueuePublic(Thread* thread)
+    {
+        if (thread == null || !_initialized)
+            return;
+
+        _globalLock.Acquire();
+        AddToReadyQueue(thread);
+        _globalLock.Release();
     }
 }

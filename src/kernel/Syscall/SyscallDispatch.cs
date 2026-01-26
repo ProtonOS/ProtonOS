@@ -183,6 +183,9 @@ public static unsafe class SyscallDispatch
         RegisterMemorySyscalls();
         RegisterTimeSyscalls();
 
+        // Initialize futex subsystem
+        InitFutex();
+
         _initialized = true;
         DebugConsole.WriteLine("[SyscallDispatch] Initialized");
     }
@@ -235,6 +238,13 @@ public static unsafe class SyscallDispatch
         _handlers[SyscallNumbers.SYS_SETPGID] = SysSetpgid;
         _handlers[SyscallNumbers.SYS_GETSID] = SysGetsid;
         _handlers[SyscallNumbers.SYS_SETSID] = SysSetsid;
+
+        // Thread-related syscalls
+        _handlers[SyscallNumbers.SYS_GETTID] = SysGettid;
+        _handlers[SyscallNumbers.SYS_ARCH_PRCTL] = SysArchPrctl;
+        _handlers[SyscallNumbers.SYS_SET_TID_ADDRESS] = SysSetTidAddress;
+        _handlers[SyscallNumbers.SYS_CLONE] = SysClone;
+        _handlers[SyscallNumbers.SYS_FUTEX] = SysFutex;
     }
 
     /// <summary>
@@ -504,6 +514,412 @@ public static unsafe class SyscallDispatch
         proc->ControllingTerminal = null;
 
         return proc->Pid;
+    }
+
+    // ==================== Thread Operations ====================
+
+    /// <summary>
+    /// gettid() - Get thread ID
+    /// Returns the kernel thread ID of the calling thread.
+    /// </summary>
+    private static long SysGettid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                   Process.Process* proc, Thread* thread)
+    {
+        return thread->Id;
+    }
+
+    /// <summary>
+    /// arch_prctl(code, addr) - Set architecture-specific thread state
+    /// Used primarily for Thread Local Storage (TLS) setup via FS base register.
+    /// </summary>
+    private static long SysArchPrctl(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                      Process.Process* proc, Thread* thread)
+    {
+        int code = (int)arg0;
+        ulong addr = (ulong)arg1;
+
+        // arch_prctl codes
+        const int ARCH_SET_GS = 0x1001;
+        const int ARCH_SET_FS = 0x1002;
+        const int ARCH_GET_FS = 0x1003;
+        const int ARCH_GET_GS = 0x1004;
+
+        switch (code)
+        {
+            case ARCH_SET_FS:
+                // Validate address is in user space (below kernel)
+                if (addr >= 0x800000000000UL)
+                    return -Errno.EPERM;
+
+                // Store in thread structure for context switch restoration
+                thread->UserFsBase = addr;
+
+                // Set the FS base register immediately
+                CPU.SetFsBase(addr);
+                return 0;
+
+            case ARCH_GET_FS:
+                // Write current FS base to user pointer
+                if (addr == 0 || addr >= 0x800000000000UL)
+                    return -Errno.EFAULT;
+                *(ulong*)addr = thread->UserFsBase;
+                return 0;
+
+            case ARCH_SET_GS:
+                // GS is typically used by kernel, but we allow user to set it
+                if (addr >= 0x800000000000UL)
+                    return -Errno.EPERM;
+                thread->UserGsBase = addr;
+                // Note: We don't set GS base directly as kernel uses it for per-CPU data
+                // User GS would need to be saved/restored on syscall entry/exit
+                return 0;
+
+            case ARCH_GET_GS:
+                if (addr == 0 || addr >= 0x800000000000UL)
+                    return -Errno.EFAULT;
+                *(ulong*)addr = thread->UserGsBase;
+                return 0;
+
+            default:
+                return -Errno.EINVAL;
+        }
+    }
+
+    /// <summary>
+    /// set_tid_address(tidptr) - Set pointer for thread ID clearing on exit
+    /// The kernel will write 0 to *tidptr and do a futex wake when the thread exits.
+    /// This enables pthread_join() implementation.
+    /// </summary>
+    private static long SysSetTidAddress(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                          Process.Process* proc, Thread* thread)
+    {
+        uint* tidptr = (uint*)arg0;
+
+        // Store the address - kernel will clear it and wake waiters on thread exit
+        thread->ClearChildTid = tidptr;
+
+        // Return the thread ID
+        return thread->Id;
+    }
+
+    // ==================== Clone Flags (Linux-compatible) ====================
+    private const ulong CLONE_VM = 0x00000100;            // Share address space
+    private const ulong CLONE_FS = 0x00000200;            // Share filesystem info
+    private const ulong CLONE_FILES = 0x00000400;         // Share file descriptor table
+    private const ulong CLONE_SIGHAND = 0x00000800;       // Share signal handlers
+    private const ulong CLONE_THREAD = 0x00010000;        // Same thread group
+    private const ulong CLONE_SETTLS = 0x00080000;        // Set TLS for new thread
+    private const ulong CLONE_PARENT_SETTID = 0x00100000; // Write TID to parent_tidptr
+    private const ulong CLONE_CHILD_SETTID = 0x01000000;  // Write TID to child_tidptr
+    private const ulong CLONE_CHILD_CLEARTID = 0x00200000; // Clear TID on exit (futex wake)
+
+    /// <summary>
+    /// clone(flags, child_stack, parent_tidptr, child_tidptr, tls) - Create a new thread
+    /// Linux ABI for x86_64 clone:
+    ///   arg0 (rdi) = flags
+    ///   arg1 (rsi) = child_stack
+    ///   arg2 (rdx) = parent_tidptr
+    ///   arg3 (r10) = child_tidptr
+    ///   arg4 (r8)  = tls
+    /// Returns: child TID to parent, 0 to child
+    /// </summary>
+    private static long SysClone(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        ulong flags = (ulong)arg0;
+        ulong childStack = (ulong)arg1;
+        uint* parentTidptr = (uint*)arg2;
+        uint* childTidptr = (uint*)arg3;
+        ulong tls = (ulong)arg4;
+
+        // For .NET threading, we expect thread-style clone with shared VM
+        // Reject fork-style clone (would need COW, full process creation)
+        if ((flags & CLONE_VM) == 0)
+        {
+            // Fork not yet supported
+            return -Errno.ENOSYS;
+        }
+
+        // For CLONE_THREAD, CLONE_VM must be set (already checked)
+        // Also expect CLONE_SIGHAND and CLONE_FS for full thread semantics
+        bool isThread = (flags & CLONE_THREAD) != 0;
+
+        // Allocate kernel stack for new thread (8KB)
+        ulong kernelStack = PageAllocator.AllocatePages(2);
+        if (kernelStack == 0)
+            return -Errno.ENOMEM;
+
+        // Allocate thread structure
+        var newThread = (Thread*)HeapAllocator.AllocZeroed((ulong)sizeof(Thread));
+        if (newThread == null)
+        {
+            PageAllocator.FreePage(kernelStack);
+            PageAllocator.FreePage(kernelStack + 4096);
+            return -Errno.ENOMEM;
+        }
+
+        // Allocate extended state area for FPU/SSE
+        byte* extendedStateRaw = (byte*)HeapAllocator.Alloc(512 + 64);
+        if (extendedStateRaw == null)
+        {
+            HeapAllocator.Free(newThread);
+            PageAllocator.FreePage(kernelStack);
+            PageAllocator.FreePage(kernelStack + 4096);
+            return -Errno.ENOMEM;
+        }
+
+        // Align extended state to 64 bytes
+        ulong aligned = ((ulong)extendedStateRaw + 63) & ~63UL;
+        newThread->ExtendedStateRaw = extendedStateRaw;
+        newThread->ExtendedState = (byte*)aligned;
+        newThread->ExtendedStateSize = 512;
+
+        // Initialize FPU state
+        for (int i = 0; i < 512; i++)
+            newThread->ExtendedState[i] = 0;
+
+        // Generate thread ID
+        uint childTid = Scheduler.AllocateThreadId();
+
+        // Set up the thread structure
+        newThread->Id = childTid;
+        newThread->State = ThreadState.Ready;
+        newThread->Priority = thread->Priority;
+        newThread->Process = proc;
+        newThread->IsUserMode = true;
+
+        // Kernel stack
+        ulong stackTop = kernelStack + 2 * 4096;
+        newThread->KernelStackTop = stackTop;
+        newThread->StackBase = stackTop;
+        newThread->StackLimit = kernelStack;
+        newThread->StackSize = 2 * 4096;
+
+        // The child stack is provided by the caller (user space allocated)
+        // Set up context to resume in user mode at the syscall return point
+        // Child returns 0 from clone
+        newThread->UserRsp = childStack;
+        newThread->UserRip = thread->UserRip; // Same instruction pointer - clone returns here
+
+        // Set up CPU context for the child
+        // Copy parent's context as base
+        newThread->Context = thread->Context;
+
+        // Child gets return value 0 in rax
+        newThread->Context.Rax = 0;
+
+        // Use the provided child stack
+        newThread->Context.Rsp = childStack;
+
+        // Set up user-mode segment selectors
+        newThread->Context.Cs = GDTSelectors.UserCode | 3;
+        newThread->Context.Ss = GDTSelectors.UserData | 3;
+        newThread->Context.Rflags = 0x202; // IF=1
+
+        // Handle CLONE_SETTLS - set Thread Local Storage base
+        if ((flags & CLONE_SETTLS) != 0)
+        {
+            newThread->UserFsBase = tls;
+        }
+
+        // Handle CLONE_PARENT_SETTID - write TID to parent's pointer
+        if ((flags & CLONE_PARENT_SETTID) != 0 && parentTidptr != null)
+        {
+            *parentTidptr = childTid;
+        }
+
+        // Handle CLONE_CHILD_SETTID - write TID to child's pointer
+        // Note: In shared VM, this writes to the same memory visible to both
+        if ((flags & CLONE_CHILD_SETTID) != 0 && childTidptr != null)
+        {
+            *childTidptr = childTid;
+        }
+
+        // Handle CLONE_CHILD_CLEARTID - set up futex wake on exit
+        if ((flags & CLONE_CHILD_CLEARTID) != 0)
+        {
+            newThread->ClearChildTid = childTidptr;
+        }
+
+        // Register thread with scheduler
+        Scheduler.RegisterClonedThread(newThread);
+
+        // Increment process thread count
+        proc->ThreadCount++;
+
+        // Return child TID to parent
+        return childTid;
+    }
+
+    // ==================== Futex Operations ====================
+    private const int FUTEX_WAIT = 0;
+    private const int FUTEX_WAKE = 1;
+    private const int FUTEX_WAIT_PRIVATE = 128;
+    private const int FUTEX_WAKE_PRIVATE = 129;
+    private const int FUTEX_PRIVATE_FLAG = 128;
+    private const int FUTEX_CMD_MASK = 127;  // Mask out private flag
+
+    // Simple futex wait queue - array of waiting threads
+    // Key is the futex address, value is the waiting thread
+    private const int MAX_FUTEX_WAITERS = 256;
+    private static FutexWaiter* _futexWaiters;
+    private static int _futexWaiterCount;
+    private static SpinLock _futexLock;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FutexWaiter
+    {
+        public ulong Address;      // Futex address being waited on
+        public Thread* Thread;     // Waiting thread
+        public bool Active;        // Whether this entry is in use
+    }
+
+    /// <summary>
+    /// Initialize the futex subsystem
+    /// </summary>
+    public static void InitFutex()
+    {
+        _futexWaiters = (FutexWaiter*)HeapAllocator.AllocZeroed((ulong)(sizeof(FutexWaiter) * MAX_FUTEX_WAITERS));
+        _futexWaiterCount = 0;
+        _futexLock = default;
+    }
+
+    /// <summary>
+    /// futex(uaddr, op, val, timeout, uaddr2, val3) - Fast userspace locking
+    /// Linux ABI for x86_64 futex:
+    ///   arg0 (rdi) = uaddr (uint*)
+    ///   arg1 (rsi) = op (futex operation)
+    ///   arg2 (rdx) = val (value to compare/wake count)
+    ///   arg3 (r10) = timeout (timespec* for WAIT, or uaddr2 for some ops)
+    ///   arg4 (r8)  = uaddr2 (second address for some ops)
+    ///   arg5 (r9)  = val3 (third value for some ops)
+    /// </summary>
+    private static long SysFutex(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                                  Process.Process* proc, Thread* thread)
+    {
+        uint* uaddr = (uint*)arg0;
+        int op = (int)arg1;
+        uint val = (uint)arg2;
+        // timespec* timeout = (timespec*)arg3;  // Not yet implemented
+        // uint* uaddr2 = (uint*)arg4;
+        // uint val3 = (uint)arg5;
+
+        // Mask out the private flag - we treat all futexes as private for now
+        // (single address space per process)
+        int cmd = op & FUTEX_CMD_MASK;
+
+        switch (cmd)
+        {
+            case FUTEX_WAIT:
+                return FutexWait(uaddr, val, thread);
+
+            case FUTEX_WAKE:
+                return FutexWake(uaddr, (int)val);
+
+            default:
+                // Unsupported operation
+                return -Errno.ENOSYS;
+        }
+    }
+
+    /// <summary>
+    /// FUTEX_WAIT: If *uaddr == val, block until woken
+    /// </summary>
+    private static long FutexWait(uint* uaddr, uint val, Thread* thread)
+    {
+        _futexLock.Acquire();
+
+        // Check if the value still matches
+        // This must be done atomically with adding to wait queue
+        if (*uaddr != val)
+        {
+            _futexLock.Release();
+            return -Errno.EAGAIN;
+        }
+
+        // Find a free waiter slot
+        int slot = -1;
+        for (int i = 0; i < MAX_FUTEX_WAITERS; i++)
+        {
+            if (!_futexWaiters[i].Active)
+            {
+                slot = i;
+                break;
+            }
+        }
+
+        if (slot < 0)
+        {
+            _futexLock.Release();
+            return -Errno.ENOMEM;  // Too many waiters
+        }
+
+        // Add to wait queue
+        _futexWaiters[slot].Address = (ulong)uaddr;
+        _futexWaiters[slot].Thread = thread;
+        _futexWaiters[slot].Active = true;
+        _futexWaiterCount++;
+
+        // Block the thread
+        thread->State = ThreadState.Blocked;
+        thread->WaitObject = uaddr;
+
+        _futexLock.Release();
+
+        // Yield to scheduler - thread will be woken by FutexWake
+        Scheduler.Schedule();
+
+        // When we return, check if we were actually woken or interrupted
+        // For now, just return 0 (success)
+        return 0;
+    }
+
+    /// <summary>
+    /// FUTEX_WAKE: Wake up to 'count' waiters on uaddr
+    /// </summary>
+    private static long FutexWake(uint* uaddr, int count)
+    {
+        if (count <= 0)
+            return 0;
+
+        _futexLock.Acquire();
+
+        int woken = 0;
+        ulong addr = (ulong)uaddr;
+
+        for (int i = 0; i < MAX_FUTEX_WAITERS && woken < count; i++)
+        {
+            if (_futexWaiters[i].Active && _futexWaiters[i].Address == addr)
+            {
+                var waitingThread = _futexWaiters[i].Thread;
+
+                // Remove from wait queue
+                _futexWaiters[i].Active = false;
+                _futexWaiters[i].Thread = null;
+                _futexWaiterCount--;
+
+                // Wake the thread
+                if (waitingThread != null && waitingThread->State == ThreadState.Blocked)
+                {
+                    waitingThread->State = ThreadState.Ready;
+                    waitingThread->WaitObject = null;
+                    Scheduler.AddToReadyQueuePublic(waitingThread);
+                    woken++;
+                }
+            }
+        }
+
+        _futexLock.Release();
+
+        return woken;
+    }
+
+    /// <summary>
+    /// Wake all futex waiters on an address (used for thread exit with CLONE_CHILD_CLEARTID)
+    /// </summary>
+    public static void FutexWakeAll(uint* uaddr)
+    {
+        FutexWake(uaddr, int.MaxValue);
     }
 
     // ==================== File Operations ====================

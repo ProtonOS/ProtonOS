@@ -83,6 +83,14 @@ public static class SyscallNumbers
     public const int SYS_GETGROUPS = 115;
     public const int SYS_SETGROUPS = 116;
 
+    // ==================== Threading ====================
+    public const int SYS_CLONE = 56;
+    public const int SYS_GETTID = 186;
+    public const int SYS_FUTEX = 202;
+    public const int SYS_SET_TID_ADDRESS = 218;
+    public const int SYS_GET_ROBUST_LIST = 274;
+    public const int SYS_SET_ROBUST_LIST = 273;
+
     // ==================== Signals ====================
     public const int SYS_RT_SIGACTION = 13;
     public const int SYS_RT_SIGPROCMASK = 14;

@@ -222,6 +222,26 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("fork");
         builder.EmitForkTest();
 
+        // Test 51: gettid
+        builder.EmitTestHeader("gettid");
+        builder.EmitGettidTest();
+
+        // Test 52: arch_prctl (TLS)
+        builder.EmitTestHeader("arch_prctl");
+        builder.EmitArchPrctlTest();
+
+        // Test 53: set_tid_address
+        builder.EmitTestHeader("set_tid_address");
+        builder.EmitSetTidAddressTest();
+
+        // Test 54: clone (thread creation)
+        builder.EmitTestHeader("clone");
+        builder.EmitCloneTest();
+
+        // Test 55: futex (basic operations)
+        builder.EmitTestHeader("futex");
+        builder.EmitFutexTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -3049,6 +3069,343 @@ public static unsafe class UserModeTests
             // Fork is complex and not fully implemented, so just mark as skipped
             // We verify fork syscall exists by checking the dispatcher has a handler
             EmitPrintString("  [PASS] fork test skipped (not implemented)\n");
+        }
+
+        public void EmitGettidTest()
+        {
+            // Test: gettid() should return a positive thread ID
+            // SYS_GETTID = 186
+            fixed (byte* code = _code)
+            {
+                // gettid()
+                code[_offset++] = 0xB8; Emit32(186);  // mov eax, 186
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Result should be > 0
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test eax, eax
+                code[_offset++] = 0x7F;  // jg pass (positive = good)
+                int passJump = _offset++;
+
+                EmitPrintString("  [FAIL] gettid returned invalid id\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump] = (byte)(_offset - passJump - 1);
+                EmitPrintString("  [PASS] gettid works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+            }
+        }
+
+        public void EmitArchPrctlTest()
+        {
+            // Test: arch_prctl(ARCH_SET_FS, addr) and arch_prctl(ARCH_GET_FS, &result)
+            // SYS_ARCH_PRCTL = 158, ARCH_SET_FS = 0x1002, ARCH_GET_FS = 0x1003
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 16 (for result storage)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 16;
+
+                // Set FS base to a test value (0x12345678)
+                // arch_prctl(ARCH_SET_FS, 0x12345678)
+                code[_offset++] = 0xB8; Emit32(158);  // mov eax, 158
+                code[_offset++] = 0xBF; Emit32(0x1002);  // mov edi, ARCH_SET_FS
+                code[_offset++] = 0x48; code[_offset++] = 0xBE;  // mov rsi, imm64
+                Emit32(0x12345678); Emit32(0);  // 0x12345678
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Check SET_FS returned 0
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test eax, eax
+                code[_offset++] = 0x74;  // je set_ok
+                int setOk = _offset++;
+
+                EmitPrintString("  [FAIL] arch_prctl SET_FS failed\n");
+                code[_offset++] = 0xEB;
+                int endJump1 = _offset++;
+
+                code[setOk] = (byte)(_offset - setOk - 1);
+
+                // Now get FS base
+                // arch_prctl(ARCH_GET_FS, rsp)
+                code[_offset++] = 0xB8; Emit32(158);  // mov eax, 158
+                code[_offset++] = 0xBF; Emit32(0x1003);  // mov edi, ARCH_GET_FS
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE6;  // mov rsi, rsp
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Check GET_FS returned 0
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test eax, eax
+                code[_offset++] = 0x74;  // je get_ok
+                int getOk = _offset++;
+
+                EmitPrintString("  [FAIL] arch_prctl GET_FS failed\n");
+                code[_offset++] = 0xEB;
+                int endJump2 = _offset++;
+
+                code[getOk] = (byte)(_offset - getOk - 1);
+
+                // Check the value we got back matches (low 32 bits)
+                // mov eax, [rsp]
+                code[_offset++] = 0x8B; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                // cmp eax, 0x12345678
+                code[_offset++] = 0x3D; Emit32(0x12345678);
+                code[_offset++] = 0x74;  // je value_ok
+                int valueOk = _offset++;
+
+                EmitPrintString("  [FAIL] arch_prctl value mismatch\n");
+                code[_offset++] = 0xEB;
+                int endJump3 = _offset++;
+
+                code[valueOk] = (byte)(_offset - valueOk - 1);
+                EmitPrintString("  [PASS] arch_prctl works\n");
+
+                code[endJump1] = (byte)(_offset - endJump1 - 1);
+                code[endJump2] = (byte)(_offset - endJump2 - 1);
+                code[endJump3] = (byte)(_offset - endJump3 - 1);
+
+                // add rsp, 16
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 16;
+            }
+        }
+
+        public void EmitSetTidAddressTest()
+        {
+            // Test: set_tid_address(&tid) should return thread ID
+            // SYS_SET_TID_ADDRESS = 218
+            fixed (byte* code = _code)
+            {
+                // sub rsp, 16 (for tid storage)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 16;
+
+                // Initialize tid to 0
+                code[_offset++] = 0x48; code[_offset++] = 0xC7; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                Emit32(0);  // mov qword [rsp], 0
+
+                // set_tid_address(rsp)
+                code[_offset++] = 0xB8; Emit32(218);  // mov eax, 218
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;  // mov rdi, rsp
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Result should be > 0 (thread ID)
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test eax, eax
+                code[_offset++] = 0x7F;  // jg pass
+                int passJump = _offset++;
+
+                EmitPrintString("  [FAIL] set_tid_address failed\n");
+                code[_offset++] = 0xEB;
+                int endJump = _offset++;
+
+                code[passJump] = (byte)(_offset - passJump - 1);
+                EmitPrintString("  [PASS] set_tid_address works\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // add rsp, 16
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 16;
+            }
+        }
+
+        public void EmitCloneTest()
+        {
+            // Test: clone() should create a new thread
+            // Clone flags for thread creation:
+            // CLONE_VM (0x100) | CLONE_FS (0x200) | CLONE_FILES (0x400) |
+            // CLONE_SIGHAND (0x800) | CLONE_THREAD (0x10000) = 0x10F00
+            //
+            // Strategy:
+            // 1. Allocate child stack with mmap
+            // 2. Call clone(flags, child_stack_top, 0, 0, 0)
+            // 3. If return == 0, we're the child - exit immediately
+            // 4. If return > 0, we're the parent - verify TID received
+
+            const int CLONE_FLAGS = 0x10F00;  // VM|FS|FILES|SIGHAND|THREAD
+            const int STACK_SIZE = 4096;
+
+            fixed (byte* code = _code)
+            {
+                // First, mmap a stack for the child
+                // mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+                // SYS_MMAP = 9
+                code[_offset++] = 0xB8; Emit32(9);  // mov eax, 9 (mmap)
+                code[_offset++] = 0x48; code[_offset++] = 0x31; code[_offset++] = 0xFF;  // xor rdi, rdi (addr=NULL)
+                code[_offset++] = 0xBE; Emit32(STACK_SIZE);  // mov esi, 4096 (len)
+                code[_offset++] = 0xBA; Emit32(3);  // mov edx, 3 (PROT_READ|PROT_WRITE)
+                code[_offset++] = 0x41; code[_offset++] = 0xB8; Emit32(0x22);  // mov r8d, 0x22 (MAP_PRIVATE|MAP_ANONYMOUS)
+                code[_offset++] = 0x41; code[_offset++] = 0xB9; Emit32(-1);  // mov r9d, -1 (fd)
+                // For mmap, arg6 (offset) goes in r9 via stack for syscall, but Linux puts it in stack
+                // Actually for x86-64, args go: rdi, rsi, rdx, r10, r8, r9
+                // So we need r10 = flags, r8 = fd, r9 = offset
+                // Let me fix this:
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC2; Emit32(0x22);  // mov r10, 0x22 (flags)
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC0; Emit32(-1);    // mov r8, -1 (fd)
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC1; Emit32(0);     // mov r9, 0 (offset)
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Save stack base in r15
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC7;  // mov r15, rax
+
+                // Check mmap succeeded (rax > 0)
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test rax, rax
+                code[_offset++] = 0x7F;  // jg mmap_ok
+                int mmapOkJump = _offset++;
+
+                EmitPrintString("  [FAIL] mmap for child stack failed\n");
+                code[_offset++] = 0xEB;  // jmp end
+                int endJump1 = _offset++;
+
+                code[mmapOkJump] = (byte)(_offset - mmapOkJump - 1);
+
+                // Calculate stack top (stack grows down, so top = base + size)
+                // mov rsi, r15
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xFE;
+                // add rsi, STACK_SIZE
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC6; Emit32(STACK_SIZE);
+
+                // Align stack to 16 bytes
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xE6; code[_offset++] = 0xF0;  // and rsi, ~0xF
+
+                // Now call clone(flags, child_stack, 0, 0, 0)
+                // SYS_CLONE = 56
+                // Args: rdi=flags, rsi=child_stack, rdx=parent_tidptr, r10=child_tidptr, r8=tls
+                code[_offset++] = 0xB8; Emit32(56);  // mov eax, 56 (clone)
+                code[_offset++] = 0xBF; Emit32(CLONE_FLAGS);  // mov edi, flags
+                // rsi already has child_stack
+                code[_offset++] = 0x48; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor rdx, rdx (parent_tidptr=0)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor r10, r10 (child_tidptr=0)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC0;  // xor r8, r8 (tls=0)
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Now check result:
+                // - Child gets 0
+                // - Parent gets child TID (>0)
+                // - Error would be negative
+
+                // test rax, rax
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;
+
+                // jz child_path (rax == 0)
+                code[_offset++] = 0x74;
+                int childJump = _offset++;
+
+                // jl error_path (rax < 0)
+                code[_offset++] = 0x7C;
+                int errorJump = _offset++;
+
+                // ===== Parent path (rax > 0 = child TID) =====
+                EmitPrintString("  [PASS] clone: parent got child TID\n");
+                // Continue to end (use near jump for larger distance)
+                code[_offset++] = 0xE9;  // jmp near (32-bit displacement)
+                int endJump2 = _offset;
+                _offset += 4;  // Reserve 4 bytes for displacement
+
+                // ===== Child path =====
+                code[childJump] = (byte)(_offset - childJump - 1);
+                // Child just exits immediately - no message to keep jump distances small
+                code[_offset++] = 0xB8; Emit32(60);  // mov eax, 60 (exit)
+                code[_offset++] = 0xBF; Emit32(42);  // mov edi, 42
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x0B;  // ud2 (should not reach)
+
+                // ===== Error path =====
+                code[errorJump] = (byte)(_offset - errorJump - 1);
+                EmitPrintString("  [FAIL] clone failed with error\n");
+
+                // End label - patch the near jump
+                code[endJump1] = (byte)(_offset - endJump1 - 1);
+                // Patch endJump2 as 32-bit displacement
+                int disp2 = _offset - (endJump2 + 4);
+                code[endJump2] = (byte)(disp2 & 0xFF);
+                code[endJump2 + 1] = (byte)((disp2 >> 8) & 0xFF);
+                code[endJump2 + 2] = (byte)((disp2 >> 16) & 0xFF);
+                code[endJump2 + 3] = (byte)((disp2 >> 24) & 0xFF);
+            }
+        }
+
+        public void EmitFutexTest()
+        {
+            // Test futex operations:
+            // 1. FUTEX_WAIT with wrong value should return -EAGAIN (11)
+            // 2. FUTEX_WAKE on empty queue should return 0
+            //
+            // SYS_FUTEX = 202
+            // FUTEX_WAIT = 0
+            // FUTEX_WAKE = 1
+            // EAGAIN = 11
+
+            fixed (byte* code = _code)
+            {
+                // Allocate space for a futex variable on the stack
+                // sub rsp, 16
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 16;
+
+                // Initialize futex value to 42
+                // mov dword [rsp], 42
+                code[_offset++] = 0xC7; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                Emit32(42);
+
+                // ===== Test 1: FUTEX_WAIT with mismatched value =====
+                // futex(&val, FUTEX_WAIT, 99, NULL, NULL, 0)
+                // Should return -EAGAIN because val=42, not 99
+                code[_offset++] = 0xB8; Emit32(202);  // mov eax, 202 (futex)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;  // mov rdi, rsp (uaddr)
+                code[_offset++] = 0xBE; Emit32(0);    // mov esi, 0 (FUTEX_WAIT)
+                code[_offset++] = 0xBA; Emit32(99);   // mov edx, 99 (val - mismatched!)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor r10, r10 (timeout=NULL)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC0;  // xor r8, r8 (uaddr2=NULL)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC9;  // xor r9, r9 (val3=0)
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Check result: should be -11 (EAGAIN)
+                // cmp eax, -11
+                code[_offset++] = 0x83; code[_offset++] = 0xF8; code[_offset++] = 0xF5;  // cmp eax, -11
+                code[_offset++] = 0x74;  // je test1_pass
+                int test1PassJump = _offset++;
+
+                EmitPrintString("  [FAIL] FUTEX_WAIT should return EAGAIN\n");
+                code[_offset++] = 0xEB;  // jmp test2
+                int test2Jump1 = _offset++;
+
+                code[test1PassJump] = (byte)(_offset - test1PassJump - 1);
+                EmitPrintString("  [OK] FUTEX_WAIT mismatch returns EAGAIN\n");
+
+                code[test2Jump1] = (byte)(_offset - test2Jump1 - 1);
+
+                // ===== Test 2: FUTEX_WAKE on empty queue =====
+                // futex(&val, FUTEX_WAKE, 1, NULL, NULL, 0)
+                // Should return 0 (no waiters)
+                code[_offset++] = 0xB8; Emit32(202);  // mov eax, 202 (futex)
+                code[_offset++] = 0x48; code[_offset++] = 0x89; code[_offset++] = 0xE7;  // mov rdi, rsp (uaddr)
+                code[_offset++] = 0xBE; Emit32(1);    // mov esi, 1 (FUTEX_WAKE)
+                code[_offset++] = 0xBA; Emit32(1);    // mov edx, 1 (wake count)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor r10, r10
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC0;  // xor r8, r8
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC9;  // xor r9, r9
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Check result: should be 0 (no waiters woken)
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                code[_offset++] = 0x74;  // je test2_pass
+                int test2PassJump = _offset++;
+
+                EmitPrintString("  [FAIL] FUTEX_WAKE should return 0\n");
+                code[_offset++] = 0xEB;  // jmp end
+                int endJump = _offset++;
+
+                code[test2PassJump] = (byte)(_offset - test2PassJump - 1);
+                EmitPrintString("  [PASS] futex basic operations work\n");
+
+                code[endJump] = (byte)(_offset - endJump - 1);
+
+                // Clean up stack
+                // add rsp, 16
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 16;
+            }
         }
 
         public void EmitTestSummary()

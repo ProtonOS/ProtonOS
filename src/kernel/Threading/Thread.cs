@@ -155,6 +155,24 @@ public unsafe struct Thread
     /// Kernel stack top (used for syscall entry, TSS.RSP0)
     /// </summary>
     public ulong KernelStackTop;
+
+    /// <summary>
+    /// User-mode FS base (for Thread Local Storage)
+    /// Set via arch_prctl(ARCH_SET_FS) syscall
+    /// </summary>
+    public ulong UserFsBase;
+
+    /// <summary>
+    /// User-mode GS base (reserved for future use)
+    /// Set via arch_prctl(ARCH_SET_GS) syscall
+    /// </summary>
+    public ulong UserGsBase;
+
+    /// <summary>
+    /// Pointer where kernel writes 0 on thread exit (for futex-based join)
+    /// Set via set_tid_address syscall
+    /// </summary>
+    public uint* ClearChildTid;
 }
 
 /// <summary>
