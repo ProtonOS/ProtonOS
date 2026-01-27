@@ -176,13 +176,21 @@ public static unsafe class SyscallHandler
     /// <param name="arg3">Fourth argument (from R10, Linux uses R10 instead of RCX)</param>
     /// <param name="arg4">Fifth argument (from R8)</param>
     /// <param name="arg5">Sixth argument (from R9)</param>
+    /// <param name="userRip">User-mode return address (from RCX at syscall entry)</param>
     /// <returns>Syscall result (placed in RAX on return)</returns>
     [UnmanagedCallersOnly(EntryPoint = "SyscallDispatch")]
-    public static long Dispatch(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5)
+    public static long Dispatch(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5, long userRip)
     {
         // Get current thread and process
         var thread = Scheduler.CurrentThread;
         var proc = thread != null ? thread->Process : null;
+
+        // Store user RIP in thread for use by clone and other syscalls that need
+        // to know where to return to in user mode
+        if (thread != null)
+        {
+            thread->UserRip = (ulong)userRip;
+        }
 
         // Special case: exit syscall (60) can be called without a full process context
         // This is needed for Ring 3 testing where we don't have a full process set up

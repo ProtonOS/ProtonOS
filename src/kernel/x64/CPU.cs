@@ -145,6 +145,10 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void load_context(CPUContext* context);
 
+    // Syscall Kernel Stack (from native.asm)
+    [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void set_syscall_kernel_stack(ulong stackTop);
+
     // Exception Throwing (from native.asm)
     [DllImport("*", CallingConvention = CallingConvention.Cdecl)]
     private static extern void RhpThrowEx(void* exceptionObject);
@@ -536,6 +540,13 @@ public unsafe struct CPU : ProtonOS.Arch.ICpu<CPU>
     /// </summary>
     public static void LoadContext(CPUContext* context)
         => load_context(context);
+
+    /// <summary>
+    /// Set the kernel stack pointer used for syscall entry.
+    /// Must be called when switching to a different thread.
+    /// </summary>
+    public static void SetSyscallKernelStack(ulong stackTop)
+        => set_syscall_kernel_stack(stackTop);
 
     /// <summary>
     /// Restore a PAL CONTEXT structure.

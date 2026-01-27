@@ -1946,23 +1946,26 @@ syscall_entry:
     ;   [rsp+152] = user RIP
 
     ; Set up arguments for C# dispatcher (Windows x64 ABI)
+    ; 8 params: number, arg0-5, userRip
     mov rcx, [rsp + 128]    ; syscall number -> rcx
     mov rdx, [rsp + 120]    ; arg0 -> rdx
     mov r8,  [rsp + 112]    ; arg1 -> r8
     mov r9,  [rsp + 104]    ; arg2 -> r9
 
     ; Remaining args go on stack (after shadow space)
-    sub rsp, 56             ; 32 shadow + 24 for 3 stack args (aligned to 16)
-    mov rax, [rsp + 56 + 96]    ; arg3 (was r10)
+    sub rsp, 64             ; 32 shadow + 32 for 4 stack args (aligned to 16)
+    mov rax, [rsp + 64 + 96]    ; arg3 (was r10)
     mov [rsp + 32], rax
-    mov rax, [rsp + 56 + 88]    ; arg4 (was r8)
+    mov rax, [rsp + 64 + 88]    ; arg4 (was r8)
     mov [rsp + 40], rax
-    mov rax, [rsp + 56 + 80]    ; arg5 (was r9)
+    mov rax, [rsp + 64 + 80]    ; arg5 (was r9)
     mov [rsp + 48], rax
+    mov rax, [rsp + 64 + 152]   ; user RIP (8th param)
+    mov [rsp + 56], rax
 
     call SyscallDispatch
 
-    add rsp, 56             ; Remove shadow space and stack args
+    add rsp, 64             ; Remove shadow space and stack args
 
     ; RAX now contains syscall return value
     ; Save it temporarily
@@ -2084,18 +2087,21 @@ syscall_entry_v2:
     sti
 
     ; Call dispatcher - set up Windows x64 ABI args
+    ; 8 params: number, arg0-5, userRip
     mov rcx, [rsp + 32 + 136]   ; syscall number
     mov rdx, [rsp + 32 + 128]   ; arg0
     mov r8,  [rsp + 32 + 120]   ; arg1
     mov r9,  [rsp + 32 + 112]   ; arg2
 
-    ; Stack args at [rsp+32], [rsp+40], [rsp+48]
+    ; Stack args at [rsp+32], [rsp+40], [rsp+48], [rsp+56]
     mov rax, [rsp + 32 + 104]   ; arg3
     mov [rsp + 32], rax
     mov rax, [rsp + 32 + 96]    ; arg4
     mov [rsp + 40], rax
     mov rax, [rsp + 32 + 88]    ; arg5
     mov [rsp + 48], rax
+    mov rax, [rsp + 32 + 160]   ; user RIP (8th param)
+    mov [rsp + 56], rax
 
     ; Extra shadow space already in our 32 bytes
     call SyscallDispatch
@@ -2201,22 +2207,26 @@ syscall_entry_final:
     ;   [rsp+120] user RSP
 
     ; Windows x64 ABI call
-    sub rsp, 56         ; Shadow space (32) + 3 stack args (24), 16-byte aligned
+    ; 8 params: number, arg0-5, userRip
+    ; 4 in registers (rcx, rdx, r8, r9), 4 on stack
+    sub rsp, 64         ; Shadow space (32) + 4 stack args (32), 16-byte aligned
 
-    mov rcx, [rsp + 56 + 96]    ; syscall number
-    mov rdx, [rsp + 56 + 88]    ; arg0
-    mov r8,  [rsp + 56 + 80]    ; arg1
-    mov r9,  [rsp + 56 + 72]    ; arg2
-    mov rax, [rsp + 56 + 64]    ; arg3
+    mov rcx, [rsp + 64 + 96]    ; syscall number
+    mov rdx, [rsp + 64 + 88]    ; arg0
+    mov r8,  [rsp + 64 + 80]    ; arg1
+    mov r9,  [rsp + 64 + 72]    ; arg2
+    mov rax, [rsp + 64 + 64]    ; arg3
     mov [rsp + 32], rax
-    mov rax, [rsp + 56 + 56]    ; arg4
+    mov rax, [rsp + 64 + 56]    ; arg4
     mov [rsp + 40], rax
-    mov rax, [rsp + 56 + 48]    ; arg5
+    mov rax, [rsp + 64 + 48]    ; arg5
     mov [rsp + 48], rax
+    mov rax, [rsp + 64 + 104]   ; user RIP (8th param)
+    mov [rsp + 56], rax
 
     call SyscallDispatch
 
-    add rsp, 56
+    add rsp, 64
 
     ; RAX = return value, keep it
 
@@ -2412,6 +2422,47 @@ jump_to_ring3:
 
     ; Clear all general purpose registers (security: don't leak kernel data)
     xor rax, rax
+    xor rbx, rbx
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rsi, rsi
+    xor rdi, rdi
+    xor rbp, rbp
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    xor r11, r11
+    xor r12, r12
+    xor r13, r13
+    xor r14, r14
+    xor r15, r15
+
+    ; Transition to Ring 3!
+    iretq
+
+    ; Should never reach here
+    ud2
+
+;; Jump to Ring 3 with a return value in RAX (for clone child)
+;; void jump_to_ring3_with_retval(ulong userRip, ulong userRsp, ulong retval)
+;; Windows x64: rcx=userRip, rdx=userRsp, r8=retval
+global jump_to_ring3_with_retval
+jump_to_ring3_with_retval:
+    ; Disable interrupts during transition
+    cli
+
+    ; Save arguments
+    mov rax, r8             ; retval -> will be in rax for user code
+    mov rbx, rdx            ; userRsp
+
+    ; Set up the iretq frame on current stack
+    push qword 0x1B         ; SS (UserData | RPL 3)
+    push rbx                ; RSP (user stack)
+    push qword 0x202        ; RFLAGS (IF=1)
+    push qword 0x23         ; CS (UserCode | RPL 3)
+    push rcx                ; RIP (userRip)
+
+    ; Clear most registers (security) but preserve rax (return value)
     xor rbx, rbx
     xor rcx, rcx
     xor rdx, rdx

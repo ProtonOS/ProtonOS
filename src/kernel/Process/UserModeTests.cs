@@ -242,6 +242,10 @@ public static unsafe class UserModeTests
         builder.EmitTestHeader("futex");
         builder.EmitFutexTest();
 
+        // Test 56: thread join via futex (CLONE_CHILD_CLEARTID)
+        builder.EmitTestHeader("thread_join");
+        builder.EmitThreadJoinTest();
+
         // Summary and exit
         builder.EmitTestSummary();
 
@@ -3405,6 +3409,190 @@ public static unsafe class UserModeTests
                 // add rsp, 16
                 code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
                 code[_offset++] = 16;
+            }
+        }
+
+        public void EmitThreadJoinTest()
+        {
+            // Test thread join using CLONE_CHILD_CLEARTID + futex
+            // 1. Allocate stack and tid storage
+            // 2. Clone with CLONE_CHILD_CLEARTID, child_tidptr points to our tid var
+            // 3. Child exits immediately
+            // 4. Parent uses FUTEX_WAIT on tid (if tid != 0)
+            // 5. When child exits, kernel writes 0 to tid and wakes futex
+            // 6. Parent verifies tid == 0
+
+            // Clone flags: CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD |
+            //              CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID
+            // CLONE_CHILD_SETTID = 0x01000000, CLONE_CHILD_CLEARTID = 0x00200000
+            const int CLONE_FLAGS = 0x10F00 | 0x01000000 | 0x00200000;  // Thread flags + SETTID + CLEARTID
+            const int STACK_SIZE = 4096;
+
+            fixed (byte* code = _code)
+            {
+                // Allocate space for child_tid on stack
+                // sub rsp, 32 (16 for tid + alignment)
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xEC;
+                code[_offset++] = 32;
+
+                // Initialize child_tid to 0xFFFFFFFF (will be overwritten by clone)
+                // mov dword [rsp], 0xFFFFFFFF
+                code[_offset++] = 0xC7; code[_offset++] = 0x04; code[_offset++] = 0x24;
+                Emit32(unchecked((int)0xFFFFFFFF));
+
+                // Save rsp in r14 for later (points to child_tid)
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xE6;  // mov r14, rsp
+
+                // Allocate child stack with mmap
+                code[_offset++] = 0xB8; Emit32(9);  // mov eax, 9 (mmap)
+                code[_offset++] = 0x48; code[_offset++] = 0x31; code[_offset++] = 0xFF;  // xor rdi, rdi (addr=NULL)
+                code[_offset++] = 0xBE; Emit32(STACK_SIZE);  // mov esi, 4096 (len)
+                code[_offset++] = 0xBA; Emit32(3);  // mov edx, 3 (PROT_READ|PROT_WRITE)
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC2; Emit32(0x22);  // mov r10, 0x22 (flags)
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC0; Emit32(-1);    // mov r8, -1 (fd)
+                code[_offset++] = 0x49; code[_offset++] = 0xC7; code[_offset++] = 0xC1; Emit32(0);     // mov r9, 0 (offset)
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Save stack base in r15
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC7;  // mov r15, rax
+
+                // Check mmap succeeded
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test rax, rax
+                code[_offset++] = 0x7F;  // jg mmap_ok
+                int mmapOkJump = _offset++;
+
+                EmitPrintString("  [FAIL] mmap failed\n");
+                code[_offset++] = 0xE9;  // jmp near end
+                int endJump1 = _offset;
+                _offset += 4;
+
+                code[mmapOkJump] = (byte)(_offset - mmapOkJump - 1);
+
+                // Calculate child stack top
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xFE;  // mov rsi, r15
+                code[_offset++] = 0x48; code[_offset++] = 0x81; code[_offset++] = 0xC6; Emit32(STACK_SIZE);  // add rsi, 4096
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xE6; code[_offset++] = 0xF0;  // and rsi, ~0xF
+
+                // Call clone with CLONE_CHILD_CLEARTID
+                // clone(flags, child_stack, parent_tidptr=0, child_tidptr=&child_tid, tls=0)
+                code[_offset++] = 0xB8; Emit32(56);  // mov eax, 56 (clone)
+                code[_offset++] = 0xBF; Emit32(CLONE_FLAGS);  // mov edi, flags
+                // rsi already has child_stack
+                code[_offset++] = 0x48; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor rdx, rdx (parent_tidptr=0)
+                code[_offset++] = 0x4D; code[_offset++] = 0x89; code[_offset++] = 0xF2;  // mov r10, r14 (child_tidptr = &child_tid)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC0;  // xor r8, r8 (tls=0)
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Check result
+                code[_offset++] = 0x48; code[_offset++] = 0x85; code[_offset++] = 0xC0;  // test rax, rax
+                // jz near child_path (0x0F 0x84 rel32) - need near jump due to large distance
+                code[_offset++] = 0x0F; code[_offset++] = 0x84;
+                int childJump = _offset;
+                _offset += 4;  // Reserve 4 bytes for displacement
+                // jl near error_path (0x0F 0x8C rel32)
+                code[_offset++] = 0x0F; code[_offset++] = 0x8C;
+                int errorJump = _offset;
+                _offset += 4;  // Reserve 4 bytes for displacement
+
+                // ===== Parent path =====
+                // Save child TID in r13
+                code[_offset++] = 0x49; code[_offset++] = 0x89; code[_offset++] = 0xC5;  // mov r13, rax
+
+                // Wait for child to exit using futex
+                // The child_tid should be set to the child's TID by clone
+                // When child exits, kernel writes 0 and wakes us
+
+                // Loop: while (*child_tid != 0) { futex_wait(child_tid, *child_tid) }
+                // Load current value of child_tid
+                // mov eax, [r14]
+                code[_offset++] = 0x41; code[_offset++] = 0x8B; code[_offset++] = 0x06;
+
+                // test eax, eax - check if already 0
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                code[_offset++] = 0x74;  // jz already_exited
+                int alreadyExitedJump = _offset++;
+
+                // Not zero yet, do futex wait
+                // futex(child_tid, FUTEX_WAIT, current_val, NULL, NULL, 0)
+                code[_offset++] = 0x89; code[_offset++] = 0xC2;  // mov edx, eax (val = current tid)
+                code[_offset++] = 0xB8; Emit32(202);  // mov eax, 202 (futex)
+                code[_offset++] = 0x4C; code[_offset++] = 0x89; code[_offset++] = 0xF7;  // mov rdi, r14 (uaddr = &child_tid)
+                code[_offset++] = 0xBE; Emit32(0);    // mov esi, 0 (FUTEX_WAIT)
+                // edx already has val
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xD2;  // xor r10, r10 (timeout=NULL)
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC0;  // xor r8, r8
+                code[_offset++] = 0x4D; code[_offset++] = 0x31; code[_offset++] = 0xC9;  // xor r9, r9
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+
+                // Futex returned (either woken or EAGAIN if value changed)
+                // Check child_tid again
+                code[alreadyExitedJump] = (byte)(_offset - alreadyExitedJump - 1);
+
+                // Verify child_tid is now 0
+                // mov eax, [r14]
+                code[_offset++] = 0x41; code[_offset++] = 0x8B; code[_offset++] = 0x06;
+                // test eax, eax
+                code[_offset++] = 0x85; code[_offset++] = 0xC0;
+                code[_offset++] = 0x74;  // jz pass
+                int passJump = _offset++;
+
+                EmitPrintString("  [FAIL] child_tid not cleared\n");
+                code[_offset++] = 0xE9;  // jmp near end
+                int endJump2 = _offset;
+                _offset += 4;
+
+                code[passJump] = (byte)(_offset - passJump - 1);
+                EmitPrintString("  [PASS] thread join works\n");
+                code[_offset++] = 0xE9;  // jmp near end
+                int endJump3 = _offset;
+                _offset += 4;
+
+                // ===== Child path =====
+                // Patch jz near (32-bit displacement)
+                int childDisp = _offset - (childJump + 4);
+                code[childJump] = (byte)(childDisp & 0xFF);
+                code[childJump + 1] = (byte)((childDisp >> 8) & 0xFF);
+                code[childJump + 2] = (byte)((childDisp >> 16) & 0xFF);
+                code[childJump + 3] = (byte)((childDisp >> 24) & 0xFF);
+                // Child just exits immediately
+                code[_offset++] = 0xB8; Emit32(60);  // mov eax, 60 (exit)
+                code[_offset++] = 0xBF; Emit32(0);   // mov edi, 0
+                code[_offset++] = 0x0F; code[_offset++] = 0x05;  // syscall
+                code[_offset++] = 0x0F; code[_offset++] = 0x0B;  // ud2
+
+                // ===== Error path =====
+                // Patch jl near (32-bit displacement)
+                int errorDisp = _offset - (errorJump + 4);
+                code[errorJump] = (byte)(errorDisp & 0xFF);
+                code[errorJump + 1] = (byte)((errorDisp >> 8) & 0xFF);
+                code[errorJump + 2] = (byte)((errorDisp >> 16) & 0xFF);
+                code[errorJump + 3] = (byte)((errorDisp >> 24) & 0xFF);
+                EmitPrintString("  [FAIL] clone failed\n");
+
+                // ===== End =====
+                // Patch all end jumps
+                int endPos = _offset;
+                int disp1 = endPos - (endJump1 + 4);
+                code[endJump1] = (byte)(disp1 & 0xFF);
+                code[endJump1 + 1] = (byte)((disp1 >> 8) & 0xFF);
+                code[endJump1 + 2] = (byte)((disp1 >> 16) & 0xFF);
+                code[endJump1 + 3] = (byte)((disp1 >> 24) & 0xFF);
+
+                int disp2 = endPos - (endJump2 + 4);
+                code[endJump2] = (byte)(disp2 & 0xFF);
+                code[endJump2 + 1] = (byte)((disp2 >> 8) & 0xFF);
+                code[endJump2 + 2] = (byte)((disp2 >> 16) & 0xFF);
+                code[endJump2 + 3] = (byte)((disp2 >> 24) & 0xFF);
+
+                int disp3 = endPos - (endJump3 + 4);
+                code[endJump3] = (byte)(disp3 & 0xFF);
+                code[endJump3 + 1] = (byte)((disp3 >> 8) & 0xFF);
+                code[endJump3 + 2] = (byte)((disp3 >> 16) & 0xFF);
+                code[endJump3 + 3] = (byte)((disp3 >> 24) & 0xFF);
+
+                // Clean up stack
+                code[_offset++] = 0x48; code[_offset++] = 0x83; code[_offset++] = 0xC4;
+                code[_offset++] = 32;
             }
         }
 

@@ -355,6 +355,44 @@ public static unsafe class Scheduler
     }
 
     /// <summary>
+    /// Entry point for cloned user-mode threads.
+    /// When scheduled, this wrapper jumps to user mode at the saved UserRip/UserRsp.
+    /// </summary>
+    [UnmanagedCallersOnly]
+    private static void ClonedUserThreadWrapper()
+    {
+        var thread = CurrentThread;
+        if (thread == null)
+        {
+            CPU.HaltForever();
+            return;
+        }
+
+        // Set up FS base for TLS if configured
+        if (thread->UserFsBase != 0)
+        {
+            CPU.SetFsBase(thread->UserFsBase);
+        }
+
+        // Jump to user mode - this never returns
+        // The thread's Context.Rax was set to 0 (clone returns 0 to child)
+        // But we need to pass it via the actual jump mechanism
+        JumpToUserMode(thread->UserRip, thread->UserRsp, 0);
+
+        // Should never reach here
+        CPU.HaltForever();
+    }
+
+    [DllImport("*", EntryPoint = "jump_to_ring3_with_retval")]
+    private static extern void JumpToUserMode(ulong userRip, ulong userRsp, ulong retval);
+
+    /// <summary>
+    /// Get the function pointer to ClonedUserThreadWrapper for clone syscall.
+    /// </summary>
+    public static ulong GetClonedUserThreadWrapperAddress()
+        => (ulong)(delegate* unmanaged<void>)&ClonedUserThreadWrapper;
+
+    /// <summary>
     /// Exit the current thread.
     /// </summary>
     public static void ExitThread(uint exitCode)
@@ -372,8 +410,21 @@ public static unsafe class Scheduler
         thread->ExitCode = exitCode;
         thread->State = ThreadState.Terminated;
 
-        DebugConsole.WriteLine(string.Format("[Sched] Thread 0x{0} exited with code 0x{1}",
-            thread->Id.ToString("X4", null), exitCode.ToString("X8", null)));
+        // Handle CLONE_CHILD_CLEARTID: write 0 to ClearChildTid and wake futex waiters
+        // This enables pthread_join() / Thread.Join() implementation
+        if (thread->ClearChildTid != null)
+        {
+            // Write 0 to the tid address (signals thread has exited)
+            *thread->ClearChildTid = 0;
+
+            // Wake any threads waiting on this address via futex
+            // Release lock temporarily since FutexWakeAll acquires its own lock
+            _globalLock.Release();
+            Syscall.SyscallDispatch.FutexWakeAll(thread->ClearChildTid);
+            _globalLock.Acquire();
+
+            thread->ClearChildTid = null;
+        }
 
         // Wake any threads waiting on this thread
         WakeWaiters(thread);
@@ -824,6 +875,11 @@ public static unsafe class Scheduler
                 if (next->IsUserMode && next->UserFsBase != 0)
                     CPU.SetFsBase(next->UserFsBase);
 
+                // Set the syscall kernel stack for the new thread
+                // This is critical - each thread needs its own kernel stack for syscalls
+                if (next->KernelStackTop != 0)
+                    CPU.SetSyscallKernelStack(next->KernelStackTop);
+
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
             else
@@ -834,6 +890,10 @@ public static unsafe class Scheduler
                 // Restore new thread's FS base if it's a user-mode thread
                 if (next->IsUserMode && next->UserFsBase != 0)
                     CPU.SetFsBase(next->UserFsBase);
+
+                // Set the syscall kernel stack for the new thread
+                if (next->KernelStackTop != 0)
+                    CPU.SetSyscallKernelStack(next->KernelStackTop);
 
                 CPU.LoadContext(&next->Context);
             }
@@ -972,6 +1032,10 @@ public static unsafe class Scheduler
                 if (next->IsUserMode && next->UserFsBase != 0)
                     CPU.SetFsBase(next->UserFsBase);
 
+                // Set the syscall kernel stack for the new thread
+                if (next->KernelStackTop != 0)
+                    CPU.SetSyscallKernelStack(next->KernelStackTop);
+
                 CPU.SwitchContext(&oldThread->Context, &next->Context);
             }
             else
@@ -982,6 +1046,10 @@ public static unsafe class Scheduler
                 // Restore new thread's FS base if it's a user-mode thread
                 if (next->IsUserMode && next->UserFsBase != 0)
                     CPU.SetFsBase(next->UserFsBase);
+
+                // Set the syscall kernel stack for the new thread
+                if (next->KernelStackTop != 0)
+                    CPU.SetSyscallKernelStack(next->KernelStackTop);
 
                 CPU.LoadContext(&next->Context);
             }
@@ -1363,10 +1431,6 @@ public static unsafe class Scheduler
         }
 
         _globalLock.Release();
-
-        DebugConsole.Write("[Sched] Cloned thread 0x");
-        DebugConsole.WriteHex(thread->Id);
-        DebugConsole.WriteLine();
     }
 
     /// <summary>

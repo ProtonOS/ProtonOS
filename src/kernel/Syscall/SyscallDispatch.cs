@@ -702,18 +702,23 @@ public static unsafe class SyscallDispatch
         newThread->UserRip = thread->UserRip; // Same instruction pointer - clone returns here
 
         // Set up CPU context for the child
-        // Copy parent's context as base
+        // The child will start in kernel mode at ClonedUserThreadWrapper,
+        // which then uses iretq to jump to Ring 3 at UserRip/UserRsp
         newThread->Context = thread->Context;
 
-        // Child gets return value 0 in rax
+        // Child gets return value 0 in rax (this will be passed to user mode)
         newThread->Context.Rax = 0;
 
-        // Use the provided child stack
-        newThread->Context.Rsp = childStack;
+        // Set RIP to the kernel-mode wrapper that transitions to Ring 3
+        // load_context uses 'ret', so we need a kernel address
+        newThread->Context.Rip = Scheduler.GetClonedUserThreadWrapperAddress();
 
-        // Set up user-mode segment selectors
-        newThread->Context.Cs = GDTSelectors.UserCode | 3;
-        newThread->Context.Ss = GDTSelectors.UserData | 3;
+        // Set kernel stack for the wrapper to use (top of kernel stack)
+        newThread->Context.Rsp = newThread->KernelStackTop;
+
+        // Kernel-mode context (wrapper runs in Ring 0 then transitions to Ring 3)
+        newThread->Context.Cs = GDTSelectors.KernelCode;
+        newThread->Context.Ss = GDTSelectors.KernelData;
         newThread->Context.Rflags = 0x202; // IF=1
 
         // Handle CLONE_SETTLS - set Thread Local Storage base
